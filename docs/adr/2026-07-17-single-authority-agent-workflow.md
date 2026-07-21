@@ -2,11 +2,24 @@
 
 ## Status
 
-Proposed.
+Accepted.
 
-This ADR becomes Accepted after product approval. The current implementation
-reference remains [Phase 4 Agent Workflow Reference](../phase-4-agent-workflow-reference.md) until the cutover
-and live acceptance gates in this document are complete.
+This ADR is the current implementation authority. The former
+[Phase 4 Agent Workflow Reference](../phase-4-agent-workflow-reference.md) is
+retired and provides historical context only. Final live-chain acceptance is
+tracked by the current implementation roadmap and does not restore any retired
+runtime contract.
+
+The [2026-07-20 advisory publication and human-review decision](./2026-07-20-advisory-publication-human-review.md)
+supersedes this ADR wherever this document assigns narrative verification a
+publication veto, automatic focused rewrite, or `verified/withheld` publication
+state.
+
+The 2026-07-20 launch closeout uses the complete automated contract, verifier,
+integration, Gateway, build, and stale-reference suite plus one fresh real-chain
+Case B run after code freeze. Manual truth review, manual insight scoring, and
+wording-pair review are optional research inputs and do not gate publication or
+deployment.
 
 ## 中文执行摘要
 
@@ -24,6 +37,8 @@ and live acceptance gates in this document are complete.
 8. 质量审计只反馈洞察与表达风险；持久化、交付和客户投影不能重新判断业务事实。
 9. 每个 run attempt 在编译首个 plan 前自动解析最新 active release，后续 plan patch 继承同一权威上下文，用户界面不暴露权威模式选择。
 10. capability 与 LLM 按 at-least-once 执行，AuthorityBundle 按 digest exactly-once 发布，delivery 通过 outbox 幂等重试。
+11. 分析自由采用“宽探索 → 严证据结算 → 宽表达 → 窄发布校验”：planner 的 issue tree 和候选假设完整留痕，claim 按证据强度结算，writer 保留业务表达自由，verifier 只拥有否决权。
+12. `AuthorityBundle` 封存所有 `user_required` obligation IDs；provider-facing `NarrativeMaterialProjection` 用不透明 requirement handle 表达必答 claim/limitation 闭环。必答覆盖只约束结构化 handles，writer 继续自由决定段落数量、顺序、重点、综合方式和业务措辞。
 
 迁移采用无兼容替换：先建立新领域合同和持久 checkpoint，再依次切换意图与澄清、唯一 compiler、分支执行、ClaimGraph、claim-aware 文案、原子持久化和交付；每完成一层就删除对应旧实现与旧断言。最终以 Case A-D 和八类典型问题的真实 DeepSeek、真实 ClickHouse、真实 Postgres、真实 Gateway/Core 链路验收。
 
@@ -58,7 +73,7 @@ Development has no live users. The cutover will directly replace obsolete
 behavior and tests. It will not add compatibility adapters, dual compilers,
 dual-write modes, legacy readers, or long-lived feature flags.
 
-## Context
+## Pre-cutover context (historical)
 
 Case B exposed a recurring failure pattern across the workflow:
 
@@ -69,17 +84,21 @@ Case B exposed a recurring failure pattern across the workflow:
 5. state recovery is described at workflow level while node results remain
    process-local until the run returns.
 
-The current responsibilities are concentrated in several large modules:
+At decision time, responsibilities were concentrated in several large modules.
+The paths below describe the removed architecture and are not current runtime
+entry points:
 
-- [`bi_agent/runtime/langgraph_workflow.py`](../../bi_agent/runtime/langgraph_workflow.py): conversation, planning, execution,
-  evidence reduction, writing, verification, repair, and persistence;
-- [`bi_agent/runtime/answer_package.py`](../../bi_agent/runtime/answer_package.py): claim construction, verification,
-  narrative publication, scrubbing, delivery reverification, and projection;
-- [`bi_agent/runtime/final_narrative_binding.py`](../../bi_agent/runtime/final_narrative_binding.py): post-hoc interpretation of
-  open business text;
-- [`bi_agent/conversation/clarification_authority.py`](../../bi_agent/conversation/clarification_authority.py): repeated projections of
-  the same material decisions;
-- [`bi_agent/runtime/runtime_persistence.py`](../../bi_agent/runtime/runtime_persistence.py): storage integrity plus substantial
+- `bi_agent/runtime/langgraph_workflow.py`: formerly combined conversation,
+  planning, execution, evidence reduction, writing, verification, repair, and
+  persistence;
+- `bi_agent/runtime/answer_package.py`: formerly combined claim construction,
+  verification, narrative publication, scrubbing, delivery reverification, and
+  projection;
+- `bi_agent/runtime/final_narrative_binding.py`: formerly reinterpreted open
+  business text after execution;
+- `bi_agent/conversation/clarification_authority.py`: formerly repeated the same
+  material decisions across projections;
+- `bi_agent/runtime/runtime_persistence.py`: formerly combined storage integrity with substantial
   semantic closure logic.
 
 The existing implementation also has foundations worth retaining:
@@ -176,6 +195,37 @@ delivery projection: idempotent and retryable
 
 These guarantees are explicit in state, persistence, recovery, and tests.
 
+### 7. Exploration, settlement, expression, and publication use different constraints
+
+The analysis path follows this contract:
+
+```text
+wide exploration
+→ strict evidence settlement
+→ wide expression
+→ narrow publication verification
+```
+
+- planning preserves the model's business-readable issue tree, auxiliary axes,
+  competing hypotheses, and priorities as an immutable proposal;
+- deterministic admission controls which proposal items may become executable
+  plan items and records every admission outcome without erasing the proposal;
+- claim settlement assigns an explicit epistemic class, evidence ceiling,
+  support set, and boundary while allowing candidate mechanisms and scenarios to
+  remain visible at their qualified strength;
+- the writer controls narrative structure, emphasis, synthesis, and professional
+  business wording over the verified `NarrativeMaterialProjection`;
+- publication verification may accept or veto a block and may never rewrite the
+  block, grant a claim, or increase claim strength;
+- insight-quality evaluation is human-reviewed and advisory. An eval finding
+  cannot become a runtime guardrail without a separate, generalizable policy
+  decision with business and system ownership.
+
+The records and checks for these responsibilities are introduced in their
+assigned migration phases. Phase 2 establishes proposal retention and execution
+admission only; it does not pull claim settlement, narrative verification, or
+insight-quality evaluation forward.
+
 ## Target architecture
 
 ```mermaid
@@ -185,8 +235,10 @@ flowchart LR
   IR --> D["DecisionLedger"]
   D --> RC["Resolve and pin latest active release"]
   RC --> PL["Planner LLM"]
-  PL --> PC["Authoritative multi-pass compiler"]
-  PC --> PR["PlanRevision"]
+  PL --> PPR["Immutable PlannerProposal"]
+  PPR --> PC["Authoritative multi-pass compiler"]
+  PC --> PAR["ProposalAdmissionRecord"]
+  PAR --> PR["PlanRevision"]
   PR --> S["Capability DAG scheduler"]
   S --> CO1["CapabilityOutcome"]
   S --> CO2["CapabilityOutcome"]
@@ -198,7 +250,8 @@ flowchart LR
   CV --> CG["ClaimGraph"]
   CG --> AS["Authority seal transaction"]
   AS --> AB["Sealed AuthorityBundle"]
-  AB --> W["Narrative LLM with public-safe claim palette"]
+  AB --> MP["Durable NarrativeMaterialProjection checkpoint"]
+  MP --> W["Narrative LLM with claim-material projection"]
   W --> ND["NarrativeDocument blocks"]
   ND --> BV["Block-level verifier"]
   AB --> BV
@@ -230,6 +283,23 @@ bind_intent
 `evaluate_claim_coverage` may request a versioned `PlanPatch` when a valuable
 claim remains unresolved and an admissible route exists. A patch produces a new
 `PlanRevision`; it does not send the entire run back through intent parsing.
+
+Coverage evaluation carries the current obligation subject and success policy,
+required claim strength, public-safe observation facts, evidence kind and
+strength, maximum claim strength, publication ceiling, data-contract state,
+scope, window, dimension path, limitations, result/completeness references, and
+the durable exploration-stop policy. Ordinary evidence remains
+`evidence_present` until claim settlement and verification; only a typed
+boundary with the required limitation and publication ceiling may close locally
+as `explicit_boundary`.
+
+The model may choose to seal the current evidence or request one of the supplied
+routes. Deterministic route admission first proves data coverage, evidence and
+claim-class compatibility, a ceiling that can satisfy the obligation, and the
+actual incremental task cost against the remaining auxiliary budget. Each
+admitted route then exposes its business name, semantics, selection policy,
+per-obligation ceiling, cost, and expected-value projection so the model can
+exercise analytical judgment inside the executable set.
 
 Clarification pauses only when a material decision slot remains unresolved.
 Narrative repair retries only rejected blocks. Persistence retry happens through
@@ -309,7 +379,60 @@ A confirmed slot can reopen only when a new intent revision invalidates it or a
 hard contract proves the selected value impossible. The invalidation is
 explicit and auditable.
 
-### `PlanRevision`
+### `PlannerProposal`, `ProposalAdmissionRecord`, and `PlanRevision`
+
+The planner's structured business proposal is immutable and content-addressed:
+
+```text
+PlannerProposal
+- planner_proposal_id
+- intent_revision_id
+- decision_refs[]
+- authority_context_ref
+- issue_tree_nodes[]
+- analysis_axis_proposals[]
+- hypothesis_proposals[]
+- priority_proposals[]
+- assumption_proposals[]
+- raw_provider_response_ref
+- schema_version
+- prompt_version
+- model_version
+- content_digest
+```
+
+The issue tree and hypotheses are business-readable analytical proposals, not
+hidden chain-of-thought. The stored structured proposal and restricted raw
+provider-response reference preserve what the planner proposed before admission.
+
+Deterministic admission produces a separate immutable record:
+
+```text
+ProposalAdmissionRecord
+- proposal_admission_id
+- planner_proposal_ref
+- intent_revision_id
+- decision_refs[]
+- authority_context_ref
+- admission_entries[]
+  - proposal_item_ref
+  - item_kind
+  - status: admitted | rejected | deferred
+  - reason_code
+  - contract_refs[]
+  - normalized_execution_ref?
+- compiler_version
+- contract_versions
+- content_digest
+```
+
+Admission reasons come from closed contracts, hard safety boundaries, duplicate
+identity, execution budget, and dependency validity. The compiler does not use
+open-language keyword rules to reinterpret a proposal. A structurally invalid
+model response remains a failed model attempt; the runtime does not fabricate an
+empty proposal or invoke a fallback compiler.
+
+The accepted execution plan references both records:
 
 ```text
 plan_revision_id
@@ -317,6 +440,8 @@ supersedes_plan_revision_id?
 intent_revision_id
 decision_refs[]
 authority_context_ref
+planner_proposal_ref
+proposal_admission_ref
 resolved_window_refs[]
 claim_obligations[]
 analysis_axes[]
@@ -336,6 +461,12 @@ The compiler derives mandatory tasks from accepted goals and claim obligations,
 then admits LLM proposals that reference valid contracts. Invalid auxiliary
 suggestions are recorded and omitted. They do not become user clarification.
 
+Only admitted executable axes and tasks enter `PlanRevision.analysis_axes` and
+`PlanRevision.capability_tasks`. Rejected, deferred, or currently non-executable
+ideas remain in `PlannerProposal` with an explicit admission outcome, so the
+original analytical exploration cannot disappear silently or masquerade as an
+executed plan item.
+
 The goal registry covers all eight typical business-question families. Each
 goal declares required business outcomes, recommended candidate axes, evidence
 ceilings, and completion policy. It is a planning contract rather than a fixed
@@ -350,9 +481,16 @@ obligation_id
 claim_kind
 role: user_required | analyst_auxiliary
 subject
-minimum_evidence
+evidence_requirement:
+  operator: any_of
+  evidence_kinds[]
 success_policy
 ```
+
+`any_of` is the only current evidence operator. Each proposed claim closes its
+own requirement by binding at least one listed evidence kind. Evidence attached
+to another claim under the same obligation cannot be borrowed during semantic
+verification.
 
 Requiredness belongs to the edge from a claim obligation to a capability task.
 A capability has no run-wide required flag.
@@ -512,6 +650,12 @@ Claim classes include:
 - scenario;
 - boundary.
 
+Observed facts, accounting identity contributions, statistical associations,
+candidate mechanisms, scenarios, and boundaries keep distinct identities and
+publication ceilings. A candidate mechanism can remain useful and visible with
+its supporting context and limitations without being promoted into an observed,
+accounting, association, or causal claim.
+
 Support edges include `supports`, `qualifies`, `depends_on`, `contradicts`, and
 `contextualizes`.
 
@@ -556,6 +700,8 @@ intent_revision_id
 decision_refs[]
 plan_revision_id
 authority_context_ref
+required_obligation_ids[]
+obligation_coverage_refs[]
 evidence_refs[]
 verified_claim_refs[]
 recommendation_refs[]
@@ -580,12 +726,64 @@ threads never grant cross-thread access.
 Rejected claims live in `claim_verifier_report_ref`; they are not members of the
 sealed authority manifest.
 
+`required_obligation_ids` is derived exactly from the accepted `PlanRevision`
+entries whose role is `user_required`. Analyst-added auxiliary obligations stay
+in settlement and audit, but they do not become mandatory customer-publication
+requirements. The sealed IDs prevent a downstream writer or projection from
+silently redefining which parts of the user's request must reach the answer.
+
 ### `NarrativeDocument` and `NarrativeBlock`
 
-The writer receives a public-safe claim palette. It does not receive raw rows,
-SQL, owner fields, internal debug enums, secrets, or unrestricted evidence
-payloads. Internal claim refs are mapped to short per-call handles outside the
-text channel.
+The public-safe claim palette remains the complete derivation source for claims,
+recommendations, limitations, and reviewed facts. Before the first provider
+call, the runtime derives and durably checkpoints one
+`NarrativeMaterialProjection` from that palette, the accepted claim settlement,
+and the exact supporting evidence entries. The checkpoint is atomic and
+content-addressed; a conflicting replay or unavailable checkpoint blocks the
+provider call and surfaces the typed failure.
+
+The projection pools repeated public facts by evidence material, preserves
+lossless source-fact closure, converts repeated limitation context into shared
+boundary facets, and binds every claim to the material handles it may use. This
+removes transport duplication without truncation, sampling, top-N selection, or
+locally generated substitute prose. Each canonical capability observation is
+bounded at 64 KiB when evidence is created. The complete serialized provider
+message envelope is bounded at 512 KiB immediately before dispatch. Exceeding
+either contract is a visible non-retryable boundary failure.
+
+The projection also contains one content-addressed publication requirement for
+each sealed `user_required` obligation. Internal records retain the obligation,
+basis, coverage refs, and digests. For each requirement, the writer and block
+verifier see only:
+
+```text
+publication_requirement
+- requirement_handle
+- status: satisfied | mixed | contradicted | unavailable
+- required_claim_strength
+- claim_handles[]
+- limitation_handles[]
+```
+
+The handle set follows the same closure rules as customer publication:
+
+- `satisfied`: at least one listed claim reaches the required strength, and the
+  coverage has no limitation;
+- `mixed`: at least one accepted coverage claim and every listed limitation;
+- `contradicted`: at least one accepted coverage claim and every listed
+  limitation;
+- `unavailable`: no claim and every listed limitation.
+
+Only handles carried by blocks marked `required` satisfy these requirements.
+This contract controls answer completeness without prescribing prose. The writer
+remains free to choose block count, ordering, roles, emphasis, comparison,
+synthesis, and wording within claim ceilings and exact material bindings.
+
+The writer and verifier receive the same `NarrativeMaterialProjection`. They do
+not receive the derivation palette, raw rows, SQL, owner fields, internal debug
+enums, secrets, or unrestricted evidence payloads. Internal claim, material,
+fact, recommendation, limitation, and boundary-facet refs are mapped to short
+per-call handles outside the text channel.
 
 DeepSeek returns:
 
@@ -608,19 +806,35 @@ NarrativeBlock
 ```
 
 `text` preserves the raw DeepSeek business expression. Handles are resolved to
-authority refs through a separate structured channel.
+authority refs through a separate structured channel. Provider-facing
+`material_fact_bindings` contain only a claim handle and fact handle. The
+runtime resolves fact kind, value, range end, and unit directly from the durable
+projection when it constructs the typed `NarrativeBlock`; the model never
+retypes those authoritative fields.
 
 Validation occurs per block:
 
 1. local schema, handle, numeric binding, date, scope, and sensitive-output
    checks;
 2. semantic entailment and evidence-strength review by a verifier model;
-3. accepted blocks retained unchanged;
-4. rejected required blocks receive focused LLM repair under the centralized
-   retry and risk policy;
-5. rejected auxiliary blocks are omitted with an audit record;
-6. a required block that still fails is withheld, while its structured
+3. accepted blocks retain the same typed block identity, digest, writer-attempt
+   provenance, and provider text;
+4. rejected required blocks may receive a focused writer attempt under the
+   centralized retry and risk policy; the provider returns only replacement
+   target blocks, and its response and audit remain target-only;
+5. the runtime merges accepted source blocks and replacement target blocks in
+   source order, creating a mixed-origin narrative revision whose parent is the
+   source narrative; the verifier supplies rejection reasons and never
+   replacement prose;
+6. rejected auxiliary blocks are omitted with an audit record;
+7. a required block that still fails is withheld, while its structured
    claim/evidence status remains visible in the audit and business-process UI.
+
+After verification, publication readiness is computed from the accepted
+required blocks. Every publication requirement must still have its status-
+appropriate claim and limitation handles. A veto that removes the only covering
+required block therefore enters focused repair and then withholding if coverage
+cannot be restored.
 
 Local code does not split Chinese sentences, resolve pronouns, enumerate causal
 words, rewrite business wording, or generate fallback conclusion sentences.
@@ -643,6 +857,13 @@ projection_digest
 Projection may perform fixed field removal, ordering, and deterministic
 visualization sampling. A projection manifest proves that it added no claim and
 did not increase claim strength. Projection failure cannot modify authority.
+
+`PublicationFlow` retains a final hard gate over the resolved customer payload.
+It recomputes every `user_required` obligation from the accepted plan, settlement
+basis, coverage, accepted claims, and published limitation refs. A mismatch is a
+typed publication-closure failure. This gate is an independent trust-boundary
+assertion; normal execution should satisfy it earlier through the material
+projection and accepted-required-block closure.
 
 Translation creates a new NarrativeDocument revision and must pass block
 verification again. It is not a projection operation.
@@ -670,6 +891,18 @@ obligation_coverage[obligation_id]:
   satisfied | contradicted | mixed | unavailable | unresolved | not_requested
 ```
 
+The pre-settlement loop uses a separate typed state:
+
+```text
+claim_coverage_evaluation[obligation_id]:
+  uncovered | evidence_present | explicit_boundary
+```
+
+`evidence_present` preserves qualified observations for interpretation and
+keeps the obligation open. During settlement, accepted lower-strength claims
+remain publishable at their own ceiling and produce `mixed` coverage with an
+explicit strength-gap limitation; they cannot satisfy a stronger obligation.
+
 Examples:
 
 | Situation | Analysis | Obligation coverage | Publication | Delivery |
@@ -685,13 +918,13 @@ Examples:
 |---|---|---|
 | Intent | bind open language to supplied goal/metric/axis catalog | validate IDs, source spans, dates, transitions |
 | Clarification | propose concise business options and a recommendation | open only unresolved material slots; store option IDs |
-| Planning | build issue tree, suggest axes, hypotheses, and priority | compile mandatory obligations, contracts, budget, and DAG |
+| Planning | create an immutable business-readable issue tree, axes, hypotheses, and priorities | retain the proposal; deterministically admit executable items; compile mandatory obligations, contracts, budget, and DAG |
 | Query | describe business need | compile SQL, enforce parameters, release, safety, and grain |
 | Analysis | interpret multiple results and propose candidate insights | formula, statistics, completeness, and reconciliation |
 | Claims | interpret statistical associations; propose mechanisms and implications | statistical capabilities produce association facts; verifier closes refs and enforces ceilings |
-| Narrative | write professional claim-aware blocks | validate handles and material facts |
-| Semantic review | veto unsupported block meaning | prevent the reviewer from granting claims |
-| Quality review | identify weak insight or expression | advisory warning or focused rewrite request only |
+| Narrative | freely choose structure, emphasis, synthesis, and professional wording over the material projection | validate handles, claim-material pairs, and facts without rewriting text |
+| Semantic review | veto unsupported block meaning | prevent the reviewer from granting claims, increasing strength, or returning replacement wording |
+| Quality review | human-review explanation value, novelty, decision usefulness, competing hypotheses, uncertainty, and actionability | advisory result or a separately identified rewrite request; no direct guardrail promotion |
 | Persistence | none | schema, digest, references, transaction, idempotency |
 | Delivery | none | ownership, field policy, projection manifest, outbox |
 
@@ -787,9 +1020,10 @@ text are untrusted data. They are passed as typed, escaped data fields and never
 concatenated into system instructions. Raw text fields require an allowlisted
 contract before entering a model prompt.
 
-The writer and verifier receive only public-safe aggregates and per-call claim
-handles. Returned handles are checked for existence, active run ownership,
-scope, and membership in the supplied palette.
+The writer and verifier receive only the durable public-safe material projection
+and per-call handles. Returned handles are checked for existence, active run
+ownership, scope, claim-material pair membership, and exact fact binding inside
+the supplied projection.
 
 Raw provider responses remain in restricted admin audit storage under the
 project retention policy. Customer output uses verified blocks only.
@@ -967,7 +1201,10 @@ Deliver:
 - `PlanRevision`, claim obligations, analysis axes, and capability DAG;
 - latest-active-release resolution pinned per run attempt and inherited by plan
   patches;
-- LLM auxiliary-route proposals with deterministic admission.
+- immutable `PlannerProposal` records that retain the original issue tree,
+  auxiliary axes, hypotheses, and priorities;
+- deterministic `ProposalAdmissionRecord` records whose accepted items are the
+  only proposal-derived axes and tasks allowed into `PlanRevision`.
 
 Remove:
 
@@ -984,10 +1221,45 @@ Retain and consolidate:
 Gate:
 
 - the audit contains one accepted plan digest;
+- the audit retains one planner-proposal digest and its deterministic admission
+  digest, including rejected and deferred proposal items;
+- an invalid auxiliary item is recorded without becoming a clarification,
+  fabricated replacement proposal, or fallback-compiler input;
 - Case B includes primary comparison, formula graph, eligible dimension
   universe, temporal context, and data-quality obligations;
 - payment-success unavailability does not make the plan non-executable;
 - all branches use one release set.
+
+Phase 2 stops at the accepted execution plan. Claim-class settlement, narrative
+composition and verification, and human-reviewed insight-quality evaluation
+remain Phase 4, Phase 5, and Phase 6 work respectively.
+
+#### Phase 2 implementation status (2026-07-18)
+
+Phase 2 is implemented through the `planned` boundary:
+
+- the live graph has one intent/decision/plan authority path and the superseded
+  compiler, route-repair, obligation, model, and recipe authorities are removed;
+- PostgreSQL accepts the authority context, planner proposal, admission record,
+  plan revision, and transition in one transaction after rebuilding every
+  content-addressed record, validating proposal-to-plan admission closure, and
+  comparing the transition parent with the current accepted head;
+- planner audit validation closes the actual provider response through the same
+  structured-response parser used by the LLM client, then verifies the exact
+  structured proposal, provider, routed model, prompt, transition, and response
+  digest;
+- Gateway planned/replay responses require the complete authority bundle and use
+  a fixed customer projection; interaction directives expose only their public
+  handle, business status, and stable explanation;
+- the real Case B acceptance runner persists the explicit baseline decision,
+  compiles one pinned plan, and stops before SQL execution or answer publication.
+
+Executable evidence lives in
+[`test_single_authority_phase02.py`](../../tests/phase7/test_single_authority_phase02.py),
+[`test_single_authority_phase02_postgres.py`](../../tests/phase7/test_single_authority_phase02_postgres.py),
+[`test_gateway_phase02_planned.py`](../../tests/phase7/test_gateway_phase02_planned.py),
+and
+[`run_single_authority_phase02_acceptance.py`](../../tools/phase7/run_single_authority_phase02_acceptance.py).
 
 ### Phase 3: DAG execution, formula graph, and branch isolation
 
@@ -1023,7 +1295,11 @@ Deliver:
 - stable claim keys and content revisions;
 - many-to-many evidence support edges;
 - obligation-vector sufficiency;
-- claim classes, strength ceilings, semantic veto, and sealed bundle manifest.
+- distinct epistemic identities and ceilings for observed facts, accounting
+  contributions, statistical associations, candidate mechanisms, scenarios,
+  and boundaries;
+- claim strength ceilings, semantic veto, and sealed bundle manifest;
+- exact `user_required` obligation IDs in the sealed bundle manifest.
 
 Remove:
 
@@ -1039,17 +1315,27 @@ Gate:
 - region/city and device evidence coexist, and material findings can coexist as
   child claims;
 - missing payment success leaves only its obligation unresolved;
+- an exploratory hypothesis may survive as a candidate mechanism, scenario, or
+  boundary without being promoted to an observed, accounting, or association
+  claim;
 - a duplicate authority seal commits one bundle digest.
 
 ### Phase 5: Claim-aware narrative and block verifier
 
 Deliver:
 
-- public-safe claim palette;
+- durable `NarrativeMaterialProjection` derived from the public-safe palette,
+  claim settlement, and exact evidence entries before any provider call;
+- opaque publication requirements derived from sealed `user_required`
+  obligations and their settlement basis and coverage;
 - DeepSeek `NarrativeDocument` with original block text;
+- writer control over narrative structure, emphasis, synthesis, and business
+  wording;
 - local structured checks and semantic block veto;
-- focused repair for rejected required blocks;
-- advisory quality review.
+- focused new writer attempts for rejected required blocks, with independent
+  attempt identity, target-only provider output, deterministic runtime merge,
+  and unchanged typed provenance for accepted sibling blocks;
+- veto-only verifier reports that never contain replacement prose.
 
 Remove:
 
@@ -1068,9 +1354,13 @@ Gate:
   labels, and model names do not trigger local semantic rejection;
 - unsupported numbers, target/baseline reversal, scope drift, and causal
   overreach are rejected at the corresponding block;
+- the verifier can accept or reject original text and cannot mutate it, draft a
+  replacement, or grant a stronger claim;
+- every publication requirement is covered by verifier-accepted required blocks
+  under its status-specific claim and limitation rules;
 - final business writing retains full analytical depth.
 
-### Phase 6: Independent authority seal and pure delivery
+### Phase 6: Independent authority seal, pure delivery, and insight evaluation
 
 Deliver:
 
@@ -1078,7 +1368,15 @@ Deliver:
 - separately retryable narrative/verifier/projection publication transaction;
 - delivery outbox and idempotent customer projection;
 - orthogonal analysis, publication, and delivery states;
-- digest-based cross-boundary validation.
+- digest-based cross-boundary validation;
+- human-reviewed insight-quality evals covering explanation value, novelty,
+  decision usefulness, competing hypotheses, uncertainty handling, and
+  actionability;
+- advisory quality results that may request a separately identified narrative
+  attempt without mutating claims, accepted text, or publication authority;
+- a reviewed promotion path requiring a generalizable failure pattern and joint
+  business and system ownership before any eval finding becomes a runtime
+  guardrail.
 
 Remove:
 
@@ -1100,7 +1398,10 @@ Gate:
 - persist, load, project, and deliver preserve bundle digest and claim IDs;
 - projection removes only fields forbidden by the visibility policy;
 - a delivery failure leaves analysis and publication verified;
-- outbox retry completes without rerunning LLMs, queries, or claim verification.
+- outbox retry completes without rerunning LLMs, queries, or claim verification;
+- a low insight-quality score remains advisory and preserves the sealed bundle
+  and accepted narrative revision;
+- a single eval case or model preference cannot create a runtime guardrail.
 
 ### Phase 7: Delete the old workflow and finish product acceptance
 
@@ -1148,6 +1449,20 @@ High-risk semantic nodes use repeated real calls with saved raw outputs:
 For a fixed material input, schema, refs, and hard-boundary decisions must remain
 stable. Business prose and ranking can vary within the accepted contract.
 
+### Optional insight-quality evaluation
+
+Insight quality is evaluated against real user wording and structured
+expectations. Human reviewers assess explanation value, novelty, decision
+usefulness, competing hypotheses, uncertainty handling, and actionability. The
+result is advisory and may inform prompts, model selection, or a separately
+identified writer attempt. It is excluded from launch and per-publication gates.
+
+An individual failure, phrase preference, or model output does not become a
+runtime guardrail. Promotion requires a recurring and generalizable failure
+pattern, human validation, and joint business and system ownership. Hard legality
+and evidence boundaries remain code or contract responsibilities regardless of
+eval outcomes.
+
 ### Fault-injection checks
 
 Use the real workflow and real storage boundary while injecting controlled
@@ -1165,7 +1480,7 @@ failures:
 - sparse-cell suppression while the containing dimension task still succeeds;
 - narrative-only changes with an unchanged AuthorityBundle digest.
 
-### Human-led Case B gate
+### Real-chain Case B launch gate
 
 The real Case B protocol remains:
 
@@ -1184,8 +1499,47 @@ The real Case B protocol remains:
     boundaries;
 13. persist and deliver without changing the claim set.
 
-After end-to-end cutover, Case B must complete three consecutive real runs. At
-least one run restarts Gateway or Agent Core between durable stages.
+After code freeze, Case B must complete one fresh real run through Gateway,
+PostgreSQL, ClickHouse, and the configured LLM provider. Restart/resume,
+duplicate dispatch, and post-seal recovery remain automated fault-injection
+checks so launch does not depend on repeated manual runs.
+
+The fresh attempt stored under the `verified-03` artifact label is diagnostic
+evidence and does not count as a successful run. Its writer output passed typed
+fact binding and block verification, then the final publication gate found that
+one `user_required` obligation was absent from the customer payload. The reusable
+failure class is **late required-obligation closure**: settlement knows what must
+be answered, while the provider contract omits that obligation and discovers the
+gap only at publication. The architectural fix is to project the requirement
+before writing, enforce it across required blocks, include it in focused repair,
+and retain the final `PublicationFlow` hard gate.
+
+The fresh attempt stored under the `verified-04` artifact label is also
+diagnostic evidence and does not count as a successful run. Its first narrative
+revision reached focused repair, then the focused writer contract required the
+provider to reproduce accepted sibling blocks together with rejected targets.
+That mixed provider/runtime ownership caused repeated scope rejection. The
+reusable failure class is **focused-repair authority duplication**. The current
+contract sends only rejected targets to the provider, keeps that raw response
+target-only, reuses accepted typed blocks with their original identity and
+writer provenance, and performs a deterministic source-order merge in runtime.
+Failure terminals also persist the same safe `operational_failure` projection
+returned by Agent Core, so Gateway can expose the typed terminal state without
+weakening its fail-closed publication checks.
+
+The fresh attempt stored under the `verified-05` artifact label reached a sealed
+AuthorityBundle, then failed while materializing the initial writer output. The
+writer used an optional `direction` block bound only to a verified recommendation;
+all handles were valid and the prompt allowed free role selection, while the
+typed block constructor permitted recommendation-only authority only for
+`next_action`. The provider validator did not share that structural rule, so the
+durable call was accepted before materialization exposed the mismatch. This is
+the reference failure for **provider-validator/materializer contract drift**.
+The current handle grammar allows a non-boundary block to be authorized by a
+claim or verified recommendation, requires a boundary block to carry a
+limitation, requires `next_action` to carry a recommendation, and is shared by
+provider validation and typed block construction. Claim and limitation scope
+remain local block-validation concerns that can enter focused repair.
 
 ### Eight-question acceptance
 
@@ -1235,6 +1589,14 @@ Implementation starts with failing checks for these properties:
 15. `data_prompt_isolation`: untrusted values cannot alter model instructions.
 16. `sparse_cell_locality`: suppressing an unsafe cell does not fail the
     containing aggregate dimension task.
+17. `planner_proposal_retention`: every structured issue-tree, axis, and
+    hypothesis proposal remains addressable with an admission outcome.
+18. `epistemic_class_separation`: observed, accounting, association, candidate
+    mechanism, scenario, and boundary claims cannot be silently interchanged.
+19. `verifier_veto_only`: a verifier may reject a narrative block and cannot
+    rewrite it or grant stronger authority.
+20. `insight_eval_non_authority`: insight-quality evaluation cannot mutate
+    claims, accepted narrative text, or runtime guardrails directly.
 
 ## Deletion map
 
@@ -1294,7 +1656,7 @@ cleanup project.
 | One large mutable AuthorityBundle recreates current coupling | Keep it as a sealed manifest over immutable child records |
 | LLM planner explores too broadly | Candidate universe plus information-gain budget and stop policy |
 | Local compiler over-constrains analysis | Compiler rejects only closed-contract violations and invalid refs |
-| Semantic verifier becomes a new claim authority | Enforce veto-only output and claim-palette membership |
+| Semantic verifier becomes a new claim authority | Enforce veto-only output and claim-material projection membership |
 | Parallelism creates nondeterministic results | Stable identities, set semantics, commutative reducers, release pinning |
 | Crash recovery duplicates calls or claims | Durable journal, idempotency keys, accepted-attempt refs, CAS publication |
 | Sparse cells reveal unsafe detail | Cell-level suppression or roll-up without blocking the whole dimension; revisit cross-query budgets only after a threat-model ADR |
@@ -1350,12 +1712,14 @@ The convergence is complete only when all conditions hold:
 - formula execution comes from the reviewed SSOT graph;
 - every qualified dimension result retains evidence, and every material
   dimension finding retains child-claim identity;
+- every sealed `user_required` obligation reaches accepted required narrative
+  blocks through its status-specific claim/limitation closure;
 - analysis, publication, and delivery states remain independent;
 - node-level crash recovery and duplicate-dispatch publication tests pass;
-- Case B completes three consecutive real runs;
-- Cases A, C, and D complete through the same architecture;
-- all eight typical question families complete original and paraphrased real
-  runs;
+- one post-freeze Case B run completes through the real Gateway, PostgreSQL,
+  ClickHouse, and configured LLM chain;
+- Cases A, C, and D and all eight typical question families pass the automated
+  contract and scenario regression matrix;
 - permissions, SQL safety, active release, data contracts, completeness,
   reconciliation, evidence provenance, claim provenance, and verifier ceilings
   remain hard boundaries;

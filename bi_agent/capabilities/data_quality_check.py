@@ -7,29 +7,35 @@ def data_quality_check(
     rows: Iterable[dict[str, Any]],
     *,
     required_fields: tuple[str, ...] = (),
+    source_row_count_key: str = "source_row_count",
     result_refs: tuple[str, ...] = (),
 ):
     rows = list(rows)
+    measurement = _measurement(rows, source_row_count_key=source_row_count_key)
     quality_risks = _quality_risks(rows)
     risk_limitations = _risk_limitations(quality_risks)
     if not rows:
         return make_evidence_envelope(
             "data_quality_check",
-            evidence_type="insufficient",
+            evidence_type="insufficient_evidence",
             strength="insufficient",
             wording_limit="blocked",
-            typed_payload={"row_count": 0, "missing_required_fields": {}, "quality_risks": {}},
+            typed_payload={
+                **measurement,
+                "missing_required_fields": {},
+                "quality_risks": {},
+            },
             limitations=("no_rows",),
             result_refs=result_refs,
         )
     if not required_fields:
         return make_evidence_envelope(
             "data_quality_check",
-            evidence_type="insufficient",
-            strength="low",
+            evidence_type="trust_boundary",
+            strength="trust_boundary",
             wording_limit="degraded",
             typed_payload={
-                "row_count": len(rows),
+                **measurement,
                 "missing_required_fields": {},
                 "quality_risks": quality_risks,
             },
@@ -43,11 +49,13 @@ def data_quality_check(
     failed = {field: count for field, count in missing.items() if count}
     return make_evidence_envelope(
         "data_quality_check",
-        evidence_type="insufficient",
-        strength="high" if not failed and not risk_limitations else "low",
-        wording_limit="supported" if not failed and not risk_limitations else "degraded",
+        evidence_type="trust_boundary",
+        strength="trust_boundary",
+        wording_limit="supported"
+        if not failed and not risk_limitations
+        else "degraded",
         typed_payload={
-            "row_count": len(rows),
+            **measurement,
             "missing_required_fields": failed,
             "quality_risks": quality_risks,
         },
@@ -60,6 +68,40 @@ def data_quality_check(
 
 
 check_data_quality = data_quality_check
+
+
+def _measurement(
+    rows: list[dict[str, Any]],
+    *,
+    source_row_count_key: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(source_row_count_key, str)
+        or not source_row_count_key
+        or source_row_count_key != source_row_count_key.strip()
+    ):
+        raise ValueError("data_quality_source_row_count_key_invalid")
+    measurement: dict[str, Any] = {
+        "result_group_count": len(rows),
+        "result_group_unit": "window_aggregate",
+    }
+    source_counts = [
+        row[source_row_count_key] for row in rows if source_row_count_key in row
+    ]
+    if not source_counts:
+        return measurement
+    if len(source_counts) != len(rows) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in source_counts
+    ):
+        raise ValueError("data_quality_source_coverage_count_invalid")
+    measurement.update(
+        {
+            "source_coverage_count": sum(source_counts),
+            "source_coverage_unit": "window_scoped_source_record",
+        }
+    )
+    return measurement
 
 
 def _quality_risks(rows: list[dict[str, Any]]) -> dict[str, Any]:

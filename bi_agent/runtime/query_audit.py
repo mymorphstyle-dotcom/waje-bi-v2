@@ -23,9 +23,7 @@ def query_audit_identity(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    snapshot_identity = hashlib.sha256(
-        snapshot_payload.encode("utf-8")
-    ).hexdigest()
+    snapshot_identity = hashlib.sha256(snapshot_payload.encode("utf-8")).hexdigest()
     return ":".join(
         (
             query_hash or "uncompiled",
@@ -59,9 +57,7 @@ def query_audit_refs(
         separators=(",", ":"),
         sort_keys=True,
     )
-    execution_identity = hashlib.sha256(
-        execution_payload.encode("utf-8")
-    ).hexdigest()
+    execution_identity = hashlib.sha256(execution_payload.encode("utf-8")).hexdigest()
     return QueryAuditRefs(
         result_ref=f"result:{execution_identity}",
         rows_ref=(

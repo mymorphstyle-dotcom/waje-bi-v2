@@ -29,9 +29,7 @@ _TRANSFORM_ALIASES = {
     "signed_log_difference": "signed_log_difference",
     "signed_log_change": "signed_log_difference",
 }
-_PAIR_COVERAGE_BASIS = (
-    "complete_transformed_lagged_pairs_over_aligned_opportunities"
-)
+_PAIR_COVERAGE_BASIS = "complete_transformed_lagged_pairs_over_aligned_opportunities"
 
 
 def cross_source_panel_association(
@@ -186,7 +184,7 @@ def cross_source_panel_association(
         normalized_mapping_authority in _MAPPING_AUTHORITY_STATUSES
     )
     mapping_coverage_sufficient = (
-        mapping_coverage is None or mapping_coverage >= min_mapping_coverage
+        mapping_coverage is not None and mapping_coverage >= min_mapping_coverage
     )
     pair_coverage_sufficient = pair_coverage >= min_pair_coverage
     stable_across_panels = bool(direction["stable"])
@@ -199,7 +197,7 @@ def cross_source_panel_association(
     )
 
     evidence_type = (
-        "statistical_association" if analysis_sufficient else "insufficient"
+        "statistical_association" if analysis_sufficient else "insufficient_evidence"
     )
     strength = "medium" if publishable_association else "low"
     wording_limit = (
@@ -320,7 +318,9 @@ def _normalize_hypothesis(value: Mapping[str, Any]) -> dict[str, Any]:
     if set(value) - allowed:
         raise ValueError("hypothesis contains unsupported fields")
     if not required.issubset(value):
-        raise ValueError("hypothesis must declare outcome, candidate, transform, and lag")
+        raise ValueError(
+            "hypothesis must declare outcome, candidate, transform, and lag"
+        )
     outcome_key = str(value.get("outcome_key") or "").strip()
     candidate_key = str(value.get("candidate_key") or "").strip()
     if not outcome_key or not candidate_key or outcome_key == candidate_key:
@@ -762,7 +762,11 @@ def _limitations(
             "cross-source mapping authority is not established; result is "
             "sensitivity-only"
         )
-    if mapping_coverage is not None and not mapping_coverage_sufficient:
+    if mapping_coverage is None:
+        limitations.append(
+            "cross-source mapping coverage is unknown; result is sensitivity-only"
+        )
+    elif not mapping_coverage_sufficient:
         limitations.append(
             "cross-source mapping coverage is below the configured threshold"
         )

@@ -40,4 +40,4 @@ assumptions:
       - timezone_policy
     verifier_rules:
       - Do not allow confirmed cause wording from this assumption alone.
-      - Require the Answer Package to state the tested payday window and evidence strength.
+      - Require the NarrativeDocument and PublicationRevision to state the tested payday window and evidence strength.

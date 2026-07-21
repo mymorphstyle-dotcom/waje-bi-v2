@@ -4,12 +4,12 @@ import { runAgentCore } from "../../../_agentCore";
 import { resolveCustomerActor } from "../../../_customerActor";
 import {
   acquireRunDispatchLease,
-  claimClarificationResolutionAttempt,
-  completeOwnedRunDispatch,
-  failOwnedRunDispatch,
+  claimRunDispatchRequest,
+  customerJsonError,
   gatewayError,
-  jsonError,
-  projectAgentCoreForCustomer,
+  loadCustomerAnalysisSnapshot,
+  observeOwnedRunDispatchExit,
+  requireRun,
   runDispatchRequestIdentity,
 } from "../../../_conversationStore";
 
@@ -18,170 +18,146 @@ export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ runId: string }> };
 
+type OwnedDispatch = {
+  dispatchId: string;
+  runId: string;
+  ownerId: string;
+  leaseEpoch: number;
+};
+
 export async function POST(request: NextRequest, context: RouteContext) {
   const { runId } = await context.params;
   const body = await request.json().catch(() => ({}));
-  const rawAnswer = body.answer ?? body.choice;
+  let actorId: string | undefined;
+  if (
+    body === null
+    || typeof body !== "object"
+    || Array.isArray(body)
+    || Object.keys(body).length !== 3
+    || !Object.prototype.hasOwnProperty.call(body, "answer")
+    || !Object.prototype.hasOwnProperty.call(body, "selectedOptionId")
+    || !Object.prototype.hasOwnProperty.call(body, "requestIdentity")
+  ) {
+    return customerJsonError(gatewayError("clarification_request_invalid"), { runId });
+  }
+  const rawAnswer = body.answer;
   if (typeof rawAnswer !== "string" || !rawAnswer.trim()) {
-    return NextResponse.json({ error: "clarification_answer_required" }, { status: 400 });
+    return customerJsonError(gatewayError("clarification_answer_required"), { runId });
   }
   const rawSelectedOptionId = body.selectedOptionId;
   if (
     rawSelectedOptionId !== undefined
     && rawSelectedOptionId !== null
-    && (typeof rawSelectedOptionId !== "string" || !rawSelectedOptionId.trim())
+    && (
+      typeof rawSelectedOptionId !== "string"
+      || !rawSelectedOptionId.trim()
+    )
   ) {
-    return NextResponse.json(
-      { error: "clarification_selected_option_invalid" },
-      { status: 400 },
+    return customerJsonError(
+      gatewayError("clarification_selected_option_invalid"),
+      { runId },
     );
   }
   const answer = rawAnswer.trim();
   const selectedOptionId = typeof rawSelectedOptionId === "string"
     ? rawSelectedOptionId.trim()
     : null;
-  let claimedRunId = "";
-  let dispatchAcquired = false;
-  let dispatchOwnerId = "";
-  let dispatchLeaseEpoch = 0;
+  let ownedDispatch: OwnedDispatch | null = null;
+
   try {
-    const actorId = resolveCustomerActor(request);
+    actorId = resolveCustomerActor(request);
     const requestIdentity = runDispatchRequestIdentity(request, body);
-    const claim = await claimClarificationResolutionAttempt({
+    const run = await requireRun(runId, actorId);
+    const clarification = {
       sourceRunId: runId,
-      requestIdentity,
-      answer,
-      selectedOptionId,
-      source: "user",
-      actorId,
-    });
-    claimedRunId = claim.attemptRunId;
-    const clarificationPayload = {
-      sourceRunId: claim.sourceRunId,
-      resolutionId: claim.resolutionId,
-      attemptRunId: claim.attemptRunId,
+      resolutionId: `single-authority:${requestIdentity}`,
+      attemptRunId: runId,
       answer,
       selectedOptionId,
       source: "user" as const,
       retryAttempt: false,
     };
-    const clarification = {
-      ...clarificationPayload,
-      threadId: claim.threadId,
-      status: "accepted",
-      requestIdentity: claim.requestIdentity,
-      attemptNumber: claim.attemptNumber,
-    };
+    const claim = await claimRunDispatchRequest({
+      producerKind: "clarification_resolution",
+      scopeRef: runId,
+      requestIdentity,
+      threadId: run.threadId,
+      runId,
+      text: answer,
+      actorId,
+      requestPayload: {
+        message: answer,
+        clarification,
+      },
+    });
     const dispatch = await acquireRunDispatchLease({
-      runId: claim.attemptRunId,
-      requestIdentity: claim.requestIdentity,
+      dispatchId: claim.dispatch.dispatchId,
+      runId,
     });
     if (!dispatch.acquired || !dispatch.ownerId) {
-      return NextResponse.json({
-        sourceRunId: runId,
-        resolutionId: claim.resolutionId,
-        attemptRunId: claim.attemptRunId,
-        previousAttemptRunId: claim.previousAttemptRunId,
-        attemptNumber: claim.attemptNumber,
-        topicId: claim.topicId,
-        status: dispatch.run.status,
-        answerPackagePreview: null,
-        message: claim.message,
-        clarification,
-        agentCore: {
-          status: dispatch.reason === "active_lease"
-            ? "dispatch_in_progress"
-            : "replayed",
+      return NextResponse.json(
+        {
+          snapshot: await loadCustomerAnalysisSnapshot({
+            threadId: run.threadId,
+            actorId,
+            runId,
+          }),
         },
-        eventsUrl: `/api/runs/${claim.attemptRunId}/events`,
-      });
+        { status: 202 },
+      );
     }
-    dispatchAcquired = true;
-    dispatchOwnerId = dispatch.ownerId;
-    dispatchLeaseEpoch = dispatch.leaseEpoch;
+
+    ownedDispatch = {
+      dispatchId: dispatch.dispatchId,
+      runId,
+      ownerId: dispatch.ownerId,
+      leaseEpoch: dispatch.leaseEpoch,
+    };
+    const workerOwnership = ownedDispatch;
     const agentCore = await runAgentCore(
-      claim.threadId,
-      claim.attemptRunId,
+      run.threadId,
+      runId,
       answer,
       actorId,
       {
-        clarification: clarificationPayload,
+        clarification,
         runDispatch: {
-          ownerId: dispatch.ownerId,
-          leaseEpoch: dispatch.leaseEpoch,
+          dispatchId: workerOwnership.dispatchId,
+          ownerId: workerOwnership.ownerId,
+          leaseEpoch: workerOwnership.leaseEpoch,
         },
-        forceInline: true,
+        onDetachedWorkerExit: () => observeOwnedRunDispatchExit({
+          ...workerOwnership,
+          failureReason: "agent_core_worker_exited",
+        }).then(() => undefined),
       },
     );
-    if (agentCore.error) {
-      await failOwnedRunDispatch({
-        runId: claim.attemptRunId,
-        ownerId: dispatch.ownerId,
-        leaseEpoch: dispatch.leaseEpoch,
-        failureReason: agentCore.error,
-      });
-      throw gatewayError(agentCore.error);
-    }
-    const rawResult = agentCore.result && typeof agentCore.result === "object"
-      ? agentCore.result as Record<string, unknown>
-      : {};
-    if (rawResult.run_id !== claim.attemptRunId) {
-      await failOwnedRunDispatch({
-        runId: claim.attemptRunId,
-        ownerId: dispatch.ownerId,
-        leaseEpoch: dispatch.leaseEpoch,
-        failureReason: "agent_core_run_id_mismatch",
-      });
-      throw gatewayError("agent_core_run_id_mismatch");
-    }
-    const rawStatus = rawResult.status;
-    if (
-      rawStatus !== "completed"
-      && rawStatus !== "completed_without_workflow"
-      && rawStatus !== "waiting_for_clarification"
-      && rawStatus !== "failed"
-    ) {
+    if (agentCore.error) throw gatewayError(agentCore.error);
+    if (agentCore.status !== "started") {
       throw gatewayError("agent_core_output_status_invalid");
     }
-    await completeOwnedRunDispatch({
-      runId: claim.attemptRunId,
-      ownerId: dispatch.ownerId,
-      leaseEpoch: dispatch.leaseEpoch,
-      runStatus: rawStatus,
-    });
-    const visibleAgentCore = projectAgentCoreForCustomer(
-      agentCore as unknown as Record<string, unknown>,
+    ownedDispatch = null;
+
+    return NextResponse.json(
+      {
+        snapshot: await loadCustomerAnalysisSnapshot({
+          threadId: run.threadId,
+          actorId,
+          runId,
+        }),
+      },
+      { status: 202 },
     );
-    const visibleResult = visibleAgentCore.result && typeof visibleAgentCore.result === "object"
-      ? visibleAgentCore.result as Record<string, unknown>
-      : {};
-    const answerPackagePreview = visibleResult.answer_package ?? null;
-    return NextResponse.json({
-      sourceRunId: runId,
-      resolutionId: claim.resolutionId,
-      attemptRunId: claim.attemptRunId,
-      previousAttemptRunId: claim.previousAttemptRunId,
-      attemptNumber: claim.attemptNumber,
-      topicId: visibleResult.topic_id ?? null,
-      status: visibleAgentCore.status,
-      answerPackagePreview,
-      message: claim.message,
-      clarification,
-      agentCore: visibleAgentCore,
-      eventsUrl: `/api/runs/${claim.attemptRunId}/events`,
-    });
   } catch (error) {
-    if (claimedRunId && dispatchAcquired) {
-      const code = error instanceof Error && error.message
+    if (ownedDispatch) {
+      const failureReason = error instanceof Error && error.message
         ? error.message
         : "agent_core_process_failed";
-      await failOwnedRunDispatch({
-        runId: claimedRunId,
-        ownerId: dispatchOwnerId,
-        leaseEpoch: dispatchLeaseEpoch,
-        failureReason: code,
-      }).catch(() => undefined);
+      await observeOwnedRunDispatchExit({
+        ...ownedDispatch,
+        failureReason,
+      });
     }
-    return jsonError(error);
+    return customerJsonError(error, { actorId, runId });
   }
 }

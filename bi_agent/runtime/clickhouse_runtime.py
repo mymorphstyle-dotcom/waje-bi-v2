@@ -5,6 +5,14 @@ import os
 import re
 from typing import Any, Mapping, Optional
 
+from clickhouse_connect.driver.exceptions import (
+    ClickHouseError,
+    InterfaceError,
+    OperationalError,
+    StreamClosedError,
+    StreamFailureError,
+)
+
 from bi_agent.runtime.sql_safety import validate_select_only
 
 
@@ -38,12 +46,6 @@ class ClickHouseQueryResult:
     query_id: str = ""
     provider_stats: Mapping[str, Any] = field(default_factory=dict)
     execution_attempt_ref: str = ""
-
-
-class _RequiredQueryKwargUnsupported(Exception):
-    def __init__(self, kwarg: str) -> None:
-        super().__init__(kwarg)
-        self.kwarg = kwarg
 
 
 @dataclass
@@ -167,7 +169,9 @@ class ClickHouseRuntime:
         self, sql: str, query_id: str = ""
     ) -> ClickHouseQueryResult:
         if sql != "SHOW TABLES" and not sql.startswith("DESCRIBE TABLE "):
-            return ClickHouseQueryResult(ok=False, reason="unsupported_inspection_query")
+            return ClickHouseQueryResult(
+                ok=False, reason="unsupported_inspection_query"
+            )
         return self._execute(sql, query_id=query_id)
 
     def _execute_select(
@@ -217,27 +221,35 @@ class ClickHouseRuntime:
 
         try:
             client = self._get_client()
-            kwargs = {"query_id": query_id} if query_id else {}
+            query_settings = dict(settings or {})
+            query_settings.pop("query_id", None)
+            if query_id:
+                query_settings["query_id"] = query_id
+            kwargs = {}
             if parameters is not None:
                 kwargs["parameters"] = dict(parameters)
-            if settings is not None:
-                kwargs["settings"] = dict(settings)
-            result, omitted_kwargs = _query_with_compatible_kwargs(client, sql, kwargs)
-        except _RequiredQueryKwargUnsupported as exc:
+            if query_settings:
+                kwargs["settings"] = query_settings
+            result = client.query(sql, **kwargs)
+        except (
+            ConnectionError,
+            TimeoutError,
+            InterfaceError,
+            OperationalError,
+            StreamClosedError,
+            StreamFailureError,
+        ) as exc:
             return ClickHouseQueryResult(
                 ok=False,
-                reason=f"clickhouse_required_kwarg_unsupported:{exc.kwarg}",
+                reason=f"transient_clickhouse:{_exception_category(exc)}",
                 query_hash=query_hash,
                 query_id=query_id,
-                provider_stats={"unsupported_kwarg": exc.kwarg},
                 execution_attempt_ref=execution_attempt_ref,
             )
-        except TypeError:
-            raise
-        except Exception as exc:
+        except ClickHouseError:
             return ClickHouseQueryResult(
                 ok=False,
-                reason=_clickhouse_failure_reason(exc),
+                reason="clickhouse_query_failed",
                 query_hash=query_hash,
                 query_id=query_id,
                 execution_attempt_ref=execution_attempt_ref,
@@ -246,7 +258,6 @@ class ClickHouseRuntime:
         provider_stats = _provider_stats(
             result,
             settings=settings,
-            omitted_kwargs=omitted_kwargs,
         )
         if _provider_result_truncated(provider_stats):
             return ClickHouseQueryResult(
@@ -305,53 +316,18 @@ def _rows_from_result(result: Any) -> tuple[Any, ...]:
     return rows
 
 
-def _query_with_compatible_kwargs(
-    client: Any,
-    sql: str,
-    kwargs: Mapping[str, Any],
-) -> tuple[Any, tuple[str, ...]]:
-    active_kwargs = dict(kwargs)
-    omitted: list[str] = []
-    while True:
-        try:
-            return client.query(sql, **active_kwargs), tuple(omitted)
-        except TypeError as exc:
-            unsupported = _explicit_unexpected_kwarg(exc)
-            if unsupported == "query_id" and unsupported in active_kwargs:
-                active_kwargs.pop(unsupported)
-                omitted.append(unsupported)
-                continue
-            if unsupported in {"parameters", "settings"} and unsupported in active_kwargs:
-                raise _RequiredQueryKwargUnsupported(unsupported) from exc
-            if not unsupported:
-                raise
-            raise
-
-
-def _explicit_unexpected_kwarg(error: TypeError) -> str:
-    match = re.search(
-        r"unexpected keyword argument ['\"](query_id|parameters|settings)['\"]",
-        str(error),
-        re.IGNORECASE,
-    )
-    return match.group(1).casefold() if match is not None else ""
-
-
 def _provider_stats(
     result: Any,
     *,
     settings: Mapping[str, Any] | None,
-    omitted_kwargs: tuple[str, ...],
 ) -> dict[str, Any]:
     summary = getattr(result, "summary", None)
     stats = dict(summary) if isinstance(summary, Mapping) else {}
     provider_query_id = getattr(result, "query_id", "")
     if provider_query_id not in (None, ""):
         stats["provider_query_id"] = str(provider_query_id)
-    if settings and "settings" not in omitted_kwargs:
+    if settings:
         stats["requested_settings"] = dict(settings)
-    if omitted_kwargs:
-        stats["compatibility_omitted_kwargs"] = omitted_kwargs
     return stats
 
 
@@ -360,25 +336,6 @@ def _provider_result_truncated(provider_stats: Mapping[str, Any]) -> bool:
         if str(provider_stats.get(key) or "").casefold() == "break":
             return True
     return provider_stats.get("truncated") is True
-
-
-def _clickhouse_failure_reason(error: Exception) -> str:
-    if isinstance(error, (ConnectionError, TimeoutError)):
-        return f"transient_clickhouse:{_exception_category(error)}"
-    class_name = type(error).__name__.casefold()
-    if any(
-        token in class_name
-        for token in (
-            "connection",
-            "network",
-            "operational",
-            "socket",
-            "timeout",
-            "transport",
-        )
-    ):
-        return f"transient_clickhouse:{_exception_category(error)}"
-    return "clickhouse_query_failed"
 
 
 def _exception_category(error: Exception) -> str:

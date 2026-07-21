@@ -15,12 +15,7 @@ def _associated_panel_rows(*, periods: int = 18, panels: int = 5):
     for time_index in range(periods):
         for panel_index in range(panels):
             interaction = ((time_index + 1) * (panel_index + 2) % 13) - 6
-            candidate = (
-                40.0
-                + 7.0 * panel_index
-                + 3.0 * time_index
-                + interaction
-            )
+            candidate = 40.0 + 7.0 * panel_index + 3.0 * time_index + interaction
             target = (
                 100.0
                 - 5.0 * panel_index
@@ -90,6 +85,26 @@ def test_contracted_mapping_can_publish_aggregate_panel_association():
     assert "channel-0" not in repr(payload)
 
 
+def test_unknown_mapping_coverage_cannot_publish_panel_association():
+    result = cross_source_panel_association(
+        _associated_panel_rows(),
+        time_key="day",
+        panel_key="channel",
+        hypothesis=_hypothesis(),
+        mapping_authority_status="contracted",
+        min_samples=30,
+        min_panels=3,
+        min_panel_samples=6,
+    )
+
+    assert result.evidence_type == "statistical_association"
+    assert result.strength == "low"
+    assert result.wording_limit == "sensitivity_only"
+    assert result.typed_payload["mapping"]["coverage_known"] is False
+    assert result.typed_payload["mapping"]["coverage_sufficient"] is False
+    assert any("coverage" in limitation for limitation in result.limitations)
+
+
 def test_mechanical_crosswalk_is_always_sensitivity_only():
     result = cross_source_panel_association(
         _associated_panel_rows(),
@@ -153,7 +168,7 @@ def test_minimum_sample_and_panel_requirements_prevent_association_evidence():
         min_panel_samples=3,
     )
 
-    assert result.evidence_type == "insufficient"
+    assert result.evidence_type == "insufficient_evidence"
     assert result.strength == "low"
     assert result.wording_limit == "sensitivity_only"
     assert result.typed_payload["claim_ceiling"] == "sensitivity_only"
@@ -190,7 +205,7 @@ def test_two_way_fixed_effects_remove_common_time_and_panel_levels():
 
     assert result.numeric_facts["residual_pearson"] is None
     assert result.numeric_facts["residual_spearman"] is None
-    assert result.evidence_type == "insufficient"
+    assert result.evidence_type == "insufficient_evidence"
     assert result.wording_limit == "sensitivity_only"
     assert any("residual variance" in limitation for limitation in result.limitations)
 
@@ -217,7 +232,9 @@ def test_decimal_metrics_and_an_unbalanced_panel_are_supported():
             "bet_amount": Decimal(str(row["bet_amount"])),
         }
         for row in rows
-        if not (row["channel"] == "channel-4" and row["day"] in {"2026-05-01", "2026-05-02"})
+        if not (
+            row["channel"] == "channel-4" and row["day"] in {"2026-05-01", "2026-05-02"}
+        )
     ]
 
     result = cross_source_panel_association(

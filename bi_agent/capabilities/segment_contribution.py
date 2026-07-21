@@ -52,7 +52,9 @@ def segment_contribution(
         limitations = ("no_comparable_segments",)
     return make_evidence_envelope(
         "segment_contribution",
-        evidence_type="statistical_association" if contributions else "insufficient_evidence",
+        evidence_type="accounting_contribution"
+        if contributions
+        else "insufficient_evidence",
         strength="medium" if contributions else "low",
         wording_limit="contextual" if contributions else "insufficient",
         typed_payload={
@@ -60,7 +62,9 @@ def segment_contribution(
             "group_key": group_key,
             "total_delta": total_delta,
             "top_drags": tuple(dragged[:5]),
-            "top_lifts": tuple(sorted(contributions, key=lambda item: item["delta"], reverse=True)[:5]),
+            "top_lifts": tuple(
+                sorted(contributions, key=lambda item: item["delta"], reverse=True)[:5]
+            ),
             "segment_count": len(contributions),
             "skipped_rows_or_segments": skipped,
         },

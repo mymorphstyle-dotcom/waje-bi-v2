@@ -33,20 +33,36 @@ class DatasetCatalogTest(unittest.TestCase):
             "paid_order_success",
             as_of=datetime.fromisoformat("2026-07-10T00:00:00+00:00"),
         )
-        self.assertEqual(snapshot.physical_table, "paid_order_success_clean_20240101_20260704")
+        self.assertEqual(
+            snapshot.physical_table, "paid_order_success_clean_20240101_20260704"
+        )
 
     def test_common_watermark_uses_oldest_required_source(self):
         catalog = DatasetCatalog(
             (
                 authorize_paid_snapshot(
                     DatasetSnapshot(
-                        "s1", "paid_order_success", "paid", "2026-07-04", "a",
-                        (), "c1", "2026-07-05T00:00:00Z", "active",
+                        "s1",
+                        "paid_order_success",
+                        "paid",
+                        "2026-07-04",
+                        "a",
+                        (),
+                        "c1",
+                        "2026-07-05T00:00:00Z",
+                        "active",
                     )
                 ),
                 DatasetSnapshot(
-                    "s2", "payment_attempt", "attempt", "2026-06-02", "b",
-                    (), "c2", "2026-06-03T00:00:00Z", "active",
+                    "s2",
+                    "payment_attempt",
+                    "attempt",
+                    "2026-06-02",
+                    "b",
+                    (),
+                    "c2",
+                    "2026-06-03T00:00:00Z",
+                    "active",
                 ),
             ),
             release_resolver=_PAID_RELEASE_RESOLVER,
@@ -102,7 +118,9 @@ class DatasetCatalogTest(unittest.TestCase):
                 _snapshot("eligible-old", loaded_at="2026-07-04T00:00:00Z"),
                 _snapshot("eligible-latest", loaded_at="2026-07-05T00:00:00Z"),
                 _snapshot("future", loaded_at="2026-07-11T00:00:00Z"),
-                _snapshot("inactive", loaded_at="2026-07-09T00:00:00Z", status="inactive"),
+                _snapshot(
+                    "inactive", loaded_at="2026-07-09T00:00:00Z", status="inactive"
+                ),
             ),
             release_resolver=_PAID_RELEASE_RESOLVER,
         )

@@ -90,8 +90,7 @@ def test_signed_log_difference_keeps_negative_business_metrics_analyzable():
 
     assert result.typed_payload["transforms"] == ("signed_log_difference",)
     assert all(
-        estimate["sample_size"] == 119
-        for estimate in result.typed_payload["estimates"]
+        estimate["sample_size"] == 119 for estimate in result.typed_payload["estimates"]
     )
 
 
@@ -136,9 +135,15 @@ def test_pearson_spearman_difference_and_log_difference_are_all_evaluated():
         for method in ("pearson", "spearman")
         for transform in ("level", "difference", "log_difference")
     }
-    assert all(item["sample_size"] == 180 for item in estimates if item["transform"] == "level")
-    assert all(item["sample_size"] == 179 for item in estimates if item["transform"] != "level")
-    log_estimates = [item for item in estimates if item["transform"] == "log_difference"]
+    assert all(
+        item["sample_size"] == 180 for item in estimates if item["transform"] == "level"
+    )
+    assert all(
+        item["sample_size"] == 179 for item in estimates if item["transform"] != "level"
+    )
+    log_estimates = [
+        item for item in estimates if item["transform"] == "log_difference"
+    ]
     assert all(item["coefficient"] > 0.95 for item in log_estimates)
     assert all(item["supported"] for item in log_estimates)
     assert "bh_assumes_independent_or_positive_dependence" in result.limitations

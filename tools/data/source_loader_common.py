@@ -81,11 +81,15 @@ def schema_fingerprint(fields: Sequence[str]) -> str:
 
 
 def content_ref(prefix: str, payload: Mapping[str, Any]) -> str:
-    return f"{prefix}:sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+    return (
+        f"{prefix}:sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+    )
 
 
 def rows_content_hash(rows: Sequence[Mapping[str, Any]]) -> str:
-    return hashlib.sha256(canonical_json_bytes(tuple(dict(row) for row in rows))).hexdigest()
+    return hashlib.sha256(
+        canonical_json_bytes(tuple(dict(row) for row in rows))
+    ).hexdigest()
 
 
 def canonical_json_bytes(value: Any) -> bytes:

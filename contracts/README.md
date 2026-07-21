@@ -13,9 +13,13 @@ This directory stores reviewable contract source files for WAJE BI v2. These fil
 - `contracts/assumptions/` stores reviewed static or semi-static assumptions with owner, source, valid window, refresh rule, and wording limit.
 - `contracts/backlog/` stores missing contracts and upgrade paths.
 - `contracts/ledger/` stores factor master records and factor-capability support records.
-- `contracts/capabilities/` stores capability cards used by the graph compiler, LLM planner context, verifier, and launch acceptance.
+- `contracts/capabilities/` stores reviewable business capability contracts for responsibilities, evidence outputs, degradation boundaries, and launch acceptance. Executable eligibility and ordering are pinned in the reviewed runtime binding and support ledger; runtime nodes do not interpret a separate static capability catalog.
+- `contracts/authorities/` stores non-executable completion authorities such as claim and publication verification. These records never enter capability task planning or produce analytical evidence.
 
-Contract files are repo source artifacts. Runtime mirrors, database tables, API payload schemas, and query execution contracts are designed in later phases.
+Contract files are repo source artifacts. Runtime mirrors, database tables, API
+payload schemas, and query execution contracts must preserve their identities and
+boundaries; they cannot replace these reviewed sources with a second semantic
+definition.
 
 ## Shared Vocabularies
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# This executable bootstraps the repository root before importing project modules.
+# ruff: noqa: E402
+
 import argparse
 from datetime import datetime
 import json
@@ -42,7 +45,9 @@ def run_audit(args: argparse.Namespace, *, store: Any) -> dict[str, Any]:
         as_of = datetime.fromisoformat(args.as_of)
     except (TypeError, ValueError) as exc:
         raise CoverageCLIError(
-            "coverage_request_invalid", "audit_operator", "the coverage audit request is invalid"
+            "coverage_request_invalid",
+            "audit_operator",
+            "the coverage audit request is invalid",
         ) from exc
     try:
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
@@ -128,12 +133,18 @@ def main(
                         "the coverage database connection could not be closed cleanly",
                     )
     if failure is not None:
-        print(json.dumps({
-            "ok": False,
-            "error_code": failure.error_code,
-            "owner": failure.owner,
-            "impact": failure.impact,
-        }, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error_code": failure.error_code,
+                    "owner": failure.owner,
+                    "impact": failure.impact,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

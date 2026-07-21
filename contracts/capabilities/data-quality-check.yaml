@@ -50,7 +50,7 @@ evidence_outputs:
 
 limitations:
   - Review-only contract coverage can name gaps while runtime data remains unavailable.
-  - Source-access, restricted-output, and missing-contract blockers must flow into Answer Package limitations.
+  - Source-access, restricted-output, and missing-contract blockers must flow into AuthorityBundle limitations and the customer publication projection.
   - Data-quality output cannot raise evidence strength for another capability.
 
 degradation_rules:

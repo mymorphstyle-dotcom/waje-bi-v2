@@ -1,26 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
 from bi_agent.conversation import run_status as run_status_policy
-from bi_agent.conversation.agent_core import (
-    ConversationAgentCore,
-    RunFailureFinalizationError,
-    _finalize_analysis_run_failure,
-)
+from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
-from tests.phase7.test_agent_core_bridge import (
-    _completed_runtime_workflow_result,
-    _queryless_runtime_records_for_request,
-    fake_workflow,
-)
+from bi_agent.runtime.durable_call_journal import DurableCallSpec
+from bi_agent.runtime.single_authority import LifecycleState
 
 
 def test_run_status_value_validator_defines_closed_vocabulary() -> None:
@@ -128,8 +123,11 @@ class _RunStatusConnection:
             else None
         )
         self._pending_run: dict | None = None
+        self._committed_lifecycle: dict | None = None
+        self._pending_lifecycle: dict | None = None
         self._pending_audit_events: list[dict] = []
         self.audit_events: list[dict] = []
+        self.lifecycle: dict | None = None
         self.statements: list[tuple[str, dict]] = []
         self.transaction_events: list[str] = []
         self.audit_attempts = 0
@@ -165,9 +163,30 @@ class _RunStatusConnection:
     def _visible_run(self):
         return self._pending_run or self._committed_run
 
+    def _visible_lifecycle(self):
+        return self._pending_lifecycle or self._committed_lifecycle
+
     def execute(self, statement, params=None):
         params = dict(params or {})
         self.statements.append((statement, params))
+        if "INSERT INTO waje_runtime.run_lifecycle_state_revisions" in statement:
+            payload = json.loads(params["payload"])
+            existing = self._visible_lifecycle()
+            if existing is not None and (
+                existing["state_revision"] == payload["state_revision"]
+            ):
+                return _Cursor()
+            self._pending_lifecycle = payload
+            return _Cursor(({"state_revision": payload["state_revision"]},))
+        if "FROM waje_runtime.run_lifecycle_state_revisions" in statement:
+            lifecycle = self._visible_lifecycle()
+            if lifecycle is None:
+                return _Cursor()
+            if "state_revision = %(state_revision)s" in statement and (
+                lifecycle["state_revision"] != params["state_revision"]
+            ):
+                return _Cursor()
+            return _Cursor(({"payload": json.dumps(lifecycle)},))
         if "analysis_run_status_insert" in statement:
             if self._visible_run() is not None:
                 return _Cursor()
@@ -197,9 +216,7 @@ class _RunStatusConnection:
             )
         if "analysis_run_status_transition_cas" in statement:
             run = self._visible_run()
-            if run is None or run["status"] != str(
-                params.get("current_status") or ""
-            ):
+            if run is None or run["status"] != str(params.get("current_status") or ""):
                 return _Cursor()
             self._pending_run = {
                 **run,
@@ -218,8 +235,7 @@ class _RunStatusConnection:
                     deepcopy(event)
                     for event in self.audit_events
                     if event.get("run_id") == params.get("run_id")
-                    and event.get("event_type")
-                    == params.get("failure_reason")
+                    and event.get("event_type") == params.get("failure_reason")
                 )
             )
         if "INSERT INTO waje_runtime.audit_events" in statement:
@@ -227,8 +243,7 @@ class _RunStatusConnection:
             self.transaction_events.append("audit")
             if self.fail_audit or (
                 self.fail_secondary_audit
-                and params.get("event_type")
-                == "workflow_failure_llm_call_recorded"
+                and params.get("event_type") == "workflow_failure_llm_call_recorded"
             ):
                 raise RuntimeError("run_status_audit_unavailable")
             self._pending_audit_events.append(deepcopy(params))
@@ -238,14 +253,18 @@ class _RunStatusConnection:
         self.transaction_events.append("commit")
         if self._pending_run is not None:
             self._committed_run = deepcopy(self._pending_run)
+        if self._pending_lifecycle is not None:
+            self._committed_lifecycle = deepcopy(self._pending_lifecycle)
         self.audit_events.extend(deepcopy(self._pending_audit_events))
         self._pending_run = None
+        self._pending_lifecycle = None
         self._pending_audit_events = []
         self.commits += 1
 
     def rollback(self):
         self.transaction_events.append("rollback")
         self._pending_run = None
+        self._pending_lifecycle = None
         self._pending_audit_events = []
         self.rollbacks += 1
 
@@ -259,6 +278,7 @@ class _RunDispatchOwnershipConnection:
         dispatch_state: str = "leased",
         run_status: str = "queued",
         lease_active: bool = True,
+        producer_kind: str = "thread_message",
     ) -> None:
         self.run = {
             "run_id": "run-dispatch",
@@ -270,8 +290,12 @@ class _RunDispatchOwnershipConnection:
         }
         self.dispatch = {
             "dispatch_id": "dispatch-1",
-            "producer_kind": "thread_message",
-            "scope_ref": "thread-dispatch",
+            "producer_kind": producer_kind,
+            "scope_ref": (
+                "run-dispatch"
+                if producer_kind == "clarification_resolution"
+                else "thread-dispatch"
+            ),
             "request_identity": "request-dispatch",
             "request_digest": "a" * 64,
             "request_payload": {
@@ -287,6 +311,7 @@ class _RunDispatchOwnershipConnection:
             "failure_reason": None,
         }
         self.audit_events: list[dict] = []
+        self.lifecycle: dict | None = None
         self.statements: list[tuple[str, dict]] = []
         self.commits = 0
         self.rollbacks = 0
@@ -294,26 +319,53 @@ class _RunDispatchOwnershipConnection:
     def execute(self, statement, params=None):
         params = dict(params or {})
         self.statements.append((statement, params))
+        if "INSERT INTO waje_runtime.run_lifecycle_state_revisions" in statement:
+            payload = json.loads(params["payload"])
+            if self.lifecycle is not None:
+                return _Cursor()
+            self.lifecycle = payload
+            return _Cursor(({"state_revision": payload["state_revision"]},))
+        if "FROM waje_runtime.run_lifecycle_state_revisions" in statement:
+            if self.lifecycle is None:
+                return _Cursor()
+            return _Cursor(({"payload": json.dumps(self.lifecycle)},))
+        if "pg_advisory_xact_lock" in statement:
+            return _Cursor()
         if "recoverable_run_dispatch_scan" in statement:
-            if (
-                self.run["status"] == "queued"
-                and (
-                    self.dispatch["dispatch_state"] == "pending"
-                    or (
-                        self.dispatch["dispatch_state"] == "leased"
-                        and not self.dispatch["lease_active"]
-                    )
+            recoverable_status = (
+                self.dispatch["producer_kind"] == "thread_message"
+                and self.run["status"] == "queued"
+            ) or (
+                self.dispatch["producer_kind"] == "clarification_resolution"
+                and self.run["status"] == "waiting_for_clarification"
+            )
+            if recoverable_status and (
+                self.dispatch["dispatch_state"] == "pending"
+                or (
+                    self.dispatch["dispatch_state"] == "leased"
+                    and not self.dispatch["lease_active"]
                 )
             ):
-                return _Cursor(({
-                    **deepcopy(self.dispatch),
-                    "lease_expired": not self.dispatch["lease_active"],
-                    "run_status": self.run["status"],
-                },))
+                return _Cursor(
+                    (
+                        {
+                            **deepcopy(self.dispatch),
+                            "lease_expired": not self.dispatch["lease_active"],
+                            "run_status": self.run["status"],
+                        },
+                    )
+                )
             return _Cursor()
         if "recoverable_run_dispatch_lease_cas" in statement:
+            recoverable_status = (
+                self.dispatch["producer_kind"] == "thread_message"
+                and self.run["status"] == "queued"
+            ) or (
+                self.dispatch["producer_kind"] == "clarification_resolution"
+                and self.run["status"] == "waiting_for_clarification"
+            )
             if (
-                self.run["status"] != "queued"
+                not recoverable_status
                 or self.dispatch["lease_epoch"] != params["current_epoch"]
                 or (
                     self.dispatch["dispatch_state"] != "pending"
@@ -324,15 +376,20 @@ class _RunDispatchOwnershipConnection:
                 )
             ):
                 return _Cursor()
-            self.dispatch.update({
-                "dispatch_state": "leased",
-                "owner_id": params["owner_id"],
-                "lease_epoch": self.dispatch["lease_epoch"] + 1,
-                "lease_active": True,
-            })
+            self.dispatch.update(
+                {
+                    "dispatch_state": "leased",
+                    "owner_id": params["owner_id"],
+                    "lease_epoch": self.dispatch["lease_epoch"] + 1,
+                    "lease_active": True,
+                }
+            )
             return _Cursor(({"lease_epoch": self.dispatch["lease_epoch"]},))
         if "recovery_run_dispatch_owner_lock" in statement:
-            if self.dispatch["run_id"] != params["run_id"]:
+            if (
+                self.dispatch["dispatch_id"] != params["dispatch_id"]
+                or self.dispatch["run_id"] != params["run_id"]
+            ):
                 return _Cursor()
             return _Cursor((deepcopy(self.dispatch),))
         if "recovery_run_dispatch_run_lock" in statement:
@@ -353,15 +410,20 @@ class _RunDispatchOwnershipConnection:
                 or not self.dispatch["lease_active"]
             ):
                 return _Cursor()
-            self.dispatch.update({
-                "dispatch_state": "terminal",
-                "terminal_status": "failed",
-                "failure_reason": params["failure_reason"],
-                "lease_active": False,
-            })
+            self.dispatch.update(
+                {
+                    "dispatch_state": "terminal",
+                    "terminal_status": "failed",
+                    "failure_reason": params["failure_reason"],
+                    "lease_active": False,
+                }
+            )
             return _Cursor(({"dispatch_state": "terminal"},))
         if "generic_run_dispatch_owner_lock" in statement:
-            if self.dispatch["run_id"] != params["run_id"]:
+            if (
+                self.dispatch["dispatch_id"] != params["dispatch_id"]
+                or self.dispatch["run_id"] != params["run_id"]
+            ):
                 return _Cursor()
             return _Cursor((deepcopy(self.dispatch),))
         if "generic_run_dispatch_run_lock" in statement:
@@ -393,29 +455,38 @@ class _RunDispatchOwnershipConnection:
                 or self.dispatch["owner_id"] != params["owner_id"]
                 or self.dispatch["lease_epoch"] != params["lease_epoch"]
                 or not self.dispatch["lease_active"]
-                or self.run["status"] not in {"running", "running_workflow"}
+                or self.run["status"]
+                not in {
+                    "running",
+                    "running_workflow",
+                    "waiting_for_clarification",
+                }
             ):
                 return _Cursor()
             return _Cursor(({"run_id": self.run["run_id"]},))
         if "owned_analysis_run_status_transition_cas" in statement:
             if self.run["status"] != params["current_status"]:
                 return _Cursor()
-            self.run.update({
-                "status": params["status"],
-                "request": json.loads(params["request"]),
-                "turn_id": params.get("turn_id"),
-                "topic_id": params.get("topic_id"),
-            })
+            self.run.update(
+                {
+                    "status": params["status"],
+                    "request": json.loads(params["request"]),
+                    "turn_id": params.get("turn_id"),
+                    "topic_id": params.get("topic_id"),
+                }
+            )
             return _Cursor(({"status": self.run["status"]},))
         if "analysis_run_status_transition_cas" in statement:
             if self.run["status"] != params["current_status"]:
                 return _Cursor()
-            self.run.update({
-                "status": params["status"],
-                "request": json.loads(params["request"]),
-                "turn_id": params.get("turn_id"),
-                "topic_id": params.get("topic_id"),
-            })
+            self.run.update(
+                {
+                    "status": params["status"],
+                    "request": json.loads(params["request"]),
+                    "turn_id": params.get("turn_id"),
+                    "topic_id": params.get("topic_id"),
+                }
+            )
             return _Cursor(({"status": self.run["status"]},))
         if "analysis_run_failure_primary_audit" in statement:
             return _Cursor(
@@ -442,10 +513,14 @@ class _RunDispatchOwnershipConnection:
                 self.dispatch["dispatch_state"] in {"leased", "running"}
                 and not self.dispatch["lease_active"]
             ):
-                return _Cursor(({
-                    **deepcopy(self.dispatch),
-                    "run_status": self.run["status"],
-                },))
+                return _Cursor(
+                    (
+                        {
+                            **deepcopy(self.dispatch),
+                            "run_status": self.run["status"],
+                        },
+                    )
+                )
             return _Cursor()
         if "expired_running_dispatch_run_fail_cas" in statement:
             if self.run["status"] not in {"running", "running_workflow"}:
@@ -456,6 +531,23 @@ class _RunDispatchOwnershipConnection:
                 "failure_reason": "run_dispatch_heartbeat_expired",
             }
             return _Cursor(({"status": "failed"},))
+        if "expired_running_clarification_release_cas" in statement:
+            if (
+                self.dispatch["dispatch_state"] != "running"
+                or self.dispatch["owner_id"] != params["owner_id"]
+                or self.dispatch["lease_epoch"] != params["lease_epoch"]
+            ):
+                return _Cursor()
+            self.dispatch.update(
+                {
+                    "dispatch_state": "pending",
+                    "owner_id": None,
+                    "lease_active": False,
+                    "terminal_status": None,
+                    "failure_reason": None,
+                }
+            )
+            return _Cursor(({"dispatch_state": "pending"},))
         if "expired_running_dispatch_terminal_cas" in statement:
             if self.dispatch["dispatch_state"] != "running":
                 return _Cursor()
@@ -465,11 +557,13 @@ class _RunDispatchOwnershipConnection:
         if "expired_leased_dispatch_release_cas" in statement:
             if self.dispatch["dispatch_state"] != "leased":
                 return _Cursor()
-            self.dispatch.update({
-                "dispatch_state": "pending",
-                "owner_id": None,
-                "lease_active": False,
-            })
+            self.dispatch.update(
+                {
+                    "dispatch_state": "pending",
+                    "owner_id": None,
+                    "lease_active": False,
+                }
+            )
             return _Cursor(({"dispatch_state": "pending"},))
         if "INSERT INTO waje_runtime.audit_events" in statement:
             self.audit_events.append(deepcopy(params))
@@ -488,6 +582,7 @@ def test_generic_dispatch_owner_claim_heartbeat_and_terminal_transition_are_fenc
     store = PostgresConversationStore(connection)
 
     claimed = store.claim_run_dispatch(
+        dispatch_id="dispatch-1",
         run_id="run-dispatch",
         thread_id="thread-dispatch",
         dispatch_owner_id="owner-current",
@@ -497,16 +592,30 @@ def test_generic_dispatch_owner_claim_heartbeat_and_terminal_transition_are_fenc
     assert claimed["status"] == "running"
     assert connection.run["status"] == "running"
     assert connection.dispatch["dispatch_state"] == "running"
-    assert store.renew_run_dispatch_lease(
-        run_id="run-dispatch",
-        dispatch_owner_id="owner-current",
-        lease_epoch=4,
-    ) is True
-    assert store.renew_run_dispatch_lease(
-        run_id="run-dispatch",
-        dispatch_owner_id="owner-stale",
-        lease_epoch=3,
-    ) is False
+    assert connection.lifecycle is not None
+    assert connection.lifecycle["run_attempt_id"] == "run-dispatch"
+    assert connection.lifecycle["state_revision"] == 1
+    assert connection.lifecycle["execution_state"] == "running"
+    assert connection.lifecycle["cancellation_state"] == "active"
+    assert connection.lifecycle["supersession_state"] == "active"
+    assert (
+        store.renew_run_dispatch_lease(
+            dispatch_id="dispatch-1",
+            run_id="run-dispatch",
+            dispatch_owner_id="owner-current",
+            lease_epoch=4,
+        )
+        is True
+    )
+    assert (
+        store.renew_run_dispatch_lease(
+            dispatch_id="dispatch-1",
+            run_id="run-dispatch",
+            dispatch_owner_id="owner-stale",
+            lease_epoch=3,
+        )
+        is False
+    )
 
     store.upsert_run(
         "run-dispatch",
@@ -528,6 +637,7 @@ def test_generic_dispatch_claim_rejects_stale_epoch_before_start():
         match="^run_dispatch_claim_rejected$",
     ):
         PostgresConversationStore(connection).claim_run_dispatch(
+            dispatch_id="dispatch-1",
             run_id="run-dispatch",
             thread_id="thread-dispatch",
             dispatch_owner_id="owner-current",
@@ -538,13 +648,429 @@ def test_generic_dispatch_claim_rejects_stale_epoch_before_start():
     assert connection.dispatch["dispatch_state"] == "leased"
 
 
+def test_clarification_dispatch_claim_preserves_waiting_run_until_decision_resume():
+    connection = _RunDispatchOwnershipConnection(
+        producer_kind="clarification_resolution",
+        dispatch_state="leased",
+        run_status="waiting_for_clarification",
+    )
+    connection.lifecycle = LifecycleState.create(
+        run_attempt_id="run-dispatch",
+        execution_state="waiting",
+        interaction_state="waiting_for_user",
+    ).to_dict()
+    store = PostgresConversationStore(connection)
+
+    claimed = store.claim_run_dispatch(
+        dispatch_id="dispatch-1",
+        run_id="run-dispatch",
+        thread_id="thread-dispatch",
+        dispatch_owner_id="owner-current",
+        lease_epoch=4,
+    )
+
+    assert claimed["producer_kind"] == "clarification_resolution"
+    assert claimed["dispatch_state"] == "running"
+    assert claimed["status"] == "waiting_for_clarification"
+    assert connection.run["status"] == "waiting_for_clarification"
+    assert connection.dispatch["dispatch_state"] == "running"
+    assert store._active_run_dispatches["run-dispatch"] == (
+        "dispatch-1",
+        "owner-current",
+        4,
+    )
+
+    store.upsert_run(
+        "run-dispatch",
+        thread_id="thread-dispatch",
+        status="running_workflow",
+        request={},
+    )
+
+    assert connection.run["status"] == "running_workflow"
+    assert connection.dispatch["dispatch_state"] == "running"
+
+
+def test_clarification_dispatch_start_failure_preserves_waiting_business_run():
+    connection = _RunDispatchOwnershipConnection(
+        producer_kind="clarification_resolution",
+        dispatch_state="leased",
+        run_status="waiting_for_clarification",
+    )
+
+    durable = PostgresConversationStore(connection).fail_owned_run_dispatch(
+        dispatch_id="dispatch-1",
+        run_id="run-dispatch",
+        thread_id="thread-dispatch",
+        dispatch_owner_id="owner-current",
+        lease_epoch=4,
+        failure_reason="agent_core_startup_failed",
+    )
+
+    assert durable == {
+        "dispatch_id": "dispatch-1",
+        "dispatch_status": "failed",
+        "failure_reason": "agent_core_startup_failed",
+        "run_id": "run-dispatch",
+        "status": "waiting_for_clarification",
+        "thread_id": "thread-dispatch",
+    }
+    assert connection.run["status"] == "waiting_for_clarification"
+    assert connection.run["request"] == {}
+    assert connection.dispatch["dispatch_state"] == "terminal"
+    assert connection.dispatch["terminal_status"] == "failed"
+
+
+def _create_postgres_leased_dispatch(
+    store: PostgresConversationStore,
+    *,
+    suffix: str,
+) -> tuple[str, str, str, str]:
+    thread_id = f"thread-dispatch-pg-{suffix}"
+    run_id = f"run-dispatch-pg-{suffix}"
+    owner_id = f"dispatch-owner-pg-{suffix}"
+    dispatch_id = f"dispatch-pg-{suffix}"
+    message_id = f"message-dispatch-pg-{suffix}"
+    store.create_thread(thread_id, owner_id=f"thread-owner-pg-{suffix}")
+    store.connection.execute(
+        """
+        INSERT INTO waje_runtime.conversation_messages(
+          message_id, thread_id, role, text
+        ) VALUES (
+          %(message_id)s, %(thread_id)s, 'user', 'dispatch lifecycle test'
+        )
+        """,
+        {"message_id": message_id, "thread_id": thread_id},
+    )
+    store.connection.execute(
+        """
+        INSERT INTO waje_runtime.analysis_runs(
+          run_id, run_attempt_id, thread_id, status, request
+        ) VALUES (
+          %(run_id)s, %(run_id)s, %(thread_id)s, 'queued', '{}'::jsonb
+        )
+        """,
+        {"run_id": run_id, "thread_id": thread_id},
+    )
+    store.connection.execute(
+        """
+        INSERT INTO waje_runtime.run_dispatches(
+          dispatch_id, producer_kind, scope_ref, request_identity,
+          request_digest, request_payload, thread_id, run_id,
+          message_id, dispatch_state, owner_id, lease_epoch, lease_expires_at,
+          heartbeat_at
+        ) VALUES (
+          %(dispatch_id)s, 'thread_message', %(thread_id)s,
+          %(request_identity)s, %(request_digest)s, '{}'::jsonb,
+          %(thread_id)s, %(run_id)s, %(message_id)s,
+          'leased', %(owner_id)s, 1,
+          now() + interval '10 minutes', now()
+        )
+        """,
+        {
+            "dispatch_id": dispatch_id,
+            "thread_id": thread_id,
+            "request_identity": f"request-pg-{suffix}",
+            "request_digest": "a" * 64,
+            "run_id": run_id,
+            "message_id": message_id,
+            "owner_id": owner_id,
+        },
+    )
+    store.connection.commit()
+    return thread_id, run_id, dispatch_id, owner_id
+
+
+def _terminalize_postgres_dispatch_test_run(
+    store: PostgresConversationStore,
+    *,
+    thread_id: str,
+    run_id: str,
+) -> None:
+    lifecycle = store.latest_lifecycle_state(run_id)
+    if lifecycle is not None and lifecycle.cancellation_state == "active":
+        store.cancel_run_attempt(
+            run_attempt_id=run_id,
+            reason_ref=f"test-cleanup:{run_id}",
+        )
+    if run_id in store._active_run_dispatches:
+        store.upsert_run(
+            run_id,
+            thread_id=thread_id,
+            status="failed",
+            request={"failure_reason": "test_cleanup"},
+        )
+        return
+    store.connection.execute(
+        """
+        UPDATE waje_runtime.analysis_runs
+        SET status = 'failed',
+            request = jsonb_build_object('failure_reason', 'test_cleanup'),
+            updated_at = now()
+        WHERE run_id = %(run_id)s AND status = 'queued'
+        """,
+        {"run_id": run_id},
+    )
+    store.connection.execute(
+        """
+        UPDATE waje_runtime.run_dispatches
+        SET dispatch_state = 'terminal', terminal_status = 'failed',
+            failure_reason = 'test_cleanup', lease_expires_at = NULL,
+            updated_at = now()
+        WHERE run_id = %(run_id)s AND dispatch_state = 'leased'
+        """,
+        {"run_id": run_id},
+    )
+    store.connection.commit()
+
+
+@pytest.mark.skipif(
+    not (os.getenv("WAJE_RUNTIME_DATABASE_URL") or os.getenv("DATABASE_URL")),
+    reason="runtime PostgreSQL is not configured",
+)
+def test_postgres_dispatch_claim_opens_conversation_provider_scope_atomically():
+    store = PostgresConversationStore.from_env()
+    store.apply_schema()
+    suffix = uuid4().hex
+    thread_id, run_id, dispatch_id, owner_id = _create_postgres_leased_dispatch(
+        store,
+        suffix=suffix,
+    )
+    attempt = None
+    try:
+        claimed = store.claim_run_dispatch(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            thread_id=thread_id,
+            dispatch_owner_id=owner_id,
+            lease_epoch=1,
+        )
+        lifecycle = store.latest_lifecycle_state(run_id)
+        row = store.connection.execute(
+            """
+            SELECT run.status, dispatch.dispatch_state,
+                   (SELECT count(*)
+                    FROM waje_runtime.run_lifecycle_state_revisions state
+                    WHERE state.run_attempt_id = run.run_id)
+            FROM waje_runtime.analysis_runs run
+            JOIN waje_runtime.run_dispatches dispatch
+              ON dispatch.run_id = run.run_id
+            WHERE run.run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        ).fetchone()
+
+        assert claimed["status"] == "running"
+        assert tuple(row) == ("running", "running", 1)
+        assert lifecycle is not None
+        assert lifecycle.state_revision == 1
+        assert lifecycle.execution_state == "running"
+        assert lifecycle.cancellation_state == "active"
+        assert lifecycle.supersession_state == "active"
+
+        duplicate_store = PostgresConversationStore.from_env()
+        try:
+            with pytest.raises(
+                EvidenceIntegrityError,
+                match="^run_dispatch_claim_rejected$",
+            ):
+                duplicate_store.claim_run_dispatch(
+                    dispatch_id=dispatch_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    dispatch_owner_id=owner_id,
+                    lease_epoch=1,
+                )
+        finally:
+            duplicate_store.connection.close()
+
+        spec = DurableCallSpec.create(
+            run_attempt_id=run_id,
+            intent_revision_id=None,
+            plan_revision_id=None,
+            task_id=None,
+            stage_name="conversation_entry",
+            call_kind="conversation_provider",
+            operation_name="dispatch_lifecycle_regression",
+            input_ref=f"dispatch-lifecycle-input:{suffix}",
+            input_payload={"question": "检查付费金额变化"},
+        )
+        claim = store.attempt_journal.claim(spec)
+        attempt = claim.attempt
+        assert claim.replayed is False
+        event_rows = store.connection.execute(
+            """
+            SELECT status
+            FROM waje_runtime.durable_call_attempt_events
+            WHERE run_attempt_id = %(run_id)s
+              AND attempt_ref = %(attempt_ref)s
+            ORDER BY event_sequence
+            """,
+            {
+                "run_id": run_id,
+                "attempt_ref": attempt.attempt_ref,
+            },
+        ).fetchall()
+        assert tuple(str(row[0]) for row in event_rows) == (
+            "claimed",
+            "started",
+        )
+    finally:
+        if attempt is not None:
+            store.attempt_journal.fail(
+                attempt,
+                failure_code="dispatch_lifecycle_regression_complete",
+            )
+        _terminalize_postgres_dispatch_test_run(
+            store,
+            thread_id=thread_id,
+            run_id=run_id,
+        )
+        store.connection.close()
+
+
+class _PostgresDispatchLifecycleFailureStore(PostgresConversationStore):
+    def _append_lifecycle_state_locked(self, state: LifecycleState) -> str:
+        del state
+        raise RuntimeError("injected_dispatch_lifecycle_failure")
+
+
+@pytest.mark.skipif(
+    not (os.getenv("WAJE_RUNTIME_DATABASE_URL") or os.getenv("DATABASE_URL")),
+    reason="runtime PostgreSQL is not configured",
+)
+def test_postgres_dispatch_lifecycle_failure_rolls_back_run_and_dispatch_claim():
+    store = _PostgresDispatchLifecycleFailureStore.from_env()
+    store.apply_schema()
+    suffix = uuid4().hex
+    thread_id, run_id, dispatch_id, owner_id = _create_postgres_leased_dispatch(
+        store,
+        suffix=suffix,
+    )
+    recovered_store = None
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="^injected_dispatch_lifecycle_failure$",
+        ):
+            store.claim_run_dispatch(
+                dispatch_id=dispatch_id,
+                run_id=run_id,
+                thread_id=thread_id,
+                dispatch_owner_id=owner_id,
+                lease_epoch=1,
+            )
+
+        row = store.connection.execute(
+            """
+            SELECT run.status, dispatch.dispatch_state,
+                   dispatch.owner_id, dispatch.lease_epoch,
+                   (SELECT count(*)
+                    FROM waje_runtime.run_lifecycle_state_revisions state
+                    WHERE state.run_attempt_id = run.run_id),
+                   (SELECT count(*)
+                    FROM waje_runtime.audit_events audit
+                    WHERE audit.run_id = run.run_id
+                      AND audit.event_type = 'run_status_changed')
+            FROM waje_runtime.analysis_runs run
+            JOIN waje_runtime.run_dispatches dispatch
+              ON dispatch.run_id = run.run_id
+            WHERE run.run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        ).fetchone()
+        assert tuple(row) == ("queued", "leased", owner_id, 1, 0, 0)
+
+        recovered_store = PostgresConversationStore(store.connection)
+        recovered_store.claim_run_dispatch(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            thread_id=thread_id,
+            dispatch_owner_id=owner_id,
+            lease_epoch=1,
+        )
+        lifecycle = recovered_store.latest_lifecycle_state(run_id)
+        assert lifecycle is not None
+        assert lifecycle.state_revision == 1
+        assert lifecycle.execution_state == "running"
+    finally:
+        cleanup_store = recovered_store or store
+        _terminalize_postgres_dispatch_test_run(
+            cleanup_store,
+            thread_id=thread_id,
+            run_id=run_id,
+        )
+        store.connection.close()
+
+
+@pytest.mark.skipif(
+    not (os.getenv("WAJE_RUNTIME_DATABASE_URL") or os.getenv("DATABASE_URL")),
+    reason="runtime PostgreSQL is not configured",
+)
+def test_postgres_dispatch_claim_rejects_preexisting_lifecycle_without_mutation():
+    store = PostgresConversationStore.from_env()
+    store.apply_schema()
+    suffix = uuid4().hex
+    thread_id, run_id, dispatch_id, owner_id = _create_postgres_leased_dispatch(
+        store,
+        suffix=suffix,
+    )
+    lifecycle = LifecycleState.create(run_attempt_id=run_id)
+    store.append_lifecycle_state(lifecycle)
+    try:
+        with pytest.raises(
+            EvidenceIntegrityError,
+            match="^run_dispatch_lifecycle_conflict$",
+        ):
+            store.claim_run_dispatch(
+                dispatch_id=dispatch_id,
+                run_id=run_id,
+                thread_id=thread_id,
+                dispatch_owner_id=owner_id,
+                lease_epoch=1,
+            )
+
+        row = store.connection.execute(
+            """
+            SELECT run.status, dispatch.dispatch_state,
+                   dispatch.owner_id, dispatch.lease_epoch, state.content_digest
+            FROM waje_runtime.analysis_runs run
+            JOIN waje_runtime.run_dispatches dispatch
+              ON dispatch.run_id = run.run_id
+            JOIN waje_runtime.run_lifecycle_state_revisions state
+              ON state.run_attempt_id = run.run_id
+             AND state.state_revision = 1
+            WHERE run.run_id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        ).fetchone()
+        assert tuple(row) == (
+            "queued",
+            "leased",
+            owner_id,
+            1,
+            lifecycle.content_digest,
+        )
+    finally:
+        _terminalize_postgres_dispatch_test_run(
+            store,
+            thread_id=thread_id,
+            run_id=run_id,
+        )
+        store.connection.close()
+
+
 def test_owned_dispatch_failure_finalizer_terminalizes_same_owner_atomically():
     connection = _RunDispatchOwnershipConnection(
         dispatch_state="running",
         run_status="running_workflow",
     )
     store = PostgresConversationStore(connection)
-    store._active_run_dispatches["run-dispatch"] = ("owner-current", 4)
+    store._active_run_dispatches["run-dispatch"] = (
+        "dispatch-1",
+        "owner-current",
+        4,
+    )
 
     finalized = store.finalize_run_failure(
         run_id="run-dispatch",
@@ -572,7 +1098,11 @@ def test_stale_dispatch_owner_cannot_finalize_failure():
         run_status="running_workflow",
     )
     store = PostgresConversationStore(connection)
-    store._active_run_dispatches["run-dispatch"] = ("owner-stale", 3)
+    store._active_run_dispatches["run-dispatch"] = (
+        "dispatch-1",
+        "owner-stale",
+        3,
+    )
 
     with pytest.raises(EvidenceIntegrityError, match="^run_dispatch_owner_lost$"):
         store.finalize_run_failure(
@@ -590,77 +1120,6 @@ def test_stale_dispatch_owner_cannot_finalize_failure():
     assert connection.dispatch["dispatch_state"] == "running"
     assert connection.commits == 0
     assert connection.rollbacks == 1
-
-
-def test_owned_dispatch_completion_finalizer_terminalizes_same_owner():
-    from tests.phase7.test_material_authority import (
-        _CompletedFinalizationConnection,
-        _signed_material_authority,
-        _source_contract,
-    )
-
-    class OwnedCompletionConnection(_CompletedFinalizationConnection):
-        def __init__(self, *, run_row):
-            super().__init__(run_row=run_row)
-            self.dispatch = {
-                "run_id": "run-source",
-                "thread_id": "thread-1",
-                "dispatch_state": "running",
-                "owner_id": "owner-current",
-                "lease_epoch": 4,
-                "lease_active": True,
-                "terminal_status": None,
-            }
-
-        def execute(self, statement, params=None):
-            params = dict(params or {})
-            if "generic_run_dispatch_owner_lock" in statement:
-                self.statements.append((statement, params))
-                return _Cursor((deepcopy(self.dispatch),))
-            if "owned_run_dispatch_terminal_cas" in statement:
-                self.statements.append((statement, params))
-                if (
-                    self.dispatch["dispatch_state"] != "running"
-                    or self.dispatch["owner_id"] != params["owner_id"]
-                    or self.dispatch["lease_epoch"] != params["lease_epoch"]
-                ):
-                    return _Cursor()
-                self.dispatch["dispatch_state"] = "terminal"
-                self.dispatch["terminal_status"] = params["status"]
-                return _Cursor(({"dispatch_state": "terminal"},))
-            return super().execute(statement, params)
-
-    contract = _source_contract()
-    connection = OwnedCompletionConnection(
-        run_row={
-            "run_status": "running_workflow",
-            "run_thread_id": "thread-1",
-            "run_topic_id": "topic-1",
-            "run_request": json.dumps({"question": "source question"}),
-            "analysis_run_id": "run-source",
-            "stored_contract_signature": contract["contract_signature"],
-            "contract_payload": json.dumps(contract),
-        }
-    )
-    store = PostgresConversationStore(connection)
-    store._active_run_dispatches["run-source"] = ("owner-current", 4)
-
-    store.finalize_completed_material_authority(
-        run_id="run-source",
-        thread_id="thread-1",
-        topic_id="topic-1",
-        request={"question": "source question"},
-        material_authority=_signed_material_authority(
-            thread_id="thread-1",
-            topic_id="topic-1",
-        ),
-    )
-
-    assert connection.dispatch["dispatch_state"] == "terminal"
-    assert connection.dispatch["terminal_status"] == "completed"
-    assert "run-source" not in store._active_run_dispatches
-    assert connection.commits == 1
-    assert connection.rollbacks == 0
 
 
 @pytest.mark.parametrize(
@@ -690,10 +1149,35 @@ def test_expired_dispatch_sweeper_recovers_only_nonterminal_current_owner(
         assert recovered[0]["run_id"] == "run-dispatch"
 
 
+def test_expired_running_clarification_dispatch_is_released_for_recovery():
+    connection = _RunDispatchOwnershipConnection(
+        dispatch_state="running",
+        run_status="waiting_for_clarification",
+        lease_active=False,
+        producer_kind="clarification_resolution",
+    )
+
+    recovered = PostgresConversationStore(connection).sweep_expired_run_dispatches()
+
+    assert recovered == (
+        {
+            "dispatch_id": "dispatch-1",
+            "run_id": "run-dispatch",
+            "action": "released_for_retry",
+        },
+    )
+    assert connection.run["status"] == "waiting_for_clarification"
+    assert connection.dispatch["dispatch_state"] == "pending"
+    assert connection.dispatch["owner_id"] is None
+    assert connection.dispatch["terminal_status"] is None
+    assert connection.dispatch["failure_reason"] is None
+
+
 def test_recovery_driver_starts_committed_pending_dispatch_without_client_retry():
     from tools.runtime.recover_run_dispatches import recover_pending_run_dispatches
 
     lease = {
+        "dispatch_id": "dispatch-crash-window",
         "run_id": "run-crash-window",
         "thread_id": "thread-crash-window",
         "producer_kind": "thread_message",
@@ -726,9 +1210,9 @@ def test_recovery_driver_starts_committed_pending_dispatch_without_client_retry(
 
     summary = recover_pending_run_dispatches(
         store=store,
-        dispatch_runner=lambda dispatch: started.append(dispatch) or {
-            "status": "completed"
-        },
+        dispatch_runner=lambda dispatch: (
+            started.append(dispatch) or {"status": "completed"}
+        ),
         limit=10,
     )
 
@@ -751,9 +1235,9 @@ def test_postgres_recovery_leases_pending_dispatch_with_db_epoch_fence():
         lease_active=False,
     )
 
-    leases = PostgresConversationStore(
-        connection
-    ).lease_recoverable_run_dispatches(limit=1)
+    leases = PostgresConversationStore(connection).lease_recoverable_run_dispatches(
+        limit=1
+    )
 
     assert len(leases) == 1
     lease = leases[0]
@@ -782,6 +1266,7 @@ def test_postgres_recovery_failure_is_owner_cas_terminal():
     )
 
     failed = PostgresConversationStore(connection).fail_owned_run_dispatch(
+        dispatch_id="dispatch-1",
         run_id="run-dispatch",
         thread_id="thread-dispatch",
         dispatch_owner_id="recovery-owner-1",
@@ -811,6 +1296,7 @@ def test_postgres_recovery_failure_replays_same_owner_terminal_authority():
     before_dispatch = deepcopy(connection.dispatch)
 
     durable = PostgresConversationStore(connection).fail_owned_run_dispatch(
+        dispatch_id="dispatch-1",
         run_id="run-dispatch",
         thread_id="thread-dispatch",
         dispatch_owner_id="recovery-owner-terminal",
@@ -829,13 +1315,13 @@ def test_recovery_driver_owner_terminalizes_worker_start_failure():
     from tools.runtime.recover_run_dispatches import recover_pending_run_dispatches
 
     lease = {
+        "dispatch_id": "dispatch-recovery-failure",
         "run_id": "run-recovery-failure",
         "thread_id": "thread-recovery-failure",
-        "producer_kind": "artifact_continue",
-        "scope_ref": "artifact-1",
+        "producer_kind": "thread_message",
+        "scope_ref": "thread-recovery-failure",
         "request_identity": "request-recovery-failure",
         "request_payload": {
-            "artifactId": "artifact-1",
             "message": "继续分析",
         },
         "dispatch_owner_id": "recovery-owner-2",
@@ -867,18 +1353,23 @@ def test_recovery_driver_owner_terminalizes_worker_start_failure():
         limit=10,
     )
 
-    assert store.failed == [{
-        "run_id": "run-recovery-failure",
-        "thread_id": "thread-recovery-failure",
-        "dispatch_owner_id": "recovery-owner-2",
-        "lease_epoch": 2,
-        "failure_reason": "run_dispatch_recovery_worker_failed",
-    }]
-    assert summary["failed"] == [{
-        "run_id": "run-recovery-failure",
-        "failure_reason": "run_dispatch_recovery_worker_failed",
-        "error_type": "RuntimeError",
-    }]
+    assert store.failed == [
+        {
+            "dispatch_id": "dispatch-recovery-failure",
+            "run_id": "run-recovery-failure",
+            "thread_id": "thread-recovery-failure",
+            "dispatch_owner_id": "recovery-owner-2",
+            "lease_epoch": 2,
+            "failure_reason": "run_dispatch_recovery_worker_failed",
+        }
+    ]
+    assert summary["failed"] == [
+        {
+            "run_id": "run-recovery-failure",
+            "failure_reason": "run_dispatch_recovery_worker_failed",
+            "error_type": "RuntimeError",
+        }
+    ]
 
 
 def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
@@ -886,6 +1377,7 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
 
     leases = tuple(
         {
+            "dispatch_id": f"dispatch-{run_id}",
             "run_id": run_id,
             "thread_id": "thread-recovery-batch",
             "producer_kind": "thread_message",
@@ -943,7 +1435,6 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
         "producer_kind",
         "payload",
         "expected_message",
-        "expected_clarification",
     ),
     [
         (
@@ -952,38 +1443,6 @@ def test_recovery_driver_continues_batch_after_terminal_owner_then_throw():
                 "message": "检查昨天付费金额",
             },
             "检查昨天付费金额",
-            None,
-        ),
-        (
-            "artifact_continue",
-            {
-                "artifactId": "artifact-1",
-                "message": "继续分析",
-            },
-            "继续分析",
-            None,
-        ),
-        (
-            "clarification_resume",
-            {
-                "sourceRunId": "run-source",
-                "resolutionId": "resolution-recovery",
-                "attemptRunId": "run-recovery",
-                "answer": "按推荐继续",
-                "selectedOptionId": "recommended",
-                "source": "user",
-                "retryAttempt": False,
-            },
-            "按推荐继续",
-            {
-                "sourceRunId": "run-source",
-                "resolutionId": "resolution-recovery",
-                "attemptRunId": "run-recovery",
-                "answer": "按推荐继续",
-                "selectedOptionId": "recommended",
-                "source": "user",
-                "retryAttempt": False,
-            },
         ),
     ],
 )
@@ -991,7 +1450,6 @@ def test_recovery_runner_rehydrates_every_dispatch_producer(
     producer_kind,
     payload,
     expected_message,
-    expected_clarification,
 ):
     from tools.runtime.recover_run_dispatches import run_agent_core_dispatch
 
@@ -1005,14 +1463,11 @@ def test_recovery_runner_rehydrates_every_dispatch_producer(
             return {"status": "completed", "run_id": kwargs["run_id"]}
 
     lease = {
+        "dispatch_id": "dispatch-recovery",
         "run_id": "run-recovery",
         "thread_id": "thread-recovery",
         "producer_kind": producer_kind,
-        "scope_ref": (
-            "thread-recovery"
-            if producer_kind == "thread_message"
-            else payload.get("artifactId") or payload.get("resolutionId")
-        ),
+        "scope_ref": "thread-recovery",
         "request_identity": "request-recovery",
         "request_payload": payload,
         "dispatch_owner_id": "recovery-owner-3",
@@ -1025,16 +1480,18 @@ def test_recovery_runner_rehydrates_every_dispatch_producer(
         result = run_agent_core_dispatch(lease)
 
     assert result == {"status": "completed", "run_id": "run-recovery"}
-    assert calls == [{
-        "thread_id": "thread-recovery",
-        "run_id": "run-recovery",
-        "user_message": expected_message,
-        "clarification": expected_clarification,
-        "run_dispatch": {
-            "dispatch_owner_id": "recovery-owner-3",
-            "lease_epoch": 3,
-        },
-    }]
+    assert calls == [
+        {
+            "thread_id": "thread-recovery",
+            "run_id": "run-recovery",
+            "user_message": expected_message,
+            "run_dispatch": {
+                "dispatch_id": "dispatch-recovery",
+                "dispatch_owner_id": "recovery-owner-3",
+                "lease_epoch": 3,
+            },
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1086,166 +1543,12 @@ def test_postgres_nonterminal_run_can_still_transition_to_failed() -> None:
     assert len(connection.audit_events) == 1
 
 
-def _delivery_failure_result(store):
-    return _finalize_analysis_run_failure(
-        store=store,
-        failure_reason="analysis_delivery_persistence_failed",
-        failure_stage="answer_package",
-        exc=RuntimeError("answer package delivery unavailable"),
-        run_id="run-transition",
-        thread_id="thread-1",
-        turn_id="turn-1",
-        topic_id="topic-1",
-        request={"question": "检查付费金额"},
-        artifact_path="/tmp/answer-package.json",
-        context_manifest={"manifest_id": "manifest-delivery"},
-        intent="follow_up_analysis",
-        topic_relation="inherit_current",
-        llm_calls=(
-            {
-                "task": "answer_synthesis",
-                "status": "failed",
-                "response_id": "response-delivery-failure",
-            },
-        ),
-    )
-
-
-def test_inmemory_delivery_failure_terminalizes_before_secondary_audit_failure() -> None:
-    class SecondaryAuditFailingStore(InMemoryConversationStore):
-        def add_audit_event(self, event_type, **kwargs):
-            if event_type == "workflow_failure_llm_call_recorded":
-                raise RuntimeError("run_status_audit_unavailable")
-            return super().add_audit_event(event_type, **kwargs)
-
-    store = SecondaryAuditFailingStore()
-    store.upsert_run(
-        "run-transition",
-        thread_id="thread-1",
-        turn_id="turn-1",
-        topic_id="topic-1",
-        status="running_workflow",
-        request={"question": "检查付费金额"},
-    )
-
-    result = _delivery_failure_result(store)
-
-    state = store.get_run_state("run-transition")
-    assert result["status"] == "failed"
-    assert state is not None
-    assert state["status"] == "failed"
-    assert state["request"]["failure_reason"] == "analysis_delivery_persistence_failed"
-    assert state["request"]["failure_stage"] == "answer_package"
-    assert any(
-        event["event_type"] == "analysis_delivery_persistence_failed"
-        for event in store.audit_events
-    )
-
-
-def test_postgres_delivery_failure_terminalizes_before_secondary_audit_failure() -> None:
-    connection = _RunStatusConnection(
-        status="running_workflow",
-        request={"question": "检查付费金额"},
-        turn_id="turn-1",
-        fail_secondary_audit=True,
-    )
-    store = PostgresConversationStore(connection)
-
-    result = _delivery_failure_result(store)
-
-    assert result["status"] == "failed"
-    assert connection.status == "failed"
-    assert connection.request["failure_reason"] == "analysis_delivery_persistence_failed"
-    assert connection.request["failure_stage"] == "answer_package"
-    assert any(
-        event["event_type"] == "analysis_delivery_persistence_failed"
-        for event in connection.audit_events
-    )
-
-
-def test_delivery_failure_secondary_audits_keep_unique_fallback_refs() -> None:
-    store = InMemoryConversationStore()
-    store.upsert_run(
-        "run-transition",
-        thread_id="thread-1",
-        turn_id="turn-1",
-        topic_id="topic-1",
-        status="running_workflow",
-        request={"question": "检查付费金额"},
-    )
-
-    _finalize_analysis_run_failure(
-        store=store,
-        failure_reason="analysis_delivery_persistence_failed",
-        failure_stage="answer_package",
-        exc=RuntimeError("delivery unavailable"),
-        run_id="run-transition",
-        thread_id="thread-1",
-        turn_id="turn-1",
-        topic_id="topic-1",
-        request={"question": "检查付费金额"},
-        artifact_path="/tmp/answer-package.json",
-        context_manifest={"manifest_id": "manifest-delivery"},
-        intent="follow_up_analysis",
-        topic_relation="inherit_current",
-        llm_calls=(
-            {"task": "analysis_route", "status": "failed"},
-            {"task": "answer_synthesis", "status": "failed"},
-        ),
-    )
-
-    refs = [
-        event["ref"]
-        for event in store.audit_events
-        if event["event_type"] == "workflow_failure_llm_call_recorded"
-    ]
-    assert refs == [
-        "run-transition:llm-call:1",
-        "run-transition:llm-call:2",
-    ]
-
-
-@pytest.mark.parametrize("proof_mode", ("finalize_error", "stale_readback"))
-def test_delivery_failure_returns_typed_composite_when_terminal_state_is_unproven(
-    proof_mode: str,
-) -> None:
-    class UnprovenFailureStore(InMemoryConversationStore):
-        def finalize_run_failure(self, **kwargs):
-            if proof_mode == "finalize_error":
-                raise RuntimeError("primary failure transaction unavailable")
-            return super().finalize_run_failure(**kwargs)
-
-        def get_run_state(self, run_id):
-            state = super().get_run_state(run_id)
-            if proof_mode == "stale_readback" and state is not None:
-                state["status"] = "running_workflow"
-            return state
-
-    store = UnprovenFailureStore()
-    store.upsert_run(
-        "run-transition",
-        thread_id="thread-1",
-        turn_id="turn-1",
-        topic_id="topic-1",
-        status="running_workflow",
-        request={"question": "检查付费金额"},
-    )
-
-    with pytest.raises(
-        RunFailureFinalizationError,
-        match="^analysis_run_failure_finalization_unverified$",
-    ) as error:
-        _delivery_failure_result(store)
-
-    assert error.value.failure_reason == "analysis_delivery_persistence_failed"
-    assert error.value.failure_stage == "answer_package"
-
-
 @pytest.mark.parametrize("backend", ("inmemory", "postgres"))
 def test_failure_finalization_rolls_back_when_primary_audit_cannot_commit(
     backend: str,
 ) -> None:
     if backend == "inmemory":
+
         class PrimaryAuditFailingStore(InMemoryConversationStore):
             def _append_staged_audit_event(self, events, event):
                 if event.get("event_type") == "analysis_delivery_persistence_failed":
@@ -1278,8 +1581,8 @@ def test_failure_finalization_rolls_back_when_primary_audit_cannot_commit(
             topic_id="topic-1",
             request={"question": "检查付费金额"},
             failure_reason="analysis_delivery_persistence_failed",
-            failure_stage="answer_package",
-            failure_payload={"reason": "answer package delivery unavailable"},
+            failure_stage="publication",
+            failure_payload={"reason": "publication delivery unavailable"},
         )
 
     state = store.get_run_state("run-transition")
@@ -1316,7 +1619,7 @@ def test_failure_finalization_fills_owner_once_and_replays_exactly(
         "topic_id": "topic-1",
         "request": {"question": "检查付费金额"},
         "failure_reason": "analysis_delivery_persistence_failed",
-        "failure_stage": "answer_package",
+        "failure_stage": "publication",
         "failure_payload": {"reason": "delivery unavailable"},
     }
     store.finalize_run_failure(**arguments)
@@ -1333,9 +1636,7 @@ def test_failure_finalization_fills_owner_once_and_replays_exactly(
     assert first_state["topic_id"] == "topic-1"
     assert store.get_run_state("run-transition") == first_state
     assert (
-        store.audit_events
-        if backend == "inmemory"
-        else connection.audit_events
+        store.audit_events if backend == "inmemory" else connection.audit_events
     ) == first_audits
 
 
@@ -1431,7 +1732,12 @@ def test_gateway_queued_status_allows_only_declared_entry_transitions(
 
 @pytest.mark.parametrize(
     "next_status",
-    ("running_workflow", "waiting_for_clarification", "completed", "completed_without_workflow"),
+    (
+        "running_workflow",
+        "waiting_for_clarification",
+        "completed",
+        "interaction_completed",
+    ),
 )
 def test_gateway_queued_status_rejects_skipped_runtime_phases(
     next_status: str,
@@ -1543,7 +1849,6 @@ def test_unknown_run_status_values_fail_closed(
                 "topic_id": "topic-1",
                 "status": current_status,
                 "request": deepcopy(request),
-                "answer_package": None,
                 "checkpoint_events": [],
             }
     else:
@@ -1578,7 +1883,7 @@ def test_unknown_run_status_values_fail_closed(
 @pytest.mark.parametrize(
     ("current_status", "attempted_status"),
     (
-        ("completed_without_workflow", "failed"),
+        ("interaction_completed", "failed"),
         ("waiting_for_clarification", "running"),
         ("failed", "running"),
         ("completed", "failed"),
@@ -1620,11 +1925,12 @@ def test_terminal_run_statuses_reject_cross_status_overwrite(
     (
         ("running", "running_workflow"),
         ("running", "waiting_for_clarification"),
-        ("running", "completed_without_workflow"),
+        ("running", "interaction_completed"),
         ("running", "failed"),
         ("running_workflow", "waiting_for_clarification"),
         ("running_workflow", "completed"),
         ("running_workflow", "failed"),
+        ("waiting_for_clarification", "running_workflow"),
     ),
 )
 def test_run_status_table_allows_only_declared_forward_transitions(
@@ -1848,7 +2154,7 @@ def test_postgres_exact_replay_does_not_attempt_audit() -> None:
         "running_workflow",
         "waiting_for_clarification",
         "completed",
-        "completed_without_workflow",
+        "interaction_completed",
         "failed",
     ),
 )
@@ -1982,31 +2288,3 @@ def test_legal_status_transition_rejects_existing_owner_drift(
 
     assert _run_state(backend, authority) == before
     assert _run_audit_count(backend, authority) == before_audits
-
-
-def test_agent_core_keeps_real_nonterminal_finalizer_failure_failed() -> None:
-    class FailingBeforeCommitStore(InMemoryConversationStore):
-        def finalize_completed_material_authority(self, **_kwargs):
-            raise EvidenceIntegrityError(
-                "completed_followup_authority_anchor_unavailable"
-            )
-
-    def workflow(request):
-        result = fake_workflow(request)
-        return type(result)(
-            status=result.status,
-            run_id=result.run_id,
-            answer_package=result.answer_package,
-            artifact_path=result.artifact_path,
-            completed_material_authority={"invalid": "store owns validation"},
-        )
-
-    store = FailingBeforeCommitStore()
-    result = ConversationAgentCore(store, workflow_runner=workflow).run_message(
-        thread_id="thread-real-finalizer-failure",
-        run_id="run-real-finalizer-failure",
-        user_message="昨天付费金额为什么变化？",
-    )
-
-    assert result["status"] == "failed"
-    assert store.runs["run-real-finalizer-failure"]["status"] == "failed"

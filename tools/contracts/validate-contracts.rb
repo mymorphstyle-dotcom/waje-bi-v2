@@ -30,6 +30,7 @@ BUSINESS_STATES = %w[
 
 EVIDENCE_TYPES = %w[
   accounting_contribution
+  dimension_localization
   statistical_association
   candidate_mechanism
   causal_evidence
@@ -48,8 +49,10 @@ CAPABILITIES = %w[
   outlier_contribution
   segment_bridge
   segment_contribution
-  driver_decomposition
   data_quality_check
+].freeze
+
+COMPLETION_AUTHORITIES = %w[
   answer_verify
 ].freeze
 
@@ -261,6 +264,26 @@ missing_cards = CAPABILITIES - capability_ids
 extra_cards = capability_ids.compact - CAPABILITIES
 errors << "contracts/capabilities: missing capability cards #{missing_cards.join(", ")}" unless missing_cards.empty?
 errors << "contracts/capabilities: extra capability cards #{extra_cards.join(", ")}" unless extra_cards.empty?
+
+completion_authority_ids = []
+Dir.glob(File.join(ROOT, "contracts/authorities/*.yaml")).sort.each do |path|
+  doc = docs.fetch(rel(path), {})
+  authority_id = doc["authority_id"]
+  completion_authority_ids << authority_id
+  require_in(errors, path, "authority_id", authority_id, COMPLETION_AUTHORITIES)
+  errors << "#{rel(path)}: authority_kind must be completion" unless doc["authority_kind"] == "completion"
+  %w[purpose inputs outputs hard_boundaries completion_semantics non_uses typical_question_families].each do |field|
+    errors << "#{rel(path)}: missing #{field}" if blank?(doc[field])
+  end
+  list(doc["typical_question_families"]).each do |family|
+    require_in(errors, path, "typical_question_family", family, QUESTION_FAMILIES)
+  end
+end
+
+missing_authorities = COMPLETION_AUTHORITIES - completion_authority_ids
+extra_authorities = completion_authority_ids.compact - COMPLETION_AUTHORITIES
+errors << "contracts/authorities: missing completion authorities #{missing_authorities.join(", ")}" unless missing_authorities.empty?
+errors << "contracts/authorities: extra completion authorities #{extra_authorities.join(", ")}" unless extra_authorities.empty?
 
 state_counts = Hash.new(0)
 pending_count = 0

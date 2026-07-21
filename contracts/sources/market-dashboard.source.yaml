@@ -142,7 +142,7 @@ field_contracts:
   profit: {source_field: 利润, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
 
 runtime_binding:
-  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@1
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@15
   snapshot_column: snapshot_id
   load_revision_column: load_revision
   overall:

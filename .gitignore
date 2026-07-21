@@ -1,9 +1,13 @@
 node_modules/
 .next/
 .playwright-cli/
+playwright-report/
+test-results/
 dist/
 build/
 coverage/
+.coverage
+/output/
 *.tsbuildinfo
 .DS_Store
 .env

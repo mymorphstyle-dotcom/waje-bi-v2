@@ -122,7 +122,7 @@ def canonical_source_ambiguity_source_ids(
     prefix = f"{item_kind}:{item_id}:source_ambiguous:"
     if not gap.gap_id.startswith(prefix):
         return ()
-    suffix = gap.gap_id[len(prefix):]
+    suffix = gap.gap_id[len(prefix) :]
     selected = tuple(suffix.split(",")) if suffix else ()
     return canonical_source_ambiguity_subset(registered, selected)
 
@@ -199,8 +199,7 @@ def _is_direct_analysis_source_ambiguity_shape(
         and gap.gap_type == "contract_partial"
         and gap.dataset_id == ""
         and gap.owner == "contract_owner"
-        and gap.repair_options
-        == ("select_dataset_requirement", "clarify_source_scope")
+        and gap.repair_options == ("select_dataset_requirement", "clarify_source_scope")
         and gap.requires_clarification is True
     )
 
@@ -240,9 +239,7 @@ def reviewed_queryless_gap_claim_types(
         or not isinstance(readiness, Mapping)
         or readiness.get("required_slots") != "none"
         or not isinstance(degradation, Mapping)
-        or not str(degradation.get("missing_required_input") or "").startswith(
-            "block_"
-        )
+        or not str(degradation.get("missing_required_input") or "").startswith("block_")
         or not isinstance(supported, (list, tuple))
         or not supported
         or len(supported) != len(set(supported))
@@ -272,10 +269,7 @@ def _is_canonical_final_gap_scope(
         return False
     if expected_capability_requirements is not None:
         required = set(expected_capability_requirements)
-        if any(
-            capability_id not in required
-            for capability_id in capabilities[1:]
-        ):
+        if any(capability_id not in required for capability_id in capabilities[1:]):
             return False
     if capabilities == ("analysis_contract",):
         return True

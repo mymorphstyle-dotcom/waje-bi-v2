@@ -50,10 +50,18 @@ def audit_existing_data_coverage(
                 "datasets": [dataset_id],
                 "metrics": list(_metrics(registry, contract, dataset_id)),
                 "dimensions": list(_dimensions(registry, contract, dataset_id)),
-                "windows": sorted(str(item) for item in contract.get("required_windows", ())),
-                "evidence_types": sorted(str(item) for item in contract.get("supported_evidence_types", ())),
-                "claim_ceiling": str(contract.get("maximum_claim_strength") or "insufficient"),
-                "current_release_refs": sorted({item.release_ref for item in selected if item.release_ref}),
+                "windows": sorted(
+                    str(item) for item in contract.get("required_windows", ())
+                ),
+                "evidence_types": sorted(
+                    str(item) for item in contract.get("supported_evidence_types", ())
+                ),
+                "claim_ceiling": str(
+                    contract.get("maximum_claim_strength") or "insufficient"
+                ),
+                "current_release_refs": sorted(
+                    {item.release_ref for item in selected if item.release_ref}
+                ),
                 "current_releases": [
                     {
                         "dataset_id": item.dataset_id,
@@ -71,9 +79,13 @@ def audit_existing_data_coverage(
                 "next_action": _next_action(state, dataset_id),
             }
     ordered = {key: cells[key] for key in sorted(cells)}
-    summary = {state: sum(cell["state"] == state for cell in ordered.values()) for state in COVERAGE_STATES}
+    summary = {
+        state: sum(cell["state"] == state for cell in ordered.values())
+        for state in COVERAGE_STATES
+    }
     return {
-        "schema_version": "existing-data-coverage-v2",
+        "schema_version": "existing-data-coverage-v3",
+        "capability_family_projection": "goal_axis_eligibility",
         "as_of": as_of.isoformat(),
         "registry_contract_version": registry.contract_version,
         "states": list(COVERAGE_STATES),
@@ -89,20 +101,26 @@ def _snapshot(value: Any) -> DatasetSnapshot:
     if isinstance(value, Mapping):
         fields = DatasetSnapshot.__dataclass_fields__
         try:
-            return DatasetSnapshot(**{key: value[key] for key in fields if key in value})
+            return DatasetSnapshot(
+                **{key: value[key] for key in fields if key in value}
+            )
         except TypeError as exc:
             raise ValueError("coverage_snapshot_invalid") from exc
     raise ValueError("coverage_snapshot_invalid")
 
 
-def _validate_release_authority(snapshots: tuple[DatasetSnapshot, ...], resolver: Any) -> None:
+def _validate_release_authority(
+    snapshots: tuple[DatasetSnapshot, ...], resolver: Any
+) -> None:
     for snapshot in snapshots:
         if snapshot.status != "active":
             continue
         try:
             authority = resolver.resolve_dataset_release(snapshot.release_ref)
         except Exception as exc:
-            raise ValueError(f"coverage_release_resolver:{snapshot.dataset_id}") from exc
+            raise ValueError(
+                f"coverage_release_resolver:{snapshot.dataset_id}"
+            ) from exc
         if dataset_release_authority_integrity_errors(authority):
             raise ValueError(f"coverage_release_integrity:{snapshot.dataset_id}")
         if not snapshot_matches_release_authority(snapshot, authority):
@@ -110,10 +128,18 @@ def _validate_release_authority(snapshots: tuple[DatasetSnapshot, ...], resolver
 
 
 def _state(registry, cases, contract, dataset_id, snapshots, as_of):
-    candidates = tuple(item for item in snapshots if item.dataset_id == dataset_id and item.status == "active")
+    candidates = tuple(
+        item
+        for item in snapshots
+        if item.dataset_id == dataset_id and item.status == "active"
+    )
     if not candidates:
         return "source_unbound", ()
-    available = tuple(item for item in candidates if _loaded_at(item) <= as_of.astimezone(timezone.utc))
+    available = tuple(
+        item
+        for item in candidates
+        if _loaded_at(item) <= as_of.astimezone(timezone.utc)
+    )
     if not available:
         return "snapshot_unavailable_as_of", candidates
     selected = (max(available, key=lambda item: (_loaded_at(item), item.snapshot_ref)),)
@@ -141,8 +167,19 @@ def _loaded_at(snapshot: DatasetSnapshot) -> datetime:
 
 
 def _metrics(registry, contract, dataset_id):
-    requested = set(str(item) for item in (*contract.get("required_metrics", ()), *contract.get("allowed_metrics", ()), *contract.get("optional_metrics", ())))
-    return tuple(sorted(item for item in requested if dataset_id in registry.metric_sources(item)))
+    requested = set(
+        str(item)
+        for item in (
+            *contract.get("required_metrics", ()),
+            *contract.get("allowed_metrics", ()),
+            *contract.get("optional_metrics", ()),
+        )
+    )
+    return tuple(
+        sorted(
+            item for item in requested if dataset_id in registry.metric_sources(item)
+        )
+    )
 
 
 def _datasets(registry, contract):
@@ -164,19 +201,25 @@ def _datasets(registry, contract):
 def _dimensions(registry, contract, dataset_id):
     if not contract.get("dimension_mode"):
         return ()
-    return tuple(sorted(item for item in registry._payload["dimensions"] if dataset_id in registry.dimension_sources(item)))
+    return tuple(
+        sorted(
+            item
+            for item in registry._payload["dimensions"]
+            if dataset_id in registry.dimension_sources(item)
+        )
+    )
 
 
 def _capability_families(registry):
     output = {item: set() for item in registry.capability_ids}
-    for family in registry.question_family_ids:
-        obligation = registry.question_family_obligation(family)
-        values = [*obligation.get("required_capabilities", ()), *obligation.get("independent_capabilities", ())]
-        for rule in obligation.get("conditional_rules", ()):
-            values.extend(rule.get("add", ()))
-        for capability in values:
-            if capability in output:
-                output[capability].add(family)
+    for goal_id in registry.analysis_goal_ids:
+        obligation = registry.analysis_goal_obligation(goal_id)
+        family = str(obligation["question_family_ref"])
+        for binding in obligation["analysis_axes"]:
+            axis = registry.analysis_axis(str(binding["axis_id"]))
+            for capability in axis["capability_refs"]:
+                if capability in output:
+                    output[capability].add(family)
     return {key: tuple(sorted(value)) for key, value in output.items()}
 
 
@@ -196,7 +239,11 @@ def _impact(state, capability, dataset):
             f"no authoritative {dataset} release was visible at the audit as_of; "
             f"{capability} cannot be assessed for that transaction-time boundary"
         )
-    return "current capability path is executable" if state == "executable" else f"{capability} cannot publish at its configured claim ceiling from {dataset}"
+    return (
+        "current capability path is executable"
+        if state == "executable"
+        else f"{capability} cannot publish at its configured claim ceiling from {dataset}"
+    )
 
 
 def _next_action(state, dataset):

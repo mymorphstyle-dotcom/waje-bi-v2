@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
+from enum import Enum
 from hashlib import sha256
 import json
 import math
@@ -13,6 +14,139 @@ from bi_agent.runtime.canonical_values import canonical_thaw
 DIMENSION_PRESENCE_POLICIES = frozenset(
     {"paired_required", "sparse_allowed", "zero_filled"}
 )
+
+
+class CompletenessFailureClass(str, Enum):
+    EXECUTION_TECHNICAL = "execution_technical"
+    AUTHORITY_INTEGRITY = "authority_integrity"
+    SCHEMA_INTEGRITY = "schema_integrity"
+    PROVIDER_TRUNCATION = "provider_truncation"
+    FRESHNESS = "freshness"
+    EMPTY_RESULT = "empty_result"
+    AVAILABILITY = "availability"
+    RESULT_CONSISTENCY = "result_consistency"
+    RECONCILIATION = "reconciliation"
+    RECONCILIATION_PENDING = "reconciliation_pending"
+    ANALYTICAL_QUALITY = "analytical_quality"
+
+
+COMPLETENESS_FAILURE_CLASSES = frozenset(
+    item.value for item in CompletenessFailureClass
+)
+
+_COMPLETENESS_ASSERTION_FIELDS = frozenset(
+    {"assertion", "passed", "failure_reasons", "failure_classes", "details"}
+)
+
+
+def validate_completeness_assertions(
+    assertions: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+) -> None:
+    if not isinstance(assertions, (tuple, list)):
+        raise ValueError("completeness_assertions_invalid")
+    for assertion in assertions:
+        if not isinstance(assertion, Mapping):
+            raise ValueError("completeness_assertion_shape_invalid")
+        if set(assertion) != _COMPLETENESS_ASSERTION_FIELDS:
+            if assertion.get("passed") is False:
+                if "failure_classes" not in assertion:
+                    raise ValueError("completeness_assertion_failure_classes_missing")
+                if "failure_reasons" not in assertion:
+                    raise ValueError("completeness_assertion_failure_reasons_missing")
+            raise ValueError("completeness_assertion_shape_invalid")
+        name = assertion.get("assertion")
+        passed = assertion.get("passed")
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ValueError("completeness_assertion_name_invalid")
+        if type(passed) is not bool:
+            raise ValueError("completeness_assertion_passed_invalid")
+        reasons = assertion.get("failure_reasons", ())
+        if (
+            isinstance(reasons, (str, bytes))
+            or not isinstance(reasons, (tuple, list))
+            or any(
+                not isinstance(reason, str) or not reason or reason != reason.strip()
+                for reason in reasons
+            )
+        ):
+            raise ValueError("completeness_assertion_failure_reasons_invalid")
+        failure_classes = assertion.get("failure_classes", ())
+        if (
+            isinstance(failure_classes, (str, bytes))
+            or not isinstance(failure_classes, (tuple, list))
+            or any(
+                type(failure_class) is not str
+                or failure_class not in COMPLETENESS_FAILURE_CLASSES
+                for failure_class in failure_classes
+            )
+            or len(failure_classes) != len(set(failure_classes))
+        ):
+            raise ValueError("completeness_assertion_failure_classes_invalid")
+        details = assertion.get("details", {})
+        if not isinstance(details, Mapping):
+            raise ValueError("completeness_assertion_details_invalid")
+        if passed and (reasons or failure_classes):
+            raise ValueError("completeness_assertion_passed_failure_present")
+        if not passed and not reasons:
+            raise ValueError("completeness_assertion_failure_reasons_missing")
+        if not passed and not failure_classes:
+            raise ValueError("completeness_assertion_failure_classes_missing")
+
+
+def completeness_state_from_assertions(
+    assertions: tuple[Mapping[str, Any], ...],
+) -> tuple[str, str]:
+    return _completeness_state(completeness_failure_classes(assertions))
+
+
+def _completeness_state(failure_classes: tuple[str, ...]) -> tuple[str, str]:
+    failure_classes = set(failure_classes)
+    if failure_classes & {
+        CompletenessFailureClass.AUTHORITY_INTEGRITY.value,
+        CompletenessFailureClass.SCHEMA_INTEGRITY.value,
+    }:
+        return "invalid", "blocked"
+    if CompletenessFailureClass.PROVIDER_TRUNCATION.value in failure_classes:
+        return "truncated", "blocked"
+    if CompletenessFailureClass.EXECUTION_TECHNICAL.value in failure_classes:
+        return "invalid", "blocked"
+    if CompletenessFailureClass.FRESHNESS.value in failure_classes:
+        return "stale", "blocked"
+    if CompletenessFailureClass.EMPTY_RESULT.value in failure_classes:
+        return "empty", "blocked"
+    if failure_classes & {
+        CompletenessFailureClass.AVAILABILITY.value,
+        CompletenessFailureClass.RESULT_CONSISTENCY.value,
+        CompletenessFailureClass.RECONCILIATION.value,
+        CompletenessFailureClass.RECONCILIATION_PENDING.value,
+    }:
+        return "partial", "blocked"
+    if CompletenessFailureClass.ANALYTICAL_QUALITY.value in failure_classes:
+        return "partial", "degraded"
+    return "complete", "ready"
+
+
+def completeness_failure_classes(
+    assertions: tuple[Mapping[str, Any], ...],
+) -> tuple[str, ...]:
+    validate_completeness_assertions(assertions)
+    return _validated_completeness_failure_classes(assertions)
+
+
+def _validated_completeness_failure_classes(
+    assertions: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    observed = {
+        str(failure_class)
+        for assertion in assertions
+        if not assertion["passed"]
+        for failure_class in assertion["failure_classes"]
+    }
+    return tuple(
+        failure_class.value
+        for failure_class in CompletenessFailureClass
+        if failure_class.value in observed
+    )
 
 
 def canonical_exact_additive_count(value: Any) -> int | None:
@@ -33,7 +167,9 @@ def canonical_exact_additive_count(value: Any) -> int | None:
 
 
 def stable_contract_signature(value: Mapping[str, Any]) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -184,7 +320,9 @@ def query_contract_signature(value: QueryContract | Mapping[str, Any]) -> str:
     return stable_contract_signature(query_contract_semantic_body(value))
 
 
-def analysis_contract_semantic_body(value: "AnalysisContract" | Mapping[str, Any]) -> dict[str, Any]:
+def analysis_contract_semantic_body(
+    value: "AnalysisContract" | Mapping[str, Any],
+) -> dict[str, Any]:
     payload = asdict(value) if isinstance(value, AnalysisContract) else dict(value)
     return {
         str(key): _serialize_contract_value(item)
@@ -221,8 +359,7 @@ def _serialize_contract_value(value: Any) -> Any:
         return asdict(value)
     if isinstance(value, Mapping):
         return {
-            str(key): _serialize_contract_value(item)
-            for key, item in value.items()
+            str(key): _serialize_contract_value(item) for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return tuple(_serialize_contract_value(item) for item in value)
@@ -352,12 +489,14 @@ def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
         ),
     )
     for name, values in (
-        ("resolved_windows", tuple(item.window_id for item in contract.resolved_windows)),
+        (
+            "resolved_windows",
+            tuple(item.window_id for item in contract.resolved_windows),
+        ),
         (
             "metric_bindings",
             tuple(
-                (item.metric_id, item.dataset_id)
-                for item in contract.metric_bindings
+                (item.metric_id, item.dataset_id) for item in contract.metric_bindings
             ),
         ),
         (
@@ -372,6 +511,214 @@ def analysis_contract_from_dict(value: Mapping[str, Any]) -> AnalysisContract:
     ):
         if len(values) != len(set(values)):
             raise ValueError(f"analysis_contract.{name}:duplicate")
+    return contract
+
+
+def query_contract_from_dict(value: Mapping[str, Any]) -> QueryContract:
+    """Rehydrate the current canonical query contract with exact shape checks."""
+    item = _strict_mapping(value, path="query_contract")
+    _require_exact_keys(
+        item,
+        tuple(QueryContract.__dataclass_fields__),
+        path="query_contract",
+    )
+    reconciliation_payload = item["reconciliation_binding"]
+    if reconciliation_payload is None:
+        reconciliation = None
+    else:
+        raw_reconciliation = _strict_mapping(
+            reconciliation_payload,
+            path="query_contract.reconciliation_binding",
+        )
+        _require_exact_keys(
+            raw_reconciliation,
+            tuple(ReconciliationBinding.__dataclass_fields__),
+            path="query_contract.reconciliation_binding",
+        )
+        reconciliation = ReconciliationBinding(
+            reference_query_role_ref=_strict_string(
+                raw_reconciliation["reference_query_role_ref"],
+                path=("query_contract.reconciliation_binding.reference_query_role_ref"),
+            ),
+            reference_contract_signature=_strict_string(
+                raw_reconciliation["reference_contract_signature"],
+                path=(
+                    "query_contract.reconciliation_binding.reference_contract_signature"
+                ),
+            ),
+        )
+    join_payload = item["join_expectation"]
+    if join_payload is None:
+        join_expectation = None
+    else:
+        raw_join = _strict_mapping(
+            join_payload,
+            path="query_contract.join_expectation",
+        )
+        _require_exact_keys(
+            raw_join,
+            tuple(JoinExpectation.__dataclass_fields__),
+            path="query_contract.join_expectation",
+        )
+        join_expectation = JoinExpectation(
+            cardinality=_strict_string(
+                raw_join["cardinality"],
+                path="query_contract.join_expectation.cardinality",
+            ),
+            audit_fields=_strict_string_sequence(
+                raw_join["audit_fields"],
+                path="query_contract.join_expectation.audit_fields",
+            ),
+            max_duplicate_keys=_strict_int(
+                raw_join["max_duplicate_keys"],
+                path="query_contract.join_expectation.max_duplicate_keys",
+            ),
+            max_unmatched_rows=_strict_int(
+                raw_join["max_unmatched_rows"],
+                path="query_contract.join_expectation.max_unmatched_rows",
+            ),
+        )
+    raw_result_shape = _strict_mapping(
+        item["result_shape"],
+        path="query_contract.result_shape",
+    )
+    _require_exact_keys(
+        raw_result_shape,
+        tuple(ResultShape.__dataclass_fields__),
+        path="query_contract.result_shape",
+    )
+    contract = QueryContract(
+        query_contract_id=_strict_string(
+            item["query_contract_id"], path="query_contract.query_contract_id"
+        ),
+        analysis_contract_ref=_strict_string(
+            item["analysis_contract_ref"],
+            path="query_contract.analysis_contract_ref",
+        ),
+        query_intent=_strict_string(
+            item["query_intent"], path="query_contract.query_intent"
+        ),
+        dataset_snapshot_refs=_strict_string_sequence(
+            item["dataset_snapshot_refs"],
+            path="query_contract.dataset_snapshot_refs",
+        ),
+        metric_bindings=tuple(
+            _metric_binding_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["metric_bindings"],
+                    path="query_contract.metric_bindings",
+                )
+            )
+        ),
+        dimension_bindings=tuple(
+            _dimension_binding_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["dimension_bindings"],
+                    path="query_contract.dimension_bindings",
+                )
+            )
+        ),
+        window_refs=_strict_string_sequence(
+            item["window_refs"], path="query_contract.window_refs"
+        ),
+        resolved_windows=tuple(
+            _resolved_window_from_dict(raw, index=index)
+            for index, raw in enumerate(
+                _strict_sequence(
+                    item["resolved_windows"],
+                    path="query_contract.resolved_windows",
+                )
+            )
+        ),
+        filters=tuple(
+            dict(
+                _strict_mapping(
+                    raw,
+                    path=f"query_contract.filters[{index}]",
+                )
+            )
+            for index, raw in enumerate(
+                _strict_sequence(item["filters"], path="query_contract.filters")
+            )
+        ),
+        result_shape=ResultShape(
+            required_fields=_strict_string_sequence(
+                raw_result_shape["required_fields"],
+                path="query_contract.result_shape.required_fields",
+            ),
+            unique_key=_strict_string_sequence(
+                raw_result_shape["unique_key"],
+                path="query_contract.result_shape.unique_key",
+            ),
+            grain=_strict_string_sequence(
+                raw_result_shape["grain"],
+                path="query_contract.result_shape.grain",
+            ),
+            required_window_ids=_strict_string_sequence(
+                raw_result_shape["required_window_ids"],
+                path="query_contract.result_shape.required_window_ids",
+            ),
+            result_semantics=_strict_string(
+                raw_result_shape["result_semantics"],
+                path="query_contract.result_shape.result_semantics",
+            ),
+            dimension_presence_policy=_strict_string(
+                raw_result_shape["dimension_presence_policy"],
+                path="query_contract.result_shape.dimension_presence_policy",
+            ),
+        ),
+        completeness_assertions=_strict_string_sequence(
+            item["completeness_assertions"],
+            path="query_contract.completeness_assertions",
+        ),
+        workload_class=_strict_string(
+            item["workload_class"], path="query_contract.workload_class"
+        ),
+        contract_signature=_strict_string(
+            item["contract_signature"], path="query_contract.contract_signature"
+        ),
+        query_parameters=dict(
+            _strict_mapping(
+                item["query_parameters"],
+                path="query_contract.query_parameters",
+            )
+        ),
+        query_role_ref=_strict_string(
+            item["query_role_ref"],
+            path="query_contract.query_role_ref",
+            allow_empty=True,
+        ),
+        reconciliation_binding=reconciliation,
+        join_expectation=join_expectation,
+    )
+    for name, values in (
+        ("dataset_snapshot_refs", contract.dataset_snapshot_refs),
+        ("window_refs", contract.window_refs),
+        (
+            "metric_bindings",
+            tuple(
+                (binding.metric_id, binding.dataset_id)
+                for binding in contract.metric_bindings
+            ),
+        ),
+        (
+            "dimension_bindings",
+            tuple(
+                (binding.dimension_id, binding.dataset_id)
+                for binding in contract.dimension_bindings
+            ),
+        ),
+        (
+            "resolved_windows",
+            tuple(window.window_id for window in contract.resolved_windows),
+        ),
+    ):
+        if len(values) != len(set(values)):
+            raise ValueError(f"query_contract.{name}:duplicate")
+    if contract.contract_signature != query_contract_signature(contract):
+        raise ValueError("query_contract.contract_signature:mismatch")
     return contract
 
 
@@ -390,9 +737,7 @@ def _resolved_window_from_dict(value: Any, *, index: int) -> ResolvedWindow:
             item["end_exclusive"], path=f"{path}.end_exclusive"
         ),
         timezone=_strict_string(item["timezone"], path=f"{path}.timezone"),
-        aggregation=_strict_string(
-            item["aggregation"], path=f"{path}.aggregation"
-        ),
+        aggregation=_strict_string(item["aggregation"], path=f"{path}.aggregation"),
         required_complete_days=_strict_int(
             item["required_complete_days"], path=f"{path}.required_complete_days"
         ),
@@ -459,9 +804,7 @@ def _dimension_binding_from_dict(value: Any, *, index: int) -> DimensionBinding:
     item = _strict_mapping(value, path=path)
     _require_exact_keys(item, tuple(DimensionBinding.__dataclass_fields__), path=path)
     return DimensionBinding(
-        dimension_id=_strict_string(
-            item["dimension_id"], path=f"{path}.dimension_id"
-        ),
+        dimension_id=_strict_string(item["dimension_id"], path=f"{path}.dimension_id"),
         contract_ref=_strict_string(item["contract_ref"], path=f"{path}.contract_ref"),
         dataset_id=_strict_string(item["dataset_id"], path=f"{path}.dataset_id"),
         source_field=_strict_string(item["source_field"], path=f"{path}.source_field"),
@@ -569,6 +912,18 @@ class QueryResultEnvelope:
     failure_reason: str = ""
     execution_attempt_ref: str = ""
 
+    def __post_init__(self) -> None:
+        if self.execution_status not in {"succeeded", "failed", "blocked"}:
+            raise ValueError("query_result_execution_status_invalid")
+        if not isinstance(self.failure_reason, str):
+            raise ValueError("query_result_execution_failure_reason_invalid")
+        if self.execution_status == "succeeded" and self.failure_reason:
+            raise ValueError("query_result_execution_succeeded_failure_reason_present")
+        if self.execution_status != "succeeded" and not self.failure_reason:
+            raise ValueError("query_result_execution_failure_reason_missing")
+        if self.failure_reason != self.failure_reason.strip():
+            raise ValueError("query_result_execution_failure_reason_invalid")
+
     def to_dict(self) -> dict[str, Any]:
         payload = canonical_thaw(self)
         payload.pop("rows")
@@ -586,5 +941,39 @@ class CompletenessReport:
     failure_reasons: tuple[str, ...]
     coverage_summary: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        if isinstance(self.assertion_results, list):
+            object.__setattr__(self, "assertion_results", tuple(self.assertion_results))
+        if isinstance(self.failure_reasons, list):
+            object.__setattr__(self, "failure_reasons", tuple(self.failure_reasons))
+        validate_completeness_assertions(self.assertion_results)
+        if not isinstance(self.coverage_summary, Mapping):
+            raise ValueError("completeness_report_coverage_summary_invalid")
+        expected_reasons = tuple(
+            dict.fromkeys(
+                reason
+                for assertion in self.assertion_results
+                for reason in assertion["failure_reasons"]
+            )
+        )
+        if self.failure_reasons != expected_reasons:
+            raise ValueError("completeness_report_failure_reasons_mismatch")
+        expected_state = _completeness_state(
+            _validated_completeness_failure_classes(self.assertion_results)
+        )
+        if (
+            self.completeness_status,
+            self.analysis_readiness,
+        ) != expected_state:
+            raise ValueError("completeness_report_state_mismatch")
+
     def to_dict(self) -> dict[str, Any]:
         return canonical_thaw(self)
+
+
+def completeness_report_failure_classes(
+    report: CompletenessReport,
+) -> tuple[str, ...]:
+    if not isinstance(report, CompletenessReport):
+        raise ValueError("completeness_report_invalid")
+    return completeness_failure_classes(report.assertion_results)

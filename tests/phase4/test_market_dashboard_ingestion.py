@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -18,8 +17,10 @@ from tools.data.load_market_dashboard_clickhouse import (
     persist_dataset_snapshot_payloads,
 )
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.runtime.clickhouse_revenue_rows import _dataset_snapshots
-from bi_agent.runtime.dataset_catalog import DatasetSnapshot
+from bi_agent.runtime.dataset_catalog import (
+    DatasetSnapshot,
+    dataset_snapshots_from_records,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -112,9 +113,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
         self.assertEqual(manifest.watermark, "2026-06-02")
 
     def test_empty_channel_file_is_no_data_not_zero_observation(self):
-        empty = self.write_csv(
-            "Empty_2024-01-01_2026-06-02.csv", [list(HEADERS)]
-        )
+        empty = self.write_csv("Empty_2024-01-01_2026-06-02.csv", [list(HEADERS)])
 
         rows, manifest = load_market_dashboard_rows(
             self.overall_fixture(), (empty,), snapshot_id="s1"
@@ -172,9 +171,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
     def test_blank_and_null_numeric_values_are_nullable(self):
         row = source_row(**{"付费金额": "", "日活arpu": "NULL"})
-        overall = self.write_csv(
-            "大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row]
-        )
+        overall = self.write_csv("大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row])
 
         rows, _ = load_market_dashboard_rows(overall, (), snapshot_id="s1")
 
@@ -183,9 +180,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
     def test_nan_numeric_marker_is_nullable_and_never_inserted_as_non_finite(self):
         row = source_row(**{"日活arpu": "nan"})
-        overall = self.write_csv(
-            "大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row]
-        )
+        overall = self.write_csv("大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row])
 
         rows, _ = load_market_dashboard_rows(overall, (), snapshot_id="s1")
 
@@ -193,9 +188,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
     def test_nan_is_rejected_when_field_contract_does_not_declare_it_missing(self):
         row = source_row(**{"付费金额": "nan"})
-        overall = self.write_csv(
-            "大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row]
-        )
+        overall = self.write_csv("大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row])
 
         with self.assertRaisesRegex(
             DashboardLoadError,
@@ -213,7 +206,10 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             load_market_dashboard_rows(overall, (), snapshot_id="s1")
 
     def test_grain_keys_and_reviewed_game_scope_are_enforced(self):
-        for game, reason in (("", "grain_key_empty:game"), ("Other Game", "game_scope_mismatch")):
+        for game, reason in (
+            ("", "grain_key_empty:game"),
+            ("Other Game", "game_scope_mismatch"),
+        ):
             with self.subTest(game=game):
                 overall = self.write_csv(
                     "大盘_2024-01-01_2026-06-02.csv",
@@ -223,9 +219,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
                     load_market_dashboard_rows(overall, (), snapshot_id="s1")
 
     def test_reversed_empty_filename_window_is_rejected(self):
-        channel = self.write_csv(
-            "A_2026-06-02_2024-01-01.csv", [list(HEADERS)]
-        )
+        channel = self.write_csv("A_2026-06-02_2024-01-01.csv", [list(HEADERS)])
 
         with self.assertRaisesRegex(DashboardLoadError, "filename_date_range_invalid"):
             load_market_dashboard_rows(
@@ -250,7 +244,9 @@ class MarketDashboardIngestionTests(unittest.TestCase):
         rows, _ = load_market_dashboard_rows(overall, (), snapshot_id="s1")
 
         self.assertEqual(rows.overall_rows[0]["active_users"], Decimal("100"))
-        self.assertEqual(rows.overall_rows[0]["paid_amount"], Decimal("3000.123456789013"))
+        self.assertEqual(
+            rows.overall_rows[0]["paid_amount"], Decimal("3000.123456789013")
+        )
         self.assertEqual(
             rows.overall_rows[0]["registration_rate"],
             Decimal("0.123456789012345679"),
@@ -270,9 +266,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
     def test_invalid_numeric_value_fails_with_file_row_and_field(self):
         row = source_row(**{"付费金额": "three thousand"})
-        overall = self.write_csv(
-            "大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row]
-        )
+        overall = self.write_csv("大盘_2024-01-01_2026-06-02.csv", [list(HEADERS), row])
 
         with self.assertRaisesRegex(
             DashboardLoadError,
@@ -287,15 +281,21 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
         payloads = build_dataset_snapshot_payloads(manifest)
 
-        self.assertRegex(manifest.manifest_ref, r"^source-load-manifest:sha256:[0-9a-f]{64}$")
+        self.assertRegex(
+            manifest.manifest_ref, r"^source-load-manifest:sha256:[0-9a-f]{64}$"
+        )
         self.assertEqual(manifest.snapshot_ref, payloads[0]["snapshot_ref"])
-        self.assertRegex(payloads[0]["snapshot_ref"], r"^dataset-snapshot:sha256:[0-9a-f]{64}$")
+        self.assertRegex(
+            payloads[0]["snapshot_ref"], r"^dataset-snapshot:sha256:[0-9a-f]{64}$"
+        )
         self.assertEqual(payloads[0]["dataset_id"], "market_dashboard")
         self.assertEqual(payloads[1]["dataset_id"], "market_dashboard_channel")
         self.assertEqual(payloads[0]["status"], "active")
         self.assertEqual(payloads[0]["source_load_manifest_ref"], manifest.manifest_ref)
         self.assertRegex(manifest.overall_rows_content_hash, r"^[0-9a-f]{64}$")
-        self.assertEqual(payloads[0]["rows_content_hash"], manifest.overall_rows_content_hash)
+        self.assertEqual(
+            payloads[0]["rows_content_hash"], manifest.overall_rows_content_hash
+        )
         self.assertEqual(rows.overall_rows[0]["snapshot_id"], "s1")
         self.assertNotEqual(manifest.physical_table, OVERALL_TABLE)
         self.assertTrue(manifest.physical_table.startswith(f"{OVERALL_TABLE}__"))
@@ -317,16 +317,18 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             "authority_record_ref": "dataset-release-authority:sha256:" + "a" * 64,
         }
 
-        snapshots = _dataset_snapshots((payload,))
+        snapshots = dataset_snapshots_from_records((payload,))
 
         snapshot = snapshots[payload["snapshot_ref"]]
         self.assertEqual(snapshot.release_ref, payload["release_ref"])
         self.assertEqual(snapshot.authority_record_ref, payload["authority_record_ref"])
         self.assertEqual(snapshot.rows_content_hash, payload["rows_content_hash"])
         with self.assertRaisesRegex(ValueError, "unexpected:unknown_authority"):
-            _dataset_snapshots(({**payload, "unknown_authority": True},))
+            dataset_snapshots_from_records(({**payload, "unknown_authority": True},))
 
-    def test_release_preflight_rejects_incomplete_or_inconsistent_batches_before_db(self):
+    def test_release_preflight_rejects_incomplete_or_inconsistent_batches_before_db(
+        self,
+    ):
         _, manifest = load_market_dashboard_rows(
             self.overall_fixture(), (), snapshot_id="s1"
         )
@@ -353,7 +355,9 @@ class MarketDashboardIngestionTests(unittest.TestCase):
         for payloads in cases:
             with self.subTest(payloads=payloads):
                 store = NoDatabaseCalls()
-                with self.assertRaisesRegex(DashboardLoadError, "postgres_release_preflight"):
+                with self.assertRaisesRegex(
+                    DashboardLoadError, "postgres_release_preflight"
+                ):
                     persist_dataset_snapshot_payloads(store, payloads)
                 self.assertEqual(store.calls, 0)
 
@@ -381,7 +385,9 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             self.overall_fixture(), (), snapshot_id="s1"
         )
         _, changed = load_market_dashboard_rows(
-            self.overall_fixture(), (), snapshot_id="s1",
+            self.overall_fixture(),
+            (),
+            snapshot_id="s1",
             source_contract_path=changed_contract,
         )
 
@@ -410,7 +416,9 @@ class MarketDashboardIngestionTests(unittest.TestCase):
         )
         self.assertEqual(overall_snapshots[1]["status"], "active")
         self.assertIn(first_payloads[0]["snapshot_ref"], result.superseded_refs)
-        self.assertEqual(result.active_refs, tuple(item["snapshot_ref"] for item in second_payloads))
+        self.assertEqual(
+            result.active_refs, tuple(item["snapshot_ref"] for item in second_payloads)
+        )
 
     def test_persistence_result_exposes_only_release_join_verified_payloads(self):
         store = InMemoryConversationStore()
@@ -435,7 +443,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             result.authority_record["snapshot_refs"],
             tuple(sorted(result.active_refs)),
         )
-        typed = _dataset_snapshots(result.verified_payloads)
+        typed = dataset_snapshots_from_records(result.verified_payloads)
         self.assertEqual(set(typed), set(result.active_refs))
 
     def test_persisting_snapshot_keeps_other_active_snapshot_ids_versioned(self):
@@ -481,10 +489,14 @@ class MarketDashboardIngestionTests(unittest.TestCase):
         self.assertEqual(matched.reconciliation.status, "matched")
         self.assertEqual(matched.reconciliation.reasons, ())
         self.assertEqual(mismatch.reconciliation.status, "mismatch")
-        self.assertIn("paid_amount_mismatch:2026-06-02", mismatch.reconciliation.reasons)
+        self.assertIn(
+            "paid_amount_mismatch:2026-06-02", mismatch.reconciliation.reasons
+        )
         self.assertEqual(mismatch.reconciliation.compared_dates, ("2026-06-02",))
 
-    def test_complementary_duplicate_channel_rows_are_aggregated_to_contract_grain(self):
+    def test_complementary_duplicate_channel_rows_are_aggregated_to_contract_grain(
+        self,
+    ):
         first = source_row(
             **{"新增设备": "13", "注册率": "1", "投放成本": "0", "付费金额": "0"}
         )
@@ -522,9 +534,7 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             )
 
     def test_empty_overall_file_is_rejected_as_missing_observation(self):
-        overall = self.write_csv(
-            "大盘_2024-01-01_2026-06-02.csv", [list(HEADERS)]
-        )
+        overall = self.write_csv("大盘_2024-01-01_2026-06-02.csv", [list(HEADERS)])
 
         with self.assertRaisesRegex(DashboardLoadError, "overall_source_has_no_data"):
             load_market_dashboard_rows(overall, (), snapshot_id="s1")
@@ -535,9 +545,13 @@ class MarketDashboardIngestionTests(unittest.TestCase):
 
         binding = source["runtime_binding"]
         self.assertEqual(binding["overall"]["dataset_id"], "market_dashboard")
-        self.assertEqual(binding["overall"]["physical_table_prefix"], f"{OVERALL_TABLE}__")
+        self.assertEqual(
+            binding["overall"]["physical_table_prefix"], f"{OVERALL_TABLE}__"
+        )
         self.assertEqual(binding["channel"]["dataset_id"], "market_dashboard_channel")
-        self.assertEqual(binding["channel"]["physical_table_prefix"], f"{CHANNEL_TABLE}__")
+        self.assertEqual(
+            binding["channel"]["physical_table_prefix"], f"{CHANNEL_TABLE}__"
+        )
         self.assertTrue(runtime["datasets"]["market_dashboard"]["requires_release"])
         self.assertTrue(
             runtime["datasets"]["market_dashboard"]["requires_physical_revision"]
@@ -550,7 +564,9 @@ class MarketDashboardIngestionTests(unittest.TestCase):
             runtime["datasets"]["market_dashboard_channel"]["physical_table_prefix"],
             f"{CHANNEL_TABLE}__",
         )
-        self.assertEqual(runtime["metrics"]["paid_amount"]["value_semantics"], "raw_scalar")
+        self.assertEqual(
+            runtime["metrics"]["paid_amount"]["value_semantics"], "raw_scalar"
+        )
         self.assertEqual(runtime["metrics"]["paid_amount"]["display_format"], "number")
 
 

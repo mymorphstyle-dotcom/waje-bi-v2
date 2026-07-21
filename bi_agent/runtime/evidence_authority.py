@@ -23,6 +23,48 @@ from bi_agent.runtime.query_audit import query_audit_refs
 
 RESULT_ROWS_CANONICALIZATION_VERSION = "result-rows-typed-order-v2"
 
+CAPABILITY_BINDING_PAYLOAD_FIELDS = (
+    "capability_id",
+    "capability_contract_ref",
+    "capability_contract_version",
+    "capability_contract_signature",
+    "analysis_contract_ref",
+    "status",
+    "rows_by_slot",
+    "reasons",
+    "issues",
+    "query_contract_refs",
+    "result_refs",
+    "query_execution_record_refs",
+    "query_execution_record_digests",
+    "rows_refs",
+    "rows_metadata_record_refs",
+    "rows_metadata_record_digests",
+    "rows_content_hashes",
+    "completeness_report_refs",
+    "completeness_record_refs",
+    "completeness_record_digests",
+    "source_snapshot_refs",
+    "validation_query_contract_refs",
+    "validation_result_refs",
+    "validation_query_execution_record_refs",
+    "validation_query_execution_record_digests",
+    "validation_rows_refs",
+    "validation_rows_metadata_record_refs",
+    "validation_rows_metadata_record_digests",
+    "validation_rows_content_hashes",
+    "validation_completeness_report_refs",
+    "validation_completeness_record_refs",
+    "validation_completeness_record_digests",
+    "validation_source_snapshot_refs",
+    "supported_evidence_types",
+    "supported_claim_types",
+    "maximum_claim_strength",
+    "maximum_claim_strength_rank",
+    "claim_strength_taxonomy_version",
+    "input_completeness_statuses",
+)
+
 
 class EvidenceIntegrityError(ValueError):
     pass
@@ -128,7 +170,9 @@ class CapabilityBindingRecord:
 
 @runtime_checkable
 class RuntimeEvidenceResolver(Protocol):
-    def resolve_query_execution(self, result_ref: str) -> QueryExecutionRecord | None: ...
+    def resolve_query_execution(
+        self, result_ref: str
+    ) -> QueryExecutionRecord | None: ...
 
     def resolve_query_execution_record(
         self,
@@ -257,7 +301,10 @@ class RuntimeEvidenceAuthority:
                 immutable_store[immutable_ref] = record
 
         def link_latest(report_ref: str, record: CompletenessRecord) -> None:
-            if type(record) is not CompletenessRecord or record.report_ref != report_ref:
+            if (
+                type(record) is not CompletenessRecord
+                or record.report_ref != report_ref
+            ):
                 raise EvidenceIntegrityError("completeness_alias_invalid")
             self.__completeness_aliases[report_ref] = record
 
@@ -388,9 +435,7 @@ def canonical_rows_hash(
     rows: Sequence[Mapping[str, Any]],
     unique_key_fields: Sequence[str],
 ) -> str:
-    return canonical_digest(
-        _canonical_ordered_rows(rows, unique_key_fields)
-    )
+    return canonical_digest(_canonical_ordered_rows(rows, unique_key_fields))
 
 
 def _canonical_ordered_rows(
@@ -427,8 +472,7 @@ def _canonical_ordered_rows(
     )
     if projection_collisions:
         raise EvidenceIntegrityError(
-            "canonical_row_projection_collision:"
-            + ",".join(projection_collisions)
+            "canonical_row_projection_collision:" + ",".join(projection_collisions)
         )
     normalized.sort(key=lambda item: item[0])
     return tuple(row for _, row in normalized)
@@ -439,8 +483,7 @@ def _typed_value_identity(value: Any) -> Any:
         return {
             "type": "mapping",
             "items": [
-                [key, _typed_value_identity(value[key])]
-                for key in sorted(value)
+                [key, _typed_value_identity(value[key])] for key in sorted(value)
             ],
         }
     if isinstance(value, (list, tuple)):
@@ -482,16 +525,10 @@ def _preflight_result_row_keys(
     key_fields: tuple[str, ...],
 ) -> tuple[str, ...]:
     invalid_row_types = sorted(
-        {
-            type(row).__name__
-            for row in rows
-            if not isinstance(row, Mapping)
-        }
+        {type(row).__name__ for row in rows if not isinstance(row, Mapping)}
     )
     if invalid_row_types:
-        raise EvidenceIntegrityError(
-            "row_not_mapping:" + ",".join(invalid_row_types)
-        )
+        raise EvidenceIntegrityError("row_not_mapping:" + ",".join(invalid_row_types))
     canonical_errors = set()
     for row in rows:
         try:
@@ -515,9 +552,7 @@ def _preflight_result_row_keys(
         if missing:
             missing_key_fields.update(missing)
             continue
-        invalid = tuple(
-            field for field in key_fields if not _scalar_key(row[field])
-        )
+        invalid = tuple(field for field in key_fields if not _scalar_key(row[field]))
         if invalid:
             invalid_key_fields.update(invalid)
             continue
@@ -563,10 +598,7 @@ def canonical_result_rows_hash_matches(
 ) -> bool:
     ordered_rows = canonical_result_rows(rows, unique_key_fields)
     versioned_hash = _versioned_result_rows_hash(ordered_rows)
-    legacy_hash = canonical_digest(ordered_rows)
-    return isinstance(rows_content_hash, str) and (
-        rows_content_hash == versioned_hash or rows_content_hash == legacy_hash
-    )
+    return isinstance(rows_content_hash, str) and rows_content_hash == versioned_hash
 
 
 def canonical_rows_storage_ref(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -627,13 +659,9 @@ def _write_query_execution(
         result.rows,
         contract.result_shape.unique_key,
     )
-    rows_hash = (
-        canonical_result_rows_hash(
-            result.rows,
-            contract.result_shape.unique_key,
-        )
-        if result.execution_status == "succeeded"
-        else canonical_digest(ordered_rows)
+    rows_hash = canonical_result_rows_hash(
+        result.rows,
+        contract.result_shape.unique_key,
     )
     expected = query_audit_refs(
         result.query_hash,
@@ -673,9 +701,7 @@ def _write_query_execution(
     }
     rows_metadata_digest = canonical_digest(rows_metadata)
     rows_record = RowsRecord(
-        record_ref=(
-            f"rows-record:{result.rows_ref}:{rows_metadata_digest}"
-        ),
+        record_ref=(f"rows-record:{result.rows_ref}:{rows_metadata_digest}"),
         record_digest=rows_metadata_digest,
         rows_ref=result.rows_ref,
         rows_content_hash=rows_hash,
@@ -721,9 +747,7 @@ def _write_query_execution(
         row_count=result.row_count,
         rows_content_hash=rows_hash,
         source_snapshot_refs=tuple(result.source_snapshot_refs),
-        source_snapshot_record_refs=tuple(
-            item.record_ref for item in snapshot_records
-        ),
+        source_snapshot_record_refs=tuple(item.record_ref for item in snapshot_records),
         source_snapshot_record_digests=tuple(
             item.record_digest for item in snapshot_records
         ),
@@ -768,6 +792,7 @@ def _write_completeness(
     link_latest(report.report_ref, record)
     return record
 
+
 def _record_capability_binding(
     writer: RuntimeEvidenceWriter | RuntimeEvidenceAuthority,
     plan: CapabilityExecutionPlan,
@@ -781,6 +806,8 @@ def _write_capability_binding(
     plan: CapabilityExecutionPlan,
     binding_payload: Mapping[str, Any],
 ) -> CapabilityBindingRecord:
+    if set(binding_payload) != set(CAPABILITY_BINDING_PAYLOAD_FIELDS):
+        raise EvidenceIntegrityError("capability_binding_payload_schema_invalid")
     payload = _canonical_value(binding_payload)
     digest = canonical_digest({"plan": asdict(plan), "binding": payload})
     ref = f"capability-binding:{plan.capability_id}:{digest}"
@@ -801,9 +828,7 @@ def _write_capability_binding(
             payload.get("query_execution_record_digests") or ()
         ),
         rows_refs=tuple(payload.get("rows_refs") or ()),
-        rows_metadata_record_refs=tuple(
-            payload.get("rows_metadata_record_refs") or ()
-        ),
+        rows_metadata_record_refs=tuple(payload.get("rows_metadata_record_refs") or ()),
         rows_metadata_record_digests=tuple(
             payload.get("rows_metadata_record_digests") or ()
         ),
@@ -849,9 +874,7 @@ def _write_capability_binding(
         supported_evidence_types=tuple(payload.get("supported_evidence_types") or ()),
         supported_claim_types=tuple(payload.get("supported_claim_types") or ()),
         maximum_claim_strength=str(payload.get("maximum_claim_strength") or ""),
-        maximum_claim_strength_rank=int(
-            payload.get("maximum_claim_strength_rank", -1)
-        ),
+        maximum_claim_strength_rank=int(payload.get("maximum_claim_strength_rank", -1)),
         claim_strength_taxonomy_version=str(
             payload.get("claim_strength_taxonomy_version") or ""
         ),
@@ -934,9 +957,8 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
             errors.append("rows_record_ref_mismatch")
         if record.row_count < 0:
             errors.append("rows_record_count_invalid")
-        if (
-            len(record.rows_content_hash) != 64
-            or any(char not in "0123456789abcdef" for char in record.rows_content_hash)
+        if len(record.rows_content_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in record.rows_content_hash
         ):
             errors.append("rows_record_hash_invalid")
         return tuple(errors)
@@ -975,9 +997,7 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
             "query_contract": contract_payload,
             "result": payload,
             "rows_content_hash": record.rows_content_hash,
-            "source_snapshot_record_refs": list(
-                record.source_snapshot_record_refs
-            ),
+            "source_snapshot_record_refs": list(record.source_snapshot_record_refs),
             "source_snapshot_record_digests": list(
                 record.source_snapshot_record_digests
             ),
@@ -1011,8 +1031,7 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
             ),
         )
         if (
-            record.record_ref
-            != f"query-execution:{record.result_ref}:{digest}"
+            record.record_ref != f"query-execution:{record.result_ref}:{digest}"
             or record.result_ref != expected_refs.result_ref
             or record.rows_ref != expected_refs.rows_ref
             or record.completeness_report_ref != expected_refs.completeness_report_ref
@@ -1038,6 +1057,8 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
         payload = _canonical_value(record.binding_payload)
         plan = _canonical_value(record.plan_payload)
         errors = []
+        if set(payload) != set(CAPABILITY_BINDING_PAYLOAD_FIELDS):
+            errors.append("capability_binding_payload_schema_invalid")
         digest = canonical_digest({"plan": plan, "binding": payload})
         if (
             record.binding_digest != digest
@@ -1053,6 +1074,18 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
         }
         if any(plan.get(key) != value for key, value in plan_fields.items()):
             errors.append("capability_binding_plan_payload_mismatch")
+        binding_identity_fields = {
+            "capability_id": record.capability_id,
+            "capability_contract_version": record.capability_contract_version,
+            "capability_contract_signature": record.capability_contract_signature,
+            "analysis_contract_ref": record.analysis_contract_ref,
+        }
+        if any(
+            payload.get(key) != value for key, value in binding_identity_fields.items()
+        ) or payload.get("capability_contract_ref") != plan.get(
+            "capability_contract_ref"
+        ):
+            errors.append("capability_binding_identity_payload_mismatch")
         binding_fields = (
             "status",
             "query_contract_refs",
@@ -1119,7 +1152,9 @@ def runtime_evidence_record_integrity_errors(record: Any) -> tuple[str, ...]:
                 record.validation_completeness_record_digests,
             ),
         )
-        if any(len({len(values) for values in group}) != 1 for group in provenance_groups):
+        if any(
+            len({len(values) for values in group}) != 1 for group in provenance_groups
+        ):
             errors.append("capability_binding_record_cardinality_mismatch")
         return tuple(errors)
     return ("runtime_evidence_record_type_invalid",)

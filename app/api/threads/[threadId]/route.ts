@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { jsonError, requireThread } from "../../_conversationStore";
+import {
+  customerJsonError,
+  loadCustomerAnalysisSnapshot,
+} from "../../_conversationStore";
 import { resolveCustomerActor } from "../../_customerActor";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +13,13 @@ type RouteContext = { params: Promise<{ threadId: string }> };
 
 export async function GET(request: Request, context: RouteContext) {
   const { threadId } = await context.params;
+  let actorId: string | undefined;
   try {
-    const actorId = resolveCustomerActor(request);
-    return NextResponse.json({ thread: await requireThread(threadId, actorId) });
+    actorId = resolveCustomerActor(request);
+    return NextResponse.json({
+      snapshot: await loadCustomerAnalysisSnapshot({ threadId, actorId }),
+    });
   } catch (error) {
-    return jsonError(error);
+    return customerJsonError(error, { actorId, threadId });
   }
 }

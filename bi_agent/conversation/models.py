@@ -4,57 +4,39 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
-from bi_agent.runtime.evidence_authority import (
-    EvidenceIntegrityError,
-    canonical_digest,
-    canonical_value,
-)
+from bi_agent.runtime.evidence_authority import canonical_value
 
 
-RESULT_REUSE_CANDIDATE_SCHEMA_VERSION = "result-reuse-candidate.v2"
 CLARIFICATION_ESCAPE_OPTION = "tell the agent to do differently"
-RESULT_REUSE_CANDIDATE_FIELDS = (
-    "schema_version",
-    "source_run_id",
-    "result_ref",
-    "query_contract_ref",
-    "query_contract_signature",
-    "query_execution_record_ref",
-    "query_execution_record_digest",
-    "analysis_contract_ref",
-    "analysis_contract_signature",
-    "runtime_snapshot_id",
-    "runtime_contract_version",
-    "source_snapshot_refs",
-    "source_snapshot_record_refs",
-    "source_snapshot_record_digests",
-    "source_release_refs",
-    "source_release_authority_refs",
-    "source_schema_fingerprints",
-    "semantic_scope_signature",
-    "rows_ref",
-    "rows_record_ref",
-    "rows_record_digest",
-    "rows_content_hash",
-    "completeness_report_ref",
-    "completeness_record_refs",
-    "completeness_record_digests",
-    "binding_record_refs",
-    "binding_record_digests",
-    "candidate_signature",
-)
-_RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS = (
-    "source_snapshot_refs",
-    "source_snapshot_record_refs",
-    "source_snapshot_record_digests",
-    "source_release_refs",
-    "source_release_authority_refs",
-    "source_schema_fingerprints",
-    "completeness_record_refs",
-    "completeness_record_digests",
-    "binding_record_refs",
-    "binding_record_digests",
-)
+
+
+def canonical_run_checkpoint_events(
+    run_id: str,
+    checkpoint_events: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or run_id != run_id.strip()
+        or not isinstance(checkpoint_events, tuple)
+    ):
+        raise ValueError("run_checkpoint_event_invalid")
+    normalized_events: list[dict[str, Any]] = []
+    for event in checkpoint_events:
+        normalized = canonical_value(event)
+        if (
+            not isinstance(normalized, dict)
+            or "name" in normalized
+            or not isinstance(normalized.get("node"), str)
+            or not normalized["node"].strip()
+            or normalized["node"] != normalized["node"].strip()
+            or not isinstance(normalized.get("status"), str)
+            or not normalized["status"].strip()
+            or normalized["status"] != normalized["status"].strip()
+        ):
+            raise ValueError("run_checkpoint_event_invalid")
+        normalized_events.append(normalized)
+    return tuple(normalized_events)
 
 
 @dataclass(frozen=True)
@@ -97,11 +79,11 @@ class ContextManifest:
     thread_id: str
     turn_id: str
     topic_id: str | None
+    run_id: str | None
     items: tuple[ContextItem, ...]
     sources: list[dict[str, Any]]
     claim_use_policy: dict[str, Any]
     snapshot_version: str | None
-    analysis_assets: list[dict[str, Any]]
     accepted_assumptions: list[dict[str, Any]]
     contract_versions: dict[str, str]
     schema_fingerprint: str
@@ -117,34 +99,43 @@ class ContextManifest:
         can_support_claims: bool | None = None,
         *,
         topic_id: str | None = None,
+        run_id: str | None = None,
         sources: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         claim_use_policy: Mapping[str, Any] | None = None,
         snapshot_version: str | None = None,
-        analysis_assets: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
-        accepted_assumptions: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        accepted_assumptions: list[dict[str, Any]]
+        | tuple[dict[str, Any], ...]
+        | None = None,
         contract_versions: Mapping[str, Any] | None = None,
         schema_fingerprint: str | None = None,
         created_at: str | None = None,
     ) -> None:
         normalized_items = tuple(items or ())
-        normalized_sources = list(sources) if sources is not None else [
-            {
-                "type": item.source_type,
-                "ref": item.source_ref,
-                "can_support_claim": item.can_support_claims,
-                **item.to_dict(),
-            }
-            for item in normalized_items
-        ]
+        normalized_sources = (
+            list(sources)
+            if sources is not None
+            else [
+                {
+                    "type": item.source_type,
+                    "ref": item.source_ref,
+                    "can_support_claim": item.can_support_claims,
+                    **item.to_dict(),
+                }
+                for item in normalized_items
+            ]
+        )
         if can_support_claims is None:
             can_support_claims = any(
-                bool(source.get("can_support_claim") or source.get("can_support_claims"))
+                bool(
+                    source.get("can_support_claim") or source.get("can_support_claims")
+                )
                 for source in normalized_sources
             )
         object.__setattr__(self, "manifest_id", manifest_id)
         object.__setattr__(self, "thread_id", thread_id)
         object.__setattr__(self, "turn_id", turn_id)
         object.__setattr__(self, "topic_id", topic_id)
+        object.__setattr__(self, "run_id", run_id)
         object.__setattr__(self, "items", normalized_items)
         object.__setattr__(self, "sources", normalized_sources)
         default_claim_use_policy = {
@@ -157,7 +148,6 @@ class ContextManifest:
             {**default_claim_use_policy, **dict(claim_use_policy or {})},
         )
         object.__setattr__(self, "snapshot_version", snapshot_version)
-        object.__setattr__(self, "analysis_assets", [dict(item) for item in analysis_assets or ()])
         object.__setattr__(
             self,
             "accepted_assumptions",
@@ -187,119 +177,28 @@ class ContextManifest:
         data = asdict(self)
         data["items"] = [item.to_dict() for item in self.items]
         data["sources"] = list(self.sources)
-        data["analysis_assets"] = [dict(item) for item in self.analysis_assets]
-        data["accepted_assumptions"] = [dict(item) for item in self.accepted_assumptions]
+        data["accepted_assumptions"] = [
+            dict(item) for item in self.accepted_assumptions
+        ]
         return data
 
 
-@dataclass(frozen=True, init=False)
-class ReuseDecision:
-    source_ref: str
-    decision: str
-    result_ref: str
-    reason: str
-    can_support_claim: bool
-    requires_rerun: bool
-
-    def __init__(
-        self,
-        decision: str,
-        result_ref: str = "",
-        reason: str = "",
-        can_support_claim: bool | None = None,
-        requires_rerun: bool | None = None,
-        *,
-        source_ref: str | None = None,
-    ) -> None:
-        known_decisions = {
-            "reuse",
-            "candidate",
-            "rerun",
-            "context_only",
-            "blocked",
-            "none",
-        }
-        if decision not in known_decisions and result_ref in known_decisions:
-            source_ref = decision
-            decision = result_ref
-            result_ref = source_ref
-        ref = source_ref if source_ref is not None else result_ref
-        if can_support_claim is None:
-            can_support_claim = decision == "reuse"
-        if requires_rerun is None:
-            requires_rerun = decision in {"blocked", "context_only", "rerun"}
-        object.__setattr__(self, "source_ref", ref)
-        object.__setattr__(self, "decision", decision)
-        object.__setattr__(self, "result_ref", result_ref or ref)
-        object.__setattr__(self, "reason", reason)
-        object.__setattr__(self, "can_support_claim", bool(can_support_claim))
-        object.__setattr__(self, "requires_rerun", bool(requires_rerun))
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class ClarificationOption:
     option_id: str
     label: str
     description: str
     recommended: bool = False
 
-    def __init__(
-        self,
-        option_id: str | None = None,
-        label: str = "",
-        description: str | None = None,
-        recommended: bool = False,
-        *,
-        id: str | None = None,
-        business_meaning: str | None = None,
-    ) -> None:
-        object.__setattr__(self, "option_id", option_id or id or "")
-        object.__setattr__(self, "label", label)
-        object.__setattr__(self, "description", description or business_meaning or "")
-        object.__setattr__(self, "recommended", recommended)
-
-    @property
-    def id(self) -> str:
-        return self.option_id
-
-    @property
-    def business_meaning(self) -> str:
-        return self.description
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            for value in (self.option_id, self.label, self.description)
+        ) or not isinstance(self.recommended, bool):
+            raise ValueError("clarification_option_invalid")
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["id"] = self.option_id
-        data["business_meaning"] = self.description
-        return data
-
-
-@dataclass(frozen=True)
-class ClarificationQuestion:
-    question_id: str
-    question: str
-    options: tuple[ClarificationOption, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["options"] = [option.to_dict() for option in self.options]
-        return data
-
-
-@dataclass(frozen=True)
-class ClarificationRequest:
-    clarification_id: str
-    reason: str
-    questions: tuple[ClarificationQuestion, ...]
-    allow_freeform: bool = True
-    status: str = "waiting_for_user"
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["questions"] = [question.to_dict() for question in self.questions]
-        return data
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -353,19 +252,11 @@ class ConversationRunRequest:
     topic_id: Optional[str]
     user_message: str
     context_manifest: Mapping[str, Any]
-    runtime_budget: Mapping[str, Any]
     analysis_context: Mapping[str, Any] = field(default_factory=dict)
-    clarification_attempt_context: Mapping[str, Any] = field(default_factory=dict)
-    prior_analysis_assets: tuple[Mapping[str, Any], ...] = ()
-    reuse_candidates: tuple[Mapping[str, Any], ...] = ()
     prior_topic_material_context: Mapping[str, Any] = field(default_factory=dict)
-    requested_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        data["reuse_candidates"] = [
-            canonical_value(candidate) for candidate in self.reuse_candidates
-        ]
         data["prior_topic_material_context"] = canonical_value(
             self.prior_topic_material_context
         )
@@ -387,6 +278,128 @@ class TopicState:
 
 
 @dataclass(frozen=True)
+class InteractionResponse:
+    schema_version: str
+    intent: str
+    response_text: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "typed-interaction.v1":
+            raise ValueError("interaction_response_schema_invalid")
+        for value in (self.intent, self.response_text):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError("interaction_response_value_invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TopicChoiceOption:
+    topic_id: str
+    label: str
+    description: str
+
+    def __post_init__(self) -> None:
+        for value in (self.topic_id, self.label, self.description):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError("topic_choice_option_value_invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TopicChoiceOption":
+        if not isinstance(payload, Mapping) or set(payload) != {
+            "topic_id",
+            "label",
+            "description",
+        }:
+            raise ValueError("topic_choice_option_shape_invalid")
+        return cls(
+            topic_id=payload["topic_id"],
+            label=payload["label"],
+            description=payload["description"],
+        )
+
+
+@dataclass(frozen=True)
+class TopicChoiceInteractionResponse:
+    schema_version: str
+    intent: str
+    response_text: str
+    options: tuple[TopicChoiceOption, ...]
+    recommended_topic_id: str
+    allow_free_text: bool
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "typed-topic-choice.v1":
+            raise ValueError("topic_choice_response_schema_invalid")
+        for value in (self.intent, self.response_text, self.recommended_topic_id):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError("topic_choice_response_value_invalid")
+        if not 2 <= len(self.options) <= 3:
+            raise ValueError("topic_choice_response_options_invalid")
+        if any(type(option) is not TopicChoiceOption for option in self.options):
+            raise ValueError("topic_choice_response_options_invalid")
+        topic_ids = tuple(option.topic_id for option in self.options)
+        if len(set(topic_ids)) != len(topic_ids):
+            raise ValueError("topic_choice_response_options_invalid")
+        if self.recommended_topic_id not in set(topic_ids):
+            raise ValueError("topic_choice_response_recommendation_invalid")
+        if self.allow_free_text is not True:
+            raise ValueError("topic_choice_response_free_text_required")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "intent": self.intent,
+            "response_text": self.response_text,
+            "options": [option.to_dict() for option in self.options],
+            "recommended_topic_id": self.recommended_topic_id,
+            "allow_free_text": self.allow_free_text,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, Any],
+    ) -> "TopicChoiceInteractionResponse":
+        if not isinstance(payload, Mapping) or set(payload) != {
+            "schema_version",
+            "intent",
+            "response_text",
+            "options",
+            "recommended_topic_id",
+            "allow_free_text",
+        }:
+            raise ValueError("topic_choice_response_shape_invalid")
+        options = payload["options"]
+        if not isinstance(options, list):
+            raise ValueError("topic_choice_response_options_invalid")
+        return cls(
+            schema_version=payload["schema_version"],
+            intent=payload["intent"],
+            response_text=payload["response_text"],
+            options=tuple(TopicChoiceOption.from_dict(item) for item in options),
+            recommended_topic_id=payload["recommended_topic_id"],
+            allow_free_text=payload["allow_free_text"],
+        )
+
+
+@dataclass(frozen=True)
 class ConversationTurnResult:
     thread_id: str
     turn_id: str
@@ -394,18 +407,16 @@ class ConversationTurnResult:
     turn_intent: TurnIntent
     topic_relation: str
     context_manifest: ContextManifest
-    reuse_decisions: tuple[ReuseDecision, ...]
+    entry_command: Mapping[str, Any]
     memory_proposals: tuple[MemoryProposal, ...] = ()
     audit_events: tuple[dict[str, Any], ...] = ()
     run_request: Optional[ConversationRunRequest] = None
-    needs_clarification: bool = False
-    clarification: Optional[ClarificationRequest] = None
-    response_boundary: str = ""
+    interaction_response: Optional[
+        InteractionResponse | TopicChoiceInteractionResponse
+    ] = None
 
     @property
     def status(self) -> str:
-        if self.needs_clarification:
-            return "waiting_for_clarification"
         if self.run_request:
             return "running"
         return "completed"
@@ -414,10 +425,13 @@ class ConversationTurnResult:
         data = asdict(self)
         data["turn_intent"] = self.turn_intent.to_dict()
         data["context_manifest"] = self.context_manifest.to_dict()
-        data["reuse_decisions"] = [decision.to_dict() for decision in self.reuse_decisions]
-        data["memory_proposals"] = [proposal.to_dict() for proposal in self.memory_proposals]
+        data["memory_proposals"] = [
+            proposal.to_dict() for proposal in self.memory_proposals
+        ]
         data["run_request"] = self.run_request.to_dict() if self.run_request else None
-        data["clarification"] = self.clarification.to_dict() if self.clarification else None
+        data["interaction_response"] = (
+            self.interaction_response.to_dict() if self.interaction_response else None
+        )
         return data
 
 
@@ -429,85 +443,3 @@ class ThreadState:
     pending_clarification_topic_id: Optional[str] = None
     pending_clarification_id: str = ""
     turns: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ResultRefRecord:
-    topic_id: str
-    result_ref: str
-    snapshot_id: str
-    contract_version: str
-    semantic_scope: str
-    payload: Mapping[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["payload"] = canonical_value(self.payload)
-        return data
-
-
-def sign_result_reuse_candidate(payload: Mapping[str, Any]) -> dict[str, Any]:
-    unsigned = canonical_value(dict(payload))
-    unsigned.pop("candidate_signature", None)
-    signed = {**unsigned, "candidate_signature": canonical_digest(unsigned)}
-    return validate_result_reuse_candidate(signed)
-
-
-def validate_result_reuse_candidate(payload: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = canonical_value(dict(payload))
-    if set(normalized) != set(RESULT_REUSE_CANDIDATE_FIELDS):
-        raise EvidenceIntegrityError("result_candidate_payload_shape_invalid")
-    if normalized.get("schema_version") != RESULT_REUSE_CANDIDATE_SCHEMA_VERSION:
-        raise EvidenceIntegrityError("result_candidate_schema_version_invalid")
-    scalar_fields = set(RESULT_REUSE_CANDIDATE_FIELDS) - set(
-        _RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS
-    )
-    for field_name in scalar_fields:
-        if not isinstance(normalized.get(field_name), str) or not normalized[field_name]:
-            raise EvidenceIntegrityError(
-                f"result_candidate_field_invalid:{field_name}"
-            )
-    for field_name in _RESULT_REUSE_CANDIDATE_SEQUENCE_FIELDS:
-        values = normalized.get(field_name)
-        if (
-            not isinstance(values, list)
-            or not values
-            or any(not isinstance(value, str) or not value for value in values)
-        ):
-            raise EvidenceIntegrityError(
-                f"result_candidate_field_invalid:{field_name}"
-            )
-    snapshot_lengths = {
-        len(normalized[field_name])
-        for field_name in (
-            "source_snapshot_refs",
-            "source_snapshot_record_refs",
-            "source_snapshot_record_digests",
-            "source_release_refs",
-            "source_release_authority_refs",
-            "source_schema_fingerprints",
-        )
-    }
-    if len(snapshot_lengths) != 1:
-        raise EvidenceIntegrityError("result_candidate_snapshot_alignment_invalid")
-    if len(normalized["completeness_record_refs"]) != len(
-        normalized["completeness_record_digests"]
-    ):
-        raise EvidenceIntegrityError("result_candidate_completeness_alignment_invalid")
-    if len(normalized["binding_record_refs"]) != len(
-        normalized["binding_record_digests"]
-    ):
-        raise EvidenceIntegrityError("result_candidate_binding_alignment_invalid")
-    unsigned = dict(normalized)
-    actual_signature = unsigned.pop("candidate_signature")
-    if actual_signature != canonical_digest(unsigned):
-        raise EvidenceIntegrityError("result_candidate_signature_invalid")
-    return normalized
-
-
-@dataclass(frozen=True)
-class ArtifactRef:
-    artifact_id: str
-    topic_id: str
-    follow_up_context: str
-    snapshot_id: str

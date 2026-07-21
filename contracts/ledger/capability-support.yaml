@@ -29,9 +29,7 @@ capabilities:
   - outlier_contribution
   - segment_bridge
   - segment_contribution
-  - driver_decomposition
   - data_quality_check
-  - answer_verify
 
 state_visibility:
   missing_contract: Support records use backlog_refs.
@@ -483,7 +481,7 @@ support_records:
     capability: data_quality_check
     grain:
       - contract_review
-      - claim_group
+      - claim
     claim_type: materiality_threshold_coverage
     business_evidence_state: quantifiable
     data_contract_state: contract_backed
@@ -512,124 +510,4 @@ support_records:
     limitation_refs:
       - raw_identifier_output_limit
     wording_limit_reason: The reviewed boundary can be reported as context; raw user or order identifier output and individual-user claims stay blocked.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_paid_amount_change
-    factor_group_id: paid_amount_metric_source
-    question_family: paid_amount_change_explanation
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify creates no new evidence; it blocks paid_amount change claims that exceed contract, evidence, or backlog limits.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_pattern
-    factor_group_id: paid_amount_metric_source
-    question_family: pattern_explanation
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks recurring-pattern claims without recurrence, exception, data-quality, and wording support.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_business_object_impact
-    factor_group_id: product_operation_events
-    question_family: business_object_impact_review
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks impact, ROI, ROAS, CPA, net impact, and causal wording without event, spend, exposure, control, and evidence support.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_revenue_health
-    factor_group_id: payment_order_metric_chain
-    question_family: revenue_health_review
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks health judgments that hide metric, quality, restricted-output, source-access, or contract limitations.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_segment_attribution
-    factor_group_id: payment_channel_and_method
-    question_family: segment_or_factor_attribution
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks attribution wording that exceeds supported segment grain, fixed output-safety, sparsity, or evidence strength.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_anomaly_black_swan
-    factor_group_id: external_context_events
-    question_family: anomaly_or_black_swan_review
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks black-swan or anomaly-cause wording without sufficient evidence and event support.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_custom_baseline
-    factor_group_id: paid_amount_metric_source
-    question_family: custom_baseline_comparison
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify blocks baseline conclusions that omit comparability, time semantics, or degraded paths.
-    review_status: draft_pending_owner_review
-
-  - support_id: verify_quality_review
-    factor_group_id: paid_amount_metric_source
-    question_family: data_quality_or_evidence_review
-    capability: answer_verify
-    grain:
-      - claim_group
-    claim_type: final_claim_boundary_check
-    business_evidence_state: contextual_evidence
-    data_contract_state: contract_backed
-    evidence_type: insufficient
-    strength: insufficient
-    wording_limit: blocked
-    wording_limit_reason: answer_verify checks that trust judgments name affected scope, blocked claims, and upgrade paths.
     review_status: draft_pending_owner_review

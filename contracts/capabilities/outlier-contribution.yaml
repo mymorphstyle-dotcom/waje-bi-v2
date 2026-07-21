@@ -4,9 +4,9 @@ business_name: Outlier contribution
 review_status: draft
 
 responsibilities:
-  - Check whether a small number of days, weeks, or periods explains a large share of movement.
-  - Quantify top positive and negative period contribution under the requested comparison.
-  - Separate concentrated-period contribution from stable pattern evidence.
+  - Check whether a small number of target days explains a large share of movement against the baseline daily mean.
+  - Quantify positive and negative target-day sensitivity without pairing unrelated calendar dates.
+  - Separate concentrated-day sensitivity from stable pattern evidence.
 
 parameters:
   required:
@@ -41,16 +41,22 @@ evidence_outputs:
     - top_negative_periods
     - top_positive_share
     - concentrated_in_top_periods
-    - paired_periods
+    - target_period_count
+    - baseline_period_count
+    - baseline_daily_mean
+    - target_actual
+    - target_expected_from_baseline_mean
     - total_delta
+    - sensitivity_method
 
 limitations:
-  - Too few paired periods degrade the result.
+  - Missing target or baseline daily observations block the result.
+  - The sensitivity uses the baseline daily mean and does not assert date-level counterfactual matching.
   - Concentration evidence supports exception wording, not stable-pattern wording.
   - External event evidence is required to explain why outliers happened.
 
 degradation_rules:
-  - when: insufficient_paired_periods
+  - when: target_or_baseline_daily_observations_missing
     output: insufficient outlier contribution wording.
   - when: no_positive_delta
     output: report no positive movement to attribute.

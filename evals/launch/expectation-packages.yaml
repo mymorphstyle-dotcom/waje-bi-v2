@@ -1,11 +1,11 @@
 version: "0.1"
 artifact: launch_eval_expectation_packages
-scope: Phase 2 launch eval design input for graph compiler, Answer Package, verifier, and Phase 3 semantic evidence prep.
+scope: Single-authority launch eval input for intent, authoritative plan, evidence, claim settlement, verifier, and customer publication.
 source_refs:
   - docs/prd.md
-  - docs/product-decisions.md
-  - docs/phase-2-graph-compiler-prep.md
+  - docs/adr/2026-07-17-single-authority-agent-workflow.md
   - contracts/ledger/capability-support.yaml
+  - contracts/authorities/answer-verify.yaml
   - contracts/backlog/missing-contracts.yaml
 source_pools:
   - real_user_questions
@@ -40,6 +40,7 @@ expectation_packages:
       - pattern_scan
       - event_evidence
       - outlier_scan
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - formula_decompose
@@ -48,7 +49,7 @@ expectation_packages:
     forbidden_capabilities: []
     expected_compiler_actions:
       - outcome: auto_repair
-        reason: add data_quality_check, contract pins, current-data snapshot, cumulative-value guard, materiality guard, and answer_verify.
+        reason: add data_quality_check, contract pins, current-data snapshot, cumulative-value guard, materiality guard, and enforce the answer_verify completion authority.
       - outcome: degrade
         reason: time-boundary and current-data limitations must flow through timezone_policy until fully executable source-time rules are reviewed.
       - outcome: block
@@ -124,7 +125,7 @@ expectation_packages:
           evidence_type: candidate_mechanism
           strength: low
           wording_limit: candidate
-      answer_package_handoff:
+      publication_handoff:
         - pattern_claims_require_tested_window_evidence_refs
         - cumulative_value_path_refs_block_claim
         - payday_claim_stays_candidate_mechanism
@@ -135,10 +136,10 @@ expectation_packages:
         - over_strong_weak_evidence
         - hidden_data_gap
       system_responsibility_points:
-        - LLM_reasoner
-        - graph_compiler
-        - answer_verifier
-        - visualization_planner
+        - intent_planner_llm
+        - plan_admission_compiler
+        - answer_completion_authority
+        - publication_projection
 
   - case_id: LE-002
     title: Weekly operating paid_amount change explanation
@@ -158,6 +159,7 @@ expectation_packages:
       - data_quality_check
       - formula_decompose
       - segment_bridge
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - pattern_scan
@@ -169,7 +171,7 @@ expectation_packages:
       - outcome: accept
         reason: metric source quality, formula, and supported segment paths are legitimate compile routes when params bind to contracts.
       - outcome: auto_repair
-        reason: add current-data snapshot, contract pins, materiality guard, and verifier node.
+        reason: add current-data snapshot, contract pins, materiality guard, and the answer_verify completion-authority requirement.
       - outcome: targeted_repair
         reason: unclear baseline or target claim gets bounded repair or question tool.
       - outcome: degrade
@@ -258,7 +260,7 @@ expectation_packages:
             - channel_payment_dimension_contracts
             - product_operation_event_contracts
             - exposure_control_contracts
-      answer_package_handoff:
+      publication_handoff:
         - formula_numbers_bind_evidence_refs_and_reconciliation
         - contribution_wording_stays_separate_from_cause_wording
         - operation_gap_path_refs_are_visible
@@ -269,11 +271,11 @@ expectation_packages:
         - over_strong_weak_evidence
         - hidden_data_gap
       system_responsibility_points:
-        - LLM_reasoner
-        - graph_compiler
-        - semantic_compiler
-        - evidence_reducer
-        - answer_verifier
+        - intent_planner_llm
+        - plan_admission_compiler
+        - query_contract_compiler
+        - claim_settlement
+        - answer_completion_authority
 
   - case_id: LE-003
     title: Recharge activity impact review with missing operation contracts
@@ -293,6 +295,7 @@ expectation_packages:
     required_capabilities:
       - event_evidence
       - data_quality_check
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - formula_decompose
@@ -352,7 +355,7 @@ expectation_packages:
           limitation_refs:
             - product_operation_event_contracts
             - exposure_control_contracts
-      answer_package_handoff:
+      publication_handoff:
         - confirmed_net_impact_claim_is_blocked
         - campaign_roi_roas_cpa_claims_are_blocked_without_spend_exposure_control_contracts
         - missing_event_exposure_control_refs_enter_limitation
@@ -364,10 +367,10 @@ expectation_packages:
         - wrong_scope
         - over_strong_weak_evidence
       system_responsibility_points:
-        - LLM_reasoner
-        - graph_compiler
-        - semantic_compiler
-        - answer_verifier
+        - intent_planner_llm
+        - plan_admission_compiler
+        - query_contract_compiler
+        - answer_completion_authority
 
   - case_id: LE-004
     title: Recent paid_amount health review
@@ -387,6 +390,7 @@ expectation_packages:
       - data_quality_check
       - formula_decompose
       - outlier_scan
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - segment_bridge
@@ -469,9 +473,9 @@ expectation_packages:
           evidence_type: statistical_association
           strength: insufficient
           wording_limit: insufficient
-      answer_package_handoff:
+      publication_handoff:
         - health_judgment_binds_baseline_and_evidence_refs
-        - data_risk_claim_group_is_separate_when_quality_limits_apply
+        - data_risk_boundary_claim_is_separate_when_quality_limits_apply
         - component_and_incident_gap_refs_are_visible
     failure_attribution:
       business_failure_types:
@@ -479,11 +483,11 @@ expectation_packages:
         - hidden_data_gap
         - misleading_visualization
       system_responsibility_points:
-        - graph_compiler
-        - semantic_compiler
-        - evidence_reducer
-        - answer_verifier
-        - visualization_planner
+        - plan_admission_compiler
+        - query_contract_compiler
+        - claim_settlement
+        - answer_completion_authority
+        - publication_projection
 
   - case_id: LE-005
     title: Channel and payment-method segment attribution
@@ -503,6 +507,7 @@ expectation_packages:
       - data_quality_check
       - segment_bridge
       - joint_attribution
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - formula_decompose
@@ -586,7 +591,7 @@ expectation_packages:
           wording_limit: candidate
           limitation_refs:
             - geo_device_environment_quality_policy
-      answer_package_handoff:
+      publication_handoff:
         - attribution_claims_bind_scope_grain_and_evidence_refs
         - raw_user_and_order_identifier_output_is_blocked
         - restricted_output_path_refs_are_visible_when_relevant
@@ -597,11 +602,11 @@ expectation_packages:
         - over_strong_weak_evidence
         - misleading_visualization
       system_responsibility_points:
-        - graph_compiler
-        - semantic_compiler
+        - plan_admission_compiler
+        - query_contract_compiler
         - restricted_output_policy
-        - answer_verifier
-        - visualization_planner
+        - answer_completion_authority
+        - publication_projection
 
   - case_id: LE-006
     title: Anomaly and black-swan review without raw external crawling
@@ -621,6 +626,7 @@ expectation_packages:
       - data_quality_check
       - outlier_scan
       - event_evidence
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - segment_bridge
@@ -701,7 +707,7 @@ expectation_packages:
           wording_limit: blocked
           limitation_refs:
             - raw_external_ingestion_phase1_scope
-      answer_package_handoff:
+      publication_handoff:
         - anomaly_claims_bind_baseline_and_quality_refs
         - black_swan_claim_stays_candidate_or_context
         - raw_external_path_refs_block_final_claim_and_visual
@@ -711,10 +717,10 @@ expectation_packages:
         - hidden_data_gap
         - unsupported_main_conclusion
       system_responsibility_points:
-        - LLM_reasoner
-        - graph_compiler
-        - semantic_compiler
-        - answer_verifier
+        - intent_planner_llm
+        - plan_admission_compiler
+        - query_contract_compiler
+        - answer_completion_authority
 
   - case_id: LE-007
     title: Custom first-ten-days baseline comparison
@@ -734,6 +740,7 @@ expectation_packages:
       - data_quality_check
       - pattern_scan
       - formula_decompose
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - segment_bridge
@@ -819,7 +826,7 @@ expectation_packages:
           strength: insufficient
           wording_limit: insufficient
           numeric_reconciliation: required_with_limitation
-      answer_package_handoff:
+      publication_handoff:
         - baseline_windows_bind_semantic_query_refs
         - cumulative_value_misuse_blocks_or_repairs_before_claim
         - formula_numbers_require_reconciliation_or_visible_limitation
@@ -829,10 +836,10 @@ expectation_packages:
         - hidden_data_gap
         - over_strong_weak_evidence
       system_responsibility_points:
-        - LLM_reasoner
-        - graph_compiler
-        - semantic_compiler
-        - answer_verifier
+        - intent_planner_llm
+        - plan_admission_compiler
+        - query_contract_compiler
+        - answer_completion_authority
 
   - case_id: LE-008
     title: Evidence trust and contract coverage review
@@ -844,10 +851,11 @@ expectation_packages:
       target_metric: paid_amount
       scope: referenced_claim_or_current_thread
       time_range: inherited_from_claim_or_user_question
-      grain: claim_group
+      grain: claim
       baseline: inherited_when_claim_is_comparative
     required_capabilities:
       - data_quality_check
+    required_completion_authorities:
       - answer_verify
     optional_capabilities:
       - pattern_scan
@@ -859,7 +867,7 @@ expectation_packages:
     forbidden_capabilities: []
     expected_compiler_actions:
       - outcome: accept
-        reason: quality and verifier review can compile directly against accepted graph, contracts, and evidence refs.
+        reason: data-quality review can compile from the active PlanRevision; answer_verify then closes the ClaimGraph against contracts and evidence refs.
       - outcome: block
         reason: missing evidence refs, missing-contract without backlog, raw identifiers, and unsupported main claims cannot publish.
       - outcome: degrade
@@ -924,7 +932,7 @@ expectation_packages:
           support_id: dq_contract_coverage_review
           semantic_query_status: accepted_against_existing_graph_or_claim
           required_bindings:
-            - referenced_claim_group_or_current_thread
+            - referenced_claim_or_current_thread
             - contract_version_pins
             - current_data_snapshot
             - disabled_degraded_blocked_path_refs
@@ -952,7 +960,7 @@ expectation_packages:
           wording_limit: context
           limitation_refs:
             - raw_identifier_output_limit
-      answer_package_handoff:
+      publication_handoff:
         - every_reviewed_claim_binds_evidence_refs
         - blocked_claim_paths_do_not_publish
         - missing_contract_and_restricted_output_limits_are_visible_without_promoting_gaps
@@ -962,7 +970,7 @@ expectation_packages:
         - unsupported_main_conclusion
         - restricted_output_leak
       system_responsibility_points:
-        - graph_compiler
-        - evidence_reducer
-        - answer_verifier
+        - plan_admission_compiler
+        - claim_settlement
+        - answer_completion_authority
         - restricted_output_policy

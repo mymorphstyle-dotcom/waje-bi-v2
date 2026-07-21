@@ -362,10 +362,24 @@ formula_components:
     contract_state: evidence_linked
     role: count
 
+formula_ast_contract:
+  version: formula-ast-v1
+  absolute_tolerance: 1.0e-9
+  relative_tolerance: 1.0e-9
+
 decomposition_paths:
   - path_id: paid_dau_arpu
     ssot_node_id: e01560709518ecd63e8d093985541075
     expression: paid_amount = paid_dau * paid_dau_arpu
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: paid_dau}
+          - {op: metric, metric_id: paid_dau_arpu}
     evidence_type: accounting_contribution
     requires_components:
       - paid_dau
@@ -386,6 +400,16 @@ decomposition_paths:
   - path_id: paid_user_arppu
     ssot_node_id: 2ba635b7fc42ce997a777af0aef22d9f
     expression: paid_amount = paid_dau * paid_user_conversion_rate * paid_amount_per_paid_user
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: paid_dau}
+          - {op: metric, metric_id: paid_user_conversion_rate}
+          - {op: metric, metric_id: paid_amount_per_paid_user}
     evidence_type: accounting_contribution
     requires_components:
       - paid_dau
@@ -410,6 +434,17 @@ decomposition_paths:
   - path_id: new_user_funnel_dashboard
     ssot_node_id: 882c4c534d4d165796562109beb068da
     expression: dashboard_funnel_components = new_users, registrations, registration_rate_new_base, first_pay_users, first_pay_rate_new_base, same_day_new_paid_users, same_day_new_paid_rate
+    source_ast:
+      op: relationship
+      relation: collection
+      inputs:
+        - {op: metric, metric_id: new_users}
+        - {op: metric, metric_id: registrations}
+        - {op: metric, metric_id: registration_rate_new_base}
+        - {op: metric, metric_id: first_pay_users}
+        - {op: metric, metric_id: first_pay_rate_new_base}
+        - {op: metric, metric_id: same_day_new_paid_users}
+        - {op: metric, metric_id: same_day_new_paid_rate}
     evidence_type: accounting_contribution
     requires_components:
       - new_users
@@ -439,6 +474,17 @@ decomposition_paths:
   - path_id: frequency_ticket_size
     ssot_node_id: 9b7c5bb205584cffddef346dfc54c38b
     expression: paid_amount = paid_dau * paid_user_conversion_rate * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: paid_dau}
+          - {op: metric, metric_id: paid_user_conversion_rate}
+          - {op: metric, metric_id: payment_frequency_per_paid_user}
+          - {op: metric, metric_id: avg_paid_amount_per_payment}
     evidence_type: accounting_contribution
     requires_components:
       - paid_dau
@@ -454,6 +500,16 @@ decomposition_paths:
     runtime_projection:
       target_metric: paid_amount
       runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
+      runtime_ast:
+        op: relationship
+        relation: equals
+        left: {op: metric, metric_id: paid_amount}
+        right:
+          op: multiply
+          args:
+            - {op: metric, metric_id: paid_users}
+            - {op: metric, metric_id: paid_frequency}
+            - {op: metric, metric_id: avg_order_amount}
       requires_components:
         - paid_user_count
         - payment_frequency_per_paid_user
@@ -465,6 +521,14 @@ decomposition_paths:
   - path_id: region_sum
     ssot_node_id: 34d9c39ebe6b3c9e5a4034411a58e4d6
     expression: paid_amount = sum(paid_amount by region)
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: sum_by
+        dimension_id: region
+        expression: {op: metric, metric_id: paid_amount}
     evidence_type: accounting_contribution
     requires_dimensions:
       - region
@@ -484,6 +548,14 @@ decomposition_paths:
   - path_id: device_sum
     ssot_node_id: 21be18da5198d1d5d012873a1fcf4808
     expression: paid_amount = sum(paid_amount by device_model)
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: sum_by
+        dimension_id: device_model
+        expression: {op: metric, metric_id: paid_amount}
     evidence_type: accounting_contribution
     requires_dimensions:
       - device_model
@@ -503,6 +575,15 @@ decomposition_paths:
   - path_id: paid_dau_first_pay_retention
     ssot_node_id: 16c91789eebf307d4e4ce97bbc07797b
     expression: paid_dau = first_pay_users + previous_paid_dau_retained_users
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_dau}
+      right:
+        op: add
+        args:
+          - {op: metric, metric_id: first_pay_users}
+          - {op: metric, metric_id: previous_paid_dau_retained_users}
     evidence_type: accounting_contribution
     requires_components:
       - first_pay_users
@@ -521,6 +602,14 @@ decomposition_paths:
   - path_id: avg_order_amount_identity
     ssot_node_id: cfd21a9008583879867471bc21fc0271
     expression: avg_paid_amount_per_payment = paid_amount / paid_order_count
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: avg_paid_amount_per_payment}
+      right:
+        op: divide
+        left: {op: metric, metric_id: paid_amount}
+        right: {op: metric, metric_id: paid_order_count}
     evidence_type: accounting_contribution
     requires_components:
       - paid_amount
@@ -539,6 +628,15 @@ decomposition_paths:
   - path_id: payment_success_chain
     ssot_node_id: ceba4f72086e02d7902722f407a673b1
     expression: paid_order_count = initiated_payment_count * payment_success_rate
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_order_count}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: initiated_payment_count}
+          - {op: metric, metric_id: payment_success_rate}
     evidence_type: accounting_contribution
     requires_components:
       - initiated_payment_count
@@ -557,6 +655,15 @@ decomposition_paths:
   - path_id: previous_paid_dau_retention
     ssot_node_id: 2005ff7adbf186ac07ecc9565fbb5da9
     expression: previous_paid_dau_retained_users = previous_paid_dau * previous_paid_dau_retention_rate
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: previous_paid_dau_retained_users}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: previous_paid_dau}
+          - {op: metric, metric_id: previous_paid_dau_retention_rate}
     evidence_type: accounting_contribution
     requires_components:
       - previous_paid_dau
@@ -575,6 +682,14 @@ decomposition_paths:
   - path_id: paid_user_conversion_identity
     ssot_node_id: 2b5fdcf0e59d1b940f887a21bf128004
     expression: paid_user_conversion_rate = paid_user_count / paid_dau
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_user_conversion_rate}
+      right:
+        op: divide
+        left: {op: metric, metric_id: paid_user_count}
+        right: {op: metric, metric_id: paid_dau}
     evidence_type: accounting_contribution
     requires_components:
       - paid_user_count
@@ -593,6 +708,14 @@ decomposition_paths:
   - path_id: paid_frequency_identity
     ssot_node_id: 058de25c67739e82efa3e6195b1cdfda
     expression: payment_frequency_per_paid_user = paid_order_count / paid_user_count
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: payment_frequency_per_paid_user}
+      right:
+        op: divide
+        left: {op: metric, metric_id: paid_order_count}
+        right: {op: metric, metric_id: paid_user_count}
     evidence_type: accounting_contribution
     requires_components:
       - paid_order_count
@@ -611,6 +734,18 @@ decomposition_paths:
   - path_id: paid_amount_gameplay_sum
     ssot_node_id: e57d88831a2369589f6b531b8c2a8786
     expression: paid_amount ~= sum(gameplay_active_users * gameplay_arpu by gameplay)
+    source_ast:
+      op: relationship
+      relation: approximately_equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: sum_by
+        dimension_id: gameplay
+        expression:
+          op: multiply
+          args:
+            - {op: metric, metric_id: gameplay_active_users}
+            - {op: metric, metric_id: gameplay_arpu}
     evidence_type: statistical_association
     requires_components:
       - gameplay_active_users
@@ -632,6 +767,16 @@ decomposition_paths:
   - path_id: gameplay_paid_amount_arppu
     ssot_node_id: dcf8e5311ba0156a44926cdd132021a9
     expression: gameplay_paid_amount = gameplay_active_users * gameplay_paid_rate * gameplay_amount_per_paid_user
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: gameplay_paid_amount}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: gameplay_active_users}
+          - {op: metric, metric_id: gameplay_paid_rate}
+          - {op: metric, metric_id: gameplay_amount_per_paid_user}
     evidence_type: accounting_contribution
     requires_components:
       - gameplay_active_users
@@ -652,6 +797,17 @@ decomposition_paths:
   - path_id: gameplay_frequency_ticket_size
     ssot_node_id: a7ab2b44f3b98f2cdead795e72354490
     expression: gameplay_paid_amount = gameplay_active_users * gameplay_paid_rate * gameplay_paid_frequency * gameplay_avg_paid_amount
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: gameplay_paid_amount}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: gameplay_active_users}
+          - {op: metric, metric_id: gameplay_paid_rate}
+          - {op: metric, metric_id: gameplay_paid_frequency}
+          - {op: metric, metric_id: gameplay_avg_paid_amount}
     evidence_type: accounting_contribution
     requires_components:
       - gameplay_active_users
@@ -674,6 +830,15 @@ decomposition_paths:
   - path_id: gameplay_active_exposure_click
     ssot_node_id: b2881f5daa33a482f24b4defd7d1f548
     expression: gameplay_active_users = gameplay_icon_exposures * gameplay_icon_click_rate
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: gameplay_active_users}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: gameplay_icon_exposures}
+          - {op: metric, metric_id: gameplay_icon_click_rate}
     evidence_type: accounting_contribution
     requires_components:
       - gameplay_icon_exposures
@@ -692,6 +857,12 @@ decomposition_paths:
   - path_id: gameplay_icon_position_mechanism
     ssot_node_id: 9d4f5f07a6b03970bfbf9442428ff524
     expression: gameplay_icon_exposures may vary with gameplay_icon_position
+    source_ast:
+      op: relationship
+      relation: may_vary_with
+      inputs:
+        - {op: metric, metric_id: gameplay_icon_exposures}
+        - {op: dimension, dimension_id: gameplay_icon_position}
     evidence_type: candidate_mechanism
     requires_components:
       - gameplay_icon_exposures
@@ -712,6 +883,20 @@ decomposition_paths:
   - path_id: ggr_gameplay_sum
     ssot_node_id: 777939ef030eb92e5a720f3ed56eed76
     expression: ggr = sum(gameplay_turnover * (1 - gameplay_payout_rate) by gameplay)
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: ggr}
+      right:
+        op: sum_by
+        dimension_id: gameplay
+        expression:
+          op: multiply
+          args:
+            - {op: metric, metric_id: gameplay_turnover}
+            - op: subtract
+              left: {op: const, value: 1}
+              right: {op: metric, metric_id: gameplay_payout_rate}
     evidence_type: accounting_contribution
     requires_components:
       - gameplay_turnover
@@ -734,6 +919,16 @@ decomposition_paths:
   - path_id: gameplay_turnover_components
     ssot_node_id: c8d405e80d9a6e9bbde1a2c42facbdfa
     expression: gameplay_turnover = gameplay_active_users * bets_per_active_user * avg_bet_amount
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: gameplay_turnover}
+      right:
+        op: multiply
+        args:
+          - {op: metric, metric_id: gameplay_active_users}
+          - {op: metric, metric_id: bets_per_active_user}
+          - {op: metric, metric_id: avg_bet_amount}
     evidence_type: accounting_contribution
     requires_components:
       - gameplay_active_users
@@ -754,6 +949,14 @@ decomposition_paths:
   - path_id: hour_sum
     ssot_node_id: 9de2f481297fb95286bfa2e531be42b7
     expression: paid_amount = sum(paid_amount by business_hour)
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: sum_by
+        dimension_id: business_hour
+        expression: {op: metric, metric_id: paid_amount}
     evidence_type: accounting_contribution
     requires_dimensions:
       - business_hour
@@ -773,6 +976,14 @@ decomposition_paths:
   - path_id: recharge_tier_sum
     ssot_node_id: c11cfc32396526335d3124f92ec45dd3
     expression: paid_amount = sum(paid_amount by recharge_tier)
+    source_ast:
+      op: relationship
+      relation: equals
+      left: {op: metric, metric_id: paid_amount}
+      right:
+        op: sum_by
+        dimension_id: recharge_tier
+        expression: {op: metric, metric_id: paid_amount}
     evidence_type: accounting_contribution
     requires_dimensions:
       - recharge_tier

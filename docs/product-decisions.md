@@ -1,6 +1,16 @@
 # WAJE BI v2 Product Decisions
 
-This file records confirmed product and architecture decisions from planning discussions.
+Status: historical planning log.
+
+This file records decisions from earlier planning discussions. Entries that use
+superseded workflow objects, capability identities, or persistence models are
+retained only as decision history. They do not define current runtime behavior.
+Current product authority lives in [the PRD](./prd.md); current workflow authority
+lives in [the accepted single-authority ADR](./adr/2026-07-17-single-authority-agent-workflow.md).
+
+As of 2026-07-18, `answer_verify` is a completion authority defined in
+`contracts/authorities/answer-verify.yaml`. It is excluded from executable
+capability cards, planning axes, and capability tasks.
 
 ## PRD Interview Log
 
@@ -1549,7 +1559,7 @@ Example command:
   "add_dimension": "user_type",
   "reason": "Residuals concentrate in first-payment users after channel/payment_method split.",
   "capability": "joint_attribution",
-  "required_checks": ["sample_size", "sparse_cells", "metric_compatibility", "runtime_budget"]
+  "required_checks": ["sample_size", "sparse_cells", "metric_compatibility", "exploration_budget_policy"]
 }
 ```
 

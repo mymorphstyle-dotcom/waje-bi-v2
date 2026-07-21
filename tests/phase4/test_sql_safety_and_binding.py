@@ -2,6 +2,8 @@ import os
 import unittest
 from unittest.mock import patch
 
+from clickhouse_connect.driver.exceptions import OperationalError
+
 from bi_agent.runtime.sql_safety import validate_select_only
 from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime
 
@@ -22,7 +24,7 @@ class FakeClient:
 
 class FakeFailingClient:
     def query(self, sql, **kwargs):
-        raise RuntimeError("connection failed")
+        raise OperationalError("connection failed")
 
 
 class FakeNoQueryIdClient:
@@ -30,7 +32,13 @@ class FakeNoQueryIdClient:
         self.queries = []
 
     def query(self, sql, *, parameters=None, settings=None):
-        self.queries.append(sql)
+        self.queries.append(
+            {
+                "sql": sql,
+                "parameters": parameters,
+                "settings": settings,
+            }
+        )
         return FakeQueryResult()
 
 
@@ -42,8 +50,7 @@ class FakeRejectedRequiredKwargClient:
     def query(self, sql, **kwargs):
         self.calls.append((sql, kwargs))
         raise TypeError(
-            "query() got an unexpected keyword argument "
-            f"'{self.rejected_kwarg}'"
+            f"query() got an unexpected keyword argument '{self.rejected_kwarg}'"
         )
 
 
@@ -70,32 +77,28 @@ class FakeBreakClient:
 
 
 class SqlSafetyAndBindingTest(unittest.TestCase):
-    def test_required_parameters_and_settings_fail_closed_without_retry(self):
+    def test_driver_signature_mismatch_propagates_without_retry(self):
         for rejected_kwarg in ("parameters", "settings"):
             with self.subTest(rejected_kwarg=rejected_kwarg):
                 client = FakeRejectedRequiredKwargClient(rejected_kwarg)
                 runtime = ClickHouseRuntime(client=client)
 
-                result = runtime.aggregate(
-                    "SELECT count() FROM paid_success WHERE status = %(status)s",
-                    query_id="required-kwargs",
-                    parameters={"status": "paid"},
-                    settings={"readonly": 2},
-                )
-
-                self.assertFalse(result.ok)
-                self.assertEqual(
-                    result.reason,
-                    f"clickhouse_required_kwarg_unsupported:{rejected_kwarg}",
-                )
-                self.assertEqual(result.provider_stats["unsupported_kwarg"], rejected_kwarg)
+                with self.assertRaisesRegex(TypeError, "unexpected keyword argument"):
+                    runtime.aggregate(
+                        "SELECT count() FROM paid_success WHERE status = %(status)s",
+                        query_id="required-kwargs",
+                        parameters={"status": "paid"},
+                        settings={"readonly": 2},
+                    )
                 self.assertEqual(len(client.calls), 1)
 
     def test_broad_settings_type_error_is_not_a_compatibility_signal(self):
         client = FakeBroadSettingsTypeErrorClient()
         runtime = ClickHouseRuntime(client=client)
 
-        with self.assertRaisesRegex(TypeError, "unsupported parameter type in settings"):
+        with self.assertRaisesRegex(
+            TypeError, "unsupported parameter type in settings"
+        ):
             runtime.aggregate(
                 "SELECT count() FROM paid_success",
                 query_id="broad-type-error",
@@ -161,7 +164,9 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
             self.assertTrue(result.reason)
 
     def test_aggregate_query_can_skip_limit_when_marked(self):
-        result = validate_select_only("SELECT count(*) FROM paid_success", aggregate=True)
+        result = validate_select_only(
+            "SELECT count(*) FROM paid_success", aggregate=True
+        )
         self.assertTrue(result.ok)
         self.assertTrue(result.query_hash)
 
@@ -211,7 +216,9 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         self.assertEqual(result.reason, "aggregate_shape_required")
 
     def test_comments_are_stripped_before_select_check(self):
-        result = validate_select_only("-- inspection query\nSELECT * FROM paid_success LIMIT 1")
+        result = validate_select_only(
+            "-- inspection query\nSELECT * FROM paid_success LIMIT 1"
+        )
         self.assertTrue(result.ok)
 
     def test_missing_clickhouse_env_returns_binding_failure(self):
@@ -270,7 +277,10 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
                 "SELECT count(*) FROM paid_success",
             ],
         )
-        self.assertEqual(client.queries[-1][1]["query_id"], "phase4_test")
+        self.assertEqual(
+            client.queries[-1][1]["settings"]["query_id"],
+            "phase4_test",
+        )
 
     def test_clickhouse_query_failure_preserves_hash_and_query_id(self):
         runtime = ClickHouseRuntime(
@@ -288,11 +298,11 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         )
 
         self.assertFalse(result.ok)
-        self.assertEqual(result.reason, "clickhouse_query_failed")
+        self.assertEqual(result.reason, "transient_clickhouse:operational_error")
         self.assertTrue(result.query_hash)
         self.assertEqual(result.query_id, "phase4_failure")
 
-    def test_client_without_query_id_support_still_runs_query(self):
+    def test_query_id_uses_the_current_clickhouse_transport_setting_contract(self):
         client = FakeNoQueryIdClient()
         runtime = ClickHouseRuntime(
             host="localhost",
@@ -305,12 +315,21 @@ class SqlSafetyAndBindingTest(unittest.TestCase):
         )
 
         result = runtime.aggregate(
-            "SELECT count(*) FROM paid_success", query_id="phase4_compat"
+            "SELECT count(*) FROM paid_success",
+            query_id="phase4_transport",
+            settings={"query_id": "caller_supplied_id", "readonly": 2},
         )
 
         self.assertTrue(result.ok)
-        self.assertEqual(client.queries, ["SELECT count(*) FROM paid_success"])
-        self.assertEqual(result.query_id, "phase4_compat")
+        self.assertEqual(len(client.queries), 1)
+        self.assertEqual(
+            client.queries[0]["settings"],
+            {
+                "query_id": "phase4_transport",
+                "readonly": 2,
+                "result_overflow_mode": "throw",
+            },
+        )
 
     def test_sample_rows_has_small_limit_cap(self):
         runtime = ClickHouseRuntime(client=FakeClient())

@@ -84,9 +84,7 @@ def cross_source_association(
     }
     estimates: list[dict[str, Any]] = []
     for candidate_key in candidates:
-        candidate = tuple(
-            _number(row.get(candidate_key)) for row in prepared_rows
-        )
+        candidate = tuple(_number(row.get(candidate_key)) for row in prepared_rows)
         candidate_by_transform = {
             transform: _transform(candidate, transform)
             for transform in selected_transforms
@@ -130,8 +128,7 @@ def cross_source_association(
         estimates[index]["fdr_significant"] = q_value <= alpha
         estimates[index]["supported"] = (
             q_value <= alpha
-            and abs(float(estimates[index]["coefficient"]))
-            >= min_abs_correlation
+            and abs(float(estimates[index]["coefficient"])) >= min_abs_correlation
         )
 
     supported = [estimate for estimate in estimates if estimate["supported"]]
@@ -513,9 +510,7 @@ def _rolling_stability(
     }
 
 
-def _correlation(
-    pairs: tuple[tuple[float, float], ...], method: str
-) -> float | None:
+def _correlation(pairs: tuple[tuple[float, float], ...], method: str) -> float | None:
     target = [pair[0] for pair in pairs]
     candidate = [pair[1] for pair in pairs]
     if method == "spearman":
@@ -530,8 +525,7 @@ def _correlation(
     if target_variance <= 0.0 or candidate_variance <= 0.0:
         return None
     coefficient = sum(
-        left * right
-        for left, right in zip(target_deviation, candidate_deviation)
+        left * right for left, right in zip(target_deviation, candidate_deviation)
     ) / sqrt(target_variance * candidate_variance)
     return max(-1.0, min(1.0, coefficient))
 
@@ -558,9 +552,7 @@ def _correlation_p_value(coefficient: float, sample_size: int) -> float:
     if absolute >= 1.0 - 1e-15:
         return 0.0
     degrees_of_freedom = sample_size - 2
-    t_squared = (absolute * absolute * degrees_of_freedom) / (
-        1.0 - absolute * absolute
-    )
+    t_squared = (absolute * absolute * degrees_of_freedom) / (1.0 - absolute * absolute)
     x = degrees_of_freedom / (degrees_of_freedom + t_squared)
     return max(
         0.0,
@@ -573,13 +565,7 @@ def _regularized_incomplete_beta(x: float, a: float, b: float) -> float:
         return 0.0
     if x >= 1.0:
         return 1.0
-    front = exp(
-        lgamma(a + b)
-        - lgamma(a)
-        - lgamma(b)
-        + a * log(x)
-        + b * log(1.0 - x)
-    )
+    front = exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * log(x) + b * log(1.0 - x))
     if x < (a + 1.0) / (a + b + 2.0):
         return front * _beta_continued_fraction(a, b, x) / a
     return 1.0 - front * _beta_continued_fraction(b, a, 1.0 - x) / b
@@ -598,17 +584,15 @@ def _beta_continued_fraction(a: float, b: float, x: float) -> float:
     result = d
     for iteration in range(1, max_iterations + 1):
         twice = 2 * iteration
-        numerator = iteration * (b - iteration) * x / (
-            (qam + twice) * (a + twice)
-        )
+        numerator = iteration * (b - iteration) * x / ((qam + twice) * (a + twice))
         d = 1.0 + numerator * d
         d = minimum if abs(d) < minimum else d
         c = 1.0 + numerator / c
         c = minimum if abs(c) < minimum else c
         d = 1.0 / d
         result *= d * c
-        numerator = -(a + iteration) * (qab + iteration) * x / (
-            (a + twice) * (qap + twice)
+        numerator = (
+            -(a + iteration) * (qab + iteration) * x / ((a + twice) * (qap + twice))
         )
         d = 1.0 + numerator * d
         d = minimum if abs(d) < minimum else d

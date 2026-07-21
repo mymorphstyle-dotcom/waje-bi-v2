@@ -34,9 +34,13 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertEqual(evidence.evidence_type, "statistical_association")
         self.assertEqual(evidence.wording_limit, "candidate")
         self.assertEqual(evidence.result_refs, ("result:dimension-scan",))
-        self.assertEqual(payload["analysis_role"], "auxiliary_localization")
-        self.assertFalse(payload["causal_claim_allowed"])
-        self.assertFalse(payload["formula_contribution_comparable"])
+        interpretation = payload["interpretation_contract"]
+        self.assertEqual(interpretation["analysis_role"], "auxiliary_localization")
+        self.assertEqual(interpretation["causal_interpretation"], "forbidden")
+        self.assertEqual(
+            interpretation["formula_decomposition_relationship"],
+            "co_report_only_no_shared_rank_sum_or_share",
+        )
 
         channel = profiles["channel"]
         self.assertEqual(channel["reconciliation_status"], "passed")
@@ -92,6 +96,89 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertEqual(profile["top_drags"][0]["value"], "D")
         self.assertEqual(profile["displayed_delta"], 10.0)
         self.assertEqual(profile["remainder_delta"], 95.0)
+
+    def test_wildcard_member_is_audited_but_never_localized_as_a_segment(self):
+        evidence = candidate_dimension_screen(
+            {
+                "region": (
+                    {"region": "*", "group": "baseline", "amount": 900, "n": 20},
+                    {"region": "Lagos", "group": "baseline", "amount": 100, "n": 20},
+                    {"region": "*", "group": "target", "amount": 800, "n": 20},
+                    {"region": "Lagos", "group": "target", "amount": 200, "n": 20},
+                ),
+            },
+            overall_by_group={"baseline": 1000, "target": 1000},
+            complete_dimensions=("region",),
+            dimension_labels={"region": "地区"},
+            min_sample_size=10,
+        )
+
+        payload = evidence.typed_payload
+        profile = payload["dimension_profiles"][0]
+
+        self.assertEqual(
+            profile["unknown_bucket"],
+            {"baseline_amount": 900.0, "target_amount": 800.0, "delta": -100.0},
+        )
+        self.assertEqual(profile["non_localizable_member_count"], 1)
+        self.assertEqual(profile["leading_value"], "Lagos")
+        self.assertTrue(payload["dimension_findings"])
+        self.assertTrue(
+            all(
+                item["member"] not in {"*", "Unknown"}
+                for item in payload["dimension_findings"]
+            )
+        )
+
+    def test_mixed_dimension_boundaries_stay_on_their_exact_dimension(self):
+        evidence = candidate_dimension_screen(
+            {
+                "country": (
+                    {"country": "NG", "group": "baseline", "amount": 99, "n": 20},
+                    {"country": "Other", "group": "baseline", "amount": 1, "n": 20},
+                    {"country": "NG", "group": "target", "amount": 108.9, "n": 20},
+                    {"country": "Other", "group": "target", "amount": 1.1, "n": 20},
+                ),
+                "channel": (
+                    {"channel": "A", "group": "baseline", "amount": 80, "n": 20},
+                    {"channel": "B", "group": "baseline", "amount": 20, "n": 20},
+                    {"channel": "A", "group": "target", "amount": 50, "n": 20},
+                    {"channel": "B", "group": "target", "amount": 50, "n": 20},
+                    {"channel": "C", "group": "target", "amount": 10, "n": 5},
+                ),
+                "device": (
+                    {"device": "iOS", "group": "baseline", "amount": 50, "n": 20},
+                    {"device": "Android", "group": "baseline", "amount": 50, "n": 20},
+                    {"device": "iOS", "group": "target", "amount": 70, "n": 20},
+                    {"device": "Android", "group": "target", "amount": 40, "n": 20},
+                ),
+            },
+            overall_by_group={"baseline": 100, "target": 110},
+            complete_dimensions=("country", "channel", "device"),
+            min_sample_size=10,
+        )
+
+        profiles = {
+            item["dimension"]: item
+            for item in evidence.typed_payload["dimension_profiles"]
+        }
+        findings = {
+            item["dimension_id"]: item
+            for item in evidence.typed_payload["dimension_findings"]
+        }
+
+        self.assertEqual(evidence.limitations, ())
+        self.assertEqual(profiles["country"]["profile_status"], "coverage_only")
+        self.assertIn(
+            "near_constant_dimension:country",
+            profiles["country"]["limitations"],
+        )
+        self.assertNotIn("country", findings)
+        self.assertEqual(
+            findings["channel"]["limitation_refs"],
+            ("sparse_dimension_values:channel",),
+        )
+        self.assertEqual(findings["device"]["limitation_refs"], ())
 
     def test_reconciliation_failure_withholds_candidate_ranking(self):
         evidence = candidate_dimension_screen(
@@ -161,7 +248,9 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertIn("no_dimension_movement:channel", profile["limitations"])
         self.assertEqual(evidence.evidence_type, "insufficient_evidence")
 
-    def test_localizes_segments_by_global_primary_factor_without_cross_dimension_addition(self):
+    def test_localizes_segments_by_global_primary_factor_without_cross_dimension_addition(
+        self,
+    ):
         evidence = candidate_dimension_screen(
             {
                 "channel": (
@@ -234,9 +323,7 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         payload = evidence.typed_payload
         profiles = {item["dimension"]: item for item in payload["dimension_profiles"]}
         channel_a = next(
-            item
-            for item in profiles["channel"]["top_lifts"]
-            if item["value"] == "A"
+            item for item in profiles["channel"]["top_lifts"] if item["value"] == "A"
         )
 
         self.assertEqual(channel_a["baseline_paid_frequency"], 2.0)
@@ -249,9 +336,16 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         )
         self.assertEqual(channel_a["amount_contribution_scope"], "within_dimension")
         self.assertEqual(payload["global_primary_factor"], "avg_order_amount")
-        self.assertEqual(payload["ranking_scope"], "cross_dimension_diagnostic_priority")
-        self.assertFalse(payload["cross_dimension_additivity_allowed"])
-        self.assertTrue(payload["within_dimension_amount_contribution_additive"])
+        interpretation = payload["interpretation_contract"]
+        self.assertEqual(
+            interpretation["ranking_scope"],
+            "cross_dimension_diagnostic_priority",
+        )
+        self.assertEqual(interpretation["cross_dimension_additivity"], "forbidden")
+        self.assertIn(
+            "delta",
+            interpretation["within_dimension_additivity"]["additive_measures"],
+        )
         self.assertTrue(payload["diagnostic_priorities"])
         self.assertNotIn("contribution", payload["diagnostic_priorities"][0])
 

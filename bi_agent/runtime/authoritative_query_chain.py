@@ -36,6 +36,7 @@ from bi_agent.runtime.runtime_contract_registry import (
 )
 from bi_agent.runtime.degradation_policy import (
     degraded_binding_projection_is_authorized,
+    ready_binding_projection_is_authorized,
 )
 
 
@@ -98,19 +99,13 @@ def validate_authoritative_query_chain(
         release_resolver=release_resolver,
     )
     items = (*primary, *validation)
-    by_query_ref = {
-        item.query_record.query_contract_ref: item
-        for item in items
-    }
+    by_query_ref = {item.query_record.query_contract_ref: item for item in items}
     if len(by_query_ref) != len(items):
         raise AuthoritativeQueryChainError("authoritative_query_ref_duplicate")
     validate_capability_binding_plan_semantics(
         binding,
         runtime_registry,
-        {
-            ref: item.query_record.contract
-            for ref, item in by_query_ref.items()
-        },
+        {ref: item.query_record.contract for ref, item in by_query_ref.items()},
     )
     ordered_refs = _binding_query_order(binding)
     ordered = tuple(by_query_ref[ref] for ref in ordered_refs)
@@ -128,9 +123,7 @@ def validate_authoritative_query_chain(
         tuple(item.result for item in ordered),
         base_reports,
     )
-    recomputed_by_query = {
-        report.query_contract_ref: report for report in recomputed
-    }
+    recomputed_by_query = {report.query_contract_ref: report for report in recomputed}
     for item in items:
         expected = recomputed_by_query.get(item.report.query_contract_ref)
         if expected is None or canonical_digest(expected.to_dict()) != canonical_digest(
@@ -140,9 +133,7 @@ def validate_authoritative_query_chain(
                 f"completeness_report_recomputation_mismatch:"
                 f"{item.report.query_contract_ref}"
             )
-    expected_statuses = tuple(
-        item.report.completeness_status for item in items
-    )
+    expected_statuses = tuple(item.report.completeness_status for item in items)
     if expected_statuses != binding.input_completeness_statuses:
         raise AuthoritativeQueryChainError(
             "capability_binding_completeness_statuses_mismatch"
@@ -153,7 +144,9 @@ def validate_authoritative_query_chain(
         validation_results=tuple(item.result for item in validation),
         primary_reports=tuple(item.report for item in primary),
         validation_reports=tuple(item.report for item in validation),
-        query_records={item.query_record.result_ref: item.query_record for item in items},
+        query_records={
+            item.query_record.result_ref: item.query_record for item in items
+        },
         rows_by_ref={item.result.rows_ref: item.rows for item in items},
     )
 
@@ -222,7 +215,9 @@ def _resolve_group(
             or query.rows_ref != rows_ref
             or query.completeness_report_ref != report_ref
         ):
-            raise AuthoritativeQueryChainError("query_execution_record_binding_mismatch")
+            raise AuthoritativeQueryChainError(
+                "query_execution_record_binding_mismatch"
+            )
 
         rows_record = resolver.resolve_rows_record(rows_record_ref)
         if rows_record is None:
@@ -239,7 +234,9 @@ def _resolve_group(
         ):
             raise AuthoritativeQueryChainError("rows_record_binding_mismatch")
         loaded_rows = rows_loader.load_rows(rows_record.storage_ref)
-        if loaded_rows is None or any(not isinstance(row, Mapping) for row in loaded_rows):
+        if loaded_rows is None or any(
+            not isinstance(row, Mapping) for row in loaded_rows
+        ):
             raise AuthoritativeQueryChainError("rows_payload_missing")
         rows = tuple(dict(row) for row in loaded_rows)
         if len(rows) != query.row_count:
@@ -267,9 +264,7 @@ def _resolve_group(
                 release_resolver=release_resolver,
             )
         except (PermissionError, TypeError, ValueError) as exc:
-            raise AuthoritativeQueryChainError(
-                "query_contract_runtime_policy"
-            ) from exc
+            raise AuthoritativeQueryChainError("query_contract_runtime_policy") from exc
         result = _result_from_record(query, rows)
         if canonical_digest(result.to_dict()) != canonical_digest(query.result_payload):
             raise AuthoritativeQueryChainError("query_result_payload_mismatch")
@@ -284,9 +279,7 @@ def _resolve_group(
             or completeness.query_contract_ref != query_ref
             or completeness.result_ref != result_ref
         ):
-            raise AuthoritativeQueryChainError(
-                "completeness_record_binding_mismatch"
-            )
+            raise AuthoritativeQueryChainError("completeness_record_binding_mismatch")
         report = _report_from_record(completeness.report_payload)
         _validate_report_links(report, query, result)
         resolved.append(
@@ -371,7 +364,9 @@ def _report_from_record(payload: Mapping[str, Any]) -> CompletenessReport:
             coverage_summary=canonical_thaw(payload.get("coverage_summary") or {}),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise AuthoritativeQueryChainError("completeness_report_payload_invalid") from exc
+        raise AuthoritativeQueryChainError(
+            "completeness_report_payload_invalid"
+        ) from exc
 
 
 def _validate_report_links(
@@ -386,12 +381,9 @@ def _validate_report_links(
         or report.report_ref != result.completeness_report_ref
         or coverage.get("rows_ref") != result.rows_ref
         or coverage.get("row_count") != result.row_count
-        or tuple(coverage.get("snapshot_refs") or ())
-        != result.source_snapshot_refs
-        or tuple(coverage.get("required_windows") or ())
-        != query.contract.window_refs
-        or tuple(coverage.get("observed_grain") or ())
-        != result.observed_grain
+        or tuple(coverage.get("snapshot_refs") or ()) != result.source_snapshot_refs
+        or tuple(coverage.get("required_windows") or ()) != query.contract.window_refs
+        or tuple(coverage.get("observed_grain") or ()) != result.observed_grain
     ):
         raise AuthoritativeQueryChainError("completeness_report_link_mismatch")
 
@@ -430,6 +422,13 @@ def validate_capability_binding_plan_semantics(
             )
         allow_unbound_query_refs = True
     elif binding.status == "ready":
+        if not ready_binding_projection_is_authorized(
+            plan,
+            binding.binding_payload,
+        ):
+            raise AuthoritativeQueryChainError(
+                "capability_binding_ready_projection_invalid"
+            )
         allow_unbound_query_refs = False
     else:
         raise AuthoritativeQueryChainError("capability_binding_status_invalid")
@@ -441,8 +440,7 @@ def validate_capability_binding_plan_semantics(
     )
     if (
         str(plan.get("capability_id") or "") != binding.capability_id
-        or str(plan.get("analysis_contract_ref") or "")
-        != binding.analysis_contract_ref
+        or str(plan.get("analysis_contract_ref") or "") != binding.analysis_contract_ref
         or tuple(binding.supported_claim_types)
         != tuple(plan.get("supported_claim_types") or ())
         or tuple(binding.supported_evidence_types)
@@ -458,9 +456,8 @@ def validate_capability_binding_plan_semantics(
     if query_contracts_by_ref is None:
         return
     ordered_refs = _binding_query_order(binding)
-    if (
-        set(ordered_refs) != set(query_contracts_by_ref)
-        or len(ordered_refs) != len(query_contracts_by_ref)
+    if set(ordered_refs) != set(query_contracts_by_ref) or len(ordered_refs) != len(
+        query_contracts_by_ref
     ):
         raise AuthoritativeQueryChainError(
             "capability_binding_plan_query_refs_mismatch"
@@ -534,10 +531,7 @@ def _validate_capability_slots(
     query_families = tuple(capability.get("query_families") or ())
     optional_families = set(capability.get("optional_query_families") or ())
     accepted = tuple(
-        (capability.get("minimum_readiness") or {}).get(
-            "accepted_completeness"
-        )
-        or ()
+        (capability.get("minimum_readiness") or {}).get("accepted_completeness") or ()
     )
     canonical_required_windows = tuple(capability.get("required_windows") or ())
     family_metrics = capability.get("query_family_metrics") or {}
@@ -548,17 +542,13 @@ def _validate_capability_slots(
         for slot in plan.get(field) or ()
     )
     if any(not isinstance(slot, Mapping) for slot in raw_slots):
-        raise AuthoritativeQueryChainError(
-            "capability_contract_slot_schema_invalid"
-        )
+        raise AuthoritativeQueryChainError("capability_contract_slot_schema_invalid")
     slots = raw_slots
     if any(
         set(slot) != {field.name for field in fields(CapabilityInputSlot)}
         for slot in slots
     ):
-        raise AuthoritativeQueryChainError(
-            "capability_contract_slot_schema_invalid"
-        )
+        raise AuthoritativeQueryChainError("capability_contract_slot_schema_invalid")
     slot_families = tuple(_slot_query_family(slot) for slot in slots)
     if set(slot_families) != set(query_families) or any(
         family not in query_families for family in slot_families
@@ -625,12 +615,9 @@ def _validate_capability_slots(
                     f"capability_contract_slot_metrics_mismatch:{family}"
                 )
             expected_windows = (
-                canonical_required_windows
-                or contract.result_shape.required_window_ids
+                canonical_required_windows or contract.result_shape.required_window_ids
             )
-            if tuple(slot.get("required_window_ids") or ()) != tuple(
-                expected_windows
-            ):
+            if tuple(slot.get("required_window_ids") or ()) != tuple(expected_windows):
                 raise AuthoritativeQueryChainError(
                     f"capability_contract_slot_windows_mismatch:{family}"
                 )
@@ -643,8 +630,7 @@ def _validate_capability_slots(
             expected_slot_id = family
             if family_counts[family] > 1:
                 dimension_suffix = "+".join(
-                    dimension.dimension_id
-                    for dimension in contract.dimension_bindings
+                    dimension.dimension_id for dimension in contract.dimension_bindings
                 )
                 expected_slot_id = (
                     f"{family}:{dimension_suffix or contract.query_contract_id}"

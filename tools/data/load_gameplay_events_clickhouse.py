@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# This executable bootstraps the repository root before importing project modules.
+# ruff: noqa: E402
+
 import argparse
 import calendar
 import csv
@@ -41,9 +44,11 @@ from tools.data.source_loader_common import (
 
 GAMEPLAY_CONTRACT_PATH = ROOT / "contracts" / "sources" / "gameplay.source.yaml"
 EXTERNAL_CONTRACT_PATH = ROOT / "contracts" / "sources" / "external-events.source.yaml"
-INTERNAL_CONTRACT_PATH = ROOT / "contracts" / "sources" / "internal-operation-events.source.yaml"
+INTERNAL_CONTRACT_PATH = (
+    ROOT / "contracts" / "sources" / "internal-operation-events.source.yaml"
+)
 DDL_PATH = ROOT / "tools" / "data" / "clickhouse-analysis-sources.sql"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@1"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
 GAMEPLAY_CONTRACT_REF = "contracts/sources/gameplay.source.yaml@0.1"
 EXTERNAL_CONTRACT_REF = "contracts/sources/external-events.source.yaml@0.1"
 INTERNAL_CONTRACT_REF = "contracts/sources/internal-operation-events.source.yaml@0.1"
@@ -56,8 +61,12 @@ GAMEPLAY_CHANNEL_DATASET = "gameplay_channel"
 EXTERNAL_EVENT_DATASET = "external_event"
 INTERNAL_EVENT_DATASET = "internal_operation_event"
 
-GAMEPLAY_OVERALL_RE = re.compile(r"^玩法_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$")
-GAMEPLAY_CHANNEL_RE = re.compile(r"^(?P<channel>.+)_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$")
+GAMEPLAY_OVERALL_RE = re.compile(
+    r"^玩法_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$"
+)
+GAMEPLAY_CHANNEL_RE = re.compile(
+    r"^(?P<channel>.+)_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$"
+)
 TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -157,7 +166,9 @@ def load_gameplay_rows(
     channel_window_ends: list[date] = []
     seen_names: set[str] = set()
 
-    for raw_path in sorted((Path(item) for item in overall_paths), key=lambda item: item.name):
+    for raw_path in sorted(
+        (Path(item) for item in overall_paths), key=lambda item: item.name
+    ):
         start, end, _ = _gameplay_filename(raw_path, channel=False)
         _validate_source_path(raw_path, seen_names, GameplayLoadError)
         parsed = _read_gameplay_csv(
@@ -170,7 +181,9 @@ def load_gameplay_rows(
     if not overall:
         raise GameplayLoadError("overall_source_has_no_data")
 
-    for raw_path in sorted((Path(item) for item in channel_paths), key=lambda item: item.name):
+    for raw_path in sorted(
+        (Path(item) for item in channel_paths), key=lambda item: item.name
+    ):
         start, end, channel_name = _gameplay_filename(raw_path, channel=True)
         _validate_source_path(raw_path, seen_names, GameplayLoadError)
         parsed = _read_gameplay_csv(
@@ -187,7 +200,9 @@ def load_gameplay_rows(
             channel.extend(parsed)
         else:
             no_data.append(channel_name)
-            no_data_windows.append(f"{channel_name}@{start.isoformat()}:{end.isoformat()}")
+            no_data_windows.append(
+                f"{channel_name}@{start.isoformat()}:{end.isoformat()}"
+            )
         source_paths.append(raw_path)
 
     overall = _aggregate_gameplay(
@@ -206,7 +221,10 @@ def load_gameplay_rows(
     channel_schema = _gameplay_schema(specs, channel=True)
     overall_fingerprint = schema_fingerprint(overall_schema)
     channel_fingerprint = schema_fingerprint(channel_schema)
-    checksums = {item.name: file_sha256(item) for item in sorted(source_paths, key=lambda item: item.name)}
+    checksums = {
+        item.name: file_sha256(item)
+        for item in sorted(source_paths, key=lambda item: item.name)
+    }
     revision = content_ref(
         "gameplay-load",
         {
@@ -216,7 +234,9 @@ def load_gameplay_rows(
             "channel_rows_hash": rows_content_hash(channel),
             "overall_schema_fingerprint": overall_fingerprint,
             "channel_schema_fingerprint": channel_fingerprint,
-            "canonicalization_version": contract["runtime_binding"]["canonicalization_version"],
+            "canonicalization_version": contract["runtime_binding"][
+                "canonicalization_version"
+            ],
         },
     )
     overall = _attach_revision(overall, revision)
@@ -258,7 +278,9 @@ def load_gameplay_rows(
         load_revision=revision,
         source_family="gameplay_activity",
         contract_ref=GAMEPLAY_CONTRACT_REF,
-        canonicalization_version=contract["runtime_binding"]["canonicalization_version"],
+        canonicalization_version=contract["runtime_binding"][
+            "canonicalization_version"
+        ],
         source_checksums=checksums,
         no_data_partitions=tuple(sorted(set(no_data))),
         no_data_partition_windows=tuple(sorted(no_data_windows)),
@@ -287,13 +309,18 @@ def load_external_event_workbook(
     if not isinstance(sheet_contracts, Mapping) or len(sheet_contracts) != 9:
         raise EventLoadError("external_event_sheet_contracts")
     workbook = load_workbook(path, read_only=False, data_only=True)
-    if set(workbook.sheetnames) != set(sheet_contracts) or len(workbook.sheetnames) != 9:
+    if (
+        set(workbook.sheetnames) != set(sheet_contracts)
+        or len(workbook.sheetnames) != 9
+    ):
         raise EventLoadError("external_event_sheet_set")
     rows: list[dict[str, Any]] = []
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         sheet_spec = sheet_contracts[sheet_name]
-        rows.extend(_read_external_sheet(sheet, sheet_name, sheet_spec, contract, snapshot_id))
+        rows.extend(
+            _read_external_sheet(sheet, sheet_name, sheet_spec, contract, snapshot_id)
+        )
     if not rows:
         raise EventLoadError("external_event_workbook_no_data")
     _validate_event_identities(rows)
@@ -304,7 +331,9 @@ def load_external_event_workbook(
             "snapshot_id": snapshot_id,
             "source_checksum": file_sha256(path),
             "rows_hash": rows_content_hash(rows),
-            "canonicalization_version": contract["runtime_binding"]["canonicalization_version"],
+            "canonicalization_version": contract["runtime_binding"][
+                "canonicalization_version"
+            ],
         },
     )
     rows = _attach_revision(rows, revision)
@@ -328,7 +357,9 @@ def load_external_event_workbook(
         load_revision=revision,
         source_family="external_event",
         contract_ref=EXTERNAL_CONTRACT_REF,
-        canonicalization_version=contract["runtime_binding"]["canonicalization_version"],
+        canonicalization_version=contract["runtime_binding"][
+            "canonicalization_version"
+        ],
         source_checksums={path.name: file_sha256(path)},
         no_data_partitions=(),
         no_data_partition_windows=(),
@@ -361,7 +392,9 @@ def load_internal_event_rows(
         missing = tuple(field for field in required if field not in headers)
         if missing:
             raise EventLoadError("missing_internal_event_fields:" + ",".join(missing))
-        if len(headers) != len(set(headers)) or set(headers) - set((*required, *optional)):
+        if len(headers) != len(set(headers)) or set(headers) - set(
+            (*required, *optional)
+        ):
             raise EventLoadError("internal_event_columns")
         rows = []
         for row_number, values in enumerate(reader, 2):
@@ -392,9 +425,21 @@ def load_internal_event_rows(
                 not in tuple(scope_model[scope_type].get("allowed_values") or ())
             ):
                 raise EventLoadError("internal_event_scope")
-            _require_allowed(raw["authority"], schema_contract["authority_values"], "internal_event_authority")
-            _require_allowed(raw["evidence_level"], schema_contract["evidence_level_values"], "internal_event_evidence_level")
-            _require_allowed(raw["wording_limit"], schema_contract["wording_limit_values"], "internal_event_wording_limit")
+            _require_allowed(
+                raw["authority"],
+                schema_contract["authority_values"],
+                "internal_event_authority",
+            )
+            _require_allowed(
+                raw["evidence_level"],
+                schema_contract["evidence_level_values"],
+                "internal_event_evidence_level",
+            )
+            _require_allowed(
+                raw["wording_limit"],
+                schema_contract["wording_limit_values"],
+                "internal_event_wording_limit",
+            )
             rows.append(
                 _event_row(
                     snapshot_id=snapshot_id,
@@ -416,21 +461,36 @@ def load_internal_event_rows(
     rows.sort(key=lambda item: (str(item["source_family"]), str(item["event_id"])))
     revision = content_ref(
         "internal-events-load",
-        {"snapshot_id": snapshot_id, "source_checksum": file_sha256(path), "rows_hash": rows_content_hash(rows)},
+        {
+            "snapshot_id": snapshot_id,
+            "source_checksum": file_sha256(path),
+            "rows_hash": rows_content_hash(rows),
+        },
     )
     rows = _attach_revision(rows, revision)
     schema = _event_schema(contract["runtime_binding"]["canonicalization_version"])
     fingerprint = schema_fingerprint(schema)
     event_range = _row_date_range(rows, "event_start_date")
     parts = (
-        _part(INTERNAL_EVENT_DATASET, BUSINESS_EVENTS_TABLE, schema, fingerprint, rows, event_range, event_range[-1], evidence_state="context_only"),
+        _part(
+            INTERNAL_EVENT_DATASET,
+            BUSINESS_EVENTS_TABLE,
+            schema,
+            fingerprint,
+            rows,
+            event_range,
+            event_range[-1],
+            evidence_state="context_only",
+        ),
     )
     manifest = _build_manifest(
         snapshot_id=snapshot_id,
         load_revision=revision,
         source_family="internal_operation_event",
         contract_ref=INTERNAL_CONTRACT_REF,
-        canonicalization_version=contract["runtime_binding"]["canonicalization_version"],
+        canonicalization_version=contract["runtime_binding"][
+            "canonicalization_version"
+        ],
         source_checksums={path.name: file_sha256(path)},
         no_data_partitions=(),
         no_data_partition_windows=(),
@@ -440,7 +500,9 @@ def load_internal_event_rows(
     return EventRows(snapshot_id, revision, tuple(rows)), manifest
 
 
-def build_source_snapshot_payloads(manifest: SourceLoadManifest) -> tuple[dict[str, Any], ...]:
+def build_source_snapshot_payloads(
+    manifest: SourceLoadManifest,
+) -> tuple[dict[str, Any], ...]:
     payloads = []
     for part in manifest.parts:
         payloads.append(
@@ -461,7 +523,10 @@ def build_source_snapshot_payloads(manifest: SourceLoadManifest) -> tuple[dict[s
                 "requires_release": True,
                 "evidence_state": part.evidence_state,
                 "reconciliation_status": "not_applicable",
-                "reconciliation_ref": content_ref("source-reconciliation", {"dataset_id": part.dataset_id, "status": "not_applicable"}),
+                "reconciliation_ref": content_ref(
+                    "source-reconciliation",
+                    {"dataset_id": part.dataset_id, "status": "not_applicable"},
+                ),
                 "source_load_manifest_ref": manifest.manifest_ref,
                 "runtime_binding_ref": manifest.runtime_binding_ref,
                 "source_checksums": dict(manifest.source_checksums),
@@ -475,7 +540,9 @@ def build_source_snapshot_payloads(manifest: SourceLoadManifest) -> tuple[dict[s
     return tuple(payloads)
 
 
-def persist_source_snapshot_payloads(store: Any, payloads: Sequence[Mapping[str, Any]]) -> SnapshotPersistenceResult:
+def persist_source_snapshot_payloads(
+    store: Any, payloads: Sequence[Mapping[str, Any]]
+) -> SnapshotPersistenceResult:
     try:
         return persist_dataset_snapshot_payloads(store, payloads)
     except ValueError as exc:
@@ -502,7 +569,10 @@ def stage_source_release(
                     raise GameplayLoadError("active_load_revision_invalid") from exc
                 client.command(
                     f"DELETE FROM {part.physical_table} WHERE snapshot_id = {{snapshot_id:String}} AND load_revision = {{load_revision:String}}",
-                    parameters={"snapshot_id": manifest.snapshot_id, "load_revision": manifest.load_revision},
+                    parameters={
+                        "snapshot_id": manifest.snapshot_id,
+                        "load_revision": manifest.load_revision,
+                    },
                     settings={"mutations_sync": 2},
                 )
         for offset in range(0, len(part.rows), 10_000):
@@ -512,9 +582,7 @@ def stage_source_release(
                 part.rows[offset : offset + 10_000],
             )
         _validate_persisted_part(
-            _read_persisted(
-                client, part, manifest.snapshot_id, manifest.load_revision
-            ),
+            _read_persisted(client, part, manifest.snapshot_id, manifest.load_revision),
             part,
         )
         staged = True
@@ -522,11 +590,38 @@ def stage_source_release(
 
 
 def apply_clickhouse_ddl(client: Any, manifest: SourceLoadManifest) -> None:
-    ddl = DDL_PATH.read_text(encoding="utf-8").split("-- BEGIN GAMEPLAY_EVENTS", 1)[1].split("-- END GAMEPLAY_EVENTS", 1)[0]
+    ddl = (
+        DDL_PATH.read_text(encoding="utf-8")
+        .split("-- BEGIN GAMEPLAY_EVENTS", 1)[1]
+        .split("-- END GAMEPLAY_EVENTS", 1)[0]
+    )
     replacements = {
-        "__GAMEPLAY_TABLE__": next((part.physical_table for part in manifest.parts if part.dataset_id == GAMEPLAY_DATASET), _versioned_table(GAMEPLAY_TABLE, _gameplay_current_fingerprint(False))),
-        "__GAMEPLAY_CHANNEL_TABLE__": next((part.physical_table for part in manifest.parts if part.dataset_id == GAMEPLAY_CHANNEL_DATASET), _versioned_table(GAMEPLAY_CHANNEL_TABLE, _gameplay_current_fingerprint(True))),
-        "__BUSINESS_EVENTS_TABLE__": next((part.physical_table for part in manifest.parts if part.dataset_id in {EXTERNAL_EVENT_DATASET, INTERNAL_EVENT_DATASET}), _versioned_table(BUSINESS_EVENTS_TABLE, _event_current_fingerprint())),
+        "__GAMEPLAY_TABLE__": next(
+            (
+                part.physical_table
+                for part in manifest.parts
+                if part.dataset_id == GAMEPLAY_DATASET
+            ),
+            _versioned_table(GAMEPLAY_TABLE, _gameplay_current_fingerprint(False)),
+        ),
+        "__GAMEPLAY_CHANNEL_TABLE__": next(
+            (
+                part.physical_table
+                for part in manifest.parts
+                if part.dataset_id == GAMEPLAY_CHANNEL_DATASET
+            ),
+            _versioned_table(
+                GAMEPLAY_CHANNEL_TABLE, _gameplay_current_fingerprint(True)
+            ),
+        ),
+        "__BUSINESS_EVENTS_TABLE__": next(
+            (
+                part.physical_table
+                for part in manifest.parts
+                if part.dataset_id in {EXTERNAL_EVENT_DATASET, INTERNAL_EVENT_DATASET}
+            ),
+            _versioned_table(BUSINESS_EVENTS_TABLE, _event_current_fingerprint()),
+        ),
     }
     for token, table in replacements.items():
         if not TABLE_RE.fullmatch(table):
@@ -534,7 +629,9 @@ def apply_clickhouse_ddl(client: Any, manifest: SourceLoadManifest) -> None:
         ddl = ddl.replace(token, table)
     required_tables = {part.physical_table for part in manifest.parts}
     for statement in (item.strip() for item in ddl.split(";")):
-        if statement and any(f"TABLE IF NOT EXISTS {table}" in statement for table in required_tables):
+        if statement and any(
+            f"TABLE IF NOT EXISTS {table}" in statement for table in required_tables
+        ):
             client.command(statement)
     validate_clickhouse_schema(client, manifest)
 
@@ -542,20 +639,30 @@ def apply_clickhouse_ddl(client: Any, manifest: SourceLoadManifest) -> None:
 def validate_clickhouse_schema(client: Any, manifest: SourceLoadManifest) -> None:
     tables = tuple(part.physical_table for part in manifest.parts)
     result = client.query(
-        "SELECT table, name, type, position FROM system.columns WHERE database = currentDatabase() AND table IN (" + ",".join(f"'{table}'" for table in tables) + ") ORDER BY table, position"
+        "SELECT table, name, type, position FROM system.columns WHERE database = currentDatabase() AND table IN ("
+        + ",".join(f"'{table}'" for table in tables)
+        + ") ORDER BY table, position"
     )
     observed_rows = tuple(dict(item) for item in result.named_results())
     for part in manifest.parts:
-        observed = tuple((str(item["name"]), str(item["type"])) for item in observed_rows if item.get("table") == part.physical_table)
+        observed = tuple(
+            (str(item["name"]), str(item["type"]))
+            for item in observed_rows
+            if item.get("table") == part.physical_table
+        )
         expected = tuple(
             _schema_field_pair(item)
             for item in _schema_for_part(part)
             if not item.startswith(("engine:", "order_by:", "canonicalization:"))
         )
         if observed != expected:
-            raise GameplayLoadError(f"clickhouse_schema_drift:columns:{part.dataset_id}")
+            raise GameplayLoadError(
+                f"clickhouse_schema_drift:columns:{part.dataset_id}"
+            )
     table_result = client.query(
-        "SELECT name, engine, sorting_key FROM system.tables WHERE database = currentDatabase() AND name IN (" + ",".join(f"'{table}'" for table in tables) + ") ORDER BY name"
+        "SELECT name, engine, sorting_key FROM system.tables WHERE database = currentDatabase() AND name IN ("
+        + ",".join(f"'{table}'" for table in tables)
+        + ") ORDER BY name"
     )
     by_name = {str(item["name"]): dict(item) for item in table_result.named_results()}
     for part in manifest.parts:
@@ -572,16 +679,12 @@ def validate_clickhouse_schema(client: Any, manifest: SourceLoadManifest) -> Non
 
 def _gameplay_field_specs(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     specs = contract.get("field_contracts")
-    source_fields = (
-        set(contract.get("field_mapping", {}))
-        - {
-            "service_fee_rake_raw_columns",
-            "service_fee_rake_selected_column",
-            "service_fee_rake_selection_reason",
-            "ggr",
-        }
-        | {"service_fee_rake"}
-    )
+    source_fields = set(contract.get("field_mapping", {})) - {
+        "service_fee_rake_raw_columns",
+        "service_fee_rake_selected_column",
+        "service_fee_rake_selection_reason",
+        "ggr",
+    } | {"service_fee_rake"}
     if (
         not isinstance(specs, Mapping)
         or not source_fields.issubset(specs)
@@ -617,14 +720,15 @@ def _read_gameplay_csv(
             headers = next(reader)
         except StopIteration:
             raise GameplayLoadError(f"source_headers_invalid:{path}")
-        service_positions = [index for index, value in enumerate(headers) if value == "服务费抽水"]
+        service_positions = [
+            index for index, value in enumerate(headers) if value == "服务费抽水"
+        ]
         duplicate_occurrences = tuple(
             int(item)
             for item in specs["service_fee_rake"]["reviewed_duplicate_occurrences"]
         )
-        if (
-            tuple(headers) != expected_headers
-            or len(service_positions) != len(duplicate_occurrences)
+        if tuple(headers) != expected_headers or len(service_positions) != len(
+            duplicate_occurrences
         ):
             raise GameplayLoadError(f"source_headers_invalid:{path}")
         positions: dict[str, int] = {}
@@ -633,7 +737,9 @@ def _read_gameplay_csv(
                 continue
             source_name = str(spec["source_field"])
             occurrence = int(spec.get("source_occurrence", 1))
-            candidates = [index for index, value in enumerate(headers) if value == source_name]
+            candidates = [
+                index for index, value in enumerate(headers) if value == source_name
+            ]
             if len(candidates) < occurrence:
                 raise GameplayLoadError(f"source_headers_invalid:{path}")
             positions[field] = candidates[occurrence - 1]
@@ -643,14 +749,33 @@ def _read_gameplay_csv(
                 raise GameplayLoadError(f"source_row_width:{path}:{row_number}")
             if not any(value.strip() for value in values):
                 continue
-            parsed_date = _strict_date(values[positions["business_date"]], "business_date", GameplayLoadError)
+            parsed_date = _strict_date(
+                values[positions["business_date"]], "business_date", GameplayLoadError
+            )
             if not start <= parsed_date <= end:
-                raise GameplayLoadError(f"source_date_outside_filename_window:{path}:{row_number}")
-            first_rake = _parse_decimal(values[service_positions[0]], specs["service_fee_rake"], path, row_number)
-            second_rake = _parse_decimal(values[service_positions[1]], specs["service_fee_rake"], path, row_number)
+                raise GameplayLoadError(
+                    f"source_date_outside_filename_window:{path}:{row_number}"
+                )
+            first_rake = _parse_decimal(
+                values[service_positions[0]],
+                specs["service_fee_rake"],
+                path,
+                row_number,
+            )
+            second_rake = _parse_decimal(
+                values[service_positions[1]],
+                specs["service_fee_rake"],
+                path,
+                row_number,
+            )
             if first_rake != second_rake:
-                raise GameplayLoadError(f"duplicate_reviewed_column_conflict:{path}:{row_number}")
-            row: dict[str, Any] = {"snapshot_id": snapshot_id, "business_date": parsed_date.isoformat()}
+                raise GameplayLoadError(
+                    f"duplicate_reviewed_column_conflict:{path}:{row_number}"
+                )
+            row: dict[str, Any] = {
+                "snapshot_id": snapshot_id,
+                "business_date": parsed_date.isoformat(),
+            }
             if channel:
                 row["channel"] = channel
             for field, spec in specs.items():
@@ -660,13 +785,21 @@ def _read_gameplay_csv(
                 if spec["logical_type"] == "string":
                     normalized = value.strip()
                     if not normalized:
-                        raise GameplayLoadError(f"source_string_missing:{field}:{path}:{row_number}")
+                        raise GameplayLoadError(
+                            f"source_string_missing:{field}:{path}:{row_number}"
+                        )
                     allowed = spec.get("allowed_values")
                     if allowed and normalized not in allowed:
-                        raise GameplayLoadError(f"source_scope_invalid:{field}:{normalized}")
+                        raise GameplayLoadError(
+                            f"source_scope_invalid:{field}:{normalized}"
+                        )
                     row[field] = normalized
                 else:
-                    row[field] = first_rake if field == "service_fee_rake" else _parse_decimal(value, spec, path, row_number)
+                    row[field] = (
+                        first_rake
+                        if field == "service_fee_rake"
+                        else _parse_decimal(value, spec, path, row_number)
+                    )
             row["betting_users_derived"] = _derive_betting_users(
                 row,
                 specs["betting_users_derived"],
@@ -678,7 +811,9 @@ def _read_gameplay_csv(
     return rows
 
 
-def _parse_decimal(value: Any, spec: Mapping[str, Any], path: Path, row_number: int) -> Decimal | None:
+def _parse_decimal(
+    value: Any, spec: Mapping[str, Any], path: Path, row_number: int
+) -> Decimal | None:
     text = str(value).strip()
     if text in {str(item) for item in spec.get("missing_tokens", ())}:
         if spec.get("nullable") is True:
@@ -695,9 +830,13 @@ def _parse_decimal(value: Any, spec: Mapping[str, Any], path: Path, row_number: 
     with localcontext() as context:
         context.prec = precision + scale + 8
         try:
-            number = number.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_EVEN)
+            number = number.quantize(
+                Decimal(1).scaleb(-scale), rounding=ROUND_HALF_EVEN
+            )
         except InvalidOperation as exc:
-            raise GameplayLoadError(f"source_numeric_precision:{path}:{row_number}") from exc
+            raise GameplayLoadError(
+                f"source_numeric_precision:{path}:{row_number}"
+            ) from exc
     digits = len(number.as_tuple().digits)
     integer_digits = max(0, digits + number.as_tuple().exponent)
     if integer_digits > precision - scale:
@@ -705,7 +844,12 @@ def _parse_decimal(value: Any, spec: Mapping[str, Any], path: Path, row_number: 
     return number
 
 
-def _aggregate_gameplay(rows: Sequence[Mapping[str, Any]], key_fields: tuple[str, ...], specs: Mapping[str, Mapping[str, Any]], dataset_id: str) -> list[dict[str, Any]]:
+def _aggregate_gameplay(
+    rows: Sequence[Mapping[str, Any]],
+    key_fields: tuple[str, ...],
+    specs: Mapping[str, Mapping[str, Any]],
+    dataset_id: str,
+) -> list[dict[str, Any]]:
     grouped: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for item in rows:
         key = tuple(item[field] for field in key_fields)
@@ -720,18 +864,43 @@ def _aggregate_gameplay(rows: Sequence[Mapping[str, Any]], key_fields: tuple[str
             policy = spec["duplicate_aggregation"]
             if policy == "additive_sum":
                 values = [member.get(field) for member in members]
-                target[field] = None if any(value is None for value in values) else sum((Decimal(value) for value in values), Decimal(0))
+                target[field] = (
+                    None
+                    if any(value is None for value in values)
+                    else sum((Decimal(value) for value in values), Decimal(0))
+                )
             elif policy == "recompute_from_components":
                 continue
             elif policy == "weighted_average":
-                weighted = [(member.get(field), member.get(spec["weight_field"])) for member in members]
+                weighted = [
+                    (member.get(field), member.get(spec["weight_field"]))
+                    for member in members
+                ]
                 if any(value is None or weight is None for value, weight in weighted):
                     target[field] = None
                 else:
-                    total_weight = sum((Decimal(weight) for _, weight in weighted), Decimal(0))
-                    target[field] = _quantize_contract_value(sum((Decimal(value) * Decimal(weight) for value, weight in weighted), Decimal(0)) / total_weight, spec) if total_weight else None
+                    total_weight = sum(
+                        (Decimal(weight) for _, weight in weighted), Decimal(0)
+                    )
+                    target[field] = (
+                        _quantize_contract_value(
+                            sum(
+                                (
+                                    Decimal(value) * Decimal(weight)
+                                    for value, weight in weighted
+                                ),
+                                Decimal(0),
+                            )
+                            / total_weight,
+                            spec,
+                        )
+                        if total_weight
+                        else None
+                    )
             else:
-                raise GameplayLoadError(f"duplicate_policy_unsupported:{field}:{policy}")
+                raise GameplayLoadError(
+                    f"duplicate_policy_unsupported:{field}:{policy}"
+                )
         for field, spec in specs.items():
             if spec.get("duplicate_aggregation") != "recompute_from_components":
                 continue
@@ -748,7 +917,9 @@ def _aggregate_gameplay(rows: Sequence[Mapping[str, Any]], key_fields: tuple[str
             denominator_decimal = Decimal(denominator)
             if denominator_decimal <= 0:
                 if derived.get("zero_denominator_policy") != "null":
-                    raise GameplayLoadError(f"derived_ratio_invalid_denominator:{field}")
+                    raise GameplayLoadError(
+                        f"derived_ratio_invalid_denominator:{field}"
+                    )
                 target[field] = None
                 continue
             target[field] = _quantize_contract_value(
@@ -786,12 +957,8 @@ def _validate_source_derived_values(
             Decimal(numerator) / denominator_decimal,
             spec,
         )
-        absolute_tolerance = Decimal(
-            str(validation.get("absolute_tolerance") or "0")
-        )
-        relative_tolerance = Decimal(
-            str(validation.get("relative_tolerance") or "0")
-        )
+        absolute_tolerance = Decimal(str(validation.get("absolute_tolerance") or "0"))
+        relative_tolerance = Decimal(str(validation.get("relative_tolerance") or "0"))
         tolerance = max(
             absolute_tolerance,
             abs(expected) * relative_tolerance,
@@ -809,7 +976,10 @@ def _derive_betting_users(
     row_number: int,
 ) -> Decimal | None:
     derivation = spec.get("derivation")
-    if not isinstance(derivation, Mapping) or derivation.get("policy") != "reconcile_ratio_denominators":
+    if (
+        not isinstance(derivation, Mapping)
+        or derivation.get("policy") != "reconcile_ratio_denominators"
+    ):
         raise GameplayLoadError("betting_users_derivation_contract_invalid")
     tolerance = Decimal(str(derivation.get("tolerance") or "0"))
     candidates: list[Decimal] = []
@@ -832,16 +1002,12 @@ def _derive_betting_users(
         candidate = numerator_decimal / per_user_decimal
         integral = candidate.quantize(Decimal(1), rounding=ROUND_HALF_EVEN)
         if candidate < 0 or abs(candidate - integral) > tolerance:
-            raise GameplayLoadError(
-                f"betting_users_non_integral:{path}:{row_number}"
-            )
+            raise GameplayLoadError(f"betting_users_non_integral:{path}:{row_number}")
         candidates.append(integral)
     if not candidates:
         return None
     if any(candidate != candidates[0] for candidate in candidates[1:]):
-        raise GameplayLoadError(
-            f"betting_users_source_mismatch:{path}:{row_number}"
-        )
+        raise GameplayLoadError(f"betting_users_source_mismatch:{path}:{row_number}")
     upper_bound = row.get(str(derivation.get("upper_bound_field") or ""))
     if upper_bound is not None and candidates[0] > Decimal(upper_bound):
         raise GameplayLoadError(
@@ -857,23 +1023,51 @@ def _quantize_contract_value(value: Decimal, spec: Mapping[str, Any]) -> Decimal
         return value.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_EVEN)
 
 
-def _read_external_sheet(sheet: Any, sheet_name: str, spec: Mapping[str, Any], contract: Mapping[str, Any], snapshot_id: str) -> list[dict[str, Any]]:
+def _read_external_sheet(
+    sheet: Any,
+    sheet_name: str,
+    spec: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    snapshot_id: str,
+) -> list[dict[str, Any]]:
     values = [tuple(cell.value for cell in row) for row in sheet.iter_rows()]
-    nonblank_rows = [(index + 1, row) for index, row in enumerate(values) if any(value not in (None, "") for value in row)]
+    nonblank_rows = [
+        (index + 1, row)
+        for index, row in enumerate(values)
+        if any(value not in (None, "") for value in row)
+    ]
     if not nonblank_rows:
         return []
     if spec.get("template_rows_without_header") is True:
         rows = []
         for row_number, row in nonblank_rows:
-            description = str(row[int(spec["description_column_index"]) - 1] or "").strip()
+            description = str(
+                row[int(spec["description_column_index"]) - 1] or ""
+            ).strip()
             if not description:
                 continue
-            rows.append(_native_event_row(snapshot_id, sheet_name, spec, row_number, date.fromisoformat(spec["recurring_window_start"]), date.fromisoformat(spec["recurring_window_end"]), spec["business_use"], description, spec["scope_default"], row))
+            rows.append(
+                _native_event_row(
+                    snapshot_id,
+                    sheet_name,
+                    spec,
+                    row_number,
+                    date.fromisoformat(spec["recurring_window_start"]),
+                    date.fromisoformat(spec["recurring_window_end"]),
+                    spec["business_use"],
+                    description,
+                    spec["scope_default"],
+                    row,
+                )
+            )
         return rows
     header_row = int(spec["header_row"])
     if header_row > len(values):
         raise EventLoadError(f"external_event_columns:{sheet_name}")
-    header = tuple(str(value).strip() if value is not None else "" for value in values[header_row - 1])
+    header = tuple(
+        str(value).strip() if value is not None else ""
+        for value in values[header_row - 1]
+    )
     expected = tuple(str(item) for item in spec["native_headers"])
     if header != expected:
         raise EventLoadError(f"external_event_columns:{sheet_name}")
@@ -883,35 +1077,119 @@ def _read_external_sheet(sheet: Any, sheet_name: str, spec: Mapping[str, Any], c
     for offset, raw in enumerate(values[header_row:], header_row + 1):
         if not any(value not in (None, "") for value in raw):
             continue
-        start, end, inferred_year = _event_dates(raw[positions[spec["date_column"]]], inferred_year)
-        event_type = str(raw[positions[spec["type_column"]]] or spec["business_use"]).strip()
+        start, end, inferred_year = _event_dates(
+            raw[positions[spec["date_column"]]], inferred_year
+        )
+        event_type = str(
+            raw[positions[spec["type_column"]]] or spec["business_use"]
+        ).strip()
         description = str(raw[positions[spec["description_column"]]] or "").strip()
-        scope = str(raw[positions[spec["scope_column"]]] or "").strip() if spec.get("scope_column") else str(spec["scope_default"])
+        scope = (
+            str(raw[positions[spec["scope_column"]]] or "").strip()
+            if spec.get("scope_column")
+            else str(spec["scope_default"])
+        )
         if not event_type or not description or not scope:
             raise EventLoadError(f"external_event_required_value:{sheet_name}:{offset}")
-        rows.append(_native_event_row(snapshot_id, sheet_name, spec, offset, start, end, event_type, description, scope, raw))
+        rows.append(
+            _native_event_row(
+                snapshot_id,
+                sheet_name,
+                spec,
+                offset,
+                start,
+                end,
+                event_type,
+                description,
+                scope,
+                raw,
+            )
+        )
     return rows
 
 
-def _native_event_row(snapshot_id: str, sheet_name: str, spec: Mapping[str, Any], row_number: int, start: date, end: date, event_type: str, description: str, scope: str, raw: Sequence[Any]) -> dict[str, Any]:
+def _native_event_row(
+    snapshot_id: str,
+    sheet_name: str,
+    spec: Mapping[str, Any],
+    row_number: int,
+    start: date,
+    end: date,
+    event_type: str,
+    description: str,
+    scope: str,
+    raw: Sequence[Any],
+) -> dict[str, Any]:
     identity = content_ref(
         "external-event",
         {"sheet": sheet_name, "values": [_json_cell(value) for value in raw]},
     )
-    recurrence_spec = spec.get("recurrence") if isinstance(spec.get("recurrence"), Mapping) else {}
+    recurrence_spec = (
+        spec.get("recurrence") if isinstance(spec.get("recurrence"), Mapping) else {}
+    )
     recurrence = _parse_external_recurrence(
         description,
         recurrence_spec,
         sheet_name=sheet_name,
     )
-    return _event_row(snapshot_id=snapshot_id, source_family="external_event", event_id=identity, event_type=str(event_type), start=start, end=end, scope=scope, authority="reviewed_workbook_pending_owner_review", evidence_level="context", wording_limit="context", payload={"sheet": sheet_name, "business_use": spec["business_use"], "description": description, "recurrence": dict(recurrence), "raw": [_json_cell(value) for value in raw]}, recurrence=recurrence)
+    return _event_row(
+        snapshot_id=snapshot_id,
+        source_family="external_event",
+        event_id=identity,
+        event_type=str(event_type),
+        start=start,
+        end=end,
+        scope=scope,
+        authority="reviewed_workbook_pending_owner_review",
+        evidence_level="context",
+        wording_limit="context",
+        payload={
+            "sheet": sheet_name,
+            "business_use": spec["business_use"],
+            "description": description,
+            "recurrence": dict(recurrence),
+            "raw": [_json_cell(value) for value in raw],
+        },
+        recurrence=recurrence,
+    )
 
 
-def _event_row(*, snapshot_id: str, source_family: str, event_id: str, event_type: str, start: date, end: date, scope: str, authority: str, evidence_level: str, wording_limit: str, payload: Mapping[str, Any], recurrence: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _event_row(
+    *,
+    snapshot_id: str,
+    source_family: str,
+    event_id: str,
+    event_type: str,
+    start: date,
+    end: date,
+    scope: str,
+    authority: str,
+    evidence_level: str,
+    wording_limit: str,
+    payload: Mapping[str, Any],
+    recurrence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     if not all((event_id, event_type, scope, authority, evidence_level, wording_limit)):
         raise EventLoadError("event_required_value")
     recurrence = recurrence or {}
-    return {"snapshot_id": snapshot_id, "source_family": source_family, "event_id": event_id, "event_type": event_type, "event_start_date": start.isoformat(), "event_end_date": end.isoformat(), "affected_scope": scope, "authority": authority, "evidence_level": evidence_level, "wording_limit": wording_limit, "recurrence_kind": str(recurrence.get("kind") or ""), "recurrence_month_start": int(recurrence.get("month_start") or 0), "recurrence_day_start": int(recurrence.get("day_start") or 0), "recurrence_month_end": int(recurrence.get("month_end") or 0), "recurrence_day_end": int(recurrence.get("day_end") or 0), "payload": canonical_json_bytes(payload).decode("utf-8")}
+    return {
+        "snapshot_id": snapshot_id,
+        "source_family": source_family,
+        "event_id": event_id,
+        "event_type": event_type,
+        "event_start_date": start.isoformat(),
+        "event_end_date": end.isoformat(),
+        "affected_scope": scope,
+        "authority": authority,
+        "evidence_level": evidence_level,
+        "wording_limit": wording_limit,
+        "recurrence_kind": str(recurrence.get("kind") or ""),
+        "recurrence_month_start": int(recurrence.get("month_start") or 0),
+        "recurrence_day_start": int(recurrence.get("day_start") or 0),
+        "recurrence_month_end": int(recurrence.get("month_end") or 0),
+        "recurrence_day_end": int(recurrence.get("day_end") or 0),
+        "payload": canonical_json_bytes(payload).decode("utf-8"),
+    }
 
 
 def _parse_external_recurrence(
@@ -981,8 +1259,13 @@ def _event_dates(value: Any, inferred_year: int | None) -> tuple[date, date, int
         return value.date(), value.date(), value.year
     if isinstance(value, date):
         return value, value, value.year
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    ):
         from openpyxl.utils.datetime import from_excel
+
         parsed = from_excel(value)
         parsed_date = parsed.date() if isinstance(parsed, datetime) else parsed
         return parsed_date, parsed_date, parsed_date.year
@@ -992,7 +1275,9 @@ def _event_dates(value: Any, inferred_year: int | None) -> tuple[date, date, int
         year, number = int(quarter["year"]), int(quarter["quarter"])
         start = date(year, (number - 1) * 3 + 1, 1)
         end_month = number * 3
-        next_month = date(year + (end_month == 12), 1 if end_month == 12 else end_month + 1, 1)
+        next_month = date(
+            year + (end_month == 12), 1 if end_month == 12 else end_month + 1, 1
+        )
         return start, next_month - timedelta(days=1), year
     month_window = re.search(
         r"(?P<year>20\d{2})[-年/.](?P<start_month>\d{1,2})(?:月)?\s*(?:至|到|[-~—])\s*(?P<end_month>\d{1,2})月",
@@ -1002,25 +1287,37 @@ def _event_dates(value: Any, inferred_year: int | None) -> tuple[date, date, int
         year = int(month_window["year"])
         start_month = int(month_window["start_month"])
         end_month = int(month_window["end_month"])
-        if not (1 <= start_month <= 12 and 1 <= end_month <= 12 and start_month <= end_month):
+        if not (
+            1 <= start_month <= 12 and 1 <= end_month <= 12 and start_month <= end_month
+        ):
             raise EventLoadError(f"external_event_date_invalid:{text}")
         return (
             date(year, start_month, 1),
             date(year, end_month, calendar.monthrange(year, end_month)[1]),
             year,
         )
-    full = list(re.finditer(r"(?P<year>20\d{2})[-年/.](?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})", text))
+    full = list(
+        re.finditer(
+            r"(?P<year>20\d{2})[-年/.](?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})", text
+        )
+    )
     if full:
         start = date(int(full[0]["year"]), int(full[0]["month"]), int(full[0]["day"]))
         end = date(int(full[-1]["year"]), int(full[-1]["month"]), int(full[-1]["day"]))
-        trailing = text[full[0].end():]
-        partial = list(re.finditer(r"(?<!\d)(?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})(?!\d)", trailing))
+        trailing = text[full[0].end() :]
+        partial = list(
+            re.finditer(
+                r"(?<!\d)(?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})(?!\d)", trailing
+            )
+        )
         if len(full) == 1 and partial:
             end = date(start.year, int(partial[-1]["month"]), int(partial[-1]["day"]))
             if end < start and end.month < start.month:
                 end = date(start.year + 1, end.month, end.day)
         return start, end, start.year
-    partial = list(re.finditer(r"(?<!\d)(?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})(?!\d)", text))
+    partial = list(
+        re.finditer(r"(?<!\d)(?P<month>\d{1,2})[-月/.](?P<day>\d{1,2})(?!\d)", text)
+    )
     if partial and inferred_year:
         start = date(inferred_year, int(partial[0]["month"]), int(partial[0]["day"]))
         end = date(inferred_year, int(partial[-1]["month"]), int(partial[-1]["day"]))
@@ -1040,7 +1337,9 @@ def _strict_date(value: Any, field: str, error_type=EventLoadError) -> date:
 
 
 def _gameplay_filename(path: Path, *, channel: bool) -> tuple[date, date, str]:
-    match = (GAMEPLAY_CHANNEL_RE if channel else GAMEPLAY_OVERALL_RE).fullmatch(path.name)
+    match = (GAMEPLAY_CHANNEL_RE if channel else GAMEPLAY_OVERALL_RE).fullmatch(
+        path.name
+    )
     if not match:
         raise GameplayLoadError(f"source_filename_invalid:{path.name}")
     start, end = date.fromisoformat(match["start"]), date.fromisoformat(match["end"])
@@ -1060,7 +1359,9 @@ def _validate_source_path(path: Path, seen_names: set[str], error_type) -> None:
     seen_names.add(path.name)
 
 
-def _gameplay_schema(specs: Mapping[str, Mapping[str, Any]], channel: bool) -> tuple[str, ...]:
+def _gameplay_schema(
+    specs: Mapping[str, Mapping[str, Any]], channel: bool
+) -> tuple[str, ...]:
     fields = ["snapshot_id:String", "load_revision:String", "business_date:Date"]
     if channel:
         fields.append("channel:String")
@@ -1071,36 +1372,152 @@ def _gameplay_schema(specs: Mapping[str, Mapping[str, Any]], channel: bool) -> t
         if spec["nullable"]:
             data_type = f"Nullable({data_type})"
         fields.append(f"{field}:{data_type}")
-    order = "snapshot_id,load_revision,business_date," + ("channel," if channel else "") + "service_scope,gameplay"
-    return (*fields, "engine:MergeTree", f"order_by:{order}", "canonicalization:gameplay-decimal-v1")
+    order = (
+        "snapshot_id,load_revision,business_date,"
+        + ("channel," if channel else "")
+        + "service_scope,gameplay"
+    )
+    return (
+        *fields,
+        "engine:MergeTree",
+        f"order_by:{order}",
+        "canonicalization:gameplay-decimal-v1",
+    )
 
 
 def _event_schema(version: str) -> tuple[str, ...]:
     return (
-        "snapshot_id:String", "load_revision:String", "source_family:LowCardinality(String)",
-        "event_id:String", "event_type:String", "event_start_date:Date", "event_end_date:Date",
-        "affected_scope:String", "authority:String", "evidence_level:String", "wording_limit:String",
-        "recurrence_kind:String", "recurrence_month_start:UInt8", "recurrence_day_start:UInt8",
-        "recurrence_month_end:UInt8", "recurrence_day_end:UInt8",
-        "payload:String", "engine:MergeTree",
-        "order_by:snapshot_id,load_revision,source_family,event_id", f"canonicalization:{version}",
+        "snapshot_id:String",
+        "load_revision:String",
+        "source_family:LowCardinality(String)",
+        "event_id:String",
+        "event_type:String",
+        "event_start_date:Date",
+        "event_end_date:Date",
+        "affected_scope:String",
+        "authority:String",
+        "evidence_level:String",
+        "wording_limit:String",
+        "recurrence_kind:String",
+        "recurrence_month_start:UInt8",
+        "recurrence_day_start:UInt8",
+        "recurrence_month_end:UInt8",
+        "recurrence_day_end:UInt8",
+        "payload:String",
+        "engine:MergeTree",
+        "order_by:snapshot_id,load_revision,source_family,event_id",
+        f"canonicalization:{version}",
     )
 
 
-def _part(dataset_id: str, table_prefix: str, schema: tuple[str, ...], fingerprint: str, rows: Sequence[Mapping[str, Any]], date_range: tuple[str, ...], watermark: str, *, evidence_state: str, status: str = "active") -> DatasetLoadPart:
-    return DatasetLoadPart(dataset_id, _versioned_table(table_prefix, fingerprint), tuple(item.split(":", 1)[0] for item in schema if not item.startswith(("engine:", "order_by:", "canonicalization:"))), fingerprint, len(rows), tuple(date_range), watermark, rows_content_hash(rows), evidence_state, status, tuple(dict(row) for row in rows))
+def _part(
+    dataset_id: str,
+    table_prefix: str,
+    schema: tuple[str, ...],
+    fingerprint: str,
+    rows: Sequence[Mapping[str, Any]],
+    date_range: tuple[str, ...],
+    watermark: str,
+    *,
+    evidence_state: str,
+    status: str = "active",
+) -> DatasetLoadPart:
+    return DatasetLoadPart(
+        dataset_id,
+        _versioned_table(table_prefix, fingerprint),
+        tuple(
+            item.split(":", 1)[0]
+            for item in schema
+            if not item.startswith(("engine:", "order_by:", "canonicalization:"))
+        ),
+        fingerprint,
+        len(rows),
+        tuple(date_range),
+        watermark,
+        rows_content_hash(rows),
+        evidence_state,
+        status,
+        tuple(dict(row) for row in rows),
+    )
 
 
-def _build_manifest(*, snapshot_id: str, load_revision: str, source_family: str, contract_ref: str, canonicalization_version: str, source_checksums: Mapping[str, str], no_data_partitions: tuple[str, ...], no_data_partition_windows: tuple[str, ...], evidence_state: str, parts: tuple[DatasetLoadPart, ...]) -> SourceLoadManifest:
-    manifest_content = {"snapshot_id": snapshot_id, "load_revision": load_revision, "source_family": source_family, "contract_ref": contract_ref, "canonicalization_version": canonicalization_version, "source_checksums": source_checksums, "no_data_partitions": no_data_partitions, "no_data_partition_windows": no_data_partition_windows, "parts": [{key: value for key, value in asdict(part).items() if key != "rows"} for part in parts]}
+def _build_manifest(
+    *,
+    snapshot_id: str,
+    load_revision: str,
+    source_family: str,
+    contract_ref: str,
+    canonicalization_version: str,
+    source_checksums: Mapping[str, str],
+    no_data_partitions: tuple[str, ...],
+    no_data_partition_windows: tuple[str, ...],
+    evidence_state: str,
+    parts: tuple[DatasetLoadPart, ...],
+) -> SourceLoadManifest:
+    manifest_content = {
+        "snapshot_id": snapshot_id,
+        "load_revision": load_revision,
+        "source_family": source_family,
+        "contract_ref": contract_ref,
+        "canonicalization_version": canonicalization_version,
+        "source_checksums": source_checksums,
+        "no_data_partitions": no_data_partitions,
+        "no_data_partition_windows": no_data_partition_windows,
+        "parts": [
+            {key: value for key, value in asdict(part).items() if key != "rows"}
+            for part in parts
+        ],
+    }
     manifest_ref = content_ref("source-load-manifest", manifest_content)
-    snapshot_refs = tuple(content_ref("dataset-snapshot", {"manifest_ref": manifest_ref, "snapshot_id": snapshot_id, "dataset_id": part.dataset_id, "physical_table": part.physical_table, "watermark": part.watermark, "schema_fingerprint": part.schema_fingerprint, "load_revision": load_revision}) for part in parts)
-    release_ref = dataset_snapshot_release_ref(snapshot_id, load_revision, snapshot_refs)
-    return SourceLoadManifest(manifest_ref, snapshot_refs[0], snapshot_id, load_revision, release_ref, source_family, contract_ref, RUNTIME_BINDING_REF, canonicalization_version, dict(source_checksums), no_data_partitions, no_data_partition_windows, evidence_state, parts)
+    snapshot_refs = tuple(
+        content_ref(
+            "dataset-snapshot",
+            {
+                "manifest_ref": manifest_ref,
+                "snapshot_id": snapshot_id,
+                "dataset_id": part.dataset_id,
+                "physical_table": part.physical_table,
+                "watermark": part.watermark,
+                "schema_fingerprint": part.schema_fingerprint,
+                "load_revision": load_revision,
+            },
+        )
+        for part in parts
+    )
+    release_ref = dataset_snapshot_release_ref(
+        snapshot_id, load_revision, snapshot_refs
+    )
+    return SourceLoadManifest(
+        manifest_ref,
+        snapshot_refs[0],
+        snapshot_id,
+        load_revision,
+        release_ref,
+        source_family,
+        contract_ref,
+        RUNTIME_BINDING_REF,
+        canonicalization_version,
+        dict(source_checksums),
+        no_data_partitions,
+        no_data_partition_windows,
+        evidence_state,
+        parts,
+    )
 
 
 def _snapshot_ref(manifest: SourceLoadManifest, part: DatasetLoadPart) -> str:
-    return content_ref("dataset-snapshot", {"manifest_ref": manifest.manifest_ref, "snapshot_id": manifest.snapshot_id, "dataset_id": part.dataset_id, "physical_table": part.physical_table, "watermark": part.watermark, "schema_fingerprint": part.schema_fingerprint, "load_revision": manifest.load_revision})
+    return content_ref(
+        "dataset-snapshot",
+        {
+            "manifest_ref": manifest.manifest_ref,
+            "snapshot_id": manifest.snapshot_id,
+            "dataset_id": part.dataset_id,
+            "physical_table": part.physical_table,
+            "watermark": part.watermark,
+            "schema_fingerprint": part.schema_fingerprint,
+            "load_revision": manifest.load_revision,
+        },
+    )
 
 
 def _versioned_table(prefix: str, fingerprint: str) -> str:
@@ -1109,7 +1526,9 @@ def _versioned_table(prefix: str, fingerprint: str) -> str:
     return f"{prefix}__{fingerprint[:16]}"
 
 
-def _attach_revision(rows: Sequence[Mapping[str, Any]], revision: str) -> list[dict[str, Any]]:
+def _attach_revision(
+    rows: Sequence[Mapping[str, Any]], revision: str
+) -> list[dict[str, Any]]:
     attached = []
     for item in rows:
         values = list(item.items())
@@ -1125,7 +1544,9 @@ def _row_date_range(rows: Sequence[Mapping[str, Any]], field: str) -> tuple[str,
 
 
 def _snapshot_available_at(watermark: str) -> str:
-    return datetime.combine(date.fromisoformat(watermark) + timedelta(days=1), time.min, tzinfo=timezone.utc).isoformat()
+    return datetime.combine(
+        date.fromisoformat(watermark) + timedelta(days=1), time.min, tzinfo=timezone.utc
+    ).isoformat()
 
 
 def _validate_event_identities(rows: Sequence[Mapping[str, Any]]) -> None:
@@ -1162,7 +1583,11 @@ def _read_persisted(
     snapshot_id: str,
     load_revision: str,
 ) -> tuple[dict[str, Any], ...]:
-    order = next(item.split(":", 1)[1] for item in _schema_for_part(part) if item.startswith("order_by:"))
+    order = next(
+        item.split(":", 1)[1]
+        for item in _schema_for_part(part)
+        if item.startswith("order_by:")
+    )
     result = client.query(
         f"SELECT * FROM {part.physical_table} WHERE snapshot_id = {{snapshot_id:String}} AND load_revision = {{load_revision:String}} ORDER BY {order}",
         parameters={"snapshot_id": snapshot_id, "load_revision": load_revision},
@@ -1175,17 +1600,24 @@ def _read_persisted(
         if not item.startswith(("engine:", "order_by:", "canonicalization:"))
     )
     return tuple(
-        _normalize_persisted_row(item, part, expected_types)
-        for item in raw_rows
+        _normalize_persisted_row(item, part, expected_types) for item in raw_rows
     )
 
 
 def _schema_for_part(part: DatasetLoadPart) -> tuple[str, ...]:
     if part.dataset_id == GAMEPLAY_DATASET:
-        return _gameplay_schema(_gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), False)
+        return _gameplay_schema(
+            _gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), False
+        )
     if part.dataset_id == GAMEPLAY_CHANNEL_DATASET:
-        return _gameplay_schema(_gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), True)
-    return _event_schema("external-events-v1" if part.dataset_id == EXTERNAL_EVENT_DATASET else "internal-operation-events-v1")
+        return _gameplay_schema(
+            _gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), True
+        )
+    return _event_schema(
+        "external-events-v1"
+        if part.dataset_id == EXTERNAL_EVENT_DATASET
+        else "internal-operation-events-v1"
+    )
 
 
 def _normalize_persisted_row(
@@ -1201,7 +1633,9 @@ def _normalize_persisted_row(
         if value is None:
             normalized[field] = None
         elif expected_types[field] == "Date":
-            normalized[field] = value.isoformat() if isinstance(value, date) else str(value)
+            normalized[field] = (
+                value.isoformat() if isinstance(value, date) else str(value)
+            )
         elif "Decimal" in expected_types[field]:
             scale_match = re.search(r"Decimal\(\d+,\s*(\d+)\)", expected_types[field])
             if scale_match is None:
@@ -1217,11 +1651,17 @@ def _normalize_persisted_row(
     return normalized
 
 
-def _validate_persisted_part(rows: Sequence[Mapping[str, Any]], part: DatasetLoadPart) -> None:
+def _validate_persisted_part(
+    rows: Sequence[Mapping[str, Any]], part: DatasetLoadPart
+) -> None:
     if len(rows) != part.row_count:
         raise GameplayLoadError(f"persisted_row_count_mismatch:{part.dataset_id}")
     schema = _schema_for_part(part)
-    order = tuple(next(item.split(":", 1)[1] for item in schema if item.startswith("order_by:")).split(","))
+    order = tuple(
+        next(
+            item.split(":", 1)[1] for item in schema if item.startswith("order_by:")
+        ).split(",")
+    )
     keys = [tuple(row[field] for field in order) for row in rows]
     if len(keys) != len(set(keys)):
         raise GameplayLoadError(f"persisted_unique_key_mismatch:{part.dataset_id}")
@@ -1230,7 +1670,11 @@ def _validate_persisted_part(rows: Sequence[Mapping[str, Any]], part: DatasetLoa
 
 
 def _gameplay_current_fingerprint(channel: bool) -> str:
-    return schema_fingerprint(_gameplay_schema(_gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), channel))
+    return schema_fingerprint(
+        _gameplay_schema(
+            _gameplay_field_specs(load_contract(GAMEPLAY_CONTRACT_PATH)), channel
+        )
+    )
 
 
 def _event_current_fingerprint() -> str:
@@ -1256,20 +1700,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "gameplay":
         if not args.overall.is_dir() or not args.channels.is_dir():
             raise GameplayLoadError("source_directory_missing")
-        rows, manifest = load_gameplay_rows(tuple(args.overall.glob("*.csv")), tuple(args.channels.glob("*.csv")), snapshot_id=args.snapshot_id)
+        rows, manifest = load_gameplay_rows(
+            tuple(args.overall.glob("*.csv")),
+            tuple(args.channels.glob("*.csv")),
+            snapshot_id=args.snapshot_id,
+        )
     elif args.command == "external-events":
-        rows, manifest = load_external_event_workbook(args.workbook, snapshot_id=args.snapshot_id)
+        rows, manifest = load_external_event_workbook(
+            args.workbook, snapshot_id=args.snapshot_id
+        )
     else:
-        rows, manifest = load_internal_event_rows(args.csv, snapshot_id=args.snapshot_id)
+        rows, manifest = load_internal_event_rows(
+            args.csv, snapshot_id=args.snapshot_id
+        )
     if args.clickhouse_container:
         database = os.environ.get("WAJE_CLICKHOUSE_DATABASE", "")
         if not database:
-            raise GameplayLoadError("missing_clickhouse_binding:WAJE_CLICKHOUSE_DATABASE")
+            raise GameplayLoadError(
+                "missing_clickhouse_binding:WAJE_CLICKHOUSE_DATABASE"
+            )
         client = DockerClickHouseClient(args.clickhouse_container, database)
     else:
         runtime = ClickHouseRuntime.from_env()
         if not runtime.configured():
-            raise GameplayLoadError("missing_clickhouse_binding:" + ",".join(runtime.binding.missing))
+            raise GameplayLoadError(
+                "missing_clickhouse_binding:" + ",".join(runtime.binding.missing)
+            )
         client = runtime._get_client()
     payloads = build_source_snapshot_payloads(manifest)
     store = None if args.skip_postgres else PostgresConversationStore.from_env()
@@ -1281,18 +1737,60 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             with store.dataset_snapshot_release_lock(manifest.snapshot_id):
                 apply_clickhouse_ddl(client, manifest)
-                active_revisions = tuple(str(item.get("load_revision") or "") for item in store.list_dataset_snapshots() if item.get("logical_snapshot_id", item.get("snapshot_id")) == manifest.snapshot_id and item.get("status") == "active")
-                stage_source_release(client, manifest, active_load_revisions=active_revisions)
+                active_revisions = tuple(
+                    str(item.get("load_revision") or "")
+                    for item in store.list_dataset_snapshots()
+                    if item.get("logical_snapshot_id", item.get("snapshot_id"))
+                    == manifest.snapshot_id
+                    and item.get("status") == "active"
+                )
+                stage_source_release(
+                    client, manifest, active_load_revisions=active_revisions
+                )
                 postgres_result = persist_source_snapshot_payloads(store, payloads)
     finally:
         if store is not None:
             close = getattr(store.connection, "close", None)
             if callable(close):
                 close()
-    artifact = {"source_load_manifest": manifest.to_dict(), "dataset_snapshot_payloads": list(postgres_result.verified_payloads or payloads), "postgres_snapshot_roundtrip_refs": list(postgres_result.active_refs), "postgres_superseded_snapshot_refs": list(postgres_result.superseded_refs), "dataset_release_authority": postgres_result.authority_record}
+    artifact = {
+        "source_load_manifest": manifest.to_dict(),
+        "dataset_snapshot_payloads": list(
+            postgres_result.verified_payloads or payloads
+        ),
+        "postgres_snapshot_roundtrip_refs": list(postgres_result.active_refs),
+        "postgres_superseded_snapshot_refs": list(postgres_result.superseded_refs),
+        "dataset_release_authority": postgres_result.authority_record,
+    }
     args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
-    args.manifest_out.write_text(json.dumps(json.loads(canonical_json_bytes(artifact)), ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"manifest_path": str(args.manifest_out), "manifest_ref": manifest.manifest_ref, "row_counts": {part.dataset_id: part.row_count for part in manifest.parts}, "watermarks": {part.dataset_id: part.watermark for part in manifest.parts}, "release_ref": manifest.release_ref, "postgres_snapshot_refs": postgres_result.active_refs}, ensure_ascii=False, sort_keys=True))
+    args.manifest_out.write_text(
+        json.dumps(
+            json.loads(canonical_json_bytes(artifact)),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(
+        json.dumps(
+            {
+                "manifest_path": str(args.manifest_out),
+                "manifest_ref": manifest.manifest_ref,
+                "row_counts": {
+                    part.dataset_id: part.row_count for part in manifest.parts
+                },
+                "watermarks": {
+                    part.dataset_id: part.watermark for part in manifest.parts
+                },
+                "release_ref": manifest.release_ref,
+                "postgres_snapshot_refs": postgres_result.active_refs,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

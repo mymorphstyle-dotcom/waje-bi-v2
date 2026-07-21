@@ -4,17 +4,14 @@ import unittest
 
 from bi_agent.conversation.store import InMemoryConversationStore
 from bi_agent.runtime.clickhouse_query_compiler import compile_clickhouse_query
-from bi_agent.runtime.clickhouse_revenue_rows import (
-    ClickHouseRevenueRows,
-    _dataset_snapshots,
-    trusted_active_dataset_snapshots,
-)
 from bi_agent.runtime.dataset_catalog import (
     DatasetCatalog,
     DatasetReleaseAuthorityRecord,
     DatasetSnapshot,
     build_dataset_release_authority_record,
+    dataset_snapshots_from_records,
     dataset_snapshot_release_ref,
+    trusted_active_dataset_snapshots,
 )
 
 from tests.phase4.test_clickhouse_query_compiler import contract, dashboard_metric
@@ -24,7 +21,9 @@ class _Resolver:
     def __init__(self, record: DatasetReleaseAuthorityRecord):
         self.record = record
 
-    def resolve_dataset_release(self, release_ref: str) -> DatasetReleaseAuthorityRecord:
+    def resolve_dataset_release(
+        self, release_ref: str
+    ) -> DatasetReleaseAuthorityRecord:
         if release_ref != self.record.release_ref:
             raise KeyError(release_ref)
         return self.record
@@ -105,10 +104,17 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         payloads = _release_payloads()
         record = build_dataset_release_authority_record(payloads)
 
-        self.assertTrue(record.authority_record_ref.startswith("dataset-release-authority:sha256:"))
+        self.assertTrue(
+            record.authority_record_ref.startswith("dataset-release-authority:sha256:")
+        )
         self.assertEqual(record.digest, record.authority_record_ref.rsplit(":", 1)[-1])
-        self.assertEqual(record.snapshot_refs, tuple(sorted(item["snapshot_ref"] for item in payloads)))
-        self.assertEqual(record.dataset_ids, ("market_dashboard", "market_dashboard_channel"))
+        self.assertEqual(
+            record.snapshot_refs,
+            tuple(sorted(item["snapshot_ref"] for item in payloads)),
+        )
+        self.assertEqual(
+            record.dataset_ids, ("market_dashboard", "market_dashboard_channel")
+        )
         self.assertEqual(record.integrity_errors, ())
 
         drifted = replace(
@@ -143,7 +149,9 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dataset_release_resolver_required"):
             compile_clickhouse_query(query, {selected.snapshot_ref: selected})
 
-        with self.assertRaisesRegex(ValueError, "dataset_release_authority_member_mismatch"):
+        with self.assertRaisesRegex(
+            ValueError, "dataset_release_authority_member_mismatch"
+        ):
             compile_clickhouse_query(
                 query,
                 {
@@ -180,41 +188,6 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         )
         self.assertEqual(resolved.snapshot_ref, payloads[1]["snapshot_ref"])
 
-    def test_untrusted_request_cannot_override_trusted_provider_snapshot(self):
-        payloads = _release_payloads()
-        record = build_dataset_release_authority_record(payloads)
-        selected = _snapshot_from_payload(payloads[0], record.authority_record_ref)
-        query = contract(
-            dataset_id="market_dashboard",
-            metrics=(dashboard_metric(),),
-        )
-        provider = ClickHouseRevenueRows(
-            snapshots={selected.snapshot_ref: selected},
-            release_resolver=_Resolver(record),
-        )
-
-        plan = provider.plan(
-            {
-                "run_id": "run-request-authority-forgery",
-                "compiler_runtime_plan": {"query_contracts": (query,)},
-                "dataset_snapshots": (
-                    {
-                        "snapshot_ref": selected.snapshot_ref,
-                        "dataset_id": selected.dataset_id,
-                        "release_ref": selected.release_ref,
-                        "physical_table": "forged_table",
-                        "rows_content_hash": "f" * 64,
-                        "release_verified": True,
-                    },
-                ),
-            },
-            {},
-            (),
-        )
-
-        self.assertIn("untrusted_dataset_snapshot_authority_fields", plan.reason)
-        self.assertEqual(plan.snapshots, {})
-
     def test_single_save_uses_canonical_policy_even_when_marker_is_omitted(self):
         store = InMemoryConversationStore()
         payload = _release_payloads()[0]
@@ -235,8 +208,12 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
         first = store.resolve_dataset_release(release_ref)
         self.assertEqual(first.integrity_errors, ())
 
-        store.dataset_snapshots[payloads[0]["snapshot_ref"]]["physical_table"] = "drifted"
-        with self.assertRaisesRegex(ValueError, "dataset_release_authority_record_mismatch"):
+        store.dataset_snapshots[payloads[0]["snapshot_ref"]]["physical_table"] = (
+            "drifted"
+        )
+        with self.assertRaisesRegex(
+            ValueError, "dataset_release_authority_record_mismatch"
+        ):
             store.resolve_dataset_release(release_ref)
 
     def test_in_memory_published_release_compiles_through_real_resolver(self):
@@ -248,7 +225,7 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
             logical_snapshot_id="dashboard-logical",
             payloads=payloads,
         )
-        typed = _dataset_snapshots(store.list_dataset_snapshots())
+        typed = dataset_snapshots_from_records(store.list_dataset_snapshots())
         selected = typed["snapshot:market_dashboard:1"]
         query = contract(
             dataset_id="market_dashboard",
@@ -288,7 +265,9 @@ class DatasetReleaseAuthorityTest(unittest.TestCase):
                 payloads=drifted,
             )
 
-    def test_trusted_store_adapter_projects_only_active_purpose_eligible_snapshots(self):
+    def test_trusted_store_adapter_projects_only_active_purpose_eligible_snapshots(
+        self,
+    ):
         store = InMemoryConversationStore()
         old_payloads = _release_payloads(revision="dashboard-load:sha256:old")
         store.publish_dataset_snapshot_release(
@@ -329,8 +308,26 @@ def _release_payloads(
     ref_suffix="",
 ):
     payloads = (
-        _payload(f"snapshot:market_dashboard:1{ref_suffix}", "market_dashboard", "market_dashboard_daily__schema_overall", "a" * 64, "schema_overall", "claim_ready", "matched", revision=revision),
-        _payload(f"snapshot:market_dashboard_channel:1{ref_suffix}", "market_dashboard_channel", "market_dashboard_channel_daily__schema_channel", "b" * 64, "schema_channel", channel_evidence, "mismatch", revision=revision),
+        _payload(
+            f"snapshot:market_dashboard:1{ref_suffix}",
+            "market_dashboard",
+            "market_dashboard_daily__schema_overall",
+            "a" * 64,
+            "schema_overall",
+            "claim_ready",
+            "matched",
+            revision=revision,
+        ),
+        _payload(
+            f"snapshot:market_dashboard_channel:1{ref_suffix}",
+            "market_dashboard_channel",
+            "market_dashboard_channel_daily__schema_channel",
+            "b" * 64,
+            "schema_channel",
+            channel_evidence,
+            "mismatch",
+            revision=revision,
+        ),
     )
     release_ref = dataset_snapshot_release_ref(
         "dashboard-logical",
@@ -342,7 +339,17 @@ def _release_payloads(
     return payloads
 
 
-def _payload(snapshot_ref, dataset_id, physical_table, rows_hash, schema, evidence, reconciliation, *, revision):
+def _payload(
+    snapshot_ref,
+    dataset_id,
+    physical_table,
+    rows_hash,
+    schema,
+    evidence,
+    reconciliation,
+    *,
+    revision,
+):
     return {
         "snapshot_ref": snapshot_ref,
         "snapshot_id": "dashboard-logical",
@@ -350,7 +357,12 @@ def _payload(snapshot_ref, dataset_id, physical_table, rows_hash, schema, eviden
         "physical_table": physical_table,
         "watermark": "2026-06-02",
         "schema_fingerprint": schema,
-        "schema_fields": ["snapshot_id", "load_revision", "business_date", "paid_amount"],
+        "schema_fields": [
+            "snapshot_id",
+            "load_revision",
+            "business_date",
+            "paid_amount",
+        ],
         "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1",
         "loaded_at": "2026-06-03T00:00:00+00:00",
         "status": "active",
@@ -391,9 +403,7 @@ def _snapshot_from_payload(payload, authority_record_ref):
         row_count=payload.get("row_count", -1),
         date_range=tuple(payload.get("date_range") or ()),
         no_data_partitions=tuple(payload.get("no_data_partitions") or ()),
-        no_data_partition_windows=tuple(
-            payload.get("no_data_partition_windows") or ()
-        ),
+        no_data_partition_windows=tuple(payload.get("no_data_partition_windows") or ()),
     )
 
 

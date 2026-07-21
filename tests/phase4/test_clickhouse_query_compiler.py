@@ -91,7 +91,8 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
                 ),
                 logical_snapshot_id=f"{first.dataset_id}-logical",
                 load_revision=f"{first.dataset_id}-load:sha256:reviewed",
-                rows_content_hash=("a" if member_dataset == first.dataset_id else "b") * 64,
+                rows_content_hash=("a" if member_dataset == first.dataset_id else "b")
+                * 64,
                 evidence_state=(
                     "claim_ready"
                     if member_dataset == "paid_order_success"
@@ -156,7 +157,9 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
         first = replace(first, release_ref=release_ref)
         peer = replace(peer, release_ref=release_ref, authority_record_ref="")
         record = build_dataset_release_authority_record(
-            tuple({**item.to_dict(), "requires_release": True} for item in (first, peer))
+            tuple(
+                {**item.to_dict(), "requires_release": True} for item in (first, peer)
+            )
         )
         first = replace(first, authority_record_ref=record.authority_record_ref)
         snapshots[first.snapshot_ref] = first
@@ -241,9 +244,7 @@ def metric(dataset_id="paid_order_success", expression=None):
                 "cross_source_statistical_association",
             )
         ),
-        reconciliation_tolerance=(
-            0.0 if dataset_id == "payment_attempt" else 0.01
-        ),
+        reconciliation_tolerance=(0.0 if dataset_id == "payment_attempt" else 0.01),
         reconciliation_strategy=(
             "unsupported_non_additive"
             if dataset_id == "payment_attempt"
@@ -252,9 +253,32 @@ def metric(dataset_id="paid_order_success", expression=None):
         value_semantics=(
             "scalar_ratio" if dataset_id == "payment_attempt" else "raw_scalar"
         ),
-        display_format=(
-            "percent" if dataset_id == "payment_attempt" else "number"
+        display_format=("percent" if dataset_id == "payment_attempt" else "number"),
+    )
+
+
+def reviewed_paid_metric(metric_id):
+    reviewed = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    ).metric(metric_id, dataset_id="paid_order_success")
+    return MetricBinding(
+        metric_id=metric_id,
+        contract_ref=reviewed["contract_ref"],
+        dataset_id="paid_order_success",
+        expression=reviewed["expression"],
+        aggregation=reviewed["aggregation"],
+        required_fields=tuple(reviewed["required_fields"]),
+        grain=tuple(reviewed["grain"]),
+        numerator_metric=str(reviewed.get("numerator_metric") or ""),
+        denominator_metric=str(reviewed.get("denominator_metric") or ""),
+        zero_denominator_policy=str(reviewed.get("zero_denominator_policy") or "null"),
+        claim_types=tuple(reviewed.get("claim_types") or ()),
+        reconciliation_tolerance=float(reviewed.get("reconciliation_tolerance", 0.0)),
+        reconciliation_strategy=str(
+            reviewed.get("reconciliation_strategy") or "unsupported_non_additive"
         ),
+        value_semantics=str(reviewed.get("value_semantics") or "raw_scalar"),
+        display_format=str(reviewed.get("display_format") or "number"),
     )
 
 
@@ -306,15 +330,27 @@ def dashboard_channel_dimension():
     )
 
 
-def snapshot(dataset_id="paid_order_success", *, fields=(), table="analytics.paid_success"):
+def snapshot(
+    dataset_id="paid_order_success", *, fields=(), table="analytics.paid_success"
+):
     if table == "analytics.paid_success" and dataset_id == "market_dashboard":
-        table = "market_dashboard_daily"
+        table = "market_dashboard_daily__schema"
     if table == "analytics.paid_success" and dataset_id == "market_dashboard_channel":
-        table = "market_dashboard_channel_daily"
+        table = "market_dashboard_channel_daily__schema"
     default_fields = {
-        "paid_order_success": ("business_date_lagos", "paid_amount_ngn", "user_id", "channel"),
+        "paid_order_success": (
+            "business_date_lagos",
+            "paid_amount_ngn",
+            "user_id",
+            "channel",
+        ),
         "payment_attempt": ("支付发起时间", "订单id", "支付状态"),
-        "market_dashboard": ("snapshot_id", "load_revision", "business_date", "paid_amount"),
+        "market_dashboard": (
+            "snapshot_id",
+            "load_revision",
+            "business_date",
+            "paid_amount",
+        ),
         "gameplay": ("business_date", "paid_amount_ngn", "gameplay"),
         "external_event": ("event_start_date",),
         "internal_operation_event": ("event_start_date",),
@@ -377,7 +413,10 @@ def snapshot(dataset_id="paid_order_success", *, fields=(), table="analytics.pai
             release_ref=release_ref,
         )
         record = build_dataset_release_authority_record(
-            tuple({**item.to_dict(), "requires_release": True} for item in (selected, peer))
+            tuple(
+                {**item.to_dict(), "requires_release": True}
+                for item in (selected, peer)
+            )
         )
         selected = replace(selected, authority_record_ref=record.authority_record_ref)
         _RELEASE_RESOLVERS[release_ref] = _ReleaseResolver(record)
@@ -393,65 +432,34 @@ def contract(
     filters=(),
     query_parameters=None,
 ):
-    selected_metrics = (
-        tuple(metrics)
-        if metrics is not None
-        else (metric(dataset_id),)
-    )
+    selected_metrics = tuple(metrics) if metrics is not None else (metric(dataset_id),)
     resolved = windows()
-    required_fields = ["window_id", "window_role", "observation_key"]
-    required_fields.extend(
-        {
-            "time_bucket_scan": ("calendar_week", "weekday", "month_phase"),
-            "data_quality_probe": ("source_row_count",),
-            "event_context_probe": (
-                "event_count",
-                "source_family",
-                "event_id",
-                "event_type",
-                "event_start_date",
-                "event_end_date",
-                "affected_scope",
-                "authority",
-                "evidence_level",
-                "wording_limit",
-                "recurrence_kind",
-                "recurrence_month_start",
-                "recurrence_day_start",
-                "recurrence_month_end",
-                "recurrence_day_end",
-                "payload",
-            ),
-            "high_value_scan": (
-                "high_value_threshold",
-                "high_value_amount",
-                "high_value_paid_users",
-            ),
-        }.get(query_intent, ())
-    )
+    reviewed_shape = RuntimeContractRegistry.from_path(
+        "contracts/runtime/clickhouse-analysis-bindings.yaml"
+    ).query_shape(query_intent)
+    required_fields = list(reviewed_shape["required_fields"])
     required_fields.extend(item.metric_id for item in selected_metrics)
     required_fields.extend(item.dimension_id for item in dimensions)
-    grain = [
-        "window_id",
-        "event_id" if query_intent == "event_context_probe" else "observation_key",
-        *(item.dimension_id for item in dimensions),
-    ]
+    required_fields = list(dict.fromkeys(required_fields))
+    unique_key = list(
+        dict.fromkeys(
+            (*reviewed_shape["unique_key"], *(item.dimension_id for item in dimensions))
+        )
+    )
+    grain = list(
+        dict.fromkeys(
+            (*reviewed_shape["grain"], *(item.dimension_id for item in dimensions))
+        )
+    )
     reviewed_parameters = (
         {
             "threshold_quantile": 0.95,
             "threshold_reference": "within_window_user_paid_amount",
-            "aggregation_grain": (
-                "window_id",
-                "observation_key",
-                "user_id",
-            ),
+            "aggregation_grain": ("window_id", "user_id"),
         }
         if query_intent == "high_value_scan"
         else {}
     )
-    reviewed_shape = RuntimeContractRegistry.from_path(
-        "contracts/runtime/clickhouse-analysis-bindings.yaml"
-    ).query_shape(query_intent)
     unsigned = QueryContract(
         query_contract_id=f"query:run:{dataset_id}:{query_intent}:1",
         analysis_contract_ref="analysis:run:1",
@@ -464,10 +472,10 @@ def contract(
         filters=tuple(filters),
         result_shape=ResultShape(
             tuple(required_fields),
-            tuple(grain),
+            tuple(unique_key),
             tuple(grain),
             tuple(item.window_id for item in resolved),
-            "complete_context_rows" if query_intent == "event_context_probe" else "complete_aggregate",
+            str(reviewed_shape.get("result_semantics") or "complete_aggregate"),
             str(reviewed_shape["dimension_presence_policy"]),
         ),
         completeness_assertions=("required_windows", "unique_key"),
@@ -506,6 +514,103 @@ def resigned(base, **changes):
 
 
 class ClickHouseQueryCompilerTest(unittest.TestCase):
+    def test_window_aggregate_formula_metrics_preserve_sum_and_mean_closure(self):
+        bindings = tuple(
+            reviewed_paid_metric(metric_id)
+            for metric_id in (
+                "paid_amount",
+                "paid_users",
+                "paid_orders",
+                "paid_frequency",
+                "avg_order_amount",
+            )
+        )
+        base = contract(
+            query_intent="component_driver_scan",
+            metrics=bindings,
+        )
+        compiled_mean = compile_clickhouse_query(
+            base,
+            {
+                "snapshot:paid_order_success:1": snapshot(
+                    fields=(
+                        "business_date_lagos",
+                        "paid_amount_ngn",
+                        "user_id",
+                        "order_id",
+                    )
+                )
+            },
+        )
+        sum_windows = tuple(
+            replace(window, aggregation="sum_of_complete_days")
+            if window.window_id == "rolling_7_day_baseline"
+            else window
+            for window in base.resolved_windows
+        )
+        sum_contract = resigned(base, resolved_windows=sum_windows)
+        compiled_sum = compile_clickhouse_query(
+            sum_contract,
+            {
+                "snapshot:paid_order_success:1": snapshot(
+                    fields=(
+                        "business_date_lagos",
+                        "paid_amount_ngn",
+                        "user_id",
+                        "order_id",
+                    )
+                )
+            },
+        )
+
+        self.assertEqual(
+            compiled_mean.parameters["window_aggregation_1"],
+            "mean_of_complete_days",
+        )
+        self.assertEqual(
+            compiled_sum.parameters["window_aggregation_1"],
+            "sum_of_complete_days",
+        )
+        sql = compiled_mean.sql_text
+        self.assertIn("matched_rows AS (", sql)
+        self.assertIn("window_coverage AS (", sql)
+        self.assertIn("window_aggregates AS (", sql)
+        self.assertIn("uniqExact(`__observation_date`) AS `source_complete_days`", sql)
+        self.assertIn("`__window_id` AS `observation_key`", sql)
+        self.assertIn(
+            "toFloat64(sum(paid_amount_ngn)) / nullIf(dateDiff('day', "
+            "`__window_start`, `__window_end`), 0)",
+            sql,
+        )
+        self.assertIn(
+            "toFloat64(uniqExact(user_id)) / nullIf(dateDiff('day', "
+            "`__window_start`, `__window_end`), 0)",
+            sql,
+        )
+        self.assertIn(
+            "uniqExact(order_id) / nullIf(uniqExact(user_id), 0) AS `paid_frequency`",
+            sql,
+        )
+        self.assertIn(
+            "sum(paid_amount_ngn) / nullIf(uniqExact(order_id), 0) "
+            "AS `avg_order_amount`",
+            sql,
+        )
+        self.assertNotIn("toString(`business_date_lagos`) AS `observation_key`", sql)
+
+    def test_daily_metric_baseline_keeps_daily_result_grain(self):
+        compiled = compile_clickhouse_query(
+            contract(query_intent="daily_metric_baselines"),
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "toString(`business_date_lagos`) AS `observation_key`",
+            compiled.sql_text,
+        )
+        self.assertNotIn("window_aggregates AS (", compiled.sql_text)
+        self.assertNotIn("source_complete_days", compiled.sql_text)
+
     def test_dimension_null_bucket_is_normalized_before_aggregation(self):
         query = contract(
             query_intent="dimension_contribution_scan",
@@ -531,7 +636,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         selected = snapshot(
             "market_dashboard",
             fields=("business_date", "paid_amount"),
-            table="market_dashboard_daily",
+            table="market_dashboard_daily__schema",
         )
         selected = replace(
             selected,
@@ -559,7 +664,26 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             )
         )
 
-    def test_dashboard_source_adapters_compile_business_metrics_and_revision_filter(self):
+    def test_unversioned_physical_table_is_rejected(self):
+        selected = snapshot(
+            "market_dashboard",
+            fields=("snapshot_id", "load_revision", "business_date", "paid_amount"),
+            table="market_dashboard_daily",
+        )
+        query = contract(
+            dataset_id="market_dashboard",
+            metrics=(dashboard_metric(),),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "dataset_physical_table_unreviewed:market_dashboard_daily",
+        ):
+            compile_clickhouse_query(query, {selected.snapshot_ref: selected})
+
+    def test_dashboard_source_adapters_compile_business_metrics_and_revision_filter(
+        self,
+    ):
         fields = (
             "snapshot_id",
             "load_revision",
@@ -574,7 +698,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         selected = snapshot(
             "market_dashboard",
             fields=fields,
-            table="market_dashboard_daily",
+            table="market_dashboard_daily__schema",
         )
         selected = replace(
             selected,
@@ -600,10 +724,16 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                     {selected.snapshot_ref: selected},
                 )
                 self.assertIn(f"sum({metric_id})", compiled.sql_text)
-                self.assertIn("`snapshot_id` = %(physical_snapshot_id)s", compiled.sql_text)
+                self.assertIn(
+                    "`snapshot_id` = %(physical_snapshot_id)s", compiled.sql_text
+                )
                 self.assertIn("`load_revision` = %(load_revision)s", compiled.sql_text)
-                self.assertEqual(compiled.parameters["physical_snapshot_id"], "dashboard-logical")
-                self.assertEqual(compiled.parameters["load_revision"], "load:sha256:reviewed")
+                self.assertEqual(
+                    compiled.parameters["physical_snapshot_id"], "dashboard-logical"
+                )
+                self.assertEqual(
+                    compiled.parameters["load_revision"], "load:sha256:reviewed"
+                )
 
     def test_dashboard_channel_adapter_requires_matched_claim_ready_release(self):
         selected = snapshot(
@@ -616,7 +746,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 "channel",
                 "paid_amount",
             ),
-            table="market_dashboard_channel_daily",
+            table="market_dashboard_channel_daily__schema",
         )
         selected = replace(
             selected,
@@ -645,7 +775,9 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             evidence_state="context_only",
             reconciliation_status="mismatch",
         )
-        with self.assertRaisesRegex(ValueError, "dataset_evidence_state_not_claim_ready"):
+        with self.assertRaisesRegex(
+            ValueError, "dataset_evidence_state_not_claim_ready"
+        ):
             compile_clickhouse_query(query, {mismatched.snapshot_ref: mismatched})
 
         context_probe = contract(
@@ -658,6 +790,18 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             {mismatched.snapshot_ref: mismatched},
         )
         self.assertIn("count() AS `source_row_count`", compiled_context.sql_text)
+
+        context_total = contract(
+            dataset_id="market_dashboard_channel",
+            query_intent="channel_context_total_probe",
+            metrics=(dashboard_metric("paid_amount", "market_dashboard_channel"),),
+        )
+        compiled_total = compile_clickhouse_query(
+            context_total,
+            {mismatched.snapshot_ref: mismatched},
+        )
+        self.assertIn("sum(paid_amount) AS `paid_amount`", compiled_total.sql_text)
+
     def test_event_context_keeps_reviewed_count_with_metric_projection(self):
         compiled = compile_clickhouse_query(
             contract(
@@ -669,8 +813,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
 
         self.assertIn("toUInt64(1) AS `event_count`", compiled.sql_text)
-        self.assertIn("`event_start_date` < tupleElement(analysis_window, 4)", compiled.sql_text)
-        self.assertIn("`event_end_date` >= tupleElement(analysis_window, 3)", compiled.sql_text)
+        self.assertIn(
+            "`event_start_date` < tupleElement(analysis_window, 4)", compiled.sql_text
+        )
+        self.assertIn(
+            "`event_end_date` >= tupleElement(analysis_window, 3)", compiled.sql_text
+        )
         for field in (
             "source_family",
             "event_id",
@@ -691,7 +839,9 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             self.assertIn(f"`{field}`", compiled.sql_text)
         self.assertIn("context_rows AS (", compiled.sql_text)
         self.assertIn("UNION ALL", compiled.sql_text)
-        self.assertIn("NOT IN (SELECT `window_id` FROM matched_events)", compiled.sql_text)
+        self.assertIn(
+            "NOT IN (SELECT `window_id` FROM matched_events)", compiled.sql_text
+        )
         self.assertIn("SELECT * FROM context_rows", compiled.sql_text)
         self.assertIn("ORDER BY `window_id`, `event_id`", compiled.sql_text)
         self.assertTrue(compiled.sql_text.endswith("LIMIT 5001"))
@@ -722,9 +872,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                     aggregation=metric_contract["aggregation"],
                     required_fields=tuple(metric_contract["required_fields"]),
                     grain=tuple(metric_contract["grain"]),
-                    numerator_metric=str(
-                        metric_contract.get("numerator_metric") or ""
-                    ),
+                    numerator_metric=str(metric_contract.get("numerator_metric") or ""),
                     denominator_metric=str(
                         metric_contract.get("denominator_metric") or ""
                     ),
@@ -732,9 +880,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                     reconciliation_tolerance=metric_contract[
                         "reconciliation_tolerance"
                     ],
-                    reconciliation_strategy=metric_contract[
-                        "reconciliation_strategy"
-                    ],
+                    reconciliation_strategy=metric_contract["reconciliation_strategy"],
                     value_semantics=metric_contract["value_semantics"],
                     display_format=metric_contract["display_format"],
                 )
@@ -837,9 +983,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
 
         for query_contract, reason in cases:
-            with self.subTest(reason=reason), self.assertRaisesRegex(
-                (TypeError, ValueError),
-                reason,
+            with (
+                self.subTest(reason=reason),
+                self.assertRaisesRegex(
+                    (TypeError, ValueError),
+                    reason,
+                ),
             ):
                 compile_clickhouse_query(
                     query_contract,
@@ -859,9 +1008,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         selected_snapshot = snapshot()
 
         for query_contract, field in cases:
-            with self.subTest(field=field), self.assertRaisesRegex(
-                TypeError,
-                f"invalid_query_contract_runtime_type:{field}",
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(
+                    TypeError,
+                    f"invalid_query_contract_runtime_type:{field}",
+                ),
             ):
                 compile_clickhouse_query(
                     query_contract,
@@ -888,10 +1040,13 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 base,
                 metric_bindings=(invalid_binding,),
             )
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(
-                (TypeError, ValueError),
-                "invalid_query_contract_runtime_type:"
-                "metric_bindings.reconciliation_tolerance",
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaisesRegex(
+                    (TypeError, ValueError),
+                    "invalid_query_contract_runtime_type:"
+                    "metric_bindings.reconciliation_tolerance",
+                ),
             ):
                 compile_clickhouse_query(
                     invalid_contract,
@@ -909,9 +1064,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
 
         for invalid_snapshot, field in cases:
-            with self.subTest(field=field), self.assertRaisesRegex(
-                ValueError,
-                f"invalid_snapshot_metadata:{field}",
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(
+                    ValueError,
+                    f"invalid_snapshot_metadata:{field}",
+                ),
             ):
                 compile_clickhouse_query(
                     base,
@@ -933,9 +1091,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             dataset["date_expression"] = expression
             dataset["required_fields"] = ["business_date_lagos"]
             registry = RuntimeContractRegistry(payload)
-            with self.subTest(expression=expression), patch(
-                "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
-                return_value=registry,
+            with (
+                self.subTest(expression=expression),
+                patch(
+                    "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
+                    return_value=registry,
+                ),
             ):
                 with self.assertRaisesRegex(
                     ValueError,
@@ -947,9 +1108,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                     )
 
     def test_rejects_unsafe_expression_even_if_compromised_registry_matches(self):
-        payload = load_contract(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
         expression = "sum(paid_amount_ngn), groupArray(user_id)"
         payload["metrics"]["paid_amount"]["expression"] = expression
         payload["metrics"]["paid_amount"]["required_fields"] = [
@@ -973,10 +1132,13 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             contract_signature=query_contract_signature(unsigned),
         )
 
-        with patch(
-            "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
-            return_value=registry,
-        ), self.assertRaisesRegex(ValueError, "unsafe_metric_expression"):
+        with (
+            patch(
+                "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
+                return_value=registry,
+            ),
+            self.assertRaisesRegex(ValueError, "unsafe_metric_expression"),
+        ):
             compile_clickhouse_query(
                 resigned,
                 {"snapshot:paid_order_success:1": snapshot()},
@@ -1006,9 +1168,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             )
 
     def test_structural_words_inside_reviewed_literals_are_not_sql_structure(self):
-        payload = load_contract(
-            "contracts/runtime/clickhouse-analysis-bindings.yaml"
-        )
+        payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
         expression = "countIf(channel = 'DROP')"
         payload["metrics"]["paid_amount"]["expression"] = expression
         payload["metrics"]["paid_amount"]["aggregation"] = "count_if"
@@ -1151,7 +1311,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             ),
             (
                 "aggregation_grain",
-                ("window_id", "user_id"),
+                ("window_id", "observation_key", "user_id"),
                 "high_value_aggregation_grain_unsupported",
             ),
         )
@@ -1159,9 +1319,9 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             payload = load_contract(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
             )
-            payload["query_shapes"]["high_value_scan"]["query_parameters"][
-                field
-            ] = value
+            payload["query_shapes"]["high_value_scan"]["query_parameters"][field] = (
+                value
+            )
             registry = RuntimeContractRegistry(payload)
             base = contract(query_intent="high_value_scan")
             query_parameters = dict(base.query_parameters)
@@ -1172,9 +1332,12 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 contract_signature=query_contract_signature(changed),
             )
 
-            with self.subTest(field=field), patch(
-                "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
-                return_value=registry,
+            with (
+                self.subTest(field=field),
+                patch(
+                    "bi_agent.runtime.clickhouse_query_compiler._runtime_registry",
+                    return_value=registry,
+                ),
             ):
                 with self.assertRaisesRegex(ValueError, reason):
                     compile_clickhouse_query(
@@ -1191,7 +1354,9 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertNotIn("now(", compiled.sql_text.casefold())
         self.assertRegex(compiled.sql_text.casefold(), r"\barray\s+join\b")
         self.assertEqual(compiled.parameters["start_1"], compiled.parameters["start_2"])
-        self.assertNotEqual(compiled.parameters["window_id_1"], compiled.parameters["window_id_2"])
+        self.assertNotEqual(
+            compiled.parameters["window_id_1"], compiled.parameters["window_id_2"]
+        )
         self.assertIn("%(window_id_1)s", compiled.sql_text)
         self.assertIn("%(window_id_2)s", compiled.sql_text)
         self.assertNotIn("limit 5000", compiled.sql_text.casefold())
@@ -1212,9 +1377,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                     "paid_order_success",
                     "payment_attempt",
                 }
-                selected_metrics = (
-                    (metric(dataset_id),) if has_reviewed_metric else ()
-                )
+                selected_metrics = (metric(dataset_id),) if has_reviewed_metric else ()
                 compiled = compile_clickhouse_query(
                     contract(
                         dataset_id=dataset_id,
@@ -1234,7 +1397,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 self.assertIn(expected_date_sql, compiled.sql_text)
                 self.assertNotIn("now(", compiled.sql_text.casefold())
                 expected_table = (
-                    "FROM `market_dashboard_daily`"
+                    "FROM `market_dashboard_daily__schema`"
                     if dataset_id == "market_dashboard"
                     else "FROM `gameplay_daily__a1a1a1a1a1a1a1a1`"
                     if dataset_id == "gameplay"
@@ -1267,14 +1430,46 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
     def test_rejects_unsupported_filter_operator_explicitly(self):
         with self.assertRaisesRegex(ValueError, "unsupported_filter_operator:contains"):
             compile_clickhouse_query(
-                contract(filters=({"field": "channel", "op": "contains", "value": "ads"},)),
+                contract(
+                    filters=({"field": "channel", "op": "contains", "value": "ads"},)
+                ),
+                {"snapshot:paid_order_success:1": snapshot()},
+            )
+
+    def test_rejects_raw_identifier_filter_even_when_source_schema_contains_it(self):
+        with self.assertRaisesRegex(
+            ValueError, "customer_safe_filter_field_unapproved:user_id"
+        ):
+            compile_clickhouse_query(
+                contract(
+                    filters=({"field": "user_id", "op": "eq", "value": "u-00042"},)
+                ),
+                {"snapshot:paid_order_success:1": snapshot()},
+            )
+
+    def test_rejects_unreviewed_source_filter_even_when_schema_contains_it(self):
+        with self.assertRaisesRegex(
+            ValueError, "customer_safe_filter_field_unapproved:payment_started_ms"
+        ):
+            compile_clickhouse_query(
+                contract(
+                    filters=(
+                        {
+                            "field": "payment_started_ms",
+                            "op": "gte",
+                            "value": 1,
+                        },
+                    )
+                ),
                 {"snapshot:paid_order_success:1": snapshot()},
             )
 
     def test_rejects_unreviewed_metric_expression_shape(self):
         with self.assertRaisesRegex(ValueError, "unsafe_metric_expression"):
             compile_clickhouse_query(
-                contract(metrics=(metric(expression="sum(paid_amount_ngn); DROP TABLE x"),)),
+                contract(
+                    metrics=(metric(expression="sum(paid_amount_ngn); DROP TABLE x"),)
+                ),
                 {"snapshot:paid_order_success:1": snapshot()},
             )
 
@@ -1298,10 +1493,24 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertIn("pre_join_audit AS (", compiled.sql_text)
         self.assertIn("right_key_audit AS (", compiled.sql_text)
         self.assertIn("joined_rows AS (", compiled.sql_text)
+        self.assertIn("audited_rows AS (", compiled.sql_text)
+        self.assertIn(
+            "user_totals.`__window_id` AS `__window_id`",
+            compiled.sql_text,
+        )
+        self.assertNotIn("user_totals.*", compiled.sql_text)
         self.assertIn("count() AS `join_input_rows`", compiled.sql_text)
         self.assertIn("count() AS `__join_output_rows`", compiled.sql_text)
         self.assertIn("right_key_multiplicity", compiled.sql_text)
         self.assertNotIn("toUInt64(0) AS `__join_duplicate_keys`", compiled.sql_text)
+        self.assertIn("window_coverage AS (", compiled.sql_text)
+        self.assertIn("`__window_id` AS `observation_key`", compiled.sql_text)
+        self.assertIn("AS `source_complete_days`", compiled.sql_text)
+        self.assertIn(
+            "toFloat64(countIf(`is_high_value`)) / nullIf(dateDiff('day', "
+            "`__window_start`, `__window_end`), 0)",
+            compiled.sql_text,
+        )
         self.assertIn("AS `__join_input_rows`", compiled.sql_text)
         self.assertIn("AS `__join_output_rows`", compiled.sql_text)
         self.assertIn("AS `__join_duplicate_keys`", compiled.sql_text)

@@ -26,11 +26,34 @@ from bi_agent.runtime.evidence_authority import (
 )
 from bi_agent.runtime.query_completeness import validate_query_result
 from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
-from bi_agent.capabilities import candidate_dimension_screen
-from bi_agent.capabilities.driver_decomposition import driver_decomposition
+from tests.support.temporal_authority import resolved_test_daily_pair_authority
 
 
 RUNTIME_BINDINGS = "contracts/runtime/clickhouse-analysis-bindings.yaml"
+
+
+def _temporal_authority():
+    return resolved_test_daily_pair_authority(
+        target="2026-06-02",
+        baseline_id="previous_day",
+    )
+
+
+def _candidate_dimension_proposal(dimensions):
+    return {
+        "question_families": ["paid_amount_change_explanation"],
+        "target_metrics": ["paid_amount"],
+        "requested_dimensions": list(dimensions),
+        "claim_intents": ["segment_contribution_or_mix_shift"],
+        "scope": {"type": "full_sample"},
+        "grain": "window_id",
+        "capability_roles": {
+            "candidate_dimension_screen": {
+                "analysis_role": "required",
+                "sources": ("closed_contract_test",),
+            }
+        },
+    }
 
 
 def _paid_order_snapshot() -> DatasetSnapshot:
@@ -102,14 +125,13 @@ def test_candidate_dimension_screen_contract_is_independent_and_sample_aware():
         "paid_users",
     ]
     assert (
-        registry.query_shape("dimension_contribution_scan")[
-            "dimension_presence_policy"
-        ]
+        registry.query_shape("dimension_contribution_scan")["dimension_presence_policy"]
         == "sparse_allowed"
     )
-    assert registry.diagnostic_obligation("factor_topk")[
-        "required_capabilities"
-    ] == ["candidate_dimension_screen"]
+    assert (
+        "candidate_dimension_screen"
+        in registry.analysis_axis("dimension_localization")["capability_refs"]
+    )
 
 
 def test_paid_amount_candidate_dimensions_have_distinct_business_meanings():
@@ -149,7 +171,7 @@ def test_paid_amount_candidate_dimensions_have_distinct_business_meanings():
     assert registry.dimension("device_model")["parent_dimension"] == "device_brand"
 
 
-def test_candidate_dimension_screen_compiles_one_query_per_dimension():
+def test_candidate_dimension_screen_keeps_companion_validation_only():
     registry = RuntimeContractRegistry.from_path(RUNTIME_BINDINGS)
     catalog, release_resolver = _released_paid_order_catalog()
     dimensions = (
@@ -162,17 +184,11 @@ def test_candidate_dimension_screen_compiles_one_query_per_dimension():
 
     outcome = compile_analysis_contract(
         run_id="run-candidate-dimension-screen",
-        proposal={
-            "question_families": ["paid_amount_change_explanation"],
-            "target_metrics": ["paid_amount"],
-            "requested_dimensions": list(dimensions),
-            "baselines": ["previous_day"],
-            "claim_intents": ["segment_contribution_or_mix_shift"],
-            "scope": {"type": "full_sample"},
-        },
+        proposal=_candidate_dimension_proposal(dimensions),
         accepted_capabilities=("candidate_dimension_screen",),
         catalog=catalog,
         registry=registry,
+        temporal_authority=_temporal_authority(),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         release_resolver=release_resolver,
     )
@@ -191,7 +207,24 @@ def test_candidate_dimension_screen_compiles_one_query_per_dimension():
         for query in dimension_queries
     )
     assert len(outcome.capability_plans) == 1
-    assert len(outcome.capability_plans[0].required_input_slots) == len(dimensions)
+    required_slots = outcome.capability_plans[0].required_input_slots
+    assert len(outcome.query_contracts) == len(dimensions) + 1
+    assert len(required_slots) == len(dimensions)
+    assert {slot.query_contract_refs[0] for slot in required_slots} == {
+        query.query_contract_id for query in dimension_queries
+    }
+    companion_query = next(
+        query for query in outcome.query_contracts if not query.dimension_bindings
+    )
+    assert all(
+        slot.validation_query_contract_refs == (companion_query.query_contract_id,)
+        for slot in required_slots
+    )
+    assert {
+        ref for slot in required_slots for ref in slot.query_contract_refs
+    }.isdisjoint(
+        ref for slot in required_slots for ref in slot.validation_query_contract_refs
+    )
 
 
 def test_shared_dimension_total_validation_survives_binding_chain_reordering():
@@ -222,7 +255,9 @@ def test_shared_dimension_total_validation_survives_binding_chain_reordering():
 
     assert len(chain.primary_results) == 2
     assert len(chain.validation_results) == 1
-    assert all(report.completeness_status == "complete" for report in chain.primary_reports)
+    assert all(
+        report.completeness_status == "complete" for report in chain.primary_reports
+    )
     assert chain.validation_reports[0].completeness_status == "complete"
 
 
@@ -305,17 +340,11 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
     catalog, release_resolver = _released_paid_order_catalog()
     outcome = compile_analysis_contract(
         run_id="run-candidate-dimension-subset",
-        proposal={
-            "question_families": ["paid_amount_change_explanation"],
-            "target_metrics": ["paid_amount"],
-            "requested_dimensions": ["channel", "region"],
-            "baselines": ["previous_day"],
-            "claim_intents": ["segment_contribution_or_mix_shift"],
-            "scope": {"type": "full_sample"},
-        },
+        proposal=_candidate_dimension_proposal(("channel", "region")),
         accepted_capabilities=("candidate_dimension_screen",),
         catalog=catalog,
         registry=registry,
+        temporal_authority=_temporal_authority(),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         release_resolver=release_resolver,
     )
@@ -323,9 +352,7 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
     channel_query = next(
         query
         for query in outcome.query_contracts
-        if tuple(
-            binding.dimension_id for binding in query.dimension_bindings
-        )
+        if tuple(binding.dimension_id for binding in query.dimension_bindings)
         == ("channel",)
     )
     reconciliation = channel_query.reconciliation_binding
@@ -334,9 +361,20 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
         query
         for query in outcome.query_contracts
         if query.query_role_ref == reconciliation.reference_query_role_ref
-        and query.contract_signature
-        == reconciliation.reference_contract_signature
+        and query.contract_signature == reconciliation.reference_contract_signature
     )
+    region_query = next(
+        query
+        for query in outcome.query_contracts
+        if tuple(binding.dimension_id for binding in query.dimension_bindings)
+        == ("region",)
+    )
+    unavailable_slots = tuple(
+        slot
+        for slot in plan.required_input_slots
+        if slot.query_contract_refs == (region_query.query_contract_id,)
+    )
+    assert len(unavailable_slots) == 1
 
     def provenance(prefix, query_ref):
         return {
@@ -363,9 +401,26 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
         ).items()
     }
     payload = {
+        "capability_id": plan.capability_id,
+        "capability_contract_ref": plan.capability_contract_ref,
+        "capability_contract_version": plan.capability_contract_version,
+        "capability_contract_signature": plan.capability_contract_signature,
+        "analysis_contract_ref": plan.analysis_contract_ref,
         "status": "degraded",
-        "reasons": (
-            "completeness_not_accepted:dimension_contribution_scan:region",
+        "rows_by_slot": {},
+        "reasons": tuple(
+            f"slot_input_missing:{slot.slot_id}" for slot in unavailable_slots
+        ),
+        "issues": tuple(
+            {
+                "code": "slot_input_missing",
+                "failure_class": "availability",
+                "input_state": "missing",
+                "slot_id": slot.slot_id,
+                "slot_role": "required",
+                "diagnostic": f"slot_input_missing:{slot.slot_id}",
+            }
+            for slot in unavailable_slots
         ),
         **primary,
         **validation,
@@ -376,9 +431,13 @@ def test_degraded_at_least_one_dimension_binding_validates_only_persisted_subset
         "claim_strength_taxonomy_version": plan.claim_strength_taxonomy_version,
         "input_completeness_statuses": ("complete", "complete"),
     }
-    binding = RuntimeEvidenceAuthority()._runtime_writer().record_capability_binding(
-        plan,
-        payload,
+    binding = (
+        RuntimeEvidenceAuthority()
+        ._runtime_writer()
+        .record_capability_binding(
+            plan,
+            payload,
+        )
     )
 
     validate_capability_binding_plan_semantics(
@@ -396,17 +455,11 @@ def _shared_dimension_validation_context():
     catalog, release_resolver = _released_paid_order_catalog()
     outcome = compile_analysis_contract(
         run_id="run-shared-dimension-validation",
-        proposal={
-            "question_families": ["paid_amount_change_explanation"],
-            "target_metrics": ["paid_amount"],
-            "requested_dimensions": ["channel", "region"],
-            "baselines": ["previous_day"],
-            "claim_intents": ["segment_contribution_or_mix_shift"],
-            "scope": {"type": "full_sample"},
-        },
+        proposal=_candidate_dimension_proposal(("channel", "region")),
         accepted_capabilities=("candidate_dimension_screen",),
         catalog=catalog,
         registry=registry,
+        temporal_authority=_temporal_authority(),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         release_resolver=release_resolver,
     )
@@ -459,7 +512,8 @@ def _rows_for_dimension_contract(contract):
         base = {
             "window_id": window.window_id,
             "window_role": window.role,
-            "observation_key": window.start_inclusive,
+            "observation_key": window.window_id,
+            "source_complete_days": 1,
         }
         if not dimension_id:
             rows.append(
@@ -472,6 +526,7 @@ def _rows_for_dimension_contract(contract):
             )
             continue
         order_splits = (orders - orders // 2, orders // 2)
+        user_splits = (users - users // 2, users // 2)
         for index, (member, share) in enumerate((("A", 0.6), ("B", 0.4))):
             rows.append(
                 {
@@ -479,7 +534,7 @@ def _rows_for_dimension_contract(contract):
                     dimension_id: member,
                     "paid_amount": amount * share,
                     "paid_orders": order_splits[index],
-                    "paid_users": users,
+                    "paid_users": user_splits[index],
                 }
             )
     return tuple(rows)
@@ -539,419 +594,3 @@ def _replace_binding_completeness_record(
         record_ref=f"capability-binding:{forged.capability_id}:{binding_digest}",
         binding_digest=binding_digest,
     )
-
-
-def test_route_added_dimension_claim_remains_auxiliary_in_evidence_reduction():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    resolution = workflow._required_claim_evidence_resolution(
-        {
-            "intent": {
-                "required_claim_types": ["comparative_change"],
-                "auxiliary_claim_types": [
-                    "segment_contribution_or_mix_shift"
-                ],
-            },
-            "analysis_route": {
-                "claim_intent_resolution": {
-                    "auxiliary_claim_intents": [
-                        "segment_contribution_or_mix_shift"
-                    ]
-                }
-            },
-            "evidence": [
-                {
-                    "claim_type": "segment_contribution_or_mix_shift",
-                    "capability_id": "candidate_dimension_screen",
-                    "limitations": ["one_dimension_sparse"],
-                }
-            ],
-        }
-    )
-
-    assert resolution["candidate_claim_types"] == (
-        "segment_contribution_or_mix_shift",
-    )
-    assert resolution["material_limitations"] == (
-        "missing_required_claim_evidence:comparative_change",
-    )
-    assert resolution["auxiliary_limitations"] == ("one_dimension_sparse",)
-
-
-def test_dimension_claim_selector_survives_authority_normalization():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    claim = {
-        "text": "渠道A的付费金额较基线增加50。",
-        "evidence_refs": ["candidate_dimension_screen:inline"],
-        "numbers": {
-            "paid_amount_baseline_value": 100,
-            "paid_amount_target_value": 150,
-            "paid_amount_delta": 50,
-        },
-        "dimensions": {"channel": "A"},
-        "scope": "full_sample",
-        "time_window": "2026-06-01",
-        "claim_type": "segment_contribution_or_mix_shift",
-        "claim_strength": "medium",
-    }
-
-    normalized = workflow._normalize_authority_claim_candidates(
-        [claim],
-        {
-            "intent": {
-                "scope": "full_sample",
-                "time_window": "2026-06-01",
-            },
-            "request": {"run_mode": "production"},
-            "evidence": [
-                {
-                    "evidence_ref": "candidate_dimension_screen:inline",
-                    "numeric_facts": claim["numbers"],
-                }
-            ],
-        },
-    )
-
-    assert normalized[0]["dimensions"] == {"channel": "A"}
-
-
-def test_ready_auxiliary_dimension_evidence_is_published_with_required_claims():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    state = {
-        "request": {"run_mode": "production"},
-        "intent": {
-            "scope": "full_sample",
-            "time_window": "2026-06-01",
-            "target_metric": "paid_amount",
-            "required_claim_types": ["comparative_change"],
-            "auxiliary_claim_types": [
-                "segment_contribution_or_mix_shift"
-            ],
-            "target": {"label": "2026-06-01"},
-            "baseline": {"label": "2026-05-31"},
-        },
-        "analysis_route": {
-            "claim_intent_resolution": {
-                "required_claim_intents": ["comparative_change"],
-                "auxiliary_claim_intents": [
-                    "segment_contribution_or_mix_shift"
-                ],
-                "auto_routed_claim_intents": {
-                    "segment_contribution_or_mix_shift": {
-                        "capability_id": "candidate_dimension_screen",
-                        "evidence_status": "queryable",
-                        "publication_status": "evidence_required",
-                    }
-                },
-            }
-        },
-        "evidence": [
-            {
-                "evidence_ref": "compare_periods:ready",
-                "capability_id": "compare_periods",
-                "claim_type": "comparative_change",
-                "claim_input_ready": True,
-                "binding_manifest_ref": "binding:compare",
-                "evidence_type": "statistical_association",
-                "supported_evidence_types": ["statistical_association"],
-                "supported_claim_types": ["comparative_change"],
-                "maximum_claim_strength": "directional",
-                "maximum_claim_strength_rank": 1,
-                "strength": "directional",
-                "wording_limit": "quantified",
-                "limitations": [],
-                "numeric_facts": {
-                    "target_value": 308_240_309,
-                    "baseline_value": 304_142_630,
-                    "absolute_change": 4_097_679,
-                    "relative_change": 0.013472886060069909,
-                },
-                "typed_payload": {
-                    "scope": "full_sample",
-                    "time_window": "2026-06-01",
-                    "target_value": 308_240_309,
-                    "baseline_value": 304_142_630,
-                    "absolute_change": 4_097_679,
-                    "relative_change": 0.013472886060069909,
-                },
-            },
-            {
-                "evidence_ref": "candidate_dimension_screen:ready",
-                "capability_id": "candidate_dimension_screen",
-                "claim_type": "segment_contribution_or_mix_shift",
-                "claim_input_ready": True,
-                "binding_manifest_ref": "binding:dimension",
-                "evidence_type": "statistical_association",
-                "supported_evidence_types": ["statistical_association"],
-                "supported_claim_types": [
-                    "segment_contribution_or_mix_shift"
-                ],
-                "maximum_claim_strength": "candidate_driver",
-                "maximum_claim_strength_rank": 2,
-                "strength": "medium",
-                "wording_limit": "candidate",
-                "limitations": ["sparse_dimension_values:region"],
-                "numeric_facts": {
-                    "paid_amount_target_value": 135_701_843,
-                    "paid_amount_baseline_value": 128_826_283,
-                    "paid_amount_delta": 6_875_560,
-                    "paid_amount_relative_change": 0.05337078614617795,
-                    "dimension_count": 5,
-                    "eligible_dimension_count": 5,
-                },
-                "typed_payload": {
-                    "scope": "full_sample",
-                    "time_window": "2026-06-01",
-                    "selected_dimension": "region",
-                    "selected_dimension_label": "地区",
-                    "selected_value": "拉各斯州",
-                    "business_readout": (
-                        "地区是当前优先排查维度，重点关注拉各斯州："
-                        "目标期付费金额135,701,843.00，基线期128,826,283.00，"
-                        "变化+6,875,560.00。该优先级用于定位，跨维度不可相加。"
-                    ),
-                },
-            },
-        ],
-    }
-
-    claims = workflow._authority_claims_from_evidence(state)
-
-    assert [claim["claim_type"] for claim in claims] == [
-        "comparative_change",
-        "segment_contribution_or_mix_shift",
-    ]
-    assert claims[1]["text"] == state["evidence"][1]["typed_payload"][
-        "business_readout"
-    ]
-    assert claims[1]["dimensions"] == {"region": "拉各斯州"}
-    assert claims[1]["claim_strength"] == "medium"
-    assert claims[1]["numbers"] == {
-        "paid_amount_target_value": 135_701_843,
-        "paid_amount_baseline_value": 128_826_283,
-        "paid_amount_delta": 6_875_560,
-        "paid_amount_relative_change": 0.05337078614617795,
-    }
-
-    business_context = workflow._business_evidence_context(state)
-
-    assert [slot["statement"] for slot in business_context["claimSlots"]] == [
-        claims[0]["text"],
-        state["evidence"][1]["typed_payload"]["business_readout"],
-    ]
-    assert business_context["claimSlots"][1]["strength"] == "中等强度证据"
-
-
-def test_unready_auxiliary_dimension_evidence_does_not_block_required_claim():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    state = {
-        "request": {"run_mode": "production"},
-        "intent": {
-            "scope": "full_sample",
-            "time_window": "2026-06-01",
-            "target_metric": "paid_amount",
-            "required_claim_types": ["comparative_change"],
-            "auxiliary_claim_types": [
-                "segment_contribution_or_mix_shift"
-            ],
-            "target": {"label": "2026-06-01"},
-            "baseline": {"label": "2026-05-31"},
-        },
-        "analysis_route": {
-            "claim_intent_resolution": {
-                "required_claim_intents": ["comparative_change"],
-                "auxiliary_claim_intents": [
-                    "segment_contribution_or_mix_shift"
-                ],
-                "auto_routed_claim_intents": {
-                    "segment_contribution_or_mix_shift": {
-                        "capability_id": "candidate_dimension_screen",
-                        "evidence_status": "queryable",
-                        "publication_status": "evidence_required",
-                    }
-                },
-            }
-        },
-        "evidence": [
-            {
-                "evidence_ref": "compare_periods:ready",
-                "capability_id": "compare_periods",
-                "claim_type": "comparative_change",
-                "claim_input_ready": True,
-                "binding_manifest_ref": "binding:compare",
-                "evidence_type": "statistical_association",
-                "supported_evidence_types": ["statistical_association"],
-                "supported_claim_types": ["comparative_change"],
-                "maximum_claim_strength": "directional",
-                "maximum_claim_strength_rank": 1,
-                "strength": "directional",
-                "wording_limit": "quantified",
-                "limitations": [],
-                "numeric_facts": {
-                    "target_value": 120,
-                    "baseline_value": 100,
-                    "absolute_change": 20,
-                    "relative_change": 0.2,
-                },
-                "typed_payload": {
-                    "scope": "full_sample",
-                    "time_window": "2026-06-01",
-                    "target_value": 120,
-                    "baseline_value": 100,
-                    "absolute_change": 20,
-                    "relative_change": 0.2,
-                },
-            },
-            {
-                "evidence_ref": "candidate_dimension_screen:blocked",
-                "capability_id": "candidate_dimension_screen",
-                "claim_type": "segment_contribution_or_mix_shift",
-                "claim_input_ready": False,
-                "binding_manifest_ref": "binding:dimension",
-                "evidence_type": "insufficient",
-                "supported_evidence_types": ["statistical_association"],
-                "supported_claim_types": [
-                    "segment_contribution_or_mix_shift"
-                ],
-                "maximum_claim_strength": "candidate_driver",
-                "maximum_claim_strength_rank": 2,
-                "strength": "low",
-                "wording_limit": "blocked",
-                "limitations": ["missing_required_input"],
-                "numeric_facts": {},
-                "typed_payload": {
-                    "scope": "full_sample",
-                    "time_window": "2026-06-01",
-                },
-            },
-        ],
-    }
-
-    claims = workflow._authority_claims_from_evidence(state)
-
-    assert [claim["claim_type"] for claim in claims] == [
-        "comparative_change"
-    ]
-
-
-def test_proportional_dimension_growth_stays_coverage_only():
-    from bi_agent.runtime import langgraph_workflow as workflow
-
-    context = _shared_dimension_validation_context()
-    bound = bind_capability_inputs(
-        context["plan"],
-        results=context["results"],
-        reports=context["reports"],
-        evidence_authority=context["authority"],
-        runtime_registry=context["registry"],
-        release_resolver=context["release_resolver"],
-    )
-    raw_evidence = candidate_dimension_screen(
-        {
-            "channel": (
-                {
-                    "group": "baseline",
-                    "channel": "A",
-                    "amount": 48,
-                    "paid_orders": 4,
-                    "paid_users": 7,
-                },
-                {
-                    "group": "target",
-                    "channel": "A",
-                    "amount": 60,
-                    "paid_orders": 5,
-                    "paid_users": 8,
-                },
-                {
-                    "group": "baseline",
-                    "channel": "B",
-                    "amount": 32,
-                    "paid_orders": 4,
-                    "paid_users": 7,
-                },
-                {
-                    "group": "target",
-                    "channel": "B",
-                    "amount": 40,
-                    "paid_orders": 5,
-                    "paid_users": 8,
-                },
-            ),
-            "region": (
-                {
-                    "group": "baseline",
-                    "region": "A",
-                    "amount": 48,
-                    "paid_orders": 4,
-                    "paid_users": 7,
-                },
-                {
-                    "group": "target",
-                    "region": "A",
-                    "amount": 60,
-                    "paid_orders": 5,
-                    "paid_users": 8,
-                },
-                {
-                    "group": "baseline",
-                    "region": "B",
-                    "amount": 32,
-                    "paid_orders": 4,
-                    "paid_users": 7,
-                },
-                {
-                    "group": "target",
-                    "region": "B",
-                    "amount": 40,
-                    "paid_orders": 5,
-                    "paid_users": 8,
-                },
-            ),
-        },
-        overall_by_group={"baseline": 80, "target": 100},
-        complete_dimensions=("channel", "region"),
-        dimension_labels={"channel": "渠道", "region": "地区"},
-        min_sample_size=1,
-    )
-    state = {
-        "run_id": "run-dimension-claim-verifier",
-        "request": {
-            "run_mode": "production",
-            "bound_capability_inputs": {
-                "candidate_dimension_screen": bound
-            },
-            "runtime_registry": context["registry"],
-            "evidence_resolver": context["authority"],
-            "rows_loader": context["authority"].rows_loader,
-            "release_resolver": context["release_resolver"],
-        },
-        "intent": {
-            "scope": "full_sample",
-            "time_window": "2026-06-01",
-            "target_metric": "paid_amount",
-            "pattern_family": "custom_baseline",
-            "required_claim_types": [
-                "segment_contribution_or_mix_shift"
-            ],
-            "auxiliary_claim_types": [
-                "segment_contribution_or_mix_shift"
-            ],
-        },
-        "evidence": [],
-    }
-    evidence = workflow._evidence_dict(raw_evidence, state)
-    state["evidence"] = [evidence]
-
-    claims = workflow._authority_claims_from_evidence(state)
-
-    assert evidence["typed_payload"]["coverage_ready_dimensions"] == [
-        "channel",
-        "region",
-    ]
-    assert evidence["typed_payload"]["eligible_dimensions"] == []
-    assert evidence["typed_payload"]["selected_business_readouts"] == []
-    assert claims == []

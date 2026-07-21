@@ -20,12 +20,12 @@ from bi_agent.runtime.dataset_catalog import (
     build_dataset_release_authority_record,
     dataset_snapshot_release_ref,
 )
+from bi_agent.runtime.baseline_semantics import CANONICAL_BASELINE_IDS
+from bi_agent.runtime.single_authority import DecisionLedger, DecisionRecord
+from bi_agent.runtime.temporal_comparison import resolve_effective_comparison
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.query_completeness import CURRENT_DATA_ASSERTIONS
-from bi_agent.runtime.window_resolver import (
-    CURRENT_DATA_BASELINES,
-    resolve_revenue_windows,
-)
+from bi_agent.runtime.window_resolver import resolve_temporal_windows
 
 
 _COMPLETENESS = CURRENT_DATA_ASSERTIONS
@@ -35,7 +35,9 @@ class _CoverageReleaseResolver:
     def __init__(self, record: DatasetReleaseAuthorityRecord) -> None:
         self._record = record
 
-    def resolve_dataset_release(self, release_ref: str) -> DatasetReleaseAuthorityRecord:
+    def resolve_dataset_release(
+        self, release_ref: str
+    ) -> DatasetReleaseAuthorityRecord:
         if release_ref != self._record.release_ref:
             raise KeyError(release_ref)
         return self._record
@@ -99,7 +101,9 @@ def current_data_coverage_cases(
     obligation_families = {
         str(query_family)
         for capability_id in registry.capability_ids
-        for query_family in registry.capability_inputs(capability_id).get("query_families", ())
+        for query_family in registry.capability_inputs(capability_id).get(
+            "query_families", ()
+        )
     }
     for query_family in sorted(obligation_families - supported_families):
         cases.append(
@@ -109,9 +113,9 @@ def current_data_coverage_cases(
                 metric_ids=(),
                 dimension_ids=(),
                 query_family=query_family,
-        required_window_ids=tuple(
-            window.window_id for window in _coverage_windows(registry)
-        ),
+                required_window_ids=tuple(
+                    window.window_id for window in _coverage_windows(registry)
+                ),
                 expected_state="degraded",
                 claim_ceiling="insufficient",
                 gap_type="schema_backed_query_adapter_missing",
@@ -177,18 +181,23 @@ def _adapter_query_family(
                 dataset_id=dataset_id,
                 require_dimension=dimension_mode == "requested",
             ):
-                dimension_ids = tuple(
-                    dimension_id
-                    for dimension_id in registry.dimension_ids
-                    if dataset_id in registry.dimension_sources(dimension_id)
-                    and str(query_family) in tuple(
-                        registry.dimension(
-                            dimension_id,
-                            dataset_id=dataset_id,
-                        ).get("allowed_query_families")
-                        or (str(query_family),)
+                dimension_ids = (
+                    tuple(
+                        dimension_id
+                        for dimension_id in registry.dimension_ids
+                        if dataset_id in registry.dimension_sources(dimension_id)
+                        and str(query_family)
+                        in tuple(
+                            registry.dimension(
+                                dimension_id,
+                                dataset_id=dataset_id,
+                            ).get("allowed_query_families")
+                            or (str(query_family),)
+                        )
                     )
-                ) if dimension_mode == "requested" else ()
+                    if dimension_mode == "requested"
+                    else ()
+                )
                 if dimension_mode != "requested" or dimension_ids:
                     return str(query_family), dimension_ids
     for capability_id in registry.capability_ids:
@@ -198,18 +207,23 @@ def _adapter_query_family(
         dimension_mode = str(capability.get("dimension_mode") or "")
         for query_family in capability.get("query_families", ()):
             query_family = str(query_family)
-            dimension_ids = tuple(
-                dimension_id
-                for dimension_id in registry.dimension_ids
-                if dataset_id in registry.dimension_sources(dimension_id)
-                and query_family in tuple(
-                    registry.dimension(
-                        dimension_id,
-                        dataset_id=dataset_id,
-                    ).get("allowed_query_families")
-                    or (query_family,)
+            dimension_ids = (
+                tuple(
+                    dimension_id
+                    for dimension_id in registry.dimension_ids
+                    if dataset_id in registry.dimension_sources(dimension_id)
+                    and query_family
+                    in tuple(
+                        registry.dimension(
+                            dimension_id,
+                            dataset_id=dataset_id,
+                        ).get("allowed_query_families")
+                        or (query_family,)
+                    )
                 )
-            ) if dimension_mode == "requested" else ()
+                if dimension_mode == "requested"
+                else ()
+            )
             if dimension_mode != "requested" or dimension_ids:
                 return query_family, dimension_ids
     raise ValueError(
@@ -230,30 +244,42 @@ def _dimension_coverage_cases(
     if not dimensions:
         return []
     output = []
-    if _query_family_for_topology(
-        registry, "independent", dataset_id=dataset_id
-    ):
-        output.extend(
-            _dimension_case(
-                registry,
-                metric_id=metric_id,
-                dataset_id=dataset_id,
-                dimension_ids=(dimension_id,),
-                topology="independent",
-            )
-            for dimension_id in dimensions
+    for topology in ("independent", "joint"):
+        supported_family = _dimension_query_family(
+            registry,
+            metric_id=metric_id,
+            dataset_id=dataset_id,
+            topology=topology,
         )
-    if _query_family_for_topology(registry, "joint", dataset_id=dataset_id):
+        query_families = (
+            (supported_family,)
+            if supported_family
+            else _query_families_for_topology(
+                registry,
+                topology,
+                dataset_id=dataset_id,
+            )
+        )
+        dimension_groups = (
+            tuple((dimension_id,) for dimension_id in dimensions)
+            if topology == "independent"
+            else tuple(
+                tuple(group)
+                for size in range(1, len(dimensions) + 1)
+                for group in combinations(dimensions, size)
+            )
+        )
         output.extend(
             _dimension_case(
                 registry,
                 metric_id=metric_id,
                 dataset_id=dataset_id,
-                dimension_ids=tuple(pair),
-                topology="joint",
+                dimension_ids=dimension_ids,
+                query_family=query_family,
+                capability_supported=bool(supported_family),
             )
-            for size in range(1, len(dimensions) + 1)
-            for pair in combinations(dimensions, size)
+            for query_family in query_families
+            for dimension_ids in dimension_groups
         )
     return output
 
@@ -264,24 +290,11 @@ def _dimension_case(
     metric_id: str,
     dataset_id: str,
     dimension_ids: tuple[str, ...],
-    topology: str,
+    query_family: str,
+    capability_supported: bool,
 ) -> CurrentDataCoverageCase:
-    query_family = _dimension_query_family(
-        registry,
-        metric_id=metric_id,
-        dataset_id=dataset_id,
-        topology=topology,
-    )
-    capability_supported = bool(query_family)
-    if not query_family:
-        query_family = _query_family_for_topology(
-            registry,
-            topology,
-            dataset_id=dataset_id,
-        )
-    case_id = (
-        f"dimension:{metric_id}:{dataset_id}:{query_family}:"
-        + "+".join(dimension_ids)
+    case_id = f"dimension:{metric_id}:{dataset_id}:{query_family}:" + "+".join(
+        dimension_ids
     )
     metric = registry.metric(metric_id, dataset_id=dataset_id)
     dataset_schema = set(registry.dataset(dataset_id).get("schema_fields", ()))
@@ -352,6 +365,8 @@ def _dimension_query_family(
         capability = registry.capability_inputs(capability_id)
         if str(capability.get("dimension_mode") or "") != "requested":
             continue
+        if str(capability.get("source_selection") or "") == "all_required_datasets":
+            continue
         for query_family in capability.get("query_families", ()):
             query_family = str(query_family)
             try:
@@ -371,32 +386,24 @@ def _dimension_query_family(
     return ""
 
 
-def _query_family_for_topology(
+def _query_families_for_topology(
     registry: RuntimeContractRegistry,
     topology: str,
     *,
     dataset_id: str,
-) -> str:
+) -> tuple[str, ...]:
     families = {
         str(query_family)
         for capability_id in registry.capability_ids
-        if dataset_id in tuple(
-            registry.capability_inputs(capability_id).get(
-                "allowed_datasets", ()
-            )
-        )
+        if dataset_id
+        in tuple(registry.capability_inputs(capability_id).get("allowed_datasets", ()))
         for query_family in registry.capability_inputs(capability_id).get(
             "query_families", ()
         )
-        if str(
-            registry.query_shape(str(query_family)).get("dimension_topology") or ""
-        ) == topology
+        if str(registry.query_shape(str(query_family)).get("dimension_topology") or "")
+        == topology
     }
-    if len(families) > 1:
-        raise ValueError(
-            f"current_data_dimension_topology_ambiguous:{topology}"
-        )
-    return next(iter(families), "")
+    return tuple(sorted(families))
 
 
 def _capability_accepts_adapter(
@@ -473,7 +480,9 @@ def _supported_case(
     claim_ceiling: str,
 ) -> CurrentDataCoverageCase:
     query_dataset = dataset_ids[-1]
-    metrics = (() if not metric_id else (_metric_binding(registry, metric_id, query_dataset),))
+    metrics = (
+        () if not metric_id else (_metric_binding(registry, metric_id, query_dataset),)
+    )
     dimensions = tuple(
         _dimension_binding(registry, dimension_id, query_dataset)
         for dimension_id in dimension_ids
@@ -481,11 +490,17 @@ def _supported_case(
     shape_contract = registry.query_shape(query_family)
     windows = _coverage_windows(registry)
     required_fields = _dedupe(
-        (*tuple(shape_contract["required_fields"]), *(item.metric_id for item in metrics), *dimension_ids)
+        (
+            *tuple(shape_contract["required_fields"]),
+            *(item.metric_id for item in metrics),
+            *dimension_ids,
+        )
     )
     unique_key = _dedupe((*tuple(shape_contract["unique_key"]), *dimension_ids))
     grain = _dedupe((*tuple(shape_contract["grain"]), *dimension_ids))
-    snapshots, resolver = _snapshots(registry, dataset_ids, query_dataset, metrics, dimensions)
+    snapshots, resolver = _snapshots(
+        registry, dataset_ids, query_dataset, metrics, dimensions
+    )
     selected = next(iter(snapshots.values()))
     contract = QueryContract(
         query_contract_id=f"current-data:{case_id}",
@@ -502,7 +517,9 @@ def _supported_case(
             unique_key=unique_key,
             grain=grain,
             required_window_ids=tuple(window.window_id for window in windows),
-            result_semantics=str(shape_contract.get("result_semantics") or "complete_aggregate"),
+            result_semantics=str(
+                shape_contract.get("result_semantics") or "complete_aggregate"
+            ),
             dimension_presence_policy=str(shape_contract["dimension_presence_policy"]),
         ),
         completeness_assertions=_COMPLETENESS,
@@ -517,7 +534,11 @@ def _supported_case(
         (
             *(field for item in metrics for field in item.required_fields),
             *(item.source_field for item in dimensions),
-            *(str(item) for item in shape_contract.get("source_fields", ()) if item != "metric_binding"),
+            *(
+                str(item)
+                for item in shape_contract.get("source_fields", ())
+                if item != "metric_binding"
+            ),
         )
     )
     if not source_fields:
@@ -535,35 +556,56 @@ def _supported_case(
         expected_state="supported",
         claim_ceiling=claim_ceiling,
         source_fields=source_fields,
-        window_policy=str(shape_contract.get("window_policy") or "fixed_resolved_windows"),
-        reconciliation_expectation=str(shape_contract.get("reconciliation") or "not_applicable"),
-        provider_bounds=str(shape_contract.get("provider_bounds") or "throw_on_overflow"),
+        window_policy=str(
+            shape_contract.get("window_policy") or "fixed_resolved_windows"
+        ),
+        reconciliation_expectation=str(
+            shape_contract.get("reconciliation") or "not_applicable"
+        ),
+        provider_bounds=str(
+            shape_contract.get("provider_bounds") or "throw_on_overflow"
+        ),
         query_contract=contract,
         snapshots=snapshots,
         release_resolver=resolver,
     )
 
 
-def _metric_binding(registry: RuntimeContractRegistry, metric_id: str, dataset_id: str) -> MetricBinding:
+def _metric_binding(
+    registry: RuntimeContractRegistry, metric_id: str, dataset_id: str
+) -> MetricBinding:
     item = registry.metric(metric_id, dataset_id=dataset_id)
     return MetricBinding(
-        metric_id, str(item["contract_ref"]), dataset_id, str(item["expression"]),
-        str(item["aggregation"]), tuple(item["required_fields"]), tuple(item["grain"]),
+        metric_id,
+        str(item["contract_ref"]),
+        dataset_id,
+        str(item["expression"]),
+        str(item["aggregation"]),
+        tuple(item["required_fields"]),
+        tuple(item["grain"]),
         numerator_metric=str(item.get("numerator_metric") or ""),
         denominator_metric=str(item.get("denominator_metric") or ""),
         claim_types=tuple(item.get("claim_types") or ()),
         reconciliation_tolerance=float(item.get("reconciliation_tolerance") or 0),
-        reconciliation_strategy=str(item.get("reconciliation_strategy") or "unsupported_non_additive"),
+        reconciliation_strategy=str(
+            item.get("reconciliation_strategy") or "unsupported_non_additive"
+        ),
         value_semantics=str(item.get("value_semantics") or "raw_scalar"),
         display_format=str(item.get("display_format") or "number"),
     )
 
 
-def _dimension_binding(registry: RuntimeContractRegistry, dimension_id: str, dataset_id: str) -> DimensionBinding:
+def _dimension_binding(
+    registry: RuntimeContractRegistry, dimension_id: str, dataset_id: str
+) -> DimensionBinding:
     item = registry.dimension(dimension_id, dataset_id=dataset_id)
     return DimensionBinding(
-        dimension_id, str(item["contract_ref"]), dataset_id, str(item["source_field"]),
-        tuple(item["allowed_grains"]), str(item.get("null_bucket") or "Unknown"),
+        dimension_id,
+        str(item["contract_ref"]),
+        dataset_id,
+        str(item["source_field"]),
+        tuple(item["allowed_grains"]),
+        str(item.get("null_bucket") or "Unknown"),
     )
 
 
@@ -575,9 +617,9 @@ def _snapshots(
     dimensions: tuple[DimensionBinding, ...],
 ) -> tuple[Mapping[str, DatasetSnapshot], _CoverageReleaseResolver | None]:
     release_dataset_ids = tuple(
-        registry.dataset(query_dataset).get("release_membership", {}).get(
-            "dataset_ids", dataset_ids
-        )
+        registry.dataset(query_dataset)
+        .get("release_membership", {})
+        .get("dataset_ids", dataset_ids)
     )
     members = []
     for index, dataset_id in enumerate(release_dataset_ids):
@@ -587,23 +629,40 @@ def _snapshots(
         prefix = str(dataset.get("physical_table_prefix") or "")
         members.append(
             DatasetSnapshot(
-                snapshot_ref=f"snapshot:current-data:{dataset_id}", dataset_id=dataset_id,
-                physical_table=(f"{prefix}{fingerprint[:16]}" if prefix else f"analytics.{dataset_id}"),
-                watermark="2026-06-02", schema_fingerprint=fingerprint,
+                snapshot_ref=f"snapshot:current-data:{dataset_id}",
+                dataset_id=dataset_id,
+                physical_table=(
+                    f"{prefix}{fingerprint[:16]}"
+                    if prefix
+                    else f"analytics.{dataset_id}"
+                ),
+                watermark="2026-06-02",
+                schema_fingerprint=fingerprint,
                 schema_fields=schema_fields,
                 contract_ref=str(
                     dataset.get("schema_contract_ref")
                     or f"runtime-dataset:{dataset_id}"
                 ),
-                loaded_at="2026-06-03T00:00:00Z", status="active",
-                evidence_state="claim_ready", reconciliation_status=("matched" if len(release_dataset_ids) > 1 else "not_applicable"),
-                reconciliation_ref=(f"reconciliation:{'-'.join(release_dataset_ids)}" if len(release_dataset_ids) > 1 else ""),
-                logical_snapshot_id="current-data-logical", load_revision="current-data-load:sha256:reviewed",
-                rows_content_hash=(str(index + 1) * 64)[:64], snapshot_id="current-data-logical",
+                loaded_at="2026-06-03T00:00:00Z",
+                status="active",
+                evidence_state="claim_ready",
+                reconciliation_status=(
+                    "matched" if len(release_dataset_ids) > 1 else "not_applicable"
+                ),
+                reconciliation_ref=(
+                    f"reconciliation:{'-'.join(release_dataset_ids)}"
+                    if len(release_dataset_ids) > 1
+                    else ""
+                ),
+                logical_snapshot_id="current-data-logical",
+                load_revision="current-data-load:sha256:reviewed",
+                rows_content_hash=(str(index + 1) * 64)[:64],
+                snapshot_id="current-data-logical",
             )
         )
     release_ref = dataset_snapshot_release_ref(
-        "current-data-logical", "current-data-load:sha256:reviewed",
+        "current-data-logical",
+        "current-data-load:sha256:reviewed",
         tuple(item.snapshot_ref for item in members),
     )
     members = [replace(item, release_ref=release_ref) for item in members]
@@ -622,13 +681,41 @@ def _dedupe(values: tuple[Any, ...]) -> tuple[str, ...]:
 def _coverage_windows(
     registry: RuntimeContractRegistry,
 ) -> tuple[ResolvedWindow, ...]:
-    return resolve_revenue_windows(
-        target_semantic="2026-06-02",
-        baselines=CURRENT_DATA_BASELINES,
-        context_window_specs=(),
-        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        timezone_name=registry.business_timezone,
-        dataset_watermarks={"coverage": date.fromisoformat("2026-06-02")},
-        affected_capabilities=(),
-        affected_claim_types=(),
-    ).windows
+    windows: dict[str, ResolvedWindow] = {}
+    for baseline_id in CANONICAL_BASELINE_IDS:
+        decision = DecisionRecord.create(
+            intent_revision_id="intent-current-data-coverage",
+            slot_id="comparison_baseline",
+            value={"baseline_id": baseline_id},
+            source="system",
+            status="inferred",
+            materiality="material",
+            affected_plan_fields=("resolved_window_refs",),
+            option_id=f"comparison_baseline.{baseline_id}",
+        )
+        temporal_authority = resolve_effective_comparison(
+            time_spec={"kind": "date", "target": "2026-06-02"},
+            comparison_spec={
+                "kind": "decision_slot",
+                "slot_id": "comparison_baseline",
+            },
+            decision_ledger=DecisionLedger().append(decision),
+            require_physical_baseline=True,
+        )
+        resolved = resolve_temporal_windows(
+            temporal_authority,
+            context_window_specs=(),
+            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
+            timezone_name=registry.business_timezone,
+            dataset_watermarks={"coverage": date.fromisoformat("2026-06-02")},
+            affected_capabilities=(),
+            affected_claim_types=(),
+        )
+        for window in resolved.windows:
+            existing = windows.get(window.window_id)
+            if existing is not None and existing != window:
+                raise ValueError(
+                    f"current_data_temporal_window_conflict:{window.window_id}"
+                )
+            windows[window.window_id] = window
+    return tuple(windows.values())

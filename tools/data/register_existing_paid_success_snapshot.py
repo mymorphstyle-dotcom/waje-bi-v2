@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# This executable bootstraps the repository root before importing project modules.
+# ruff: noqa: E402
+
 import argparse
 from dataclasses import dataclass
 import hashlib
@@ -34,7 +37,7 @@ from tools.data.source_loader_common import (
 SOURCE_CONTRACT_PATH = ROOT / "contracts" / "sources" / "paid-order-detail.source.yaml"
 DATASET_ID = "paid_order_success"
 CONTRACT_REF = "contracts/sources/paid-order-detail.source.yaml@0.3"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@1"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -179,7 +182,9 @@ def inspect_existing_paid_success(
         str(aggregate.get("max_business_date") or ""),
     )
     if row_count != expected_count:
-        errors.append(f"row_count:mismatch:expected={expected_count}:actual={row_count}")
+        errors.append(
+            f"row_count:mismatch:expected={expected_count}:actual={row_count}"
+        )
     if date_range != expected_range:
         errors.append(
             f"date_range:mismatch:expected={_compact(expected_range)}:actual={_compact(date_range)}"
@@ -231,7 +236,9 @@ def build_paid_success_snapshot_payload(
     if not inspection.ready_to_publish:
         raise PaidSuccessRegistrationError(";".join(inspection.validation_errors))
     snapshot_ref = f"snapshot:{snapshot_id}:{load_revision}:{DATASET_ID}"
-    release_ref = dataset_snapshot_release_ref(snapshot_id, load_revision, (snapshot_ref,))
+    release_ref = dataset_snapshot_release_ref(
+        snapshot_id, load_revision, (snapshot_ref,)
+    )
     return {
         "snapshot_ref": snapshot_ref,
         "dataset_id": DATASET_ID,
@@ -275,8 +282,8 @@ def register_existing_paid_success_snapshot(
             load_revision=load_revision,
             loaded_at=loaded_at,
         )
-        payloads, logical_id, _, release_ref = validate_dataset_snapshot_release_payloads(
-            (payload,)
+        payloads, logical_id, _, release_ref = (
+            validate_dataset_snapshot_release_payloads((payload,))
         )
         authority = build_dataset_release_authority_record(payloads)
         if authority.integrity_errors:
@@ -391,7 +398,9 @@ def _inspection_metadata(inspection: ExistingPaidSuccessInspection) -> dict[str,
     }
 
 
-def _query_rows(client: Any, query: str, *, parameters=None) -> tuple[Mapping[str, Any], ...]:
+def _query_rows(
+    client: Any, query: str, *, parameters=None
+) -> tuple[Mapping[str, Any], ...]:
     result = client.query(query, parameters=parameters or {})
     return tuple(dict(item) for item in result.named_results())
 

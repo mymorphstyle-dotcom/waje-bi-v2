@@ -1,7 +1,14 @@
-contract_version: "4"
+contract_version: "15"
 artifact: clickhouse_analysis_runtime_bindings
 business_timezone: Africa/Lagos
 public_scope_types: [full_sample]
+
+exploration_budget_policy:
+  schema_version: exploration-budget-policy.v1
+  scope: run_attempt
+  protected_axis_roles: [required, disclosure]
+  auxiliary_budget_limit: null
+  accounting_unit: declared_task_unit
 
 restricted_output_policy:
   version: "1"
@@ -28,6 +35,31 @@ claim_strength_taxonomy:
     trust_boundary: 1
     verifier_only: 0
     reducer_only: 0
+
+claim_publication_policy:
+  version: "2"
+  minimum_strength_by_claim_kind:
+    baseline_stability: directional
+    business_object_candidate_impact: candidate_driver
+    candidate_mechanism: candidate_mechanism
+    comparative_change: directional
+    contract_coverage_and_trust_boundary: trust_boundary
+    cross_source_statistical_association: candidate_driver
+    external_shock_candidate_or_anomaly: anomaly_candidate
+    formula_component_contribution: quantified_contribution
+    recurring_pattern_existence: directional
+    segment_contribution_or_mix_shift: candidate_driver
+    source_reconciliation: quantified_contribution
+  composite_support_by_claim_kind:
+    business_object_candidate_impact:
+      policy: all_required_supports_same_authority
+      claim_class: candidate_impact
+      publication_strength: candidate_driver
+      causal_interpretation_allowed: false
+      identity_fields: [event_ref, temporal_authority_ref]
+      required_supports:
+        - {source_claim_kind: business_object_candidate_impact, evidence_kind: observed, maximum_claim_strength: directional, evidence_contract: event-window-metric-comparison.v1}
+        - {source_claim_kind: candidate_mechanism, evidence_kind: observed, maximum_claim_strength: candidate_mechanism, evidence_contract: event-presence.v1}
 
 metric_display_policies:
   version: "1"
@@ -67,21 +99,23 @@ datasets:
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [paid_order_success]}
     required_fields: [business_date_lagos]
+    customer_safe_filter_fields: [paid_amount_ngn, currency, is_new_user, is_first_payment, channel, payment_method, country, region, city, device_brand, device_model, os, network_type, payment_latency_seconds]
     schema_fields: [order_id, user_id, business_date_lagos, payment_completed_ms, payment_started_ms, paid_amount_ngn, currency, is_new_user, is_first_payment, channel, payment_method, country, region, city, device_brand, device_model, os, network_type, registered_at, first_paid_at, payment_latency_seconds, raw_date]
   payment_attempt:
     intent_roles: [metric_source]
     date_expression: "toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`)), 'Africa/Lagos'))"
     required_fields: [支付发起时间]
+    customer_safe_filter_fields: []
   market_dashboard:
     intent_roles: [metric_source]
     date_field: business_date
     physical_table_prefix: market_dashboard_daily__
-    legacy_physical_tables: [market_dashboard_daily]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [market_dashboard, market_dashboard_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date]
+    customer_safe_filter_fields: [game]
     schema_fields: [snapshot_id, load_revision, business_date, game, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
     grain: [snapshot_id, load_revision, business_date, game]
     unique_key: [snapshot_id, load_revision, business_date, game]
@@ -89,12 +123,12 @@ datasets:
     intent_roles: [metric_source]
     date_field: business_date
     physical_table_prefix: market_dashboard_channel_daily__
-    legacy_physical_tables: [market_dashboard_channel_daily]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [market_dashboard, market_dashboard_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date]
+    customer_safe_filter_fields: [game, channel]
     schema_fields: [snapshot_id, load_revision, business_date, game, channel, active_users, new_users, revenue, active_user_arpu, registrations, new_devices, login_accounts, registration_rate, zero_round_user_share, gameplay_users, gameplay_rounds, app_avg_online_time, effective_user_app_avg_online_time, historical_paid_active_users, first_paid_amount, new_paid_amount, login_user_avg_recharge, avg_first_paid_amount, first_paid_rate, first_paid_users, new_paid_rate, new_paid_users, paid_users, paid_amount, recharge_channel_fee, withdraw_request_amount, withdraw_arrived_users, withdraw_arrived_amount, withdraw_to_recharge_ratio, withdraw_request_users, withdraw_fee, withdraw_user_fee, aggregate_marketing_cost, profit]
     grain: [snapshot_id, load_revision, business_date, game, channel]
     unique_key: [snapshot_id, load_revision, business_date, game, channel]
@@ -102,12 +136,12 @@ datasets:
     intent_roles: [metric_source, business_context]
     date_field: business_date
     physical_table_prefix: gameplay_daily__
-    legacy_physical_tables: [gameplay_daily]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [gameplay, gameplay_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date]
+    customer_safe_filter_fields: [service_scope, gameplay]
     schema_fields: [snapshot_id, load_revision, business_date, service_scope, gameplay, gameplay_users, gameplay_penetration_rate, gameplay_rounds, rounds_per_user, player_match_rate, total_rounds, service_fee_rake, robot_cash_won, system_rake_rate, gameplay_profit, profit_share, bet_amount_share, player_bet_amount, player_bet_count, betting_users_derived, player_bet_count_per_user, player_avg_bet_amount, player_bet_amount_per_user, robot_cash_lost_raw]
     grain: [snapshot_id, load_revision, business_date, service_scope, gameplay]
     unique_key: [snapshot_id, load_revision, business_date, service_scope, gameplay]
@@ -115,12 +149,12 @@ datasets:
     intent_roles: [metric_source, business_context]
     date_field: business_date
     physical_table_prefix: gameplay_channel_daily__
-    legacy_physical_tables: [gameplay_channel_daily]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [gameplay, gameplay_channel]}
     snapshot_field: snapshot_id
     required_fields: [business_date, channel]
+    customer_safe_filter_fields: [channel, service_scope, gameplay]
     schema_fields: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay, gameplay_users, gameplay_penetration_rate, gameplay_rounds, rounds_per_user, player_match_rate, total_rounds, service_fee_rake, robot_cash_won, system_rake_rate, gameplay_profit, profit_share, bet_amount_share, player_bet_amount, player_bet_count, betting_users_derived, player_bet_count_per_user, player_avg_bet_amount, player_bet_amount_per_user, robot_cash_lost_raw]
     grain: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
     unique_key: [snapshot_id, load_revision, business_date, channel, service_scope, gameplay]
@@ -128,12 +162,12 @@ datasets:
     intent_roles: [business_context]
     date_field: event_start_date
     physical_table_prefix: business_events__
-    legacy_physical_tables: [business_events]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [external_event]}
     snapshot_field: snapshot_id
     required_fields: [event_start_date]
+    customer_safe_filter_fields: [source_family, event_type, affected_scope, authority, evidence_level, recurrence_kind]
     schema_fields: [snapshot_id, load_revision, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
     grain: [snapshot_id, load_revision, source_family, event_id]
     unique_key: [snapshot_id, load_revision, source_family, event_id]
@@ -141,12 +175,12 @@ datasets:
     intent_roles: [business_context]
     date_field: event_start_date
     physical_table_prefix: business_events__
-    legacy_physical_tables: [business_events]
     requires_physical_revision: true
     requires_release: true
     release_membership: {policy: exact_dataset_set, dataset_ids: [internal_operation_event]}
     snapshot_field: snapshot_id
     required_fields: [event_start_date]
+    customer_safe_filter_fields: [source_family, event_type, affected_scope, authority, evidence_level, recurrence_kind]
     schema_fields: [snapshot_id, load_revision, source_family, event_id, event_type, event_start_date, event_end_date, affected_scope, authority, evidence_level, wording_limit, recurrence_kind, recurrence_month_start, recurrence_day_start, recurrence_month_end, recurrence_day_end, payload]
     grain: [snapshot_id, load_revision, source_family, event_id]
     unique_key: [snapshot_id, load_revision, source_family, event_id]
@@ -595,7 +629,7 @@ analysis_axis_catalog:
     metric_refs: [paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount, payment_success_rate]
     dimension_refs: []
     context_source_refs: []
-    capability_refs: [driver_decomposition, formula_decompose]
+    capability_refs: [formula_decompose]
     reconciliation_group: paid_amount_formula_tree
     selection_policy: all_contract_backed_formula_members
     source_refs:
@@ -609,7 +643,7 @@ analysis_axis_catalog:
     metric_refs: []
     dimension_refs: [channel, payment_method, country, region, city, device_brand, device_model, os, network_type]
     context_source_refs: []
-    capability_refs: [candidate_dimension_screen]
+    capability_refs: [candidate_dimension_screen, segment_contribution, segment_breakdown, segment_shift_compare, joint_attribution, user_mix_contribution, high_value_user_contribution]
     reconciliation_group: paid_amount_dimension_localization
     selection_policy: all_automatic_screening_dimensions
     source_refs:
@@ -623,7 +657,7 @@ analysis_axis_catalog:
     metric_refs: []
     dimension_refs: []
     context_source_refs: []
-    capability_refs: [metric_timeseries, rolling_window_compare]
+    capability_refs: [metric_timeseries, rolling_window_compare, compare_period_phases, weekday_calendar_compare]
     reconciliation_group: paid_amount_time_context
     selection_policy: periodic_context_when_available
     source_refs:
@@ -643,6 +677,20 @@ analysis_axis_catalog:
     source_refs:
       - "contracts/sources/gameplay.source.yaml#coverage.covered_metrics"
       - "contracts/ledger/capability-support.yaml#segment_gameplay_betting_structure"
+  market_context:
+    business_name: 大盘与渠道经营背景
+    semantics: 将付费金额与大盘经营指标、渠道结构和跨来源对账放在同一候选分析轴中，检验全盘共同变化、渠道迁移和来源口径差异。
+    axis_kind: market_context
+    target_metric_refs: [paid_amount]
+    metric_refs: [active_users, new_users, registrations, aggregate_marketing_cost, profit]
+    dimension_refs: [channel]
+    context_source_refs: []
+    capability_refs: [market_health_compare, market_channel_context, source_reconciliation]
+    reconciliation_group: paid_amount_market_context
+    selection_policy: association_context_when_available
+    source_refs:
+      - "contracts/ledger/capability-support.yaml#market_health_context"
+      - "contracts/metrics/paid-amount.metric.yaml#paid_amount"
   business_context:
     business_name: 业务事件背景
     semantics: 当用户明确询问业务事件或前序证据触发时，检查活动、运营和外部事件的候选解释。
@@ -665,8 +713,50 @@ analysis_axis_catalog:
     metric_refs: []
     dimension_refs: []
     context_source_refs: []
-    capability_refs: [data_quality_profile, answer_verify]
+    capability_refs: [data_quality_profile]
     reconciliation_group: paid_amount_data_quality
+    selection_policy: always
+    source_refs:
+      - "contracts/metrics/paid-amount.metric.yaml#paid_amount"
+      - "contracts/ledger/factor-ledger.yaml#factor_groups.paid_amount_metric_source"
+  evidence_synthesis:
+    business_name: 证据集合收敛
+    semantics: 在发布前对已验证证据做可重放的归并与边界收敛，不生成新的业务事实。
+    axis_kind: data_quality
+    target_metric_refs: [paid_amount]
+    metric_refs: []
+    dimension_refs: []
+    context_source_refs: []
+    capability_refs: [evidence_reduce]
+    reconciliation_group: paid_amount_evidence_synthesis
+    selection_policy: always
+    source_refs:
+      - "docs/adr/2026-07-17-single-authority-agent-workflow.md#claim-settlement"
+      - "contracts/runtime/clickhouse-analysis-bindings.yaml#capability_inputs.evidence_reduce"
+  anomaly_validation:
+    business_name: 异常成立性验证
+    semantics: 识别目标指标中超出常态波动的候选异常，并保留时间窗口、范围和敏感性边界。
+    axis_kind: anomaly_detection
+    target_metric_refs: [paid_amount]
+    metric_refs: []
+    dimension_refs: []
+    context_source_refs: []
+    capability_refs: [outlier_scan, change_point_scan, outlier_contribution]
+    reconciliation_group: paid_amount_anomaly_validation
+    selection_policy: user_or_evidence_triggered
+    source_refs:
+      - "contracts/capabilities/outlier-scan.yaml#outlier_scan"
+      - "contracts/ssot/付费金额影响因子分析.mm#内外部因素"
+  metric_coverage:
+    business_name: 指标覆盖与完整性
+    semantics: 核对目标指标在已固定数据集、窗口和粒度上的覆盖，将缺口绑定到受影响结论。
+    axis_kind: data_quality
+    target_metric_refs: [paid_amount]
+    metric_refs: []
+    dimension_refs: []
+    context_source_refs: []
+    capability_refs: [metric_coverage_profile]
+    reconciliation_group: paid_amount_metric_coverage
     selection_policy: always
     source_refs:
       - "contracts/metrics/paid-amount.metric.yaml#paid_amount"
@@ -676,6 +766,7 @@ goal_obligations:
   explain_change:
     business_name: 指标变化原因分析
     semantics: 先验证目标指标相对主基线的真实方向和幅度，再从公式、聚合维度和时间背景定位主要驱动，并明确证据边界。
+    question_family_ref: paid_amount_change_explanation
     target_metric_refs: [paid_amount]
     required_outcomes: [direction_and_magnitude, ranked_drivers, quantified_contributions, evidence_boundaries]
     outcome_claim_types:
@@ -683,21 +774,165 @@ goal_obligations:
       ranked_drivers: [formula_component_contribution, segment_contribution_or_mix_shift]
       quantified_contributions: [formula_component_contribution, segment_contribution_or_mix_shift]
       evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
     analysis_axes:
       - {axis_id: change_validation, role: required}
       - {axis_id: formula_tree, role: required}
       - {axis_id: dimension_localization, role: auxiliary}
       - {axis_id: time_context, role: auxiliary}
       - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
       - {axis_id: business_context, role: conditional}
       - {axis_id: data_quality, role: disclosure}
+  pattern_explanation:
+    business_name: 重复模式验证与解释
+    semantics: 验证重复时间模式的幅度、稳定性与例外，并在证据上限内给出候选机制。
+    question_family_ref: pattern_explanation
+    target_metric_refs: [paid_amount]
+    required_outcomes: [pattern_validation, pattern_stability, candidate_explanations, evidence_boundaries]
+    outcome_claim_types:
+      pattern_validation: [recurring_pattern_existence, comparative_change]
+      pattern_stability: [baseline_stability]
+      candidate_explanations: [cross_source_statistical_association, candidate_mechanism]
+      evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: time_context, role: required}
+      - {axis_id: evidence_synthesis, role: required}
+      - {axis_id: change_validation, role: auxiliary}
+      - {axis_id: dimension_localization, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
+      - {axis_id: business_context, role: conditional}
+      - {axis_id: data_quality, role: disclosure}
+  business_object_impact_review:
+    business_name: 业务对象影响评估
+    semantics: 评估活动、事件或运营动作与目标指标的变化关系、可量化路径和对照边界。
+    question_family_ref: business_object_impact_review
+    target_metric_refs: [paid_amount]
+    required_outcomes: [impact_direction_and_magnitude, impact_pathways, context_associations, evidence_boundaries]
+    outcome_claim_types:
+      impact_direction_and_magnitude: [business_object_candidate_impact, comparative_change]
+      impact_pathways: [candidate_mechanism, formula_component_contribution]
+      context_associations: [cross_source_statistical_association]
+      evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: business_context, role: required}
+      - {axis_id: change_validation, role: required}
+      - {axis_id: formula_tree, role: auxiliary}
+      - {axis_id: dimension_localization, role: auxiliary}
+      - {axis_id: time_context, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
+      - {axis_id: data_quality, role: disclosure}
+  revenue_health_review:
+    business_name: 收入健康度评估
+    semantics: 结合主基线、公式结构、分群变化与时间稳定性评估收入健康状态和风险边界。
+    question_family_ref: revenue_health_review
+    target_metric_refs: [paid_amount]
+    required_outcomes: [health_direction_and_magnitude, health_structure, health_stability, evidence_boundaries]
+    outcome_claim_types:
+      health_direction_and_magnitude: [comparative_change]
+      health_structure: [formula_component_contribution, segment_contribution_or_mix_shift]
+      health_stability: [baseline_stability]
+      evidence_boundaries: [contract_coverage_and_trust_boundary, source_reconciliation]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: change_validation, role: required}
+      - {axis_id: formula_tree, role: required}
+      - {axis_id: dimension_localization, role: auxiliary}
+      - {axis_id: time_context, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: required}
+      - {axis_id: business_context, role: conditional}
+      - {axis_id: data_quality, role: disclosure}
+  segment_or_factor_attribution:
+    business_name: 分群或因素贡献归因
+    semantics: 在粒度、稀疏性和固定输出安全边界内，排序分群与公式因素的局部贡献。
+    question_family_ref: segment_or_factor_attribution
+    target_metric_refs: [paid_amount]
+    required_outcomes: [ranked_segments_or_factors, quantified_contributions, context_associations, evidence_boundaries]
+    outcome_claim_types:
+      ranked_segments_or_factors: [segment_contribution_or_mix_shift]
+      quantified_contributions: [formula_component_contribution, segment_contribution_or_mix_shift]
+      context_associations: [cross_source_statistical_association]
+      evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: dimension_localization, role: required}
+      - {axis_id: formula_tree, role: required}
+      - {axis_id: change_validation, role: auxiliary}
+      - {axis_id: time_context, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
+      - {axis_id: business_context, role: conditional}
+      - {axis_id: data_quality, role: disclosure}
+  anomaly_or_black_swan_review:
+    business_name: 异常或突发因素调查
+    semantics: 验证异常是否成立，定位时间、公式与分群范围，并将内外部解释保持在候选证据强度内。
+    question_family_ref: anomaly_or_black_swan_review
+    target_metric_refs: [paid_amount]
+    required_outcomes: [anomaly_validation, anomaly_localization, candidate_explanations, evidence_boundaries]
+    outcome_claim_types:
+      anomaly_validation: [external_shock_candidate_or_anomaly, comparative_change, baseline_stability, recurring_pattern_existence]
+      anomaly_localization: [formula_component_contribution, segment_contribution_or_mix_shift]
+      candidate_explanations: [cross_source_statistical_association, candidate_mechanism]
+      evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: anomaly_validation, role: required}
+      - {axis_id: change_validation, role: required}
+      - {axis_id: time_context, role: required}
+      - {axis_id: formula_tree, role: auxiliary}
+      - {axis_id: dimension_localization, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
+      - {axis_id: business_context, role: conditional}
+      - {axis_id: data_quality, role: disclosure}
+  custom_baseline_comparison:
+    business_name: 自定义基线对比
+    semantics: 验证用户指定基线与目标窗口的可比性、方向幅度和结构性差异。
+    question_family_ref: custom_baseline_comparison
+    target_metric_refs: [paid_amount]
+    required_outcomes: [baseline_comparability, direction_and_magnitude, quantified_contributions, evidence_boundaries]
+    outcome_claim_types:
+      baseline_comparability: [baseline_stability]
+      direction_and_magnitude: [comparative_change]
+      quantified_contributions: [formula_component_contribution, segment_contribution_or_mix_shift]
+      evidence_boundaries: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: change_validation, role: required}
+      - {axis_id: time_context, role: required}
+      - {axis_id: formula_tree, role: auxiliary}
+      - {axis_id: dimension_localization, role: auxiliary}
+      - {axis_id: cross_source_context, role: auxiliary}
+      - {axis_id: market_context, role: auxiliary}
+      - {axis_id: business_context, role: conditional}
+      - {axis_id: data_quality, role: disclosure}
+  data_quality_or_evidence_review:
+    business_name: 数据质量与证据可用性审查
+    semantics: 评估合同覆盖、数据完整性、证据来源和可发布范围，并把限制绑定到受影响的结论范围。
+    question_family_ref: data_quality_or_evidence_review
+    target_metric_refs: [paid_amount]
+    required_outcomes: [trust_assessment, affected_claim_scope, publication_limits]
+    outcome_claim_types:
+      trust_assessment: [contract_coverage_and_trust_boundary]
+      affected_claim_scope: [contract_coverage_and_trust_boundary]
+      publication_limits: [contract_coverage_and_trust_boundary]
+    completion_policy: {obligation_success: verified_or_explicit_boundary, required_axis_completion: all_required_and_disclosure_axes_terminal, publication_authority: verifier_passed}
+    analysis_axes:
+      - {axis_id: data_quality, role: required}
+      - {axis_id: metric_coverage, role: required}
+      - {axis_id: market_context, role: auxiliary}
 
 query_shapes:
   daily_metric_baselines: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
-  component_driver_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
-  payment_success_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
-  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: independent, dimension_presence_policy: sparse_allowed}
-  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: paired_required}
+  component_driver_scan: {required_fields: [window_id, window_role, observation_key, source_complete_days], unique_key: [window_id, observation_key], grain: [window_id, observation_key], result_semantics: complete_window_aggregate, dimension_presence_policy: paired_required}
+  payment_success_scan: {required_fields: [window_id, window_role, observation_key, source_complete_days], unique_key: [window_id, observation_key], grain: [window_id, observation_key], result_semantics: complete_window_aggregate, dimension_presence_policy: paired_required}
+  dimension_contribution_scan: {required_fields: [window_id, window_role, observation_key, source_complete_days], unique_key: [window_id, observation_key], grain: [window_id, observation_key], result_semantics: complete_window_aggregate, dimension_topology: independent, dimension_presence_policy: sparse_allowed}
+  joint_candidate_scan: {required_fields: [window_id, window_role, observation_key, source_complete_days], unique_key: [window_id, observation_key], grain: [window_id, observation_key], result_semantics: complete_window_aggregate, dimension_topology: joint, dimension_presence_policy: paired_required}
   time_bucket_scan: {required_fields: [window_id, window_role, observation_key, calendar_week, weekday, month_phase], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   data_quality_probe: {required_fields: [window_id, window_role, observation_key, source_row_count], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_when_paired, provider_bounds: throw_on_overflow}
   event_context_probe:
@@ -713,145 +948,49 @@ query_shapes:
     provider_bounds: {max_context_rows: 5000, overflow: detect_extra_row}
   association_outcome_timeseries: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: sparse_allowed, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: not_applicable, provider_bounds: throw_on_overflow}
   association_candidate_timeseries: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: sparse_allowed, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: not_applicable, provider_bounds: throw_on_overflow}
-  channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint, dimension_presence_policy: paired_required, source_fields: [channel], source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_required, provider_bounds: throw_on_overflow}
+  channel_context_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key, channel], grain: [window_id, observation_key, channel], dimension_topology: joint, dimension_presence_policy: sparse_allowed, source_fields: [channel], source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: overall_channel_required, reconciliation_reference_query_family: channel_context_total_probe, provider_bounds: throw_on_overflow}
+  channel_context_total_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_topology: joint, dimension_presence_policy: paired_required, source_field_policy: metric_bindings, window_policy: fixed_resolved_windows, reconciliation: not_applicable, provider_bounds: throw_on_overflow}
   source_reconciliation_probe: {required_fields: [window_id, window_role, observation_key], unique_key: [window_id, observation_key], grain: [window_id, observation_key], dimension_presence_policy: paired_required}
   high_value_scan:
-    required_fields: [window_id, window_role, observation_key, high_value_threshold, high_value_amount, high_value_paid_users]
+    required_fields: [window_id, window_role, observation_key, source_complete_days, high_value_threshold, high_value_amount, high_value_paid_users]
     unique_key: [window_id, observation_key]
     grain: [window_id, observation_key]
+    result_semantics: complete_window_aggregate
     dimension_presence_policy: paired_required
     query_parameters:
       threshold_quantile: 0.95
       threshold_reference: within_window_user_paid_amount
-      aggregation_grain: [window_id, observation_key, user_id]
+      aggregation_grain: [window_id, user_id]
     join_expectation:
       cardinality: many_to_one
       audit_fields: [__join_input_rows, __join_output_rows, __join_duplicate_keys, __join_unmatched_rows]
       max_duplicate_keys: 0
       max_unmatched_rows: 0
 
-question_family_obligations:
-  pattern_explanation:
-    required_capabilities: [data_quality_profile, metric_timeseries, evidence_reduce, answer_verify]
-    conditional_rules:
-      - {condition: baselines_present, add: [compare_periods]}
-      - {condition: multiple_dimensions_present, add: [candidate_dimension_screen]}
-      - {condition: event_context_requested, add: [event_window_compare]}
-    independent_capabilities: [compare_period_phases, weekday_calendar_compare]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  paid_amount_change_explanation:
-    required_capabilities: [data_quality_profile, driver_decomposition, formula_decompose, answer_verify]
-    conditional_rules:
-      - {condition: baselines_present, add: [compare_periods]}
-      - {condition: dimensions_present, add: [candidate_dimension_screen]}
-      - {condition: components_present, add: [component_contribution]}
-    independent_capabilities: [metric_timeseries, cross_source_association, cross_source_panel_association]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  business_object_impact_review:
-    required_capabilities: [data_quality_profile]
-    conditional_rules:
-      - {condition: baselines_present, add: [compare_periods]}
-      - {condition: event_context_requested, add: [event_evidence, event_window_compare]}
-    independent_capabilities: [cross_source_association, cross_source_panel_association]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  revenue_health_review:
-    required_capabilities: [data_quality_profile, formula_decompose]
-    conditional_rules:
-      - {condition: trust_review_requested, add: [source_reconciliation]}
-    independent_capabilities: [market_health_compare]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  segment_or_factor_attribution:
-    required_capabilities: [data_quality_profile, answer_verify]
-    conditional_rules:
-      - {condition: dimensions_present, add: [market_channel_context]}
-      - {condition: components_present, add: [driver_decomposition]}
-    independent_capabilities: [cross_source_association, cross_source_panel_association, segment_breakdown, segment_shift_compare]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  anomaly_or_black_swan_review:
-    required_capabilities: [data_quality_profile, outlier_scan]
-    conditional_rules:
-      - {condition: anomaly_review_requested, add: [outlier_contribution]}
-      - {condition: event_context_requested, add: [event_evidence]}
-    independent_capabilities: [change_point_scan]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  custom_baseline_comparison:
-    required_capabilities: [data_quality_profile, compare_periods, answer_verify]
-    conditional_rules:
-      - {condition: components_present, add: [driver_decomposition]}
-    independent_capabilities: [market_health_compare, user_mix_contribution]
-    minimum_publishable_evidence: [verified_observation, verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-  data_quality_or_evidence_review:
-    required_capabilities: [data_quality_profile, metric_coverage_profile, answer_verify]
-    conditional_rules:
-      - {condition: trust_review_requested, add: [source_reconciliation]}
-      - {condition: dimensions_present, add: [market_channel_context]}
-    independent_capabilities: []
-    minimum_publishable_evidence: [verified_trust_boundary]
-    missing_contract_owner: analysis_contract_owner
-    degradation_policy: {missing_required_input: explicit_gap, missing_optional_input: omit_with_reason}
-
-diagnostic_obligations:
-  driver_focus:
-    required_capabilities: [driver_decomposition]
-    condition: components_present
-    supported_question_families: [paid_amount_change_explanation]
-  change_explanation:
-    required_capabilities: [driver_decomposition]
-    condition: components_present
-    supported_question_families: [paid_amount_change_explanation, custom_baseline_comparison]
-  pattern_attribution:
-    required_capabilities: [candidate_dimension_screen]
-    condition: dimensions_present
-    supported_question_families: [pattern_explanation, segment_or_factor_attribution]
-  event_impact:
-    required_capabilities: [event_evidence]
-    condition: event_context_requested
-    supported_question_families: [business_object_impact_review]
-  revenue_health:
-    required_capabilities: [user_mix_contribution, high_value_user_contribution]
-    condition: components_present
-    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
-  factor_topk:
-    required_capabilities: [candidate_dimension_screen]
-    condition: dimensions_present
-    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
-  selected_segment_attribution:
-    required_capabilities: [segment_contribution]
-    condition: dimensions_present
-    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
-  selected_joint_attribution:
-    required_capabilities: [joint_attribution]
-    condition: multiple_dimensions_present
-    supported_question_families: [paid_amount_change_explanation, segment_or_factor_attribution]
-  anomaly:
-    required_capabilities: [outlier_scan, outlier_contribution]
-    condition: anomaly_review_requested
-    supported_question_families: [anomaly_or_black_swan_review]
-  multi_baseline:
-    required_capabilities: [compare_periods]
-    condition: baselines_present
-    supported_question_families: [paid_amount_change_explanation, pattern_explanation]
-  evidence_quality:
-    required_capabilities: [data_quality_profile]
-    condition: trust_review_requested
-    supported_question_families: [data_quality_or_evidence_review, segment_or_factor_attribution, anomaly_or_black_swan_review]
+launch_question_families:
+  - paid_amount_change_explanation
+  - pattern_explanation
+  - business_object_impact_review
+  - revenue_health_review
+  - segment_or_factor_attribution
+  - anomaly_or_black_swan_review
+  - custom_baseline_comparison
+  - data_quality_or_evidence_review
 
 capability_inputs:
   cross_source_association:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [reference]
+      consumption_semantics: [daily_series, capability_context]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: cross_source_association
+      query_families: {outcome: association_outcome_timeseries, candidate: association_candidate_timeseries}
+      fields: {target_key: paid_amount, time_key: observation_key}
+      join_keys: [window_id, observation_key]
+      candidate_keys: [player_bet_amount, player_bet_count, player_avg_bet_amount, gameplay_users, gameplay_rounds, gameplay_profit, service_fee_rake]
+      parameters: {methods: [pearson, spearman], transforms: [level, difference, signed_log_difference], lags: [0], min_samples: 30, rolling_window: 90, min_rolling_windows: 3, stability_direction_ratio: 0.70, min_abs_correlation: 0.10, alpha: 0.05, fdr_method: by}
     query_families: [association_outcome_timeseries, association_candidate_timeseries]
     query_family_metrics:
       association_outcome_timeseries: [paid_amount, paid_users, paid_orders, paid_frequency, avg_order_amount]
@@ -864,12 +1003,25 @@ capability_inputs:
       allowed_units: [day, week, month, quarter]
       count_bounds: {day: [180, 900], week: [26, 130], month: [6, 36], quarter: [2, 12]}
       aggregation: daily_observations
+      execution_default: {unit: day, count: 180}
     supported_claim_types: [cross_source_statistical_association]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, missing_optional_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association, insufficient_evidence, insufficient]
+    supported_evidence_types: [statistical_association, insufficient_evidence]
     maximum_claim_strength: candidate_driver
   cross_source_panel_association:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [reference]
+      consumption_semantics: [daily_series, capability_context]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: cross_source_panel_association
+      query_families: {outcome: association_outcome_timeseries, candidate: association_candidate_timeseries}
+      fields: {time_key: observation_key, panel_key: channel}
+      join_keys: [window_id, observation_key, channel]
+      hypothesis: {outcome_key: paid_amount, candidate_key: player_bet_amount, transform: level, lag: 0}
+      parameters: {min_samples: 30, min_panels: 3, min_panel_samples: 5, min_pair_coverage: 0.80, min_mapping_coverage: 0.80, min_direction_stability: 0.60, residual_tolerance: 1.0e-10, max_iterations: 1000}
     query_families: [association_outcome_timeseries, association_candidate_timeseries]
     query_family_metrics:
       association_outcome_timeseries: [paid_amount, paid_users, paid_orders, paid_frequency, avg_order_amount]
@@ -889,12 +1041,21 @@ capability_inputs:
       allowed_units: [day, week, month, quarter]
       count_bounds: {day: [180, 900], week: [26, 130], month: [6, 36], quarter: [2, 12]}
       aggregation: daily_observations
+      execution_default: {unit: day, count: 180}
     supported_claim_types: [cross_source_statistical_association]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, missing_optional_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association, insufficient_evidence, insufficient]
+    supported_evidence_types: [statistical_association, insufficient_evidence]
     maximum_claim_strength: candidate_driver
   market_health_compare:
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [complete_day_sum_or_mean]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: window_metric_comparison
+      query_families: {primary: daily_metric_baselines}
     query_families: [daily_metric_baselines]
     metric_mode: requested
     allowed_metrics: [active_users, new_users, registrations, aggregate_marketing_cost, profit, paid_amount]
@@ -902,9 +1063,19 @@ capability_inputs:
     supported_claim_types: [comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [observed_comparison]
     maximum_claim_strength: directional
   market_channel_context:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [evaluation_window]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: market_channel_context
+      query_families: {primary: channel_context_probe}
+      fields: {channel_key: channel, window_id_key: window_id, observation_key: observation_key}
+      parameters: {value_key_source: requested_metric, required_window_presence: reconciled_zero_fill, completeness_source: bound_input}
     query_families: [channel_context_probe]
     metric_mode: requested
     allowed_metrics: [active_users, new_users, registrations, aggregate_marketing_cost, profit, paid_amount]
@@ -913,20 +1084,49 @@ capability_inputs:
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: context_only}
-    supported_evidence_types: [insufficient]
+    supported_evidence_types: [trust_boundary, insufficient_evidence]
     maximum_claim_strength: trust_boundary
   source_reconciliation:
+    evidence_contract: bounded-window-source-reconciliation.v1
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [evaluation_window]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: source_reconciliation
+      query_families: {primary: source_reconciliation_probe}
+      fields: {join_keys: [window_id, observation_key], value_key: paid_amount, window_id_key: window_id, window_role_key: window_role}
+      parameters:
+        required_source_count: 2
+        tolerance_source: metric_contract
+        strategy_source: metric_contract
+        reconciliation_contract: bounded-window-source-reconciliation.v1
+        authoritative_source_id: market_dashboard
+        partition_source_id: market_dashboard_channel
+        bounded_window_relative_tolerance: 0.002
+        bounded_change_residual_share: 0.01
+        hard_observation_relative_limit: 0.01
+        context_only_resolution: current_window_reconciliation
     query_families: [source_reconciliation_probe]
     metric_mode: requested
     allowed_metrics: [paid_amount]
     allowed_datasets: [market_dashboard, market_dashboard_channel]
     source_selection: all_required_datasets
     supported_claim_types: [source_reconciliation]
-    minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
+    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: context_only}
-    supported_evidence_types: [insufficient]
-    maximum_claim_strength: trust_boundary
+    supported_evidence_types: [accounting_contribution, insufficient_evidence]
+    maximum_claim_strength: quantified_contribution
   compare_periods:
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [complete_day_sum_or_mean]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: window_metric_comparison
+      query_families: {primary: daily_metric_baselines}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -934,37 +1134,39 @@ capability_inputs:
     supported_claim_types: [comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [observed_comparison]
     maximum_claim_strength: directional
   rolling_window_compare:
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, reference]
+      consumption_semantics: [daily_series, capability_context]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: pattern
+      pattern_mode: rolling
+      query_families: {primary: daily_metric_baselines}
+      fields: {observation_key: observation_key, window_role_key: window_role, target_role: target, baseline_role: baseline, context_role: reference, value_key: value}
+      parameters: {materiality_floor: 0.0, rolling_span_policy: target_window_duration_with_minimum, minimum_span_days: 3, rolling_step_policy: target_window_duration, min_periods: 8}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     context_window_policy:
       relation: trailing_complete_periods
-      allowed_units: [day, week, month, quarter]
-      count_bounds: {day: [1, 90], week: [1, 26], month: [1, 24], quarter: [1, 8]}
-      aggregation: mean_of_complete_days
+      allowed_units: [day]
+      count_bounds: {day: [4, 730]}
+      aggregation: daily_observations
+      execution_default: {unit: day, count: 10}
     supported_claim_types: [baseline_stability, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [statistical_association, insufficient_evidence]
     maximum_claim_strength: directional
-  driver_decomposition:
-    query_families: [component_driver_scan, payment_success_scan]
-    optional_query_families: [payment_success_scan]
-    query_family_metrics:
-      component_driver_scan: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
-      payment_success_scan: [payment_success_rate]
-    required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
-    allowed_datasets: [paid_order_success, payment_attempt]
-    optional_metrics: [payment_success_rate]
-    supported_claim_types: [formula_component_contribution]
-    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
-    degradation_policy: {missing_required_input: block_claim, missing_optional_input: omit_optional_component, incomplete_input: degrade_claim}
-    supported_evidence_types: [accounting_contribution]
-    maximum_claim_strength: quantified_contribution
   segment_contribution:
+    task_input_binding:
+      payload_kind: segment_contribution
+      query_families: {primary: dimension_contribution_scan}
+      fields: {segment_key: __dimension_member_ref, group_key: window_role, target_group: target, baseline_group: baseline, amount_key: paid_amount}
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -972,9 +1174,14 @@ capability_inputs:
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: quantified_contribution
   joint_attribution:
+    task_input_binding:
+      payload_kind: joint_attribution
+      query_families: {primary: joint_candidate_scan}
+      fields: {group_key: window_role, target_group: target, baseline_group: baseline, amount_key: paid_amount}
+      parameters: {residual: 0.0, fit: 1.0, force_run: false}
     query_families: [joint_candidate_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -982,7 +1189,7 @@ capability_inputs:
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: candidate_driver
   pattern_scan:
     query_families: [time_bucket_scan]
@@ -994,15 +1201,31 @@ capability_inputs:
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: recurring_pattern
   data_quality_profile:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [evaluation_window]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: data_quality
+      query_families: {primary: data_quality_probe}
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
-    supported_evidence_types: [insufficient]
+    supported_evidence_types: [trust_boundary, insufficient_evidence]
     maximum_claim_strength: trust_boundary
   event_evidence:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [evaluation_window]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: event_evidence
+      query_families: {primary: event_context_probe}
     query_families: [event_context_probe]
     required_metrics: []
     source_mode: requested_context_sources
@@ -1012,24 +1235,20 @@ capability_inputs:
     degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}
     supported_evidence_types: [candidate_mechanism]
     maximum_claim_strength: candidate_mechanism
+    evidence_contract: event-presence.v1
   high_value_user_contribution:
+    task_input_binding:
+      payload_kind: high_value_user_contribution
+      query_families: {primary: high_value_scan}
+      fields: {group_key: window_role, total_amount_key: paid_amount, high_value_amount_key: high_value_amount, high_value_users_key: high_value_paid_users, threshold_key: high_value_threshold}
     query_families: [high_value_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
-    supported_claim_types: [candidate_driver, concentration]
+    supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: candidate_driver
-  answer_verify:
-    query_families: []
-    required_metrics: []
-    supported_claim_types: []
-    minimum_readiness: {required_slots: none, accepted_completeness: []}
-    completion_authority: verifier_passed
-    degradation_policy: {missing_required_input: block_unverified_claim}
-    supported_evidence_types: []
-    maximum_claim_strength: verifier_only
   data_quality_check:
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
@@ -1037,9 +1256,18 @@ capability_inputs:
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
-    supported_evidence_types: [insufficient]
+    supported_evidence_types: [trust_boundary, insufficient_evidence]
     maximum_claim_strength: trust_boundary
   formula_decompose:
+    formula_path_id: frequency_ticket_size
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [source_window_aggregate]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: formula_graph
+      query_families: {primary: component_driver_scan}
     query_families: [component_driver_scan]
     required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -1049,18 +1277,45 @@ capability_inputs:
     supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: quantified_contribution
   outlier_contribution:
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [daily_series]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: outlier_contribution
+      query_families: {primary: daily_metric_baselines}
+      fields: {period_key: observation_key, period_grain: day, group_key: window_role, target_group: target, baseline_group: baseline, amount_key: paid_amount}
+      parameters: {top_n: 5, removal_policy: top_positive_contribution_periods, max_removed_periods: 5, direction_after_removal: true}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: candidate_driver
   outlier_scan:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, reference]
+      consumption_semantics: [daily_series, capability_context]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: outlier_scan
+      context_consumption_mode: target_against_reference
+      query_families: {primary: daily_metric_baselines}
+      fields: {value_key: paid_amount, period_key: observation_key, group_key: window_role, target_group: target, reference_group: reference}
+      parameters: {min_reference_samples: 7, mad_threshold: 6.0}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
+    context_window_policy:
+      relation: trailing_complete_periods
+      allowed_units: [day]
+      count_bounds: {day: [7, 900]}
+      aggregation: daily_observations
+      execution_default: {unit: day, count: 28}
     supported_claim_types: [external_shock_candidate_or_anomaly]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
@@ -1074,37 +1329,72 @@ capability_inputs:
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: quantified_contribution
   user_mix_contribution:
+    task_input_binding:
+      payload_kind: user_mix_contribution
+      query_families: {primary: dimension_contribution_scan}
+      fields: {segment_key: channel, mix_key: user_mix_bucket, group_key: window_role, amount_key: paid_amount, users_key: paid_users}
+      parameters: {user_grain_policy: new_vs_returning}
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     dimension_mode: requested
-    supported_claim_types: [candidate_driver, mix_shift, contribution]
+    supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [dimension_localization]
     maximum_claim_strength: candidate_driver
   metric_coverage_profile:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [evaluation_window]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: metric_coverage_profile
+      query_families: {primary: data_quality_probe}
+      fields: {value_key: paid_amount, result_ref_key: result_ref, window_id_key: window_id, observation_key: observation_key, source_row_count_key: source_row_count}
+      parameters: {coverage_records_source: query_contract_and_completeness}
     query_families: [data_quality_probe]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [contract_coverage_and_trust_boundary]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete, partial]}
     degradation_policy: {missing_required_input: report_contract_gap, incomplete_input: report_limitation}
-    supported_evidence_types: [insufficient]
+    supported_evidence_types: [trust_boundary, insufficient_evidence]
     maximum_claim_strength: trust_boundary
   metric_timeseries:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, calendar_partition, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [daily_series]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: metric_timeseries
+      query_families: {primary: daily_metric_baselines}
+      fields: {time_key: observation_key, window_id_key: window_id, window_role_key: window_role}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
     supported_claim_types: [comparative_change, recurring_pattern_existence]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [observed_comparison]
     maximum_claim_strength: directional
   compare_period_phases:
+    temporal_compatibility:
+      modes: [calendar_partition]
+      window_roles: [target]
+      consumption_semantics: [daily_series, partition_members]
+      calendar_partition_fields: [month_phase]
+    task_input_binding:
+      payload_kind: pattern
+      pattern_mode: intra_period
+      query_families: {primary: time_bucket_scan}
+      fields: {window_role_key: window_role, phase_key: month_phase, observation_key: observation_key, period_key: calendar_month, value_key: amount}
+      parameters: {materiality_floor: 0.0, min_periods: 24}
     query_families: [time_bucket_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -1113,50 +1403,70 @@ capability_inputs:
       allowed_units: [month, quarter]
       count_bounds: {month: [1, 24], quarter: [1, 8]}
       aggregation: mean_of_complete_days
-    supported_claim_types: [recurring_pattern_existence]
+      execution_default: {unit: month, count: 24}
+    supported_claim_types: [recurring_pattern_existence, baseline_stability]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: recurring_pattern
   weekday_calendar_compare:
+    temporal_compatibility:
+      modes: [calendar_partition]
+      window_roles: [target]
+      consumption_semantics: [daily_series, partition_members]
+      calendar_partition_fields: [iso_weekday]
+    task_input_binding:
+      payload_kind: pattern
+      pattern_mode: weekly
+      query_families: {primary: time_bucket_scan}
+      fields: {window_role_key: window_role, week_key: calendar_week, weekday_key: weekday, value_key: amount}
+      parameters: {materiality_floor: 0.0, min_periods: 2}
     query_families: [time_bucket_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
-    supported_claim_types: [recurring_pattern_existence]
+    supported_claim_types: [recurring_pattern_existence, baseline_stability]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: recurring_pattern
   event_window_compare:
-    query_families: [event_context_probe]
-    required_metrics: []
-    source_mode: requested_context_sources
-    allowed_context_datasets: [external_event, internal_operation_event]
-    supported_claim_types: [business_object_candidate_impact, candidate_mechanism]
+    temporal_compatibility:
+      modes: [event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [complete_day_sum_or_mean]
+      calendar_partition_fields: []
+    task_dependencies: [event_evidence]
+    task_input_binding:
+      payload_kind: event_window_metric_comparison
+      query_families: {primary: daily_metric_baselines}
+    query_families: [daily_metric_baselines]
+    required_metrics: [paid_amount]
+    allowed_datasets: [paid_order_success, payment_attempt]
+    supported_claim_types: [business_object_candidate_impact]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_candidate_impact, incomplete_input: context_only}
-    supported_evidence_types: [candidate_mechanism]
-    maximum_claim_strength: candidate_mechanism
-  component_contribution:
-    query_families: [component_driver_scan]
-    required_metrics: [paid_amount, paid_users, paid_orders, first_paid_users, paid_frequency, avg_order_amount]
+    supported_evidence_types: [observed_comparison]
+    maximum_claim_strength: directional
+    evidence_contract: event-window-metric-comparison.v1
+  segment_breakdown:
+    task_input_binding:
+      payload_kind: dimension_distribution
+      query_families: {primary: dimension_contribution_scan}
+      fields: {group_key: window_role, target_group: target, baseline_group: baseline}
+    query_families: [dimension_contribution_scan]
+    required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
-    supported_claim_types: [formula_component_contribution]
+    dimension_mode: requested
+    supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
     supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: quantified_contribution
-  segment_breakdown:
-    query_families: [dimension_contribution_scan]
-    required_metrics: [paid_amount]
-    allowed_datasets: [paid_order_success, payment_attempt]
-    dimension_mode: requested
-    supported_claim_types: [segment_contribution_or_mix_shift]
-    minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
-    degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
-    maximum_claim_strength: quantified_contribution
   segment_shift_compare:
+    task_input_binding:
+      payload_kind: dimension_distribution
+      query_families: {primary: dimension_contribution_scan}
+      fields: {group_key: window_role, target_group: target, baseline_group: baseline}
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -1164,9 +1474,19 @@ capability_inputs:
     supported_claim_types: [segment_contribution_or_mix_shift]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: block_claim, incomplete_input: degrade_claim}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [accounting_contribution]
     maximum_claim_strength: quantified_contribution
   candidate_dimension_screen:
+    temporal_compatibility:
+      modes: [single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [target, baseline]
+      consumption_semantics: [source_window_aggregate]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: candidate_dimension_screen
+      query_families: {primary: dimension_contribution_scan}
+      fields: {group_key: window_role, target_group: target, baseline_group: baseline, amount_key: paid_amount, order_key: paid_orders, user_key: paid_users}
+      parameters: {min_sample_size: 10, top_k: 5, reconciliation_tolerance: 0.01}
     query_families: [dimension_contribution_scan]
     required_metrics: [paid_amount, paid_orders, paid_users]
     allowed_datasets: [paid_order_success, payment_attempt]
@@ -1177,13 +1497,29 @@ capability_inputs:
     supported_evidence_types: [statistical_association]
     maximum_claim_strength: candidate_driver
   change_point_scan:
+    temporal_compatibility:
+      modes: [target_only, single_day_window_pair, aggregate_window_pair, event_relative]
+      window_roles: [reference]
+      consumption_semantics: [daily_series, capability_context]
+      calendar_partition_fields: []
+    task_input_binding:
+      payload_kind: change_point_scan
+      query_families: {primary: daily_metric_baselines}
+      fields: {time_key: observation_key, value_key: paid_amount}
+      parameters: {min_total_samples: 8, min_segment_samples: 4, min_relative_level_shift: 0.2, min_standardized_level_shift: 2.0, max_candidates: 5}
     query_families: [daily_metric_baselines]
     required_metrics: [paid_amount]
     allowed_datasets: [paid_order_success, payment_attempt]
+    context_window_policy:
+      relation: trailing_complete_periods
+      allowed_units: [day]
+      count_bounds: {day: [8, 900]}
+      aggregation: daily_observations
+      execution_default: {unit: day, count: 8}
     supported_claim_types: [external_shock_candidate_or_anomaly, comparative_change]
     minimum_readiness: {required_slots: all, accepted_completeness: [complete]}
     degradation_policy: {missing_required_input: omit_path, incomplete_input: sensitivity_only}
-    supported_evidence_types: [statistical_association]
+    supported_evidence_types: [statistical_association, insufficient_evidence]
     maximum_claim_strength: anomaly_candidate
   evidence_reduce:
     query_families: []

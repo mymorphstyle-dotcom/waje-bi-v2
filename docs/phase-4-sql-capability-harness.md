@@ -1,8 +1,20 @@
-# Phase 4 SQL Capability Harness Reference
+# Retired Phase 4 SQL Capability Harness Reference
 
 Version: 2026-07-06.v1
 
-Status: accepted working reference for the Phase 4 architecture repair.
+Status: retired on 2026-07-18.
+
+This document records the former Phase 4 design and no longer defines current
+WAJE BI v2 behavior. The single-authority cutover removed its public capability
+catalog, mutable analysis graph, `Answer Package`, and executable
+`answer_verify` model. Current planning, execution, evidence, claim, narrative,
+publication, and delivery authority is defined by
+[2026-07-17: Single-authority agent workflow convergence](./adr/2026-07-17-single-authority-agent-workflow.md).
+
+The filename remains as a historical pointer. The material below provides no
+runtime contract, fallback path, compatibility promise, or acceptance authority.
+
+## Historical reference
 
 ## Purpose
 
@@ -105,7 +117,6 @@ mechanical operations such as raw bucketing or arithmetic.
 | `weekday_calendar_compare` | Compare weekday or calendar buckets. | bucket ranking, weekday uplift, coverage |
 | `event_window_compare` | Compare windows before/during/after a known event or static assumption. | event-relative deltas, candidate mechanism boundary |
 | `formula_decompose` | Decompose a metric into available formula components. | component availability, contribution, reconciliation gap |
-| `component_contribution` | Quantify how a component changed between target and baseline. | accounting contribution and residual |
 | `segment_breakdown` | Compare metric distribution across one dimension. | segment share, amount, delta, sparse warnings |
 | `segment_shift_compare` | Compare segment mix between baseline and target. | mix shift, contribution, unstable segments |
 | `candidate_dimension_screen` | Screen eligible dimensions before deeper attribution. | ranked candidates, residual reduction, coverage, sparse risk |

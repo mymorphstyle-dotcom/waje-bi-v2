@@ -94,6 +94,19 @@ _DATE_FUNCTIONS = frozenset(
 )
 
 
+_WINDOW_AGGREGATE_QUERY_INTENTS = frozenset(
+    {
+        "component_driver_scan",
+        "dimension_contribution_scan",
+        "joint_candidate_scan",
+        "payment_success_scan",
+    }
+)
+_WINDOW_AGGREGATE_NORMALIZED_METRIC_KINDS = frozenset(
+    {"sum", "distinct_count", "distinct_count_if"}
+)
+
+
 @dataclass(frozen=True)
 class CompiledQuery:
     sql_text: str
@@ -154,7 +167,11 @@ def _compile_clickhouse_query_with_registry(
     date_expression = _date_expression(snapshot, registry=registry)
     _verify_reviewed_bindings(contract, snapshot, registry=registry)
     parameters = _window_parameters(contract.resolved_windows)
-    filter_sql, filter_parameters = _compile_filters(contract.filters, snapshot)
+    filter_sql, filter_parameters = _compile_filters(
+        contract.filters,
+        snapshot,
+        registry=registry,
+    )
     parameters.update(filter_parameters)
     physical_filters, physical_parameters = _physical_snapshot_filters(
         snapshot,
@@ -182,9 +199,7 @@ def _compile_clickhouse_query_with_registry(
             or not source_fields
             or any(type(field) is not str or not field for field in source_fields)
         ):
-            raise ValueError(
-                f"reviewed_source_fields_invalid:{contract.query_intent}"
-            )
+            raise ValueError(f"reviewed_source_fields_invalid:{contract.query_intent}")
         sql_text = _compile_event_context_query(
             contract,
             snapshot,
@@ -202,6 +217,14 @@ def _compile_clickhouse_query_with_registry(
             snapshot,
             date_expression=date_expression,
             filter_sql=filter_sql,
+        )
+    elif contract.query_intent in _WINDOW_AGGREGATE_QUERY_INTENTS:
+        sql_text = _compile_window_aggregate_query(
+            contract,
+            snapshot,
+            date_expression=date_expression,
+            filter_sql=filter_sql,
+            parameters=parameters,
         )
     else:
         sql_text = _compile_grouped_query(
@@ -259,11 +282,10 @@ def _verify_high_value_semantics(contract: QueryContract) -> None:
     aggregation_grain = _string_tuple(
         contract.query_parameters.get("aggregation_grain")
     )
-    supported_grain = ("window_id", "observation_key", "user_id")
+    supported_grain = ("window_id", "user_id")
     if aggregation_grain != supported_grain:
         raise ValueError(
-            "high_value_aggregation_grain_unsupported:"
-            + ",".join(aggregation_grain)
+            "high_value_aggregation_grain_unsupported:" + ",".join(aggregation_grain)
         )
     threshold_quantile = contract.query_parameters.get("threshold_quantile")
     if (
@@ -271,9 +293,7 @@ def _verify_high_value_semantics(contract: QueryContract) -> None:
         or not isinstance(threshold_quantile, (int, float))
         or not 0 < threshold_quantile < 1
     ):
-        raise ValueError(
-            f"high_value_threshold_quantile_invalid:{threshold_quantile}"
-        )
+        raise ValueError(f"high_value_threshold_quantile_invalid:{threshold_quantile}")
 
 
 def _compile_grouped_query(
@@ -329,6 +349,131 @@ def _compile_grouped_query(
     )
 
 
+def _compile_window_aggregate_query(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    date_expression: str,
+    filter_sql: tuple[str, ...],
+    parameters: dict[str, Any],
+) -> str:
+    """Compile exact window-grain metrics while retaining complete-day audit.
+
+    Formula, contribution, and payment-rate capabilities consume one metric
+    aggregate per resolved window (and per requested dimension member).  Their
+    distinct counts and ratios cannot be reconstructed from daily result rows.
+    The companion ``source_complete_days`` field keeps physical day coverage
+    independently verifiable without changing the business metric grain.
+    """
+
+    if any(
+        window.aggregation
+        not in {
+            "daily_total",
+            "sum_of_complete_days",
+            "mean_of_complete_days",
+        }
+        for window in contract.resolved_windows
+    ):
+        raise ValueError(
+            f"window_aggregate_aggregation_unsupported:{contract.query_intent}"
+        )
+    dimensions = _dimension_selects(
+        contract,
+        snapshot,
+        parameters=parameters,
+    )
+    metrics = _window_aggregate_metric_selects(contract)
+    if not metrics:
+        raise ValueError(f"query_contract_metrics_required:{contract.query_intent}")
+    predicates = _window_predicates(date_expression, filter_sql)
+    aggregate_selects = (
+        "`__window_id` AS `window_id`",
+        "`__window_role` AS `window_role`",
+        "`__window_id` AS `observation_key`",
+        *(item[0] for item in dimensions),
+        *metrics,
+    )
+    aggregate_groups = (
+        "`__window_id`",
+        "`__window_role`",
+        "`__window_aggregation`",
+        "`__window_start`",
+        "`__window_end`",
+        *(item[1] for item in dimensions),
+    )
+    return "\n".join(
+        (
+            f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows,",
+            "matched_rows AS (",
+            "  SELECT",
+            _indented(
+                (
+                    "source.*",
+                    "tupleElement(analysis_window, 1) AS `__window_id`",
+                    "tupleElement(analysis_window, 2) AS `__window_role`",
+                    "tupleElement(analysis_window, 3) AS `__window_start`",
+                    "tupleElement(analysis_window, 4) AS `__window_end`",
+                    "tupleElement(analysis_window, 5) AS `__window_aggregation`",
+                    f"{date_expression} AS `__observation_date`",
+                ),
+                spaces=4,
+            ),
+            f"  FROM {_quote_physical_table(snapshot.physical_table)} AS source",
+            "  ARRAY JOIN analysis_windows AS analysis_window",
+            "  WHERE " + "\n    AND ".join(predicates),
+            "),",
+            "window_coverage AS (",
+            "  SELECT",
+            "    `__window_id` AS `window_id`,",
+            "    `__window_role` AS `window_role`,",
+            "    uniqExact(`__observation_date`) AS `source_complete_days`",
+            "  FROM matched_rows",
+            "  GROUP BY `__window_id`, `__window_role`",
+            "),",
+            "window_aggregates AS (",
+            "  SELECT",
+            _indented(aggregate_selects, spaces=4),
+            "  FROM matched_rows",
+            "  GROUP BY " + ", ".join(aggregate_groups),
+            ")",
+            "SELECT",
+            "  window_aggregates.* ,",
+            "  window_coverage.`source_complete_days` AS `source_complete_days`",
+            "FROM window_aggregates",
+            "INNER JOIN window_coverage USING (`window_id`, `window_role`)",
+        )
+    )
+
+
+def _window_aggregate_metric_selects(
+    contract: QueryContract,
+) -> tuple[str, ...]:
+    selected = []
+    seen: set[str] = set()
+    complete_days = "dateDiff('day', `__window_start`, `__window_end`)"
+    for binding in contract.metric_bindings:
+        if binding.metric_id in seen:
+            raise ValueError(f"duplicate_metric_binding:{binding.metric_id}")
+        seen.add(binding.metric_id)
+        if binding.aggregation in _WINDOW_AGGREGATE_NORMALIZED_METRIC_KINDS:
+            normalized_expression = f"toFloat64({binding.expression})"
+            expression = (
+                "if(`__window_aggregation` = 'mean_of_complete_days', "
+                f"{normalized_expression} / nullIf({complete_days}, 0), "
+                f"{normalized_expression})"
+            )
+        elif binding.aggregation == "ratio":
+            expression = binding.expression
+        else:
+            raise ValueError(
+                "window_aggregate_metric_aggregation_unsupported:"
+                f"{binding.metric_id}:{binding.aggregation}"
+            )
+        selected.append(f"{expression} AS {_quote_identifier(binding.metric_id)}")
+    return tuple(selected)
+
+
 def _compile_event_context_query(
     contract: QueryContract,
     snapshot: DatasetSnapshot,
@@ -339,7 +484,9 @@ def _compile_event_context_query(
 ) -> str:
     if contract.metric_bindings or contract.dimension_bindings:
         raise ValueError("event_context_probe_bindings_unsupported")
-    missing = tuple(field for field in required_fields if field not in snapshot.schema_fields)
+    missing = tuple(
+        field for field in required_fields if field not in snapshot.schema_fields
+    )
     if missing:
         raise ValueError("event_context_fields_missing:" + ",".join(missing))
     window_id = "tupleElement(analysis_window, 1)"
@@ -458,21 +605,64 @@ def _compile_high_value_query(
     if len(contract.metric_bindings) != 1:
         raise ValueError("high_value_scan_requires_single_metric")
     binding = contract.metric_bindings[0]
+    if any(
+        window.aggregation
+        not in {
+            "daily_total",
+            "sum_of_complete_days",
+            "mean_of_complete_days",
+        }
+        for window in contract.resolved_windows
+    ):
+        raise ValueError("high_value_window_aggregation_unsupported")
     predicates = _window_predicates(date_expression, filter_sql)
     partition_fields = (
-        "`window_id`",
-        "`window_role`",
-        "`observation_key`",
+        "`__window_id`",
+        "`__window_role`",
+        "`__window_aggregation`",
+        "`__window_start`",
+        "`__window_end`",
     )
     partition = ", ".join(partition_fields)
+    threshold_join = " AND ".join(
+        f"user_totals.{field} = thresholds.{field}" for field in partition_fields
+    )
+    right_key_join = " AND ".join(
+        f"user_totals.{field} = right_key_audit.{field}" for field in partition_fields
+    )
+    pre_join_audit_join = " AND ".join(
+        f"joined_rows.{field} = pre_join_audit.{field}" for field in partition_fields
+    )
+    complete_days = "dateDiff('day', `__window_start`, `__window_end`)"
+    normalized_total = (
+        "if(`__window_aggregation` = 'mean_of_complete_days', "
+        f"sum(`user_metric_value`) / nullIf({complete_days}, 0), "
+        "sum(`user_metric_value`))"
+    )
+    normalized_threshold = (
+        "if(`__window_aggregation` = 'mean_of_complete_days', "
+        f"max(`threshold_cutoff`) / nullIf({complete_days}, 0), "
+        "max(`threshold_cutoff`))"
+    )
+    normalized_high_value = (
+        "if(`__window_aggregation` = 'mean_of_complete_days', "
+        f"sumIf(`user_metric_value`, `is_high_value`) / nullIf({complete_days}, 0), "
+        "sumIf(`user_metric_value`, `is_high_value`))"
+    )
+    normalized_high_value_users = (
+        "if(`__window_aggregation` = 'mean_of_complete_days', "
+        f"toFloat64(countIf(`is_high_value`)) / nullIf({complete_days}, 0), "
+        "toFloat64(countIf(`is_high_value`)))"
+    )
     final_select = (
-        "`window_id`",
-        "`window_role`",
-        "`observation_key`",
-        f"sum(`user_metric_value`) AS {_quote_identifier(binding.metric_id)}",
-        "max(`threshold_cutoff`) AS `high_value_threshold`",
-        "sumIf(`user_metric_value`, `is_high_value`) AS `high_value_amount`",
-        "countIf(`is_high_value`) AS `high_value_paid_users`",
+        "`__window_id` AS `window_id`",
+        "`__window_role` AS `window_role`",
+        "`__window_id` AS `observation_key`",
+        f"{normalized_total} AS {_quote_identifier(binding.metric_id)}",
+        f"{normalized_threshold} AS `high_value_threshold`",
+        f"{normalized_high_value} AS `high_value_amount`",
+        f"{normalized_high_value_users} AS `high_value_paid_users`",
+        "max(`source_complete_days`) AS `source_complete_days`",
         "max(`join_input_rows`) AS `__join_input_rows`",
         "count() AS `__join_output_rows`",
         "sum(greatest(toInt64(`right_key_multiplicity`) - 1, 0)) "
@@ -482,21 +672,43 @@ def _compile_high_value_query(
     return "\n".join(
         (
             f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows,",
+            "matched_rows AS (",
+            "  SELECT",
+            _indented(
+                (
+                    "source.*",
+                    "tupleElement(analysis_window, 1) AS `__window_id`",
+                    "tupleElement(analysis_window, 2) AS `__window_role`",
+                    "tupleElement(analysis_window, 3) AS `__window_start`",
+                    "tupleElement(analysis_window, 4) AS `__window_end`",
+                    "tupleElement(analysis_window, 5) AS `__window_aggregation`",
+                    f"{date_expression} AS `__observation_date`",
+                ),
+                spaces=4,
+            ),
+            f"  FROM {_quote_physical_table(snapshot.physical_table)} AS source",
+            "  ARRAY JOIN analysis_windows AS analysis_window",
+            "  WHERE " + "\n    AND ".join(predicates),
+            "),",
+            "window_coverage AS (",
+            "  SELECT",
+            "    `__window_id`,",
+            "    `__window_role`,",
+            "    uniqExact(`__observation_date`) AS `source_complete_days`",
+            "  FROM matched_rows",
+            "  GROUP BY `__window_id`, `__window_role`",
+            "),",
             "user_totals AS (",
             "  SELECT",
             _indented(
                 (
-                    "tupleElement(analysis_window, 1) AS `window_id`",
-                    "tupleElement(analysis_window, 2) AS `window_role`",
-                    f"toString({date_expression}) AS `observation_key`",
+                    *partition_fields,
                     "`user_id` AS `user_id`",
                     f"{binding.expression} AS `user_metric_value`",
                 ),
                 spaces=4,
             ),
-            f"  FROM {_quote_physical_table(snapshot.physical_table)}",
-            "  ARRAY JOIN analysis_windows AS analysis_window",
-            "  WHERE " + "\n    AND ".join(predicates),
+            "  FROM matched_rows",
             "  GROUP BY " + ", ".join((*partition_fields, "`user_id`")),
             "),",
             "pre_join_audit AS (",
@@ -523,20 +735,45 @@ def _compile_high_value_query(
             "),",
             "joined_rows AS (",
             "  SELECT",
-            "    user_totals.* ,",
+            "    "
+            + ",\n    ".join(
+                f"user_totals.{field} AS {field}" for field in partition_fields
+            )
+            + ",",
+            "    user_totals.`user_id` AS `user_id`,",
+            "    user_totals.`user_metric_value` AS `user_metric_value`,",
             "    thresholds.`threshold_cutoff` AS `threshold_cutoff`,",
             "    coalesce(right_key_audit.`right_key_multiplicity`, toUInt64(0)) "
             "AS `right_key_multiplicity`,",
             "    user_totals.`user_metric_value` >= "
             "thresholds.`threshold_cutoff` AS `is_high_value`",
             "  FROM user_totals",
-            "  LEFT JOIN thresholds USING (" + partition + ")",
-            "  LEFT JOIN right_key_audit USING (" + partition + ")",
+            "  LEFT JOIN thresholds ON " + threshold_join,
+            "  LEFT JOIN right_key_audit ON " + right_key_join,
+            "),",
+            "audited_rows AS (",
+            "  SELECT",
+            "    "
+            + ",\n    ".join(
+                f"joined_rows.{field} AS {field}" for field in partition_fields
+            )
+            + ",",
+            "    joined_rows.`user_id` AS `user_id`,",
+            "    joined_rows.`user_metric_value` AS `user_metric_value`,",
+            "    joined_rows.`threshold_cutoff` AS `threshold_cutoff`,",
+            "    joined_rows.`right_key_multiplicity` AS `right_key_multiplicity`,",
+            "    joined_rows.`is_high_value` AS `is_high_value`,",
+            "    pre_join_audit.`join_input_rows` AS `join_input_rows`,",
+            "    window_coverage.`source_complete_days` AS `source_complete_days`",
+            "  FROM joined_rows",
+            "  LEFT JOIN pre_join_audit ON " + pre_join_audit_join,
+            "  LEFT JOIN window_coverage ON "
+            "joined_rows.`__window_id` = window_coverage.`__window_id` AND "
+            "joined_rows.`__window_role` = window_coverage.`__window_role`",
             ")",
             "SELECT",
             _indented(final_select),
-            "FROM joined_rows",
-            "LEFT JOIN pre_join_audit USING (" + partition + ")",
+            "FROM audited_rows",
             "GROUP BY " + partition,
         )
     )
@@ -636,9 +873,7 @@ def _validate_runtime_types(
         )
     if contract.join_expectation is not None:
         if not isinstance(contract.join_expectation, JoinExpectation):
-            raise TypeError(
-                "invalid_query_contract_runtime_type:join_expectation"
-            )
+            raise TypeError("invalid_query_contract_runtime_type:join_expectation")
         if contract.join_expectation.cardinality not in {
             "one_to_one",
             "many_to_one",
@@ -713,9 +948,8 @@ def _validate_metric_binding_types(binding: MetricBinding) -> None:
             "invalid_query_contract_runtime_type:"
             "metric_bindings.reconciliation_strategy"
         )
-    if (
-        binding.reconciliation_strategy == "ratio_from_components"
-        and (not binding.numerator_metric or not binding.denominator_metric)
+    if binding.reconciliation_strategy == "ratio_from_components" and (
+        not binding.numerator_metric or not binding.denominator_metric
     ):
         raise ValueError("ratio_reconciliation_components_required")
 
@@ -756,9 +990,8 @@ def _validate_window_types(window: ResolvedWindow) -> None:
         )
         if not getattr(window, field_name).strip():
             raise ValueError(f"invalid_resolved_window_field:{field_name}")
-    if (
-        isinstance(window.required_complete_days, bool)
-        or not isinstance(window.required_complete_days, int)
+    if isinstance(window.required_complete_days, bool) or not isinstance(
+        window.required_complete_days, int
     ):
         raise TypeError(
             "invalid_query_contract_runtime_type:"
@@ -836,9 +1069,7 @@ def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
     except ValueError as exc:
         raise ValueError("invalid_snapshot_metadata:watermark") from exc
     try:
-        loaded_at = datetime.fromisoformat(
-            snapshot.loaded_at.replace("Z", "+00:00")
-        )
+        loaded_at = datetime.fromisoformat(snapshot.loaded_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("invalid_snapshot_metadata:loaded_at") from exc
     if loaded_at.tzinfo is None or loaded_at.utcoffset() is None:
@@ -855,6 +1086,8 @@ def _validate_snapshot_types(snapshot: DatasetSnapshot) -> None:
         raise ValueError("invalid_snapshot_metadata:reconciliation_status")
     if bool(snapshot.logical_snapshot_id) != bool(snapshot.load_revision):
         raise ValueError("invalid_snapshot_metadata:physical_revision")
+
+
 def _require_runtime_instances(
     value: Any,
     item_type: type,
@@ -872,9 +1105,7 @@ def _require_runtime_string(value: Any, field_name: str) -> None:
 
 
 def _require_runtime_string_tuple(value: Any, field_name: str) -> None:
-    if not isinstance(value, tuple) or any(
-        not isinstance(item, str) for item in value
-    ):
+    if not isinstance(value, tuple) or any(not isinstance(item, str) for item in value):
         raise TypeError(f"invalid_query_contract_runtime_type:{field_name}")
 
 
@@ -907,9 +1138,7 @@ def _verify_window_boundary(window: ResolvedWindow) -> None:
         or window.required_complete_days > duration_days
         or not start <= watermark < end
     ):
-        raise ValueError(
-            f"invalid_resolved_window_boundary:{window.window_id}"
-        )
+        raise ValueError(f"invalid_resolved_window_boundary:{window.window_id}")
 
 
 def _single_snapshot(
@@ -930,6 +1159,7 @@ def _single_snapshot(
         "association_outcome_timeseries",
         "association_candidate_timeseries",
         "channel_context_probe",
+        "channel_context_total_probe",
         "source_reconciliation_probe",
     }:
         raise ValueError(
@@ -937,7 +1167,8 @@ def _single_snapshot(
         )
     if (
         contract.dimension_bindings
-        and contract.query_intent not in {
+        and contract.query_intent
+        not in {
             "data_quality_probe",
             "association_outcome_timeseries",
             "association_candidate_timeseries",
@@ -978,7 +1209,9 @@ def _verify_dataset_snapshot_binding(
         if not snapshot.release_ref or not snapshot.authority_record_ref:
             raise ValueError(f"dataset_release_required:{snapshot.dataset_id}")
         if not snapshot.rows_content_hash:
-            raise ValueError(f"dataset_rows_content_hash_required:{snapshot.dataset_id}")
+            raise ValueError(
+                f"dataset_rows_content_hash_required:{snapshot.dataset_id}"
+            )
         if release_resolver is None:
             raise ValueError(f"dataset_release_resolver_required:{snapshot.dataset_id}")
         try:
@@ -996,10 +1229,9 @@ def _verify_dataset_snapshot_binding(
                 f"dataset_release_authority_member_mismatch:{snapshot.dataset_id}"
             )
     prefix = str(dataset.get("physical_table_prefix") or "")
-    legacy = tuple(str(item) for item in dataset.get("legacy_physical_tables") or ())
     if prefix:
         expected = f"{prefix}{snapshot.schema_fingerprint[:16]}"
-        if snapshot.physical_table not in {*legacy, expected}:
+        if snapshot.physical_table != expected:
             raise ValueError(
                 f"dataset_physical_table_unreviewed:{snapshot.physical_table}"
             )
@@ -1015,7 +1247,9 @@ def _date_expression(
     except KeyError as exc:
         raise ValueError(f"unsupported_dataset_adapter:{snapshot.dataset_id}") from exc
     required_fields = tuple(str(item) for item in adapter.get("required_fields") or ())
-    missing = tuple(field for field in required_fields if field not in snapshot.schema_fields)
+    missing = tuple(
+        field for field in required_fields if field not in snapshot.schema_fields
+    )
     if missing:
         raise ValueError(
             f"dataset_date_binding_fields_missing:{snapshot.dataset_id}:{','.join(missing)}"
@@ -1057,6 +1291,7 @@ def _window_parameters(windows: Sequence[ResolvedWindow]) -> dict[str, Any]:
         parameters[f"window_role_{index}"] = window.role
         parameters[f"start_{index}"] = window.start_inclusive
         parameters[f"end_{index}"] = window.end_exclusive
+        parameters[f"window_aggregation_{index}"] = window.aggregation
     return parameters
 
 
@@ -1064,7 +1299,8 @@ def _window_tuples(windows: Sequence[ResolvedWindow]) -> str:
     return ", ".join(
         "("
         f"%(window_id_{index})s, %(window_role_{index})s, "
-        f"toDate(%(start_{index})s), toDate(%(end_{index})s)"
+        f"toDate(%(start_{index})s), toDate(%(end_{index})s), "
+        f"%(window_aggregation_{index})s"
         ")"
         for index, _ in enumerate(windows)
     )
@@ -1084,6 +1320,8 @@ def _window_predicates(
 def _compile_filters(
     filters: Sequence[Mapping[str, Any]],
     snapshot: DatasetSnapshot,
+    *,
+    registry: RuntimeContractRegistry,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     clauses: list[str] = []
     parameters: dict[str, Any] = {}
@@ -1095,8 +1333,13 @@ def _compile_filters(
         "lt": "<",
         "lte": "<=",
     }
+    customer_safe_fields = set(
+        registry.customer_safe_filter_fields(snapshot.dataset_id)
+    )
     for index, filter_item in enumerate(filters):
         field = str(filter_item.get("field") or "")
+        if field not in customer_safe_fields:
+            raise ValueError(f"customer_safe_filter_field_unapproved:{field}")
         if field not in snapshot.schema_fields:
             raise ValueError(f"unsupported_filter_field:{field}")
         quoted_field = _quote_identifier(field)
@@ -1132,9 +1375,11 @@ def _compile_filters(
             )
         elif operator == "between":
             raw_values = filter_item.get("value")
-            if not isinstance(raw_values, Sequence) or isinstance(
-                raw_values, (str, bytes)
-            ) or len(raw_values) != 2:
+            if (
+                not isinstance(raw_values, Sequence)
+                or isinstance(raw_values, (str, bytes))
+                or len(raw_values) != 2
+            ):
                 raise ValueError("invalid_filter_value:between")
             start_name = f"{parameter_name}_start"
             end_name = f"{parameter_name}_end"
@@ -1197,8 +1442,7 @@ def _dimension_selects(
         parameter_name = f"dimension_null_bucket_{index}"
         parameters[parameter_name] = binding.null_bucket
         normalized = (
-            f"ifNull(nullIf(trim(toString({source})), ''), "
-            f"%({parameter_name})s)"
+            f"ifNull(nullIf(trim(toString({source})), ''), %({parameter_name})s)"
         )
         selected.append((f"{normalized} AS {alias}", alias))
     return tuple(selected)
@@ -1246,23 +1490,17 @@ def _verify_reviewed_query_shape(
         raise ValueError(
             f"reviewed_query_shape_missing:{contract.query_intent}"
         ) from exc
-    reviewed_parameters = _freeze_contract_value(
-        reviewed.get("query_parameters") or {}
-    )
+    reviewed_parameters = _freeze_contract_value(reviewed.get("query_parameters") or {})
     source_field_policy = str(reviewed.get("source_field_policy") or "")
     if source_field_policy not in {"", "metric_bindings"}:
         raise ValueError(
             f"reviewed_source_field_policy_invalid:{contract.query_intent}"
         )
     if _freeze_contract_value(contract.query_parameters) != reviewed_parameters:
-        raise ValueError(
-            f"reviewed_query_parameters_mismatch:{contract.query_intent}"
-        )
+        raise ValueError(f"reviewed_query_parameters_mismatch:{contract.query_intent}")
     expected_join = _reviewed_join_expectation(reviewed)
     if contract.join_expectation != expected_join:
-        raise ValueError(
-            f"reviewed_join_expectation_mismatch:{contract.query_intent}"
-        )
+        raise ValueError(f"reviewed_join_expectation_mismatch:{contract.query_intent}")
     dimension_ids = tuple(item.dimension_id for item in contract.dimension_bindings)
     expected_shape = ResultShape(
         required_fields=_dedupe(
@@ -1277,15 +1515,11 @@ def _verify_reviewed_query_shape(
         ),
         grain=_dedupe((*_string_tuple(reviewed.get("grain")), *dimension_ids)),
         required_window_ids=contract.window_refs,
-        result_semantics=str(
-            reviewed.get("result_semantics") or "complete_aggregate"
-        ),
+        result_semantics=str(reviewed.get("result_semantics") or "complete_aggregate"),
         dimension_presence_policy=str(reviewed["dimension_presence_policy"]),
     )
     if contract.result_shape != expected_shape:
-        raise ValueError(
-            f"reviewed_result_shape_mismatch:{contract.query_intent}"
-        )
+        raise ValueError(f"reviewed_result_shape_mismatch:{contract.query_intent}")
 
 
 def _verify_reviewed_bindings(
@@ -1320,8 +1554,7 @@ def _verify_reviewed_bindings(
             claim_types=_string_tuple(reviewed.get("claim_types")),
             reconciliation_tolerance=_reviewed_reconciliation_tolerance(reviewed),
             reconciliation_strategy=str(
-                reviewed.get("reconciliation_strategy")
-                or "unsupported_non_additive"
+                reviewed.get("reconciliation_strategy") or "unsupported_non_additive"
             ),
             value_semantics=str(reviewed.get("value_semantics") or "raw_scalar"),
             display_format=str(reviewed.get("display_format") or "number"),
@@ -1333,11 +1566,11 @@ def _verify_reviewed_bindings(
         ) or not _AGGREGATE_EXPRESSION.search(binding.expression):
             raise ValueError(f"unsafe_metric_expression:{binding.metric_id}")
         if binding != expected:
-            raise ValueError(
-                f"reviewed_metric_binding_mismatch:{binding.metric_id}"
-            )
+            raise ValueError(f"reviewed_metric_binding_mismatch:{binding.metric_id}")
         missing = tuple(
-            field for field in binding.required_fields if field not in snapshot.schema_fields
+            field
+            for field in binding.required_fields
+            if field not in snapshot.schema_fields
         )
         if missing:
             raise ValueError(
@@ -1446,7 +1679,11 @@ def _mask_expression_quotes(expression: str) -> str:
         if quote:
             output.append(" ")
             if char == quote:
-                if quote == "'" and index + 1 < len(expression) and expression[index + 1] == "'":
+                if (
+                    quote == "'"
+                    and index + 1 < len(expression)
+                    and expression[index + 1] == "'"
+                ):
                     output.append(" ")
                     index += 2
                     continue
@@ -1464,10 +1701,7 @@ def _mask_expression_quotes(expression: str) -> str:
 
 def _freeze_contract_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _freeze_contract_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): _freeze_contract_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_contract_value(item) for item in value)
     return value

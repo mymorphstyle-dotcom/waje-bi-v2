@@ -11,7 +11,9 @@ from bi_agent.runtime.contracts import load_contract
 
 
 class CurrentDataQueryCoverageTest(unittest.TestCase):
-    def test_every_supported_current_data_case_compiles_and_has_completeness_contract(self):
+    def test_every_supported_current_data_case_compiles_and_has_completeness_contract(
+        self,
+    ):
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         cases = current_data_coverage_cases(registry)
 
@@ -41,7 +43,8 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                             "unique_key",
                             "provider_not_truncated",
                             "overall_channel_reconciliation",
-                        } <= set(case.query_contract.completeness_assertions),
+                        }
+                        <= set(case.query_contract.completeness_assertions),
                     )
                     self.assertTrue(case.query_contract.result_shape.required_fields)
                     self.assertTrue(case.query_contract.result_shape.unique_key)
@@ -53,7 +56,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                     self.assertTrue(case.gap_type)
                     self.assertTrue(case.owner)
 
-    def test_generated_set_closes_registered_adapters_obligations_pairs_and_windows(self):
+    def test_generated_set_closes_registered_adapters_obligations_pairs_and_windows(
+        self,
+    ):
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         cases = current_data_coverage_cases(registry)
 
@@ -82,12 +87,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             if case.expected_state == "supported" and len(case.dataset_ids) == 1
         }
         self.assertTrue(
-            {"market_dashboard", "market_dashboard_channel"}
-            <= supported_datasets
+            {"market_dashboard", "market_dashboard_channel"} <= supported_datasets
         )
-        self.assertTrue(
-            {"gameplay", "gameplay_channel"} <= supported_datasets
-        )
+        self.assertTrue({"gameplay", "gameplay_channel"} <= supported_datasets)
 
         covered_windows = {
             window_id for case in cases for window_id in case.required_window_ids
@@ -119,7 +121,6 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
         }
 
         self.assertEqual(actual, expected)
-        self.assertEqual(len(expected), 18)
         self.assertEqual(
             tuple(case.case_id for case in cases),
             tuple(sorted(case.case_id for case in cases)),
@@ -129,7 +130,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             len({case.case_id for case in cases}),
         )
 
-    def test_generated_set_closes_registered_metric_dimension_cells_and_legal_joint_sets(self):
+    def test_generated_set_closes_registered_metric_dimension_cells_and_legal_joint_sets(
+        self,
+    ):
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         cases = current_data_coverage_cases(registry)
         expected_cells = {
@@ -187,9 +190,7 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
 
     def test_new_registered_dimension_is_generated_without_dataset_name_code(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
-        payload["datasets"]["paid_order_success"]["schema_fields"].append(
-            "campaign"
-        )
+        payload["datasets"]["paid_order_success"]["schema_fields"].append("campaign")
         payload["dimensions"]["campaign"] = {
             "contract_ref": "contracts/dimensions/dimensions.yaml#campaign",
             "dataset_id": "paid_order_success",
@@ -211,29 +212,35 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             and case.dataset_ids == ("paid_order_success",)
             and case.expected_state == "supported"
         ]
-        self.assertTrue(any(
-            case.metric_ids == ("paid_amount",)
-            and case.dataset_ids == ("paid_order_success",)
-            and case.dimension_ids == ("campaign",)
-            and case.query_family == "dimension_contribution_scan"
-            and case.expected_state == "supported"
-            for case in paid_amount
-        ))
-        self.assertEqual(
-            len({
-                frozenset(case.dimension_ids)
+        self.assertTrue(
+            any(
+                case.metric_ids == ("paid_amount",)
+                and case.dataset_ids == ("paid_order_success",)
+                and case.dimension_ids == ("campaign",)
+                and case.query_family == "dimension_contribution_scan"
+                and case.expected_state == "supported"
                 for case in paid_amount
-                if case.query_family == "dimension_contribution_scan"
-            }),
+            )
+        )
+        self.assertEqual(
+            len(
+                {
+                    frozenset(case.dimension_ids)
+                    for case in paid_amount
+                    if case.query_family == "dimension_contribution_scan"
+                }
+            ),
             paid_dimension_count,
         )
         self.assertEqual(
-            len({
-                frozenset(case.dimension_ids)
-                for case in paid_amount
-                if case.query_family == "joint_candidate_scan"
-            }),
-            (2 ** paid_dimension_count) - 1,
+            len(
+                {
+                    frozenset(case.dimension_ids)
+                    for case in paid_amount
+                    if case.query_family == "joint_candidate_scan"
+                }
+            ),
+            (2**paid_dimension_count) - 1,
         )
 
     def test_dimension_grain_and_query_family_legality_degrade_every_affected_set(self):
@@ -256,11 +263,13 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             case for case in paid_amount if "channel" in case.dimension_ids
         ]
         self.assertTrue(channel_cases)
-        self.assertTrue(all(
-            case.expected_state == "degraded"
-            and case.gap_type == "unsupported_grain"
-            for case in channel_cases
-        ))
+        self.assertTrue(
+            all(
+                case.expected_state == "degraded"
+                and case.gap_type == "unsupported_grain"
+                for case in channel_cases
+            )
+        )
         payment_joint = [
             case
             for case in paid_amount
@@ -269,17 +278,21 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             and "channel" not in case.dimension_ids
         ]
         self.assertTrue(payment_joint)
-        self.assertTrue(all(
-            case.expected_state == "degraded"
-            and case.gap_type == "contract_partial"
-            for case in payment_joint
-        ))
-        self.assertTrue(any(
-            case.query_family == "dimension_contribution_scan"
-            and case.dimension_ids == ("payment_method",)
-            and case.expected_state == "supported"
-            for case in paid_amount
-        ))
+        self.assertTrue(
+            all(
+                case.expected_state == "degraded"
+                and case.gap_type == "contract_partial"
+                for case in payment_joint
+            )
+        )
+        self.assertTrue(
+            any(
+                case.query_family == "dimension_contribution_scan"
+                and case.dimension_ids == ("payment_method",)
+                and case.expected_state == "supported"
+                for case in paid_amount
+            )
+        )
 
     def test_requested_dimension_query_family_requires_reviewed_topology(self):
         for topology in (None, "cartesian"):
@@ -302,7 +315,8 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
 
     def test_dimension_schema_boundary_is_retained_as_typed_gap(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
-        payload["datasets"]["paid_order_success"]["schema_fields"].remove(
+        payload["datasets"]["paid_order_success"]["schema_fields"].remove("channel")
+        payload["datasets"]["paid_order_success"]["customer_safe_filter_fields"].remove(
             "channel"
         )
         cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
@@ -313,11 +327,14 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             and case.dataset_ids == ("paid_order_success",)
         ]
 
-        self.assertTrue(any(
-            case.dimension_ids == ("channel",)
-            and case.gap_type == "source_schema_mismatch"
-            for case in paid_amount
-        ))
+        self.assertTrue(
+            any(
+                case.dimension_ids == ("channel",)
+                and case.gap_type == "source_schema_mismatch"
+                for case in paid_amount
+            )
+        )
+
     def test_new_registered_adapter_pair_is_generated_without_case_code(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
         payload["metrics"]["profit"]["source_adapters"] = {
@@ -326,9 +343,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                 "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1#field_contracts.profit",
             }
         }
-        payload["metrics"]["profit"]["source_adapters"][
-            "market_dashboard_channel"
-        ].pop("source_adapters", None)
+        payload["metrics"]["profit"]["source_adapters"]["market_dashboard_channel"].pop(
+            "source_adapters", None
+        )
         cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
 
         generated = next(
@@ -345,6 +362,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
         payload["datasets"]["paid_order_success"]["schema_fields"].remove(
             "paid_amount_ngn"
         )
+        payload["datasets"]["paid_order_success"]["customer_safe_filter_fields"].remove(
+            "paid_amount_ngn"
+        )
         cases = current_data_coverage_cases(RuntimeContractRegistry(payload))
         paid_amount = next(
             case
@@ -358,9 +378,9 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
 
     def test_source_field_policy_is_closed_and_reviewed(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
-        payload["query_shapes"]["daily_metric_baselines"][
-            "source_field_policy"
-        ] = "invent_fields"
+        payload["query_shapes"]["daily_metric_baselines"]["source_field_policy"] = (
+            "invent_fields"
+        )
 
         with self.assertRaisesRegex(
             ValueError,

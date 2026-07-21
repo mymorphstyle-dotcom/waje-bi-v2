@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from dataclasses import replace
 import unittest
 
 from bi_agent.runtime.analysis_contracts import (
@@ -11,255 +11,13 @@ from bi_agent.runtime.analysis_contracts import (
     ResolvedWindow,
     ResultShape,
     query_contract_semantic_body,
+    query_contract_from_dict,
     query_contract_signature,
     stable_contract_signature,
 )
-from bi_agent.runtime.window_resolver import resolve_revenue_windows
 
 
 class AnalysisContractsTest(unittest.TestCase):
-    def test_resolves_fixed_yesterday_and_three_baselines(self):
-        result = resolve_revenue_windows(
-            target_semantic="yesterday",
-            baselines=("previous_day", "rolling_7_day_baseline", "same_weekday_last_week"),
-            context_window_specs=(),
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            timezone_name="Africa/Lagos",
-            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-            affected_capabilities=("compare_periods",),
-            affected_claim_types=("comparative_change",),
-        )
-
-        windows = {window.window_id: window for window in result.windows}
-        self.assertEqual(windows["target_day"].start_inclusive, "2026-06-02")
-        self.assertEqual(windows["previous_day"].start_inclusive, "2026-06-01")
-        self.assertEqual(windows["rolling_7_day_baseline"].start_inclusive, "2026-05-26")
-        self.assertEqual(windows["rolling_7_day_baseline"].end_exclusive, "2026-06-02")
-        self.assertEqual(windows["same_weekday_last_week"].start_inclusive, "2026-05-26")
-        self.assertTrue(all(window.membership_policy == "allow_overlap" for window in result.windows))
-        self.assertEqual(result.gaps, ())
-
-    def test_resolves_typed_fourteen_day_context_separately_from_primary_baseline(self):
-        result = resolve_revenue_windows(
-            target_semantic="2026-06-02",
-            baselines=("previous_day",),
-            context_window_specs=(
-                {
-                    "capability_id": "rolling_window_compare",
-                    "relation": "trailing_complete_periods",
-                    "unit": "day",
-                    "count": 14,
-                },
-            ),
-            as_of=datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
-            timezone_name="Africa/Lagos",
-            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-            affected_capabilities=("compare_periods",),
-            affected_claim_types=("comparative_change",),
-        )
-
-        windows = {window.window_id: window for window in result.windows}
-        self.assertEqual(windows["previous_day"].start_inclusive, "2026-06-01")
-        context = next(window for window in result.windows if window.role == "reference")
-        self.assertEqual(context.start_inclusive, "2026-05-19")
-        self.assertEqual(context.end_exclusive, "2026-06-02")
-        self.assertEqual(context.required_complete_days, 14)
-        self.assertEqual(context.capability_refs, ("rolling_window_compare",))
-        self.assertNotIn("rolling_7_day_baseline", windows)
-
-    def test_resolves_quarter_context_on_calendar_boundaries(self):
-        result = resolve_revenue_windows(
-            target_semantic="2026-06-01",
-            baselines=("previous_day",),
-            context_window_specs=(
-                {
-                    "capability_id": "compare_period_phases",
-                    "relation": "trailing_complete_periods",
-                    "unit": "quarter",
-                    "count": 1,
-                },
-            ),
-            as_of=datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
-            timezone_name="Africa/Lagos",
-            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-            affected_capabilities=("compare_period_phases",),
-            affected_claim_types=("recurring_pattern_existence",),
-        )
-
-        context = next(window for window in result.windows if window.role == "reference")
-        self.assertEqual(context.start_inclusive, "2026-01-01")
-        self.assertEqual(context.end_exclusive, "2026-04-01")
-        self.assertEqual(context.capability_refs, ("compare_period_phases",))
-        self.assertNotIn("rolling_7_day_baseline", {item.window_id for item in result.windows})
-
-    def test_fixed_resume_bounds_accept_only_an_existing_dynamic_context_window(self):
-        context_window_id = (
-            "context__compare_period_phases__"
-            "trailing_complete_periods__1_quarter"
-        )
-        shared = {
-            "target_semantic": "2026-06-01",
-            "baselines": ("previous_day",),
-            "context_window_specs": (
-                {
-                    "capability_id": "compare_period_phases",
-                    "relation": "trailing_complete_periods",
-                    "unit": "quarter",
-                    "count": 1,
-                },
-            ),
-            "as_of": datetime.fromisoformat("2026-07-17T12:00:00+01:00"),
-            "timezone_name": "Africa/Lagos",
-            "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
-            "affected_capabilities": ("compare_period_phases",),
-            "affected_claim_types": ("recurring_pattern_existence",),
-        }
-
-        result = resolve_revenue_windows(
-            **shared,
-            fixed_window_bounds={
-                context_window_id: ("2026-01-01", "2026-03-31"),
-            },
-        )
-
-        context = next(
-            window for window in result.windows if window.window_id == context_window_id
-        )
-        self.assertEqual(context.capability_refs, ("compare_period_phases",))
-        with self.assertRaisesRegex(ValueError, "fixed_window_unknown"):
-            resolve_revenue_windows(
-                **shared,
-                fixed_window_bounds={
-                    "context__unselected__trailing_complete_periods__1_quarter": (
-                        "2026-01-01",
-                        "2026-03-31",
-                    ),
-                },
-            )
-
-    def test_fixed_eval_adds_pattern_and_anomaly_history_windows(self):
-        result = resolve_revenue_windows(
-            target_semantic="yesterday",
-            baselines=(),
-            context_window_specs=(),
-            as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-            timezone_name="Africa/Lagos",
-            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-            affected_capabilities=("pattern_scan", "outlier_scan"),
-            affected_claim_types=(
-                "recurring_pattern_existence",
-                "external_shock_candidate_or_anomaly",
-            ),
-            fixed_window_bounds={
-                "target_day": ("2026-06-02", "2026-06-02"),
-                "previous_day": ("2026-06-01", "2026-06-01"),
-                "rolling_7_day_baseline": ("2026-05-26", "2026-06-01"),
-                "same_weekday_last_week": ("2026-05-26", "2026-05-26"),
-                "pattern_history": ("2026-01-01", "2026-06-02"),
-                "anomaly_history": ("2026-05-03", "2026-06-01"),
-            },
-        )
-
-        windows = {window.window_id: window for window in result.windows}
-        self.assertEqual(windows["previous_day"].start_inclusive, "2026-06-01")
-        self.assertEqual(
-            windows["rolling_7_day_baseline"].aggregation,
-            "mean_of_complete_days",
-        )
-        self.assertEqual(
-            windows["same_weekday_last_week"].start_inclusive,
-            "2026-05-26",
-        )
-        self.assertEqual(windows["pattern_history"].start_inclusive, "2026-01-01")
-        self.assertEqual(windows["pattern_history"].end_exclusive, "2026-06-03")
-        self.assertEqual(windows["anomaly_history"].start_inclusive, "2026-05-03")
-        self.assertEqual(windows["anomaly_history"].end_exclusive, "2026-06-02")
-        self.assertEqual(windows["pattern_history"].required_complete_days, 153)
-        self.assertEqual(windows["anomaly_history"].required_complete_days, 30)
-
-    def test_reports_requested_target_missing_without_shifting_it(self):
-        result = resolve_revenue_windows(
-            target_semantic="yesterday",
-            baselines=("previous_day",),
-            context_window_specs=(),
-            as_of=datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
-            timezone_name="Africa/Lagos",
-            dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-            affected_capabilities=("compare_periods",),
-            affected_claim_types=("comparative_change",),
-        )
-
-        self.assertEqual(result.windows[0].start_inclusive, "2026-07-09")
-        self.assertEqual(result.gaps[0].gap_type, "window_data_unavailable")
-        self.assertEqual(result.gaps[0].dataset_id, "paid_order_success")
-        self.assertEqual(result.gaps[0].owner, "data_owner")
-        self.assertEqual(result.gaps[0].affected_capabilities, ("compare_periods",))
-        self.assertEqual(result.gaps[0].affected_claim_types, ("comparative_change",))
-        self.assertFalse(result.gaps[0].requires_clarification)
-        self.assertEqual(result.gaps[0].repair_options, ("wait_for_refresh",))
-        self.assertEqual(
-            result.gaps[0].diagnostic_context,
-            {
-                "target_date": "2026-07-09",
-                "latest_complete_business_date": "2026-07-04",
-                "terminal_for_current_window": True,
-            },
-        )
-
-    def test_gap_identity_includes_requested_target_window(self):
-        shared = {
-            "baselines": ("previous_day",),
-            "context_window_specs": (),
-            "as_of": datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
-            "timezone_name": "Africa/Lagos",
-            "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
-            "affected_capabilities": ("compare_periods",),
-            "affected_claim_types": ("comparative_change",),
-        }
-
-        first = resolve_revenue_windows(target_semantic="2026-07-09", **shared)
-        second = resolve_revenue_windows(target_semantic="2026-07-10", **shared)
-
-        self.assertNotEqual(first.gaps[0].gap_id, second.gaps[0].gap_id)
-        self.assertIn("target_day:2026-07-09", first.gaps[0].gap_id)
-        self.assertIn("target_day:2026-07-10", second.gaps[0].gap_id)
-
-    def test_rejects_unattributed_window_gap(self):
-        common = {
-            "target_semantic": "2026-07-09",
-            "baselines": ("previous_day",),
-            "context_window_specs": (),
-            "as_of": datetime.fromisoformat("2026-07-10T12:00:00+01:00"),
-            "timezone_name": "Africa/Lagos",
-            "dataset_watermarks": {"paid_order_success": date(2026, 7, 4)},
-        }
-
-        with self.assertRaisesRegex(ValueError, "window_gap_requires_affected_capabilities"):
-            resolve_revenue_windows(
-                **common,
-                affected_capabilities=(),
-                affected_claim_types=("comparative_change",),
-            )
-        with self.assertRaisesRegex(ValueError, "window_gap_requires_affected_claim_types"):
-            resolve_revenue_windows(
-                **common,
-                affected_capabilities=("compare_periods",),
-                affected_claim_types=(),
-            )
-
-    def test_rejects_duplicate_baselines(self):
-        with self.assertRaisesRegex(ValueError, "duplicate_baseline:previous_day"):
-            resolve_revenue_windows(
-                target_semantic="yesterday",
-                baselines=("previous_day", "previous_day"),
-                context_window_specs=(),
-                as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-                timezone_name="Africa/Lagos",
-                dataset_watermarks={"paid_order_success": date(2026, 7, 4)},
-                affected_capabilities=("compare_periods",),
-                affected_claim_types=("comparative_change",),
-            )
-
     def test_result_envelope_serializes_external_schema_and_keeps_internal_rows(self):
         rows = ({"window_id": "target_day", "paid_amount": 120},)
         envelope = QueryResultEnvelope(
@@ -279,7 +37,9 @@ class AnalysisContractsTest(unittest.TestCase):
         self.assertEqual(envelope.rows, rows)
         self.assertEqual(payload["rows_ref"], "artifact:aggregate-rows:1")
         self.assertEqual(payload["row_count"], 1)
-        self.assertEqual(payload["completeness_report_ref"], "completeness:run-1:daily:1")
+        self.assertEqual(
+            payload["completeness_report_ref"], "completeness:run-1:daily:1"
+        )
         self.assertNotIn("rows", payload)
 
     def test_contract_relationships_are_explicit_and_serialize_nested_values(self):
@@ -366,9 +126,13 @@ class AnalysisContractsTest(unittest.TestCase):
             ("capability:compare_periods@1",),
         )
         self.assertNotIn("capability_plans", analysis_payload)
-        self.assertEqual(query_payload["analysis_contract_ref"], analysis.analysis_contract_id)
+        self.assertEqual(
+            query_payload["analysis_contract_ref"], analysis.analysis_contract_id
+        )
         self.assertEqual(query_payload["window_refs"], ("target_day",))
-        self.assertEqual(query_payload["resolved_windows"][0]["window_id"], "target_day")
+        self.assertEqual(
+            query_payload["resolved_windows"][0]["window_id"], "target_day"
+        )
         self.assertEqual(plan.minimum_readiness["required_slots"], "ready")
         self.assertEqual(plan.degradation_policy["missing_optional"], "degraded")
 
@@ -408,7 +172,9 @@ class AnalysisContractsTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(query_contract_signature(first), query_contract_signature(second))
+        self.assertEqual(
+            query_contract_signature(first), query_contract_signature(second)
+        )
         self.assertNotIn("query_contract_id", query_contract_semantic_body(first))
         self.assertNotIn("contract_signature", query_contract_semantic_body(first))
         changed = QueryContract(
@@ -420,7 +186,55 @@ class AnalysisContractsTest(unittest.TestCase):
                 },
             }
         )
-        self.assertNotEqual(query_contract_signature(first), query_contract_signature(changed))
+        self.assertNotEqual(
+            query_contract_signature(first), query_contract_signature(changed)
+        )
+
+    def test_query_contract_codec_requires_current_exact_signed_shape(self):
+        window = ResolvedWindow(
+            "target_day",
+            "target",
+            "2026-06-02",
+            "2026-06-02",
+            "2026-06-03",
+            "Africa/Lagos",
+            "daily_total",
+            1,
+            "2026-06-02",
+        )
+        unsigned = QueryContract(
+            query_contract_id="query:codec:1",
+            analysis_contract_ref="analysis:codec:1",
+            query_intent="daily_metric_baselines",
+            dataset_snapshot_refs=("snapshot:paid:1",),
+            metric_bindings=(),
+            dimension_bindings=(),
+            window_refs=("target_day",),
+            resolved_windows=(window,),
+            filters=(),
+            result_shape=ResultShape(
+                ("window_id", "paid_amount"),
+                ("window_id",),
+                ("window_id",),
+                ("target_day",),
+            ),
+            completeness_assertions=("required_windows",),
+            workload_class="interactive_aggregate",
+            contract_signature="pending",
+        )
+        signed = replace(
+            unsigned,
+            contract_signature=query_contract_signature(unsigned),
+        )
+
+        self.assertEqual(query_contract_from_dict(signed.to_dict()), signed)
+        tampered = signed.to_dict()
+        tampered["query_intent"] = "tampered"
+        with self.assertRaisesRegex(ValueError, "contract_signature:mismatch"):
+            query_contract_from_dict(tampered)
+        unknown = {**signed.to_dict(), "legacy_mode": True}
+        with self.assertRaisesRegex(ValueError, "keys_invalid"):
+            query_contract_from_dict(unknown)
 
 
 if __name__ == "__main__":

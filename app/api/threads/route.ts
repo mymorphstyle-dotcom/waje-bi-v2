@@ -1,31 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createThread, listThreads } from "../_conversationStore";
+import {
+  claimInitialThreadRequest,
+  customerJsonError,
+  listCustomerThreadSummaries,
+  loadCustomerAnalysisSnapshot,
+  runDispatchRequestIdentity,
+} from "../_conversationStore";
 import { resolveCustomerActor } from "../_customerActor";
-import { gatewayError, jsonError } from "../_conversationStore";
+import { gatewayError } from "../_conversationStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
+  let actorId: string | undefined;
   try {
-    const actorId = resolveCustomerActor(request);
-    return NextResponse.json({ threads: await listThreads(actorId) });
+    actorId = resolveCustomerActor(request);
+    return NextResponse.json({
+      threads: await listCustomerThreadSummaries(actorId),
+    });
   } catch (error) {
-    return jsonError(error);
+    return customerJsonError(error, { actorId });
   }
 }
 
 export async function POST(request: NextRequest) {
+  let actorId: string | undefined;
   try {
-    const actorId = resolveCustomerActor(request);
+    actorId = resolveCustomerActor(request);
     const body = await request.json().catch(() => ({}));
-    if (body && typeof body === "object" && "ownerId" in body) {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw gatewayError("thread_request_invalid");
+    }
+    if ("ownerId" in body) {
       throw gatewayError("thread_owner_input_forbidden");
     }
-    const thread = await createThread(actorId);
-    return NextResponse.json({ thread }, { status: 201 });
+    if (Object.keys(body).some((key) => key !== "requestIdentity")) {
+      throw gatewayError("thread_request_invalid");
+    }
+    const requestIdentity = runDispatchRequestIdentity(request, body);
+    const thread = await claimInitialThreadRequest(actorId, requestIdentity);
+    return NextResponse.json(
+      {
+        snapshot: await loadCustomerAnalysisSnapshot({
+          threadId: thread.id,
+          actorId,
+        }),
+      },
+      { status: 201 },
+    );
   } catch (error) {
-    return jsonError(error);
+    return customerJsonError(error, { actorId });
   }
 }

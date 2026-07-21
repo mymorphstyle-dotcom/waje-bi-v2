@@ -699,6 +699,30 @@
   border-color: #3a4a57;
 }
 
+.revealedCanvasNode {
+  opacity: 1;
+}
+
+.unrevealedCanvasNode {
+  opacity: 0.46;
+  filter: saturate(0.72);
+}
+
+.failedCanvasNode {
+  border-color: #784842;
+  background: #1d1717;
+}
+
+.waitingCanvasNode {
+  border-color: #6a5736;
+  background: #1c1914;
+}
+
+.skippedCanvasNode {
+  border-style: dashed;
+  opacity: 0.74;
+}
+
 .selectedCanvasNode {
   border-color: #74a9d8;
   box-shadow: 0 0 0 1px rgba(116, 169, 216, 0.35), 0 12px 34px rgba(0, 0, 0, 0.24);
@@ -709,15 +733,51 @@
   background: #151b17;
 }
 
+.capabilityCanvasNode[data-task-status="succeeded"] {
+  border-color: #3f654a;
+}
+
+.capabilityCanvasNode[data-task-status="not_started"] {
+  border-color: #4a4f58;
+  border-style: dashed;
+  background: #18191c;
+}
+
+.capabilityCanvasNode[data-task-status="unsettled"] {
+  border-color: #6a5736;
+  background: #1c1914;
+}
+
+.capabilityCanvasNode[data-task-status="unavailable"] {
+  border-color: #6a5736;
+  background: #1c1914;
+}
+
+.capabilityCanvasNode[data-task-status="integrity_failed"] {
+  border-color: #784842;
+  background: #1d1717;
+}
+
+.capabilityCanvasNode[data-task-status="technical_failed"] {
+  border-color: #714b3f;
+  background: #1d1816;
+}
+
+.capabilityCanvasNode[data-task-status="skipped"] {
+  border-color: #4a4c54;
+  border-style: dashed;
+  background: #18191c;
+}
+
+.capabilityCanvasNode[data-task-status="superseded"] {
+  border-color: #514c63;
+  border-style: dashed;
+  background: #19181d;
+}
+
 .stageCanvasNode {
   border-color: #38414b;
   background: #171a1f;
-}
-
-.bypassCanvasNode {
-  border-style: dashed;
-  background: #151619;
-  opacity: 0.82;
 }
 
 .canvasNodeHeader {
@@ -786,6 +846,17 @@
   line-height: 1.2;
 }
 
+.canvasFoldButton:focus-visible,
+.workflowModalHeader button:focus-visible {
+  outline: 2px solid #74a9d8;
+  outline-offset: 2px;
+}
+
+.workflowCanvas :global(.react-flow__node:focus-visible) .canvasNode {
+  border-color: #74a9d8;
+  box-shadow: 0 0 0 2px rgba(116, 169, 216, 0.3);
+}
+
 .workflowInspector {
   display: grid;
   align-content: start;
@@ -815,6 +886,68 @@
   color: #c8c9cf;
   font-size: 13px;
   line-height: 1.65;
+}
+
+.inspectorEvidence {
+  display: grid;
+  gap: 4px;
+  border-left: 2px solid #30343a;
+  padding-left: 9px;
+}
+
+.inspectorEvidence[data-execution-state="available"] {
+  border-left-color: #70a97a;
+}
+
+.inspectorEvidence[data-execution-state="unavailable"],
+.inspectorEvidence[data-execution-state="integrity_failed"],
+.inspectorEvidence[data-execution-state="technical_failed"] {
+  border-left-color: #bf8d57;
+}
+
+.inspectorEvidence[data-binding-state="unsettled"] {
+  border-left-color: #bf8d57;
+}
+
+.bindingStatus[data-completeness="known"] {
+  color: #a6d7a9;
+}
+
+.bindingStatus[data-completeness="incomplete"] {
+  color: #e0b886;
+}
+
+.bindingStatus[data-completeness="unknown"] {
+  color: #a1a1aa;
+}
+
+.taskOutcome[data-task-status="succeeded"] {
+  color: #a6d7a9;
+}
+
+.taskOutcome[data-task-status="not_started"] {
+  color: #b7b8be;
+}
+
+.taskOutcome[data-task-status="unsettled"] {
+  color: #e0c38c;
+}
+
+.taskOutcome[data-task-status="unavailable"] {
+  color: #e0c38c;
+}
+
+.taskOutcome[data-task-status="integrity_failed"],
+.taskOutcome[data-task-status="technical_failed"] {
+  color: #e5a49d;
+}
+
+.taskOutcome[data-task-status="skipped"] {
+  color: #b7b8be;
+}
+
+.taskOutcome[data-task-status="superseded"] {
+  color: #b9b0d0;
 }
 
 .assistantMessage {
@@ -1101,11 +1234,14 @@
 }
 
 .limitations span {
+  min-width: 0;
+  max-width: 100%;
   border-radius: 4px;
   background: #24252a;
   padding: 2px 6px;
   color: #a1a1aa;
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .evidence {
@@ -1131,6 +1267,20 @@
 
 .evidence small {
   color: #a1a1aa;
+}
+
+.evidence div[data-execution-state="available"] small {
+  color: #a6d7a9;
+}
+
+.evidence div[data-execution-state="unavailable"] small,
+.evidence div[data-execution-state="integrity_failed"] small,
+.evidence div[data-execution-state="technical_failed"] small {
+  color: #e0b886;
+}
+
+.evidence div[data-binding-state="unsettled"] small {
+  color: #e0b886;
 }
 
 .todoTool {
@@ -1225,57 +1375,6 @@
   text-decoration-color: #5d6068;
 }
 
-.composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  gap: 8px;
-  align-items: end;
-  border: 1px solid #2b2c31;
-  border-radius: 12px;
-  background: #18191b;
-  padding: 8px;
-}
-
-.composer textarea {
-  min-height: 34px;
-  max-height: 96px;
-  resize: vertical;
-  border: 0;
-  background: transparent;
-  color: #eeeeef;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.55;
-  outline: 0;
-}
-
-.composer textarea::placeholder {
-  color: #777980;
-}
-
-.composer button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid #34363d;
-  border-radius: 9px;
-  background: #24262a;
-  color: #eeeeef;
-}
-
-.composer button:disabled {
-  color: #777980;
-  cursor: default;
-  opacity: 0.65;
-}
-
-.composerNotice {
-  grid-column: 1 / -1;
-  color: #8b8d95;
-  font-size: 11px;
-}
-
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1289,36 +1388,66 @@
   }
 
   .chat {
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-height: 0;
   }
 
   .header {
-    min-height: 92px;
-    align-items: start;
+    min-height: 0;
+    align-items: stretch;
     flex-direction: column;
-    justify-content: center;
-    padding: 0 10px;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .header > div:first-child,
+  .headerTitle {
+    width: 100%;
   }
 
   .headerActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
-    flex-wrap: wrap;
     gap: 5px;
   }
 
   .headerActions button {
+    justify-content: center;
+    width: 100%;
     gap: 4px;
     padding: 0 8px;
   }
 
   .messageList {
-    padding: 16px 10px 20px;
+    overscroll-behavior: contain;
+    padding: 16px 10px 24px;
+    scroll-padding-block: 16px;
+  }
+
+  .bottomPanel {
+    padding: 8px 10px max(10px, env(safe-area-inset-bottom));
   }
 
   .summaryCards,
   .workbenchGrid,
   .stats {
     grid-template-columns: 1fr;
+  }
+
+  .evidence div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .evidence strong,
+  .evidence small,
+  .chatTurn p,
+  .runNarrative {
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .inspector {
@@ -1354,23 +1483,65 @@
     max-width: none;
   }
 
+  .runSelect {
+    grid-column: 1 / -1;
+  }
+
   .workflowBackdrop {
-    padding: 10px;
+    padding: 0;
   }
 
   .workflowModal {
     width: 100%;
-    height: 94dvh;
+    height: 100dvh;
+    border-width: 0;
+    border-radius: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .workflowModalHeader {
+    min-height: 72px;
+    align-items: flex-start;
+    padding: 10px;
+  }
+
+  .workflowModalHeader > div:first-child {
+    align-self: center;
+  }
+
+  .workflowModalHeader span {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .workflowModalBody {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) 260px;
+    grid-template-rows: minmax(280px, 56dvh) minmax(0, 1fr);
   }
 
   .workflowCanvas {
     border-right: 0;
     border-bottom: 1px solid #24262a;
+  }
+
+  .workflowCanvas :global(.react-flow__minimap) {
+    display: none;
+  }
+
+  .workflowInspector {
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+  }
+
+  .stats span {
+    border-top: 1px solid #24262a;
+    border-left: 0;
+  }
+
+  .stats span:first-child {
+    border-top: 0;
   }
 }
 
@@ -1381,7 +1552,23 @@
   }
 
   .header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
     padding: 0 14px;
+  }
+
+  .chat {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .headerTitle {
+    padding-top: 10px;
+  }
+
+  .headerActions {
+    width: 100%;
+    padding-bottom: 10px;
   }
 
   .headerActions button {
@@ -1421,8 +1608,34 @@
   }
 }
 
+@media (min-width: 761px) and (max-width: 1100px) {
+  .workflowBackdrop {
+    padding: 12px;
+  }
+
+  .workflowModal {
+    width: 100%;
+    height: 94dvh;
+  }
+
+  .workflowModalBody {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .spin {
+  .messageList {
+    scroll-behavior: auto;
+  }
+
+  .spin,
+  .chevron,
+  .todoChevron {
+    animation: none;
+    transition: none;
+  }
+
+  .workflowCanvas :global(.react-flow__edge.animated path) {
     animation: none;
   }
 }

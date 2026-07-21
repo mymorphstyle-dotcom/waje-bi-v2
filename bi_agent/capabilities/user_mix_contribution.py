@@ -31,7 +31,9 @@ def user_mix_contribution(
     total_users = sum(row["paid_users"] for row in aggregate_rows)
     return make_evidence_envelope(
         "user_mix_contribution",
-        evidence_type="statistical_association" if aggregate_rows else "insufficient_evidence",
+        evidence_type="dimension_localization"
+        if aggregate_rows
+        else "insufficient_evidence",
         strength="medium" if aggregate_rows else "low",
         wording_limit="contextual" if aggregate_rows else "insufficient",
         typed_payload={

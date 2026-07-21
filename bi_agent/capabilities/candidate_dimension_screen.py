@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from math import isclose
 from typing import Any
 
-from bi_agent.capabilities import make_evidence_envelope
+from bi_agent.capabilities.evidence import make_evidence_envelope
 
 
 _SAMPLE_SIZE_KEYS = (
@@ -16,7 +16,7 @@ _SAMPLE_SIZE_KEYS = (
     "user_count",
     "paid_users",
 )
-_UNKNOWN_VALUES = frozenset(("", "unknown", "null", "none", "n/a"))
+_UNKNOWN_VALUES = frozenset(("", "*", "unknown", "null", "none", "n/a"))
 _LOCALIZABLE_FACTORS = frozenset({"paid_users", "paid_frequency", "avg_order_amount"})
 _MIN_DIMENSION_DIFFERENTIATION = 0.01
 _MIN_EXCESS_CHANGE_RATIO = 0.05
@@ -191,9 +191,7 @@ def candidate_dimension_screen(
         for profile in selected_hierarchy_profiles
         if _selected_profile_segment(profile) is not None
     )
-    profiles_by_dimension = {
-        str(profile["dimension"]): profile for profile in profiles
-    }
+    profiles_by_dimension = {str(profile["dimension"]): profile for profile in profiles}
     selected_readout_dimensions = {
         str(item["dimension"]) for item in selected_business_readouts
     }
@@ -214,11 +212,16 @@ def candidate_dimension_screen(
         *selected_business_readouts,
         *additional_business_readouts,
     )
-    limitation_values = {
-        limitation for profile in profiles for limitation in profile["limitations"]
-    }
+    # Dimension-local boundaries stay on the dimension profile/finding.  Promoting
+    # them to the capability envelope would make an unrelated qualified dimension
+    # inherit another dimension's sparsity or low-information boundary.
+    limitation_values: set[str] = set()
     if not overall_available:
         limitation_values.add("overall_reconciliation_unavailable")
+    if not eligible:
+        limitation_values.update(
+            limitation for profile in profiles for limitation in profile["limitations"]
+        )
     limitations = tuple(sorted(limitation_values))
     numeric_facts = {
         "dimension_count": len(profiles),
@@ -250,20 +253,18 @@ def candidate_dimension_screen(
     selected_label = selected_candidate["dimension_label"] if selected_candidate else ""
     selected_value = selected_segment["value"] if selected_segment else ""
     if business_readouts:
-        label_groups = [
-            "→".join(
-                item["dimension_label"] for item in selected_business_readouts
-            )
-        ] if selected_business_readouts else []
+        label_groups = (
+            ["→".join(item["dimension_label"] for item in selected_business_readouts)]
+            if selected_business_readouts
+            else []
+        )
         label_groups.extend(
             item["dimension_label"]
             for item in business_readouts
             if str(item["dimension"]) not in selected_readout_dimensions
         )
         path_label = "、".join(label_groups)
-        detail = "；".join(
-            item["business_readout"] for item in business_readouts
-        )
+        detail = "；".join(item["business_readout"] for item in business_readouts)
         business_readout = (
             f"当前有信息量的定位维度依次为{path_label}。{detail}。"
             "这些结果用于定位，跨维度不可相加。"
@@ -272,6 +273,73 @@ def candidate_dimension_screen(
         business_readout = (
             "当前候选维度没有形成同时通过对账、样本、超额变化和区分度门槛的定位结果。"
         )
+    interpretation_contract = {
+        "contract_id": "dimension-localization-interpretation.v1",
+        "analysis_role": "auxiliary_localization",
+        "ranking_scope": "cross_dimension_diagnostic_priority",
+        "ranking_subject": "dimension_view",
+        "ranking_measure": "diagnostic_priority_score",
+        "ranking_order": "diagnostic_priority_score_descending",
+        "ranking_position_measure": "priority_rank",
+        "priority_rank_order": "ascending",
+        "ranking_formula": ("excess_change_differentiation_primary_factor_alignment"),
+        "cross_dimension_overlap": "overlapping_marginal_views",
+        "cross_dimension_additivity": "forbidden",
+        "cross_dimension_contribution_ranking": "forbidden",
+        "within_dimension_additivity": {
+            "scope": "complete_reconciled_partition",
+            "additive_measures": (
+                "baseline_amount",
+                "target_amount",
+                "delta",
+            ),
+            "zero_sum_measures": ("excess_delta",),
+            "zero_sum_condition": "all_measure_values_defined",
+            "non_additive_measures": (
+                "dimension_differentiation_score",
+                "diagnostic_priority_score",
+            ),
+        },
+        "contribution_semantics": {
+            "delta": "within_dimension_accounting_change",
+            "excess_delta": "baseline_mix_structural_deviation",
+            "diagnostic_priority_score": "cross_dimension_ranking_only",
+        },
+        "excess_delta_definition": (
+            "target_amount_minus_target_total_at_baseline_share"
+        ),
+        "formula_decomposition_relationship": (
+            "co_report_only_no_shared_rank_sum_or_share"
+        ),
+        "causal_interpretation": "forbidden",
+        "representative_member_selection": ("separate_from_dimension_priority_ranking"),
+    }
+    priorities_by_dimension = {
+        str(item["dimension"]): item for item in diagnostic_priorities
+    }
+    dimension_findings = tuple(
+        {
+            **{
+                key: value
+                for key, value in readout.items()
+                if key != "business_readout"
+            },
+            "finding_type": "hierarchical_localization",
+            "dimension_id": readout["dimension"],
+            "member": readout["value"],
+            "priority_rank": priorities_by_dimension[str(readout["dimension"])][
+                "priority_rank"
+            ],
+            "diagnostic_priority_score": priorities_by_dimension[
+                str(readout["dimension"])
+            ]["diagnostic_priority_score"],
+            "evidence_state": "verified",
+            "limitation_refs": profiles_by_dimension[str(readout["dimension"])][
+                "limitations"
+            ],
+        }
+        for readout in business_readouts
+    )
     return make_evidence_envelope(
         "candidate_dimension_screen",
         evidence_type="statistical_association"
@@ -281,21 +349,8 @@ def candidate_dimension_screen(
         wording_limit="candidate" if eligible else "insufficient",
         numeric_facts=numeric_facts,
         typed_payload={
-            "analysis_role": "auxiliary_localization",
-            "ranking_scope": "cross_dimension_diagnostic_priority",
-            "dimension_ranking_basis": (
-                "excess_change_differentiation_primary_factor_alignment"
-            ),
+            "interpretation_contract": interpretation_contract,
             "global_primary_factor": primary_factor,
-            "causal_claim_allowed": False,
-            "formula_contribution_comparable": False,
-            "cross_dimension_additivity_allowed": False,
-            "within_dimension_amount_contribution_additive": True,
-            "excess_delta_additive_to_total_change": False,
-            "excess_delta_definition": (
-                "目标期实际金额减去按基线份额分配的目标期预期金额；"
-                "用于识别结构性超额变化，不作为因果贡献。"
-            ),
             "business_readout_gate": {
                 "minimum_dimension_differentiation": _MIN_DIMENSION_DIFFERENTIATION,
                 "minimum_excess_change_ratio": _MIN_EXCESS_CHANGE_RATIO,
@@ -313,22 +368,9 @@ def candidate_dimension_screen(
             "selected_hierarchy_dimensions": selected_hierarchy_dimensions,
             "selected_business_readouts": selected_business_readouts,
             "business_readouts": business_readouts,
-            "dimension_findings": tuple(
-                {
-                    **readout,
-                    "finding_type": "hierarchical_localization",
-                    "dimension_id": readout["dimension"],
-                    "member": readout["value"],
-                    "evidence_state": "verified",
-                }
-                for readout in business_readouts
-            ),
+            "dimension_findings": dimension_findings,
             "hierarchy_diagnostics": hierarchy_diagnostics,
             "business_readout": business_readout,
-            "claim_boundary": (
-                "维度内部的分群金额变化可以对账；维度之间是重叠切片，"
-                "诊断优先级不可相加，也不能写成跨维度贡献排名。"
-            ),
             "dimension_profiles": profiles,
         },
         limitations=limitations,
@@ -511,12 +553,13 @@ def _dimension_profile(
             item["delta"] / total_delta if total_delta else None
         )
     ranked = [item for item in contributions if item["sample_eligible"]]
+    localizable_ranked = [item for item in ranked if not item["is_unknown"]]
     has_movement = any(
         not isclose(item["delta"], 0.0, abs_tol=reconciliation_tolerance)
-        for item in ranked
+        for item in localizable_ranked
     )
-    candidate_eligible = reconciled and bool(ranked) and has_movement
-    publishable_ranked = ranked if candidate_eligible else ()
+    candidate_eligible = reconciled and bool(localizable_ranked) and has_movement
+    publishable_ranked = localizable_ranked if candidate_eligible else ()
     top_lifts = tuple(
         sorted(
             (item for item in publishable_ranked if item["delta"] > 0),
@@ -540,17 +583,17 @@ def _dimension_profile(
         "delta": unknown["delta"],
     }
     ranked_by_movement = sorted(
-        ranked,
+        localizable_ranked,
         key=lambda item: abs(item["delta"]),
         reverse=True,
     )
     leading = ranked_by_movement[0] if ranked_by_movement else None
-    absolute_movement = sum(abs(item["delta"]) for item in ranked)
+    absolute_movement = sum(abs(item["delta"]) for item in localizable_ranked)
     all_primary_factor_segments = tuple(
         sorted(
             (
                 item
-                for item in ranked
+                for item in localizable_ranked
                 if _factor_aligns_with_amount(item, global_primary_factor)
             ),
             key=lambda item: abs(item["delta"]),
@@ -567,7 +610,9 @@ def _dimension_profile(
         if leading is not None and absolute_movement
         else 0.0
     )
-    excess_ranked = tuple(item for item in ranked if item["excess_delta"] is not None)
+    excess_ranked = tuple(
+        item for item in localizable_ranked if item["excess_delta"] is not None
+    )
     top_excess_lifts = tuple(
         sorted(
             (item for item in excess_ranked if item["excess_delta"] > 0),
@@ -659,7 +704,7 @@ def _dimension_profile(
         for item in contributions
     ):
         limitations.append(f"sparse_dimension_values:{dimension}")
-    if reconciled and ranked and not has_movement:
+    if reconciled and localizable_ranked and not has_movement:
         limitations.append(f"no_dimension_movement:{dimension}")
     if candidate_eligible and near_constant_dimension:
         limitations.append(f"near_constant_dimension:{dimension}")
@@ -758,6 +803,7 @@ def _dimension_profile(
         "segment_count": len(contributions),
         "unpaired_dimension_value_count": incomplete_values,
         "suppressed_segment_count": len(contributions) - len(ranked),
+        "non_localizable_member_count": len(ranked) - len(localizable_ranked),
         "limitations": tuple(limitations),
     }
 

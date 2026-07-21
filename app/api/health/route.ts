@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
 import { Pool } from "pg";
+import { wajePythonInvocation } from "../_pythonRuntime";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,7 +28,7 @@ export async function GET() {
     pythonHealth("python_bi_agent_core", "import bi_agent.conversation.agent_core"),
     pythonHealth(
       "langgraph_adapter",
-      "from bi_agent.runtime.langgraph_workflow import build_pattern_graph; build_pattern_graph()",
+      "from bi_agent.runtime.langgraph_workflow import build_single_authority_graph; build_single_authority_graph()",
     ),
     clickhouseHealth(),
   ]);
@@ -99,7 +100,11 @@ async function clickhouseHealth(): Promise<HealthCheck> {
 
 function pythonHealth(name: string, code: string, timeoutMs = 5000): Promise<HealthCheck> {
   return new Promise((resolve) => {
-    const child = spawn("python3", ["-c", code], { cwd: process.cwd(), env: process.env });
+    const invocation = wajePythonInvocation(["-c", code]);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: process.cwd(),
+      env: process.env,
+    });
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill();

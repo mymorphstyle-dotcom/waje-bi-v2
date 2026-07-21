@@ -45,7 +45,9 @@ def segment_bridge(
     has_sensitive = any(_has_sensitive_keys(segment) for segment in segments)
     sample_sizes = tuple(_sample_size(segment) for segment in segments)
     has_unverified_sample = any(size is None for size in sample_sizes)
-    has_sparse = any(size is not None and size < SPARSE_THRESHOLD for size in sample_sizes)
+    has_sparse = any(
+        size is not None and size < SPARSE_THRESHOLD for size in sample_sizes
+    )
     if has_sensitive or has_sparse or has_unverified_sample:
         limitations = tuple(
             reason
@@ -58,7 +60,7 @@ def segment_bridge(
         )
         return make_evidence_envelope(
             "segment_bridge",
-            evidence_type="insufficient",
+            evidence_type="insufficient_evidence",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={
@@ -73,7 +75,9 @@ def segment_bridge(
 
     return make_evidence_envelope(
         "segment_bridge",
-        evidence_type="contextual_evidence" if segments else "insufficient_evidence",
+        evidence_type="accounting_contribution"
+        if segments
+        else "insufficient_evidence",
         strength="medium" if segments else "low",
         wording_limit="contextual" if segments else "insufficient",
         typed_payload={
@@ -89,7 +93,14 @@ def segment_bridge(
 
 def _sample_size(segment: dict[str, Any]):
     found = False
-    for key in ("n", "sample_size", "order_count", "orders", "user_count", "paid_users"):
+    for key in (
+        "n",
+        "sample_size",
+        "order_count",
+        "orders",
+        "user_count",
+        "paid_users",
+    ):
         value = segment.get(key)
         if value is not None:
             found = True
@@ -107,7 +118,17 @@ def _has_sensitive_keys(segment: dict[str, Any]) -> bool:
         normalized = str(key).lower()
         if normalized in SENSITIVE_KEYS:
             return True
-        if any(token in normalized for token in ("email", "phone", "account_id", "user_id", "device_id", "raw_ip")):
+        if any(
+            token in normalized
+            for token in (
+                "email",
+                "phone",
+                "account_id",
+                "user_id",
+                "device_id",
+                "raw_ip",
+            )
+        ):
             return True
     return False
 

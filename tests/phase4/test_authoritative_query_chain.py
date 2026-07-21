@@ -1,39 +1,17 @@
 from dataclasses import replace
-from datetime import date, datetime, timedelta
-from decimal import Decimal
-import inspect
+from datetime import datetime
 import unittest
 
-from bi_agent.runtime.analysis_assets import (
-    build_analysis_assets,
-    build_dimension_scan_reuse_contract,
-    evaluate_dimension_scan_reuse,
-    reusable_dimension_scan_inputs,
-)
-from bi_agent.runtime.answer_package import (
-    AuthorityFact,
-    _authority_bound_claim_projections,
-    _project_claim_from_authority,
-    build_answer_package,
-    reverify_answer_package_for_delivery,
-    verify_answer_package,
-)
-from bi_agent.runtime.capability_harness import execute_capability
-from bi_agent.runtime.capability_models import BudgetState, CapabilityRequest
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.analysis_contracts import (
     QueryResultEnvelope,
-    ResolvedWindow,
-    query_contract_signature,
 )
 from bi_agent.runtime.authoritative_query_chain import (
     AuthoritativeQueryChainError,
     validate_authoritative_query_chain,
 )
-from bi_agent.runtime.capability_execution import bind_capability_inputs
 from bi_agent.runtime.evidence_authority import (
     CompletenessRecord,
-    RowsRecord,
     RuntimeEvidenceAuthority,
     _record_completeness,
     _record_query_execution,
@@ -51,351 +29,13 @@ from bi_agent.runtime.query_executor import ClickHouseQueryExecutor
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.query_completeness import validate_query_result
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from tests.phase4.analysis_asset_vectors import verified_dimension_scan_asset
+from tests.phase4.authoritative_query_vectors import verified_dimension_scan_context
+from tests.support.temporal_authority import resolved_test_daily_pair_authority
 
 
 class AuthoritativeQueryChainTest(unittest.TestCase):
-    def test_sparse_gameplay_dimension_reaches_verifier_with_baseline_only_value(self):
-        context = _gameplay_authority_context(
-            self.registry,
-            include_sparse_baseline=True,
-        )
-        bound = bind_capability_inputs(
-            context["plan"],
-            results={context["contract"].query_contract_id: context["result"]},
-            reports={context["contract"].query_contract_id: context["report"]},
-            evidence_authority=context["authority"],
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual((bound.status, bound.reasons), ("ready", ()))
-        rows = context["result"].rows
-        totals = {
-            role: sum(
-                Decimal(str(row["player_bet_amount"]))
-                for row in rows
-                if row["window_role"] == role
-            )
-            for role in ("target", "baseline")
-        }
-        self.assertEqual(totals, {"target": Decimal("501"), "baseline": Decimal("581")})
-        self.assertEqual(
-            sum(
-                Decimal(str(row["player_bet_amount"]))
-                for row in rows
-                if row["window_role"] == "baseline" and row["gameplay"] == "Poker"
-            ),
-            Decimal("80"),
-        )
-        envelope = execute_capability(
-            CapabilityRequest(
-                run_id="run-gameplay-sparse-official",
-                accepted_graph_id="graph-gameplay-sparse-official",
-                graph_version=1,
-                capability_id="gameplay_activity_context",
-                question_family="business_object_impact_review",
-                target_claim="observed_activity",
-                claim_type="observed_activity",
-                metric="player_bet_amount",
-                scope="Nigeria",
-                time_window="target+rolling7",
-                baseline={"label": "rolling7"},
-                target={"label": "target"},
-                grain="window_gameplay",
-                filters={},
-                dimensions=("gameplay",),
-                contract_versions={},
-                budget_state=BudgetState("ordinary", 0, 50, 100),
-                llm_business_reason="Use sparse gameplay activity context.",
-                params={},
-                bound_input=bound,
-                evidence_resolver=context["authority"],
-                release_resolver=context["release_resolver"],
-            )
-        )
-        verifier = verify_answer_package(
-            draft_claims=(
-                {
-                    "text": "Gameplay activity was observed.",
-                    "claim_strength": "observed",
-                    "claim_type": "observed_activity",
-                    "evidence_refs": (envelope.evidence_ref,),
-                },
-            ),
-            evidence=(envelope.to_dict(),),
-            visible_limitations=envelope.limitations,
-            evidence_resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual(verifier["status"], "passed", verifier["errors"])
-
-    def test_official_gameplay_and_event_chains_reach_final_verifier(self):
-        contexts = (
-            (
-                _gameplay_authority_context(self.registry),
-                "gameplay_activity_context",
-                "observed_activity",
-                "player_bet_amount",
-                ("gameplay",),
-            ),
-            (
-                _event_authority_context(self.registry),
-                "event_evidence",
-                "candidate_mechanism",
-                "",
-                (),
-            ),
-        )
-        for context, capability_id, claim_type, metric, dimensions in contexts:
-            with self.subTest(capability_id=capability_id):
-                bound = bind_capability_inputs(
-                    context["plan"],
-                    results={context["contract"].query_contract_id: context["result"]},
-                    reports={context["contract"].query_contract_id: context["report"]},
-                    evidence_authority=context["authority"],
-                    runtime_registry=self.registry,
-                    release_resolver=context["release_resolver"],
-                )
-                self.assertEqual((bound.status, bound.reasons), ("ready", ()))
-                binding = context["authority"].resolve_capability_binding(
-                    bound.binding_manifest_ref
-                )
-                chain = validate_authoritative_query_chain(
-                    binding,
-                    resolver=context["authority"],
-                    rows_loader=context["authority"].rows_loader,
-                    runtime_registry=self.registry,
-                    release_resolver=context["release_resolver"],
-                )
-                self.assertTrue(chain.primary_results[0].observed_schema)
-                self.assertTrue(chain.primary_results[0].provider_stats["summary"])
-                self.assertTrue(chain.primary_reports[0].assertion_results)
-                self.assertTrue(chain.primary_reports[0].coverage_summary["snapshot_watermarks"])
-                envelope = execute_capability(
-                    CapabilityRequest(
-                        run_id=f"run-{capability_id}-official",
-                        accepted_graph_id=f"graph-{capability_id}-official",
-                        graph_version=1,
-                        capability_id=capability_id,
-                        question_family="business_object_impact_review",
-                        target_claim=claim_type,
-                        claim_type=claim_type,
-                        metric=metric,
-                        scope="Nigeria",
-                        time_window="2026-06-02",
-                        baseline={},
-                        target={"label": "target"},
-                        grain="window",
-                        filters={},
-                        dimensions=dimensions,
-                        contract_versions={},
-                        budget_state=BudgetState("ordinary", 0, 50, 100),
-                        llm_business_reason="Use authoritative ClickHouse rows.",
-                        params={},
-                        bound_input=bound,
-                        evidence_resolver=context["authority"],
-                        release_resolver=context["release_resolver"],
-                    )
-                )
-                verifier = verify_answer_package(
-                    draft_claims=(
-                        {
-                            "text": "Authoritative context was observed.",
-                            "claim_strength": envelope.strength,
-                            "claim_type": claim_type,
-                            "evidence_refs": (envelope.evidence_ref,),
-                        },
-                    ),
-                    evidence=(envelope.to_dict(),),
-                    visible_limitations=envelope.limitations,
-                    evidence_resolver=context["authority"],
-                    rows_loader=context["authority"].rows_loader,
-                    runtime_registry=self.registry,
-                    release_resolver=context["release_resolver"],
-                )
-                self.assertEqual(verifier["status"], "passed", verifier["errors"])
-
-    def test_gameplay_activity_fact_cannot_be_relabelled_as_payment(self):
-        fact = AuthorityFact.create(
-            query_contract_ref="query:gameplay:1",
-            result_ref="result:gameplay:1",
-            metric_id="player_bet_amount",
-            value=100,
-            window_id="target_day",
-            window_role="target",
-            observation_key="2026-06-02",
-            dimensions=(),
-            grain=("window_id", "gameplay"),
-            value_semantics="gameplay_activity_amount",
-            display_format="number",
-        )
-        facts = {
-            "metric_ids": ("player_bet_amount",),
-            "authority_facts": (fact,),
-            "authority_context_facts": (),
-            "grains": (("window_id", "gameplay"),),
-            "target_windows": (),
-            "baseline_windows": (),
-        }
-        with self.assertRaisesRegex(ValueError, "claim_number_field_unbound:paid_amount"):
-            _project_claim_from_authority(
-                {
-                    "text": "Revenue was 100.",
-                    "claim_strength": "observed",
-                    "claim_type": "observed_activity",
-                    "evidence_refs": ("gameplay:evidence",),
-                    "numbers": {"paid_amount": 100},
-                },
-                facts,
-            )
-
-    def test_single_metric_window_comparison_projects_generic_value_and_change_fields(self):
-        facts = _comparison_authority_facts()
-
-        projected = _project_claim_from_authority(
-            {
-                "text": "Use authority values.",
-                "claim_strength": "observed",
-                "claim_type": "comparative_change",
-                "evidence_refs": ("market:evidence",),
-                "numbers": {
-                    "target_value": "125260",
-                    "baseline_value": "216820",
-                    "absolute_change": "-91560",
-                    "relative_change": "-0.4222857669956646065861082926",
-                },
-            },
-            facts,
-        )
-
-        self.assertEqual(projected["target_metric"], "active_users")
-        self.assertEqual(len(set(projected["fact_refs"])), 2)
-        self.assertEqual(projected["numbers"]["absolute_change"], "-91560")
-        self.assertEqual(
-            projected["numbers"]["relative_change"],
-            "-0.4222857669956646065861082926",
-        )
-
-    def test_generic_change_projection_rejects_tampering_and_ambiguity(self):
-        claim = {
-            "text": "Use authority values.",
-            "claim_strength": "observed",
-            "claim_type": "comparative_change",
-            "evidence_refs": ("market:evidence",),
-            "numbers": {"relative_change": "0.5"},
-        }
-        with self.assertRaisesRegex(ValueError, "claim_ratio_value_mismatch"):
-            _project_claim_from_authority(claim, _comparison_authority_facts())
-
-        multi_metric = dict(_comparison_authority_facts())
-        multi_metric["metric_ids"] = ("active_users", "paid_users")
-        with self.assertRaisesRegex(ValueError, "claim_number_field_unbound"):
-            _project_claim_from_authority(claim, multi_metric)
-
-        multiple_targets = dict(_comparison_authority_facts())
-        first_target = multiple_targets["authority_facts"][0]
-        multiple_targets["authority_facts"] = (
-            *multiple_targets["authority_facts"],
-            replace(first_target, observation_key="2026-06-03"),
-        )
-        with self.assertRaisesRegex(ValueError, "claim_ratio_fact_not_unique"):
-            _project_claim_from_authority(claim, multiple_targets)
-
-    def test_event_claim_projection_uses_authoritative_rows_not_typed_payload(self):
-        context = _event_authority_context(self.registry)
-        bound = bind_capability_inputs(
-            context["plan"],
-            results={context["contract"].query_contract_id: context["result"]},
-            reports={context["contract"].query_contract_id: context["report"]},
-            evidence_authority=context["authority"],
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual((bound.status, bound.reasons), ("ready", ()))
-        envelope = execute_capability(
-            CapabilityRequest(
-                run_id="run-event-authority",
-                accepted_graph_id="graph-event-authority",
-                graph_version=1,
-                capability_id="event_evidence",
-                question_family="business_object_impact_review",
-                target_claim="candidate_mechanism",
-                claim_type="candidate_mechanism",
-                metric="",
-                scope="Nigeria",
-                time_window="2026-06-02",
-                baseline={},
-                target={"label": "target"},
-                grain="event_interval",
-                filters={},
-                dimensions=(),
-                contract_versions={},
-                budget_state=BudgetState("ordinary", 0, 50, 100),
-                llm_business_reason="Use reviewed event rows.",
-                params={"rows": ({"event_id": "forged"},)},
-                bound_input=bound,
-                evidence_resolver=context["authority"],
-                release_resolver=context["release_resolver"],
-            )
-        )
-        tampered = envelope.to_dict()
-        tampered["typed_payload"] = {"events": ({"event_id": "forged"},)}
-        claim = {
-            "text": "Forged event caused the outcome.",
-            "claim_strength": "observed",
-            "claim_type": "candidate_mechanism",
-            "evidence_refs": (envelope.evidence_ref,),
-        }
-        projected, errors = _authority_bound_claim_projections(
-            claims=(claim,),
-            accepted_indexes=(0,),
-            evidence=(tampered,),
-            evidence_resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual(errors, [])
-        self.assertEqual(len(projected), 1)
-        self.assertIn("已登记业务活动", projected[0]["text"])
-        self.assertIn("仅作为候选机制背景", projected[0]["text"])
-        self.assertEqual(
-            projected[0]["context_fact_selectors"][0]["event_id"],
-            "event:holiday:reviewed",
-        )
-        for internal_token in (
-            "holiday_context",
-            "reviewed_workbook_pending_owner_review",
-            "target_day",
-        ):
-            self.assertNotIn(internal_token, projected[0]["text"])
-        self.assertNotIn("reviewed event", projected[0]["text"])
-        self.assertNotIn("Forged", projected[0]["text"])
-        self.assertTrue(projected[0]["fact_refs"])
-
-    def test_release_resolver_is_explicit_across_authority_consumers(self):
-        functions = (
-            validate_authoritative_query_chain,
-            bind_capability_inputs,
-            build_answer_package,
-            reverify_answer_package_for_delivery,
-            verify_answer_package,
-            build_analysis_assets,
-            build_dimension_scan_reuse_contract,
-            reusable_dimension_scan_inputs,
-            evaluate_dimension_scan_reuse,
-        )
-        missing = tuple(
-            function.__name__
-            for function in functions
-            if "release_resolver" not in inspect.signature(function).parameters
-        )
-        self.assertEqual(missing, ())
-
     def setUp(self):
-        self.asset, self.context = verified_dimension_scan_asset(
+        self.context = verified_dimension_scan_context(
             rows=(
                 {
                     "window_id": "target_day",
@@ -434,120 +74,6 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
 
         self.assertEqual(chain.primary_results[0].row_count, 1)
         self.assertEqual(chain.primary_reports[0].analysis_readiness, "ready")
-
-    def test_dashboard_release_resolver_flows_through_capability_and_final_verifier(self):
-        context = _dashboard_authority_context(self.registry)
-
-        missing_resolver = bind_capability_inputs(
-            context["plan"],
-            results={context["contract"].query_contract_id: context["result"]},
-            reports={context["contract"].query_contract_id: context["report"]},
-            evidence_authority=context["authority"],
-            runtime_registry=self.registry,
-        )
-        self.assertEqual(missing_resolver.status, "blocked")
-        self.assertTrue(
-            any(
-                "dataset_release_resolver_required" in reason
-                for reason in missing_resolver.reasons
-            ),
-            missing_resolver.reasons,
-        )
-
-        bound = bind_capability_inputs(
-            context["plan"],
-            results={context["contract"].query_contract_id: context["result"]},
-            reports={context["contract"].query_contract_id: context["report"]},
-            evidence_authority=context["authority"],
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual(bound.status, "ready")
-        validate_authoritative_query_chain(
-            context["authority"].resolve_capability_binding(
-                bound.binding_manifest_ref
-            ),
-            resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-
-        evidence = _evidence_from_bound_dashboard_input(bound)
-        claim = {
-            "text": "2026-06-02 的大盘付费金额为 100。",
-            "claim_type": "comparative_change",
-            "claim_strength": "observed",
-            "evidence_refs": (evidence["evidence_ref"],),
-            "numbers": {"paid_amount": 100.0},
-        }
-        failed = verify_answer_package(
-            draft_claims=(claim,),
-            evidence=(evidence,),
-            visible_limitations=(),
-            evidence_resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-        )
-        self.assertEqual(failed["status"], "failed")
-        self.assertTrue(
-            any(
-                "query_contract_runtime_policy" in reason
-                for error in failed["errors"]
-                for reason in error.get("missing", ())
-            ),
-            failed["errors"],
-        )
-
-        passed = verify_answer_package(
-            draft_claims=(claim,),
-            evidence=(evidence,),
-            visible_limitations=(),
-            evidence_resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        self.assertEqual(passed["status"], "passed", passed["errors"])
-
-    def test_authority_projection_deduplicates_claims_that_resolve_to_one_fact(self):
-        context = _dashboard_authority_context(self.registry)
-        bound = bind_capability_inputs(
-            context["plan"],
-            results={context["contract"].query_contract_id: context["result"]},
-            reports={context["contract"].query_contract_id: context["report"]},
-            evidence_authority=context["authority"],
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-        evidence = _evidence_from_bound_dashboard_input(bound)
-        claims = tuple(
-            {
-                "text": text,
-                "claim_type": "comparative_change",
-                "claim_strength": "observed",
-                "evidence_refs": (evidence["evidence_ref"],),
-                "numbers": {"paid_amount": 100.0},
-            }
-            for text in (
-                "目标期大盘付费金额为 100。",
-                "总体数据在目标期记录到付费金额 100。",
-            )
-        )
-
-        projected, errors = _authority_bound_claim_projections(
-            claims=claims,
-            accepted_indexes=(0, 1),
-            evidence=(evidence,),
-            evidence_resolver=context["authority"],
-            rows_loader=context["authority"].rows_loader,
-            runtime_registry=self.registry,
-            release_resolver=context["release_resolver"],
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(len(projected), 1)
-        self.assertTrue(projected[0]["fact_refs"])
 
     def test_direct_payload_and_subclass_registries_cannot_authorize_chain(self):
         direct_payload_registry = RuntimeContractRegistry(self.registry._payload)
@@ -598,6 +124,10 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
         payload = dict(self.binding.binding_payload)
         payload.update(
             {
+                "capability_id": "event_evidence",
+                "capability_contract_signature": (
+                    self.registry.capability_contract_signature("event_evidence")
+                ),
                 "supported_evidence_types": tuple(event["supported_evidence_types"]),
                 "supported_claim_types": tuple(event["supported_claim_types"]),
                 "maximum_claim_strength": event["maximum_claim_strength"],
@@ -704,7 +234,11 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                         return getattr(self.resolver, name)
 
                     def resolve_rows_record(_, ref):
-                        return changed if ref == changed.record_ref else self.resolver.resolve_rows_record(ref)
+                        return (
+                            changed
+                            if ref == changed.record_ref
+                            else self.resolver.resolve_rows_record(ref)
+                        )
 
                 forged_binding = _replace_binding_rows_record(
                     self.binding,
@@ -724,8 +258,17 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
         )
         mutations = (
             {"query_contract_ref": "query:wrong"},
-            {"coverage_summary": {**dict(original.report_payload["coverage_summary"]), "row_count": 2}},
-            {"assertion_results": ({"assertion": "execution_succeeded", "passed": True},)},
+            {
+                "coverage_summary": {
+                    **dict(original.report_payload["coverage_summary"]),
+                    "row_count": 2,
+                }
+            },
+            {
+                "assertion_results": (
+                    {"assertion": "execution_succeeded", "passed": True},
+                )
+            },
         )
         for mutation in mutations:
             with self.subTest(mutation=tuple(mutation)):
@@ -747,7 +290,11 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                         return getattr(self.resolver, name)
 
                     def resolve_completeness(_, ref):
-                        return changed if ref == changed.record_ref else self.resolver.resolve_completeness(ref)
+                        return (
+                            changed
+                            if ref == changed.record_ref
+                            else self.resolver.resolve_completeness(ref)
+                        )
 
                 forged_binding = _replace_binding_completeness(
                     self.binding,
@@ -760,43 +307,6 @@ class AuthoritativeQueryChainTest(unittest.TestCase):
                         rows_loader=self.resolver.rows_loader,
                         runtime_registry=self.registry,
                     )
-
-
-def _comparison_authority_facts():
-    target = AuthorityFact.create(
-        query_contract_ref="query:market:1",
-        result_ref="result:market:1",
-        metric_id="active_users",
-        value=Decimal("125260"),
-        window_id="target_day",
-        window_role="target",
-        observation_key="2026-06-02",
-        dimensions=(),
-        grain=("window_id",),
-        value_semantics="raw_scalar",
-        display_format="number",
-    )
-    baseline = AuthorityFact.create(
-        query_contract_ref="query:market:1",
-        result_ref="result:market:1",
-        metric_id="active_users",
-        value=Decimal("216820"),
-        window_id="previous_day",
-        window_role="baseline",
-        observation_key="2026-06-01",
-        dimensions=(),
-        grain=("window_id",),
-        value_semantics="raw_scalar",
-        display_format="number",
-    )
-    return {
-        "metric_ids": ("active_users",),
-        "authority_facts": (target, baseline),
-        "authority_context_facts": (),
-        "grains": (("window_id",),),
-        "target_windows": (),
-        "baseline_windows": (),
-    }
 
 
 def _replace_binding_rows_record(binding, rows_record):
@@ -821,174 +331,6 @@ class _DatasetReleaseAuthorityResolver:
         return self.record
 
 
-def _gameplay_authority_context(registry, *, include_sparse_baseline=False):
-    base = DatasetSnapshot(
-        snapshot_ref="snapshot:gameplay:authority-e2e",
-        dataset_id="gameplay",
-        physical_table="gameplay_daily__b1b1b1b1b1b1b1b1",
-        watermark="2026-06-02",
-        schema_fingerprint="b1" * 32,
-        schema_fields=tuple(registry.dataset("gameplay")["schema_fields"]),
-        contract_ref="contracts/sources/gameplay.source.yaml@0.1",
-        loaded_at="2026-06-03T00:00:00+00:00",
-        status="active",
-        evidence_state="context_only",
-        reconciliation_status="not_applicable",
-        logical_snapshot_id="gameplay-authority-e2e",
-        load_revision="gameplay-load:sha256:authority-e2e",
-        rows_content_hash="b" * 64,
-        snapshot_id="gameplay-authority-e2e",
-        source_load_manifest_ref="load-manifest:gameplay:authority-e2e",
-        runtime_binding_ref="contracts/runtime/clickhouse-analysis-bindings.yaml@1",
-        source_checksums=(("gameplay.csv", "c" * 64),),
-        row_count=9,
-        date_range=("2026-05-26", "2026-06-02"),
-    )
-    channel = replace(
-        base,
-        snapshot_ref="snapshot:gameplay-channel:authority-e2e",
-        dataset_id="gameplay_channel",
-        physical_table="gameplay_channel_daily__c1c1c1c1c1c1c1c1",
-        schema_fingerprint="c1" * 32,
-        schema_fields=tuple(registry.dataset("gameplay_channel")["schema_fields"]),
-        rows_content_hash="d" * 64,
-        source_checksums=(("gameplay-channel.csv", "e" * 64),),
-    )
-    release_ref = dataset_snapshot_release_ref(
-        base.logical_snapshot_id,
-        base.load_revision,
-        (base.snapshot_ref, channel.snapshot_ref),
-    )
-    base = replace(base, release_ref=release_ref)
-    channel = replace(channel, release_ref=release_ref)
-    release_record = build_dataset_release_authority_record(
-        tuple(
-            {**snapshot.to_dict(), "requires_release": True}
-            for snapshot in (base, channel)
-        )
-    )
-    base = replace(base, authority_record_ref=release_record.authority_record_ref)
-    channel = replace(channel, authority_record_ref=release_record.authority_record_ref)
-    release_resolver = _DatasetReleaseAuthorityResolver(release_record)
-    outcome = compile_analysis_contract(
-        run_id="run-gameplay-authority-e2e",
-        proposal={
-            "target_metrics": ("player_bet_amount",),
-            "requested_dimensions": ("gameplay",),
-            "metric_dataset_overrides": {"player_bet_amount": "gameplay"},
-            "dimension_dataset_overrides": {"gameplay": "gameplay"},
-            "claim_intents": ("observed_activity",),
-        },
-        accepted_capabilities=("gameplay_activity_context",),
-        catalog=DatasetCatalog((base,), release_resolver=release_resolver),
-        registry=registry,
-        as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
-        release_resolver=release_resolver,
-    )
-    contract = next(
-        item
-        for item in outcome.query_contracts
-        if item.query_intent == "gameplay_activity_probe"
-    )
-    plan = outcome.capability_plans[0]
-    if include_sparse_baseline:
-        rolling = ResolvedWindow(
-            "rolling_7_day_baseline",
-            "baseline",
-            "2026-05-26..2026-06-01",
-            "2026-05-26",
-            "2026-06-02",
-            "Africa/Lagos",
-            "daily_total",
-            7,
-            "2026-06-01",
-        )
-        unsigned = replace(
-            contract,
-            window_refs=(*contract.window_refs, rolling.window_id),
-            resolved_windows=(*contract.resolved_windows, rolling),
-            result_shape=replace(
-                contract.result_shape,
-                required_window_ids=(*contract.window_refs, rolling.window_id),
-            ),
-            contract_signature="",
-            query_role_ref="",
-        )
-        signature = query_contract_signature(unsigned)
-        contract = replace(
-            unsigned,
-            contract_signature=signature,
-            query_role_ref=f"query-role:{signature}",
-        )
-        plan = replace(
-            plan,
-            required_input_slots=(
-                replace(
-                    plan.required_input_slots[0],
-                    required_window_ids=contract.window_refs,
-                ),
-            ),
-        )
-    rows = []
-    for window in contract.resolved_windows:
-        start = date.fromisoformat(window.start_inclusive)
-        end = date.fromisoformat(window.end_exclusive)
-        for offset in range((end - start).days):
-            observed = start + timedelta(days=offset)
-            value = Decimal("100.00")
-            if include_sparse_baseline:
-                value = (
-                    Decimal("501")
-                    if window.role == "target" or offset == 0
-                    else Decimal("0")
-                )
-            rows.append(
-                {
-                    "window_id": window.window_id,
-                    "window_role": window.role,
-                    "observation_key": observed.isoformat(),
-                    "gameplay": "Rummy",
-                    "player_bet_amount": value,
-                }
-            )
-        if include_sparse_baseline and window.role == "baseline":
-            rows.append(
-                {
-                    "window_id": window.window_id,
-                    "window_role": window.role,
-                    "observation_key": window.start_inclusive,
-                    "gameplay": "Poker",
-                    "player_bet_amount": Decimal("80"),
-                }
-            )
-    authority = RuntimeEvidenceAuthority()
-    result = ClickHouseQueryExecutor(
-        _FaithfulRowsRuntime(rows),
-        evidence_authority=authority,
-        release_resolver=release_resolver,
-    ).execute(
-        contract,
-        {base.snapshot_ref: base},
-        execution_attempt_ref="attempt:gameplay-authority-e2e",
-    )
-    report = validate_query_result(
-        contract,
-        result,
-        base,
-        release_resolver=release_resolver,
-    )
-    _record_completeness(authority, report)
-    return {
-        "authority": authority,
-        "release_resolver": release_resolver,
-        "contract": contract,
-        "result": result,
-        "report": report,
-        "plan": plan,
-        "snapshot": base,
-    }
-
-
 def _event_authority_context(registry):
     schema_fields = tuple(registry.dataset("external_event")["schema_fields"])
     snapshot = DatasetSnapshot(
@@ -1008,7 +350,7 @@ def _event_authority_context(registry):
         rows_content_hash="e" * 64,
         snapshot_id="external-events-authority-e2e",
         source_load_manifest_ref="load-manifest:event:authority-e2e",
-        runtime_binding_ref="contracts/runtime/clickhouse-analysis-bindings.yaml@1",
+        runtime_binding_ref="contracts/runtime/clickhouse-analysis-bindings.yaml@15",
         source_checksums=(("events.xlsx", "f" * 64),),
         row_count=1,
         date_range=("2026-05-01", "2026-06-08"),
@@ -1036,6 +378,10 @@ def _event_authority_context(registry):
         accepted_capabilities=("event_evidence",),
         catalog=DatasetCatalog((snapshot,), release_resolver=release_resolver),
         registry=registry,
+        temporal_authority=resolved_test_daily_pair_authority(
+            target="2026-06-02",
+            baseline_id="previous_day",
+        ),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         release_resolver=release_resolver,
     )
@@ -1107,7 +453,9 @@ class _FaithfulRowsRuntime:
         return ClickHouseQueryResult(
             ok=True,
             rows=self.rows,
-            query_hash=canonical_digest({"sql": sql, "parameters": kwargs.get("parameters", {})}),
+            query_hash=canonical_digest(
+                {"sql": sql, "parameters": kwargs.get("parameters", {})}
+            ),
             query_id=query_id,
             provider_stats={
                 "requested_settings": dict(kwargs.get("settings") or {}),
@@ -1192,6 +540,10 @@ def _dashboard_authority_context(registry):
         accepted_capabilities=("market_health_compare",),
         catalog=catalog,
         registry=registry,
+        temporal_authority=resolved_test_daily_pair_authority(
+            target="2026-06-02",
+            baseline_id="previous_day",
+        ),
         as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         release_resolver=release_resolver,
     )
@@ -1228,7 +580,9 @@ def _dashboard_authority_context(registry):
         row_count=len(rows),
         completeness_report_ref=refs.completeness_report_ref,
         rows=rows,
-        observed_schema={field: "String" for field in contract.result_shape.required_fields},
+        observed_schema={
+            field: "String" for field in contract.result_shape.required_fields
+        },
         observed_windows=tuple(row["window_id"] for row in rows),
         observed_grain=contract.result_shape.grain,
         source_snapshot_refs=(snapshot.snapshot_ref,),
@@ -1270,7 +624,10 @@ def _evidence_from_bound_dashboard_input(bound):
         "capability_id": bound.capability_id,
         "analysis_contract_ref": bound.analysis_contract_ref,
         "capability_contract_ref": bound.capability_contract_ref,
-        "query_contract_refs": (*bound.query_contract_refs, *bound.validation_query_contract_refs),
+        "query_contract_refs": (
+            *bound.query_contract_refs,
+            *bound.validation_query_contract_refs,
+        ),
         "result_refs": (*bound.result_refs, *bound.validation_result_refs),
         "query_execution_record_refs": (
             *bound.query_execution_record_refs,

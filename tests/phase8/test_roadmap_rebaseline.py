@@ -6,13 +6,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RoadmapRebaselineTest(unittest.TestCase):
-    def test_roadmap_has_no_open_legacy_checkboxes_before_phase5(self):
-        roadmap = (ROOT / "docs" / "implementation-roadmap.md").read_text(encoding="utf-8")
-        legacy_section = roadmap.split("## Phases 0-4:", 1)[1].split("## Phase 5:", 1)[0]
+    def test_roadmap_is_rebased_on_the_single_authority_phases(self):
+        roadmap = (ROOT / "docs" / "implementation-roadmap.md").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertIn("## Phases 0-4: Historical Baseline", roadmap)
-        self.assertIn("superseded by the 2026-07-07 Post-Phase 4 Rebaseline", legacy_section)
-        self.assertNotIn("- [ ]", legacy_section)
+        self.assertIn(
+            "Architecture authority: [2026-07-17 single-authority workflow ADR]",
+            roadmap,
+        )
+        for phase in range(8):
+            self.assertIn(f"## Phase {phase}:", roadmap)
+        self.assertIn("The cutover has no backward-compatibility path", roadmap)
+        self.assertNotIn("Post-Phase 4 Rebaseline", roadmap)
 
 
 if __name__ == "__main__":

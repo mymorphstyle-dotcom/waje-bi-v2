@@ -72,9 +72,7 @@ class FakeClickHouseClient:
         self.queries.append(query)
         self.query_parameters.append(parameters or {})
         if "currentDatabase() AS configured_database" in query:
-            return _QueryResult(
-                ({"configured_database": self.configured_database},)
-            )
+            return _QueryResult(({"configured_database": self.configured_database},))
         if "system.columns" in query:
             return _QueryResult(
                 {"name": name, "type": data_type} for name, data_type in self.schema
@@ -106,9 +104,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         self.assertEqual(len(client.queries), 3)
         self.assertIn("currentDatabase()", client.queries[0])
         self.assertIn("system.columns", client.queries[1])
-        self.assertEqual(
-            client.query_parameters[1]["analytical_database"], "waje_bi"
-        )
+        self.assertEqual(client.query_parameters[1]["analytical_database"], "waje_bi")
         self.assertIn("database = {analytical_database:String}", client.queries[1])
         self.assertIn("count()", client.queries[2])
         self.assertIn("groupBitXor", client.queries[2])
@@ -229,9 +225,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                     aggregate=mutation.get("aggregate"),
                     schema=mutation.get("schema", SCHEMA),
                 )
-                with self.assertRaisesRegex(
-                    PaidSuccessRegistrationError, failure_type
-                ):
+                with self.assertRaisesRegex(PaidSuccessRegistrationError, failure_type):
                     inspect_existing_paid_success(
                         client,
                         archive_path=self.archive,
@@ -255,7 +249,9 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         self.assertEqual(payload["row_count"], 41_234_677)
         self.assertEqual(payload["reconciliation_ref"], "")
         self.assertEqual(payload["date_range"], ["2024-01-01", "2026-07-04"])
-        self.assertEqual(payload["source_checksums"]["archive_sha256"], self.archive_sha256)
+        self.assertEqual(
+            payload["source_checksums"]["archive_sha256"], self.archive_sha256
+        )
         self.assertEqual(len(payload["rows_content_hash"]), 64)
 
     def test_registration_publishes_one_atomic_release_without_payment_attempt(self):
@@ -304,6 +300,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
             def wrapped(*args, **kwargs):
                 events.append(name)
                 return function(*args, **kwargs)
+
             return wrapped
 
         with (
@@ -349,7 +346,14 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "dataset_snapshot_release_dataset_set"):
             validate_dataset_snapshot_release_payloads(
-                (payload, {**payload, "dataset_id": "payment_attempt", "snapshot_ref": "attempt"})
+                (
+                    payload,
+                    {
+                        **payload,
+                        "dataset_id": "payment_attempt",
+                        "snapshot_ref": "attempt",
+                    },
+                )
             )
 
     def test_registration_rejects_unready_inspection_before_lock_or_write(self):
@@ -379,7 +383,9 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
             "load_revision": "accepted-20260705",
             "loaded_at": "2026-07-05T00:00:00+00:00",
         }
-        register_existing_paid_success_snapshot(store, self._valid_inspection(), **kwargs)
+        register_existing_paid_success_snapshot(
+            store, self._valid_inspection(), **kwargs
+        )
         drifted = ExistingPaidSuccessInspection(
             **{
                 **self._valid_inspection().__dict__,
@@ -424,10 +430,14 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         secret = "postgresql://admin:password@secret-host/waje"
         output = io.StringIO()
         argv = [
-            "--archive", str(self.archive),
-            "--physical-table", PHYSICAL_TABLE,
-            "--snapshot-id", "paid-order-detail-20240101-20260704",
-            "--load-revision", "accepted-20260705",
+            "--archive",
+            str(self.archive),
+            "--physical-table",
+            PHYSICAL_TABLE,
+            "--snapshot-id",
+            "paid-order-detail-20240101-20260704",
+            "--load-revision",
+            "accepted-20260705",
             "--dry-run",
         ]
 

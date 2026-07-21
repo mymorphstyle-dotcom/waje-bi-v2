@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from statistics import median
+from math import isfinite
+from statistics import fmean, median
 from typing import Any, Iterable
 
 from bi_agent.capabilities import make_evidence_envelope
@@ -21,6 +22,10 @@ def outlier_contribution(
     direction_after_removal: bool = True,
     result_refs: tuple[str, ...] = (),
 ):
+    if period_grain != "day":
+        raise ValueError("outlier_contribution_daily_grain_required")
+    if target_group == baseline_group:
+        raise ValueError("outlier_contribution_window_groups_conflict")
     normalized_removal_policy = removal_policy or "top_positive_contribution_periods"
     if normalized_removal_policy != "top_positive_contribution_periods":
         return make_evidence_envelope(
@@ -38,72 +43,120 @@ def outlier_contribution(
             limitations=("unsupported_removal_policy",),
             result_refs=result_refs,
         )
-    pairs = {}
+    daily_by_group = {target_group: [], baseline_group: []}
+    observed_periods = {target_group: set(), baseline_group: set()}
     for row in rows:
-        period = row.get(period_key)
-        group = row.get(group_key)
+        group = str(row.get(group_key) or "")
+        if group not in daily_by_group:
+            continue
+        raw_period = row.get(period_key)
+        period = str(raw_period).strip() if raw_period is not None else ""
+        if not period:
+            raise ValueError(f"outlier_contribution_period_missing:{group}")
+        if period in observed_periods[group]:
+            raise ValueError(f"outlier_contribution_period_duplicated:{group}:{period}")
         amount = _number(row.get(amount_key))
-        if period is None or group is None or amount is None:
-            continue
-        pairs.setdefault(str(period), {})[str(group)] = amount
+        if amount is None:
+            raise ValueError(f"outlier_contribution_amount_invalid:{group}:{period}")
+        observed_periods[group].add(period)
+        daily_by_group[group].append({"period": period, "amount": amount})
 
-    deltas = []
-    for period, groups in pairs.items():
-        if baseline_group not in groups or target_group not in groups:
-            continue
-        deltas.append(
-            {
-                "period": period,
-                "baseline_amount": groups[baseline_group],
-                "target_amount": groups[target_group],
-                "delta": groups[target_group] - groups[baseline_group],
-            }
+    target_daily = daily_by_group[target_group]
+    baseline_daily = daily_by_group[baseline_group]
+    sample_payload = {
+        "target_period_count": len(target_daily),
+        "baseline_period_count": len(baseline_daily),
+        "period_grain": period_grain,
+        "sensitivity_method": "target_daily_minus_baseline_daily_mean",
+        "claim_ceiling": "sensitivity_only",
+        "causal_claim_allowed": False,
+        "stable_pattern_claim_allowed": False,
+    }
+    if not target_daily or not baseline_daily:
+        limitation = (
+            "missing_target_daily_values"
+            if not target_daily
+            else "missing_baseline_daily_values"
         )
-    if not deltas:
         return make_evidence_envelope(
             "outlier_contribution",
             evidence_type="insufficient_evidence",
             strength="low",
             wording_limit="insufficient",
-            typed_payload={"paired_periods": 0},
-            limitations=("no_paired_periods",),
+            typed_payload=sample_payload,
+            limitations=(limitation,),
             result_refs=result_refs,
         )
 
-    total_delta = sum(item["delta"] for item in deltas)
-    center = median(item["delta"] for item in deltas)
-    mad = median(abs(item["delta"] - center) for item in deltas)
-    threshold = (6 * mad) if mad else 0
-    outliers = [
-        item
-        for item in deltas
-        if threshold and abs(item["delta"] - center) > threshold
+    baseline_daily_mean = fmean(item["amount"] for item in baseline_daily)
+    sensitivities = [
+        {
+            "period": item["period"],
+            "target_amount": item["amount"],
+            "baseline_daily_mean": baseline_daily_mean,
+            "sensitivity_delta": item["amount"] - baseline_daily_mean,
+        }
+        for item in target_daily
     ]
-    top_positive = sorted(deltas, key=lambda item: item["delta"], reverse=True)[:top_n]
-    top_positive_delta = sum(max(0.0, item["delta"]) for item in top_positive)
-    positive_delta = sum(max(0.0, item["delta"]) for item in deltas)
+    total_delta = sum(item["sensitivity_delta"] for item in sensitivities)
+    center = median(item["sensitivity_delta"] for item in sensitivities)
+    mad = median(abs(item["sensitivity_delta"] - center) for item in sensitivities)
+    if mad == 0:
+        outliers = [
+            item for item in sensitivities if item["sensitivity_delta"] != center
+        ]
+    else:
+        outliers = [
+            item
+            for item in sensitivities
+            if abs(item["sensitivity_delta"] - center) / mad > 6
+        ]
+    normalized_top_n = _positive_int(top_n, 5)
+    top_positive = sorted(
+        (item for item in sensitivities if item["sensitivity_delta"] > 0),
+        key=lambda item: item["sensitivity_delta"],
+        reverse=True,
+    )[:normalized_top_n]
+    top_negative = sorted(
+        (item for item in sensitivities if item["sensitivity_delta"] < 0),
+        key=lambda item: item["sensitivity_delta"],
+    )[:normalized_top_n]
+    top_positive_delta = sum(item["sensitivity_delta"] for item in top_positive)
+    positive_delta = sum(
+        item["sensitivity_delta"]
+        for item in sensitivities
+        if item["sensitivity_delta"] > 0
+    )
     top_positive_share = top_positive_delta / positive_delta if positive_delta else 0.0
-    removed_limit = _positive_int(max_removed_periods, top_n)
+    removed_limit = _positive_int(max_removed_periods, normalized_top_n)
     removed_positive = sorted(
-        (item for item in deltas if item["delta"] > 0),
-        key=lambda item: item["delta"],
+        (item for item in sensitivities if item["sensitivity_delta"] > 0),
+        key=lambda item: item["sensitivity_delta"],
         reverse=True,
     )[:removed_limit]
-    remaining_delta = total_delta - sum(item["delta"] for item in removed_positive)
+    remaining_delta = total_delta - sum(
+        item["sensitivity_delta"] for item in removed_positive
+    )
     direction_preserved = _same_direction(total_delta, remaining_delta)
     typed_payload = {
-        "paired_periods": len(deltas),
+        **sample_payload,
+        "baseline_daily_mean": baseline_daily_mean,
+        "baseline_window_actual": sum(item["amount"] for item in baseline_daily),
+        "target_window_actual": sum(item["amount"] for item in target_daily),
+        "target_window_expected_at_baseline_daily_mean": (
+            baseline_daily_mean * len(target_daily)
+        ),
         "total_delta": total_delta,
-        "median_delta": center,
-        "mad_delta": mad,
+        "median_sensitivity_delta": center,
+        "mad_sensitivity_delta": mad,
         "outliers": tuple(outliers),
         "top_positive_periods": tuple(top_positive),
+        "top_negative_periods": tuple(top_negative),
         "top_positive_share": top_positive_share,
         "concentrated_in_top_periods": top_positive_share >= 0.5,
-        "period_grain": period_grain,
         "removal_policy": normalized_removal_policy,
         "max_removed_periods": removed_limit,
-        "remaining_delta_after_top_positive": remaining_delta,
+        "remaining_target_window_delta_after_top_positive": remaining_delta,
         "removed_positive_periods": tuple(removed_positive),
         "direction_after_removal_evaluated": direction_after_removal,
         "business_readout": _business_readout(
@@ -120,7 +173,7 @@ def outlier_contribution(
         )
     return make_evidence_envelope(
         "outlier_contribution",
-        evidence_type="statistical_association",
+        evidence_type="accounting_contribution",
         strength="medium",
         wording_limit="contextual",
         typed_payload=typed_payload,
@@ -131,9 +184,10 @@ def outlier_contribution(
 
 def _number(value):
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if isfinite(parsed) else None
 
 
 def _positive_int(value, default):
@@ -151,15 +205,21 @@ def _same_direction(before, after):
 
 
 def _business_readout(remaining_delta, direction_preserved, *, evaluate_direction):
-    direction = "仍为上升" if remaining_delta > 0 else "转为下降" if remaining_delta < 0 else "接近持平"
+    direction = (
+        "仍为上升"
+        if remaining_delta > 0
+        else "转为下降"
+        if remaining_delta < 0
+        else "接近持平"
+    )
     if not evaluate_direction:
-        return f"移除最大正向贡献周期后，剩余变化值为 {remaining_delta:.1f}，本轮未评估方向是否保持。"
+        return f"以基线窗口日均为参照，移除目标窗口最大正向贡献日后，剩余敏感性变化值为 {remaining_delta:.1f}，本轮未评估方向是否保持。"
     if direction_preserved:
-        return f"移除最大正向贡献周期后，剩余变化方向{direction}。"
-    return f"移除最大正向贡献周期后，剩余变化方向发生变化，当前{direction}。"
+        return f"以基线窗口日均为参照，移除目标窗口最大正向贡献日后，剩余变化方向{direction}。"
+    return f"以基线窗口日均为参照，移除目标窗口最大正向贡献日后，剩余变化方向发生变化，当前{direction}。"
 
 
 def _claim_boundary(evaluate_direction):
     if not evaluate_direction:
-        return "这是异常敏感性复算，本轮只输出移除高贡献周期后的剩余变化值，不评价方向是否保持，也不能证明异常是原因。"
-    return "这是异常敏感性复算，只能说明移除高贡献周期后的方向变化，不能证明异常是原因。"
+        return "这是以基线窗口日均为参照的目标窗口异常敏感性复算，本轮只输出移除高贡献日后的剩余变化值，不评价方向是否保持，也不能证明异常是原因。"
+    return "这是以基线窗口日均为参照的目标窗口异常敏感性复算，只能说明移除高贡献日后的方向变化，不能证明异常是原因。"

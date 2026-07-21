@@ -7,8 +7,10 @@ from typing import Any, Mapping
 from bi_agent.runtime.analysis_contracts import (
     CapabilityExecutionPlan,
     CapabilityInputSlot,
+    CompletenessFailureClass,
     CompletenessReport,
     QueryResultEnvelope,
+    completeness_report_failure_classes,
 )
 from bi_agent.runtime.canonical_values import canonical_thaw
 from bi_agent.runtime.authoritative_query_chain import (
@@ -17,6 +19,7 @@ from bi_agent.runtime.authoritative_query_chain import (
     validate_capability_plan_semantics,
 )
 from bi_agent.runtime.evidence_authority import (
+    CAPABILITY_BINDING_PAYLOAD_FIELDS,
     EvidenceIntegrityError,
     RowsPayloadLoader,
     RuntimeEvidenceAuthority,
@@ -43,12 +46,18 @@ from bi_agent.runtime.dataset_catalog import (
 from bi_agent.runtime.degradation_policy import (
     KNOWN_DEGRADATION_ACTIONS,
     NON_BLOCKING_DEGRADATION_ACTIONS,
-    degradation_action_is_non_blocking,
     degraded_binding_projection_is_authorized,
+    ready_binding_projection_is_authorized,
 )
 
 
 _BOUND_CONSTRUCTION_TOKEN = object()
+_RECONCILIATION_ASSERTION_NAMES = frozenset(
+    {
+        "dimension_total_reconciliation",
+        "overall_channel_reconciliation",
+    }
+)
 
 
 @dataclass(frozen=True, init=False)
@@ -61,6 +70,7 @@ class BoundCapabilityInput:
     status: str
     rows_by_slot: Mapping[str, tuple[Mapping[str, Any], ...]]
     reasons: tuple[str, ...]
+    issues: tuple[Mapping[str, Any], ...]
     query_contract_refs: tuple[str, ...]
     result_refs: tuple[str, ...]
     query_execution_record_refs: tuple[str, ...]
@@ -103,9 +113,15 @@ class BoundCapabilityInput:
 class _SlotMatch:
     result: QueryResultEnvelope
     report: CompletenessReport
-    validation_dependencies: tuple[
-        tuple[QueryResultEnvelope, CompletenessReport], ...
-    ]
+    validation_dependencies: tuple[tuple[QueryResultEnvelope, CompletenessReport], ...]
+
+
+@dataclass(frozen=True)
+class _SlotFailure:
+    code: str
+    failure_class: str
+    input_state: str
+    diagnostic: str
 
 
 def capability_plan_has_executable_query_contracts(
@@ -130,14 +146,9 @@ def capability_plan_has_executable_query_contracts(
         slot_readiness.append(
             len(primary_refs) == 1
             and primary_refs[0] in available_query_contract_refs
-            and all(
-                ref in available_query_contract_refs
-                for ref in validation_refs
-            )
+            and all(ref in available_query_contract_refs for ref in validation_refs)
         )
-    required_mode = str(
-        plan.minimum_readiness.get("required_slots") or ""
-    )
+    required_mode = str(plan.minimum_readiness.get("required_slots") or "")
     if required_mode == "all":
         return all(slot_readiness)
     if required_mode == "at_least_one":
@@ -161,60 +172,55 @@ def bind_capability_inputs(
         evidence_resolver = evidence_resolver or evidence_authority
         rows_loader = rows_loader or evidence_authority.rows_loader
         evidence_writer = evidence_writer or evidence_authority._runtime_writer()
-    if (
-        evidence_resolver is None
-        or rows_loader is None
-        or evidence_writer is None
-    ):
+    if evidence_resolver is None or rows_loader is None or evidence_writer is None:
         return _blocked_bound(plan, "runtime_evidence_authority_missing")
     registry_error = runtime_registry_integrity_error(runtime_registry)
     if registry_error:
         return _blocked_bound(plan, registry_error)
     completeness_records: Mapping[str, Any] = {}
     authority_records: Mapping[str, Mapping[str, Any]] = {}
-    if evidence_resolver is not None and rows_loader is not None and evidence_writer is not None:
+    if (
+        evidence_resolver is not None
+        and rows_loader is not None
+        and evidence_writer is not None
+    ):
         registry = runtime_registry
         if registry is None:
             return _blocked_bound(plan, "runtime_contract_registry_missing")
         try:
             validate_capability_plan_semantics(plan, registry)
-        except (AuthoritativeQueryChainError, KeyError, TypeError, ValueError) as exc:
+        except AuthoritativeQueryChainError as exc:
             return _blocked_bound(
                 plan,
                 f"capability_contract_resolution_failed:{exc}",
             )
-        try:
-            (
-                results,
-                reports,
-                completeness_records,
-                authority_records,
-            ) = _resolve_authoritative_inputs(
-                plan,
-                results,
-                reports,
-                evidence_resolver,
-                rows_loader,
-                evidence_writer,
-                release_resolver,
-            )
-        except Exception as exc:
-            return _blocked_bound(
-                plan,
-                f"runtime_evidence_resolution_failed:{exc}",
-            )
+        (
+            results,
+            reports,
+            completeness_records,
+            authority_records,
+        ) = _resolve_authoritative_inputs(
+            plan,
+            results,
+            reports,
+            evidence_resolver,
+            rows_loader,
+            evidence_writer,
+            release_resolver,
+        )
     rows_by_slot: dict[str, tuple[Mapping[str, Any], ...]] = {}
     plan_schema_reasons = _plan_schema_reasons(plan)
     reasons: list[str] = list(plan_schema_reasons)
+    issues: list[Mapping[str, Any]] = [
+        _plan_binding_issue(reason) for reason in plan_schema_reasons
+    ]
     primary_results: list[QueryResultEnvelope] = []
     primary_reports: list[CompletenessReport] = []
     validation_results: list[QueryResultEnvelope] = []
     validation_reports: list[CompletenessReport] = []
     required_match_failed = bool(plan_schema_reasons)
     required_matches = 0
-    required_mode = str(
-        plan.minimum_readiness.get("required_slots") or ""
-    )
+    required_mode = str(plan.minimum_readiness.get("required_slots") or "")
     seen_slot_ids: set[str] = set()
     seen_primary_refs: set[str] = set()
     plan_completeness = tuple(
@@ -230,65 +236,87 @@ def bind_capability_inputs(
         for slot in slots:
             if slot.slot_id in seen_slot_ids:
                 required_match_failed = required_match_failed or slot.required
-                reasons.append(f"duplicate_slot_id:{slot.slot_id}")
+                diagnostic = f"duplicate_slot_id:{slot.slot_id}"
+                reasons.append(diagnostic)
+                issues.append(_plan_binding_issue(diagnostic))
                 continue
             seen_slot_ids.add(slot.slot_id)
             if slot.required != expected_required:
                 required_match_failed = True
-                reasons.append(f"slot_requiredness_mismatch:{slot.slot_id}")
+                diagnostic = f"slot_requiredness_mismatch:{slot.slot_id}"
+                reasons.append(diagnostic)
+                issues.append(_plan_binding_issue(diagnostic))
                 continue
-            if plan_completeness and tuple(slot.accepted_completeness) != plan_completeness:
+            if (
+                plan_completeness
+                and tuple(slot.accepted_completeness) != plan_completeness
+            ):
                 required_match_failed = required_match_failed or slot.required
-                reasons.append(f"slot_readiness_contract_mismatch:{slot.slot_id}")
+                diagnostic = f"slot_readiness_contract_mismatch:{slot.slot_id}"
+                reasons.append(diagnostic)
+                issues.append(_plan_binding_issue(diagnostic))
                 continue
             duplicate_primary = next(
-                (
-                    ref
-                    for ref in slot.query_contract_refs
-                    if ref in seen_primary_refs
-                ),
+                (ref for ref in slot.query_contract_refs if ref in seen_primary_refs),
                 "",
             )
             if duplicate_primary:
                 required_match_failed = required_match_failed or slot.required
-                reasons.append(f"primary_query_ref_reused:{slot.slot_id}:{duplicate_primary}")
+                diagnostic = (
+                    f"primary_query_ref_reused:{slot.slot_id}:{duplicate_primary}"
+                )
+                reasons.append(diagnostic)
+                issues.append(_plan_binding_issue(diagnostic))
                 continue
-            match, reason = _match_exact_slot_with_validation_dependencies(
+            match, slot_failure = _match_exact_slot_with_validation_dependencies(
                 slot,
                 results=results,
                 reports=reports,
             )
             if match is None:
-                if slot.required:
-                    if (
-                        required_mode != "at_least_one"
-                        or reason.startswith(
-                            "primary_query_ref_cardinality_invalid:"
-                        )
-                    ):
-                        required_match_failed = True
-                elif _optional_failure_blocks(plan, reason):
-                    required_match_failed = True
-                reasons.append(
-                    reason
-                    or (
+                failure = slot_failure or _SlotFailure(
+                    code="slot_input_missing",
+                    failure_class="availability",
+                    input_state="missing",
+                    diagnostic=(
                         f"missing_required_slot:{slot.slot_id}"
                         if slot.required
                         else f"missing_optional_slot:{slot.slot_id}"
-                    )
+                    ),
                 )
+                issue = _slot_binding_issue(slot, failure)
+                issues.append(issue)
+                if slot.required:
+                    if (
+                        required_mode != "at_least_one"
+                        or failure.failure_class == "integrity"
+                    ):
+                        required_match_failed = True
+                elif _optional_failure_blocks(plan, issue):
+                    required_match_failed = True
+                reasons.append(failure.diagnostic)
                 continue
             if slot.required:
                 required_matches += 1
             seen_primary_refs.add(match.result.query_contract_ref)
             if match.report.completeness_status != "complete":
-                reasons.append(
+                diagnostic = (
                     "accepted_incomplete_input:"
                     f"{slot.slot_id}:{match.report.completeness_status}"
                 )
-            rows_by_slot[slot.slot_id] = tuple(
-                dict(row) for row in match.result.rows
-            )
+                reasons.append(diagnostic)
+                failure = _report_slot_failure(
+                    match.report,
+                    code="accepted_incomplete_input",
+                    diagnostic=diagnostic,
+                )
+                issues.append(
+                    _slot_binding_issue(
+                        slot,
+                        failure,
+                    )
+                )
+            rows_by_slot[slot.slot_id] = tuple(dict(row) for row in match.result.rows)
             primary_results.append(match.result)
             primary_reports.append(match.report)
             for validation_result, validation_report in match.validation_dependencies:
@@ -307,6 +335,7 @@ def bind_capability_inputs(
     )
     if collision_reasons:
         reasons.extend(collision_reasons)
+        issues.extend(_plan_binding_issue(reason) for reason in collision_reasons)
         status = "blocked"
     primary_results, primary_reports = _unique_ordered_query_inputs(
         primary_results,
@@ -325,7 +354,10 @@ def bind_capability_inputs(
         "status": status,
         "rows_by_slot": rows_by_slot,
         "reasons": tuple(reasons),
-        "query_contract_refs": _dedupe(item.query_contract_ref for item in primary_results),
+        "issues": tuple(issues),
+        "query_contract_refs": _dedupe(
+            item.query_contract_ref for item in primary_results
+        ),
         "result_refs": _dedupe(item.result_ref for item in primary_results),
         "query_execution_record_refs": _authority_record_values(
             primary_results, authority_records, "query", "record_ref"
@@ -344,7 +376,9 @@ def bind_capability_inputs(
             evidence_resolver,
             primary_results,
         ),
-        "completeness_report_refs": _dedupe(item.report_ref for item in primary_reports),
+        "completeness_report_refs": _dedupe(
+            item.report_ref for item in primary_reports
+        ),
         "completeness_record_refs": _completeness_record_values(
             primary_reports,
             completeness_records,
@@ -361,16 +395,16 @@ def bind_capability_inputs(
         "validation_query_contract_refs": _dedupe(
             item.query_contract_ref for item in validation_results
         ),
-        "validation_result_refs": _dedupe(item.result_ref for item in validation_results),
+        "validation_result_refs": _dedupe(
+            item.result_ref for item in validation_results
+        ),
         "validation_query_execution_record_refs": _authority_record_values(
             validation_results, authority_records, "query", "record_ref"
         ),
         "validation_query_execution_record_digests": _authority_record_values(
             validation_results, authority_records, "query", "record_digest"
         ),
-        "validation_rows_refs": _dedupe(
-            item.rows_ref for item in validation_results
-        ),
+        "validation_rows_refs": _dedupe(item.rows_ref for item in validation_results),
         "validation_rows_metadata_record_refs": _authority_record_values(
             validation_results, authority_records, "rows", "record_ref"
         ),
@@ -407,23 +441,22 @@ def bind_capability_inputs(
             for report in (*primary_reports, *validation_reports)
         ),
     }
-    if status == "blocked":
+    if status == "degraded" and not degraded_binding_projection_is_authorized(
+        _capability_plan_manifest(plan),
+        values,
+    ):
+        values["status"] = "blocked"
+    if values["status"] == "blocked":
         return _create_bound_capability_input(plan, values)
-    try:
-        return _create_bound_capability_input(
-            plan,
-            values,
-            evidence_writer=evidence_writer,
-            evidence_resolver=evidence_resolver,
-            rows_loader=rows_loader,
-            runtime_registry=runtime_registry,
-            release_resolver=release_resolver,
-        )
-    except Exception as exc:
-        return _blocked_bound(
-            plan,
-            f"runtime_evidence_writer_record_invalid:{exc}",
-        )
+    return _create_bound_capability_input(
+        plan,
+        values,
+        evidence_writer=evidence_writer,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        runtime_registry=runtime_registry,
+        release_resolver=release_resolver,
+    )
 
 
 def _resolve_authoritative_inputs(
@@ -479,13 +512,10 @@ def _resolve_authoritative_inputs(
         rows = rows_loader.load_rows(rows_record.storage_ref)
         if rows is None:
             raise EvidenceIntegrityError(f"rows_payload_missing:{query_ref}")
-        if (
-            len(rows) != rows_record.row_count
-            or not canonical_result_rows_hash_matches(
-                rows,
-                rows_record.unique_key_fields,
-                rows_record.rows_content_hash,
-            )
+        if len(rows) != rows_record.row_count or not canonical_result_rows_hash_matches(
+            rows,
+            rows_record.unique_key_fields,
+            rows_record.rows_content_hash,
         ):
             raise EvidenceIntegrityError(f"rows_payload_invalid:{query_ref}")
         result = QueryResultEnvelope(
@@ -495,12 +525,13 @@ def _resolve_authoritative_inputs(
         if not record.source_snapshot_refs:
             raise EvidenceIntegrityError(f"snapshot_refs_missing:{query_ref}")
         snapshot_records = tuple(
-            resolver.resolve_snapshot(ref)
-            for ref in record.source_snapshot_refs
+            resolver.resolve_snapshot(ref) for ref in record.source_snapshot_refs
         )
         if any(item is None for item in snapshot_records):
             raise EvidenceIntegrityError(f"snapshot_record_missing:{query_ref}")
-        if any(runtime_evidence_record_integrity_errors(item) for item in snapshot_records):
+        if any(
+            runtime_evidence_record_integrity_errors(item) for item in snapshot_records
+        ):
             raise EvidenceIntegrityError(f"snapshot_record_integrity:{query_ref}")
         if (
             tuple(item.record_ref for item in snapshot_records)
@@ -559,8 +590,7 @@ def _resolve_authoritative_inputs(
     records = tuple(writer.record_completeness(report) for report in final_reports)
     if any(
         runtime_evidence_record_integrity_errors(record)
-        or canonical_digest(record.report_payload)
-        != canonical_digest(report.to_dict())
+        or canonical_digest(record.report_payload) != canonical_digest(report.to_dict())
         for report, record in zip(final_reports, records)
     ):
         raise EvidenceIntegrityError("runtime_evidence_writer_record_invalid")
@@ -568,10 +598,7 @@ def _resolve_authoritative_inputs(
         dict(zip(refs, results)),
         dict(zip(refs, final_reports)),
         {report.report_ref: record for report, record in zip(final_reports, records)},
-        {
-            item[0]: {"query": item[4], "rows": item[5]}
-            for item in selected
-        },
+        {item[0]: {"query": item[4], "rows": item[5]} for item in selected},
     )
 
 
@@ -589,9 +616,7 @@ def _rows_hashes(
         seen_rows_refs.add(result.rows_ref)
         record = resolver.resolve_rows(result.rows_ref)
         if record is None or runtime_evidence_record_integrity_errors(record):
-            raise EvidenceIntegrityError(
-                f"rows_record_missing:{result.rows_ref}"
-            )
+            raise EvidenceIntegrityError(f"rows_record_missing:{result.rows_ref}")
         hashes.append(record.rows_content_hash)
     return tuple(hashes)
 
@@ -632,25 +657,55 @@ def _match_exact_slot_with_validation_dependencies(
     *,
     results: Mapping[str, QueryResultEnvelope],
     reports: Mapping[str, CompletenessReport],
-) -> tuple[_SlotMatch | None, str]:
+) -> tuple[_SlotMatch | None, _SlotFailure | None]:
     if not slot.query_contract_refs:
-        return None, ""
+        return None, None
     if len(slot.query_contract_refs) > 1:
-        return None, f"primary_query_ref_cardinality_invalid:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="primary_query_ref_cardinality_invalid",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_query_ref_cardinality_invalid:{slot.slot_id}",
+        )
     query_ref = slot.query_contract_refs[0]
     result = results.get(query_ref)
     report = reports.get(query_ref)
     if result is None or report is None:
-        return None, ""
+        return None, _SlotFailure(
+            code="primary_authority_record_missing",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_authority_record_missing:{slot.slot_id}",
+        )
     if result.query_contract_ref != query_ref or report.query_contract_ref != query_ref:
-        return None, f"primary_provenance_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="primary_provenance_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_provenance_mismatch:{slot.slot_id}",
+        )
     if result.execution_status != "succeeded":
+        if result.execution_status not in {"blocked", "failed"}:
+            raise EvidenceIntegrityError("query_execution_status_invalid")
         failure_reason = str(
             result.failure_reason or result.execution_status or "unknown"
         )
         return (
             None,
-            f"query_execution_failed:{slot.slot_id}:{failure_reason}",
+            _SlotFailure(
+                code=(
+                    "query_execution_blocked"
+                    if result.execution_status == "blocked"
+                    else "query_execution_failed"
+                ),
+                failure_class=(
+                    "integrity" if result.execution_status == "blocked" else "technical"
+                ),
+                input_state=(
+                    "invalid" if result.execution_status == "blocked" else "incomplete"
+                ),
+                diagnostic=(f"query_execution_failed:{slot.slot_id}:{failure_reason}"),
+            ),
         )
     if (
         report.result_ref != result.result_ref
@@ -659,20 +714,48 @@ def _match_exact_slot_with_validation_dependencies(
         or not result.completeness_report_ref
         or not result.source_snapshot_refs
     ):
-        return None, f"primary_provenance_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="primary_provenance_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_provenance_mismatch:{slot.slot_id}",
+        )
     if report.completeness_status not in slot.accepted_completeness:
-        return None, f"completeness_not_accepted:{slot.slot_id}"
+        return None, _report_slot_failure(
+            report,
+            code="completeness_not_accepted",
+            diagnostic=f"completeness_not_accepted:{slot.slot_id}",
+        )
     if not _primary_report_accepted(report):
-        return None, f"primary_report_not_ready:{slot.slot_id}"
+        return None, _report_slot_failure(
+            report,
+            code="primary_report_not_ready",
+            diagnostic=f"primary_report_not_ready:{slot.slot_id}",
+        )
     if not _report_snapshot_matches(report, result):
-        return None, f"primary_snapshot_provenance_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="primary_snapshot_provenance_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_snapshot_provenance_mismatch:{slot.slot_id}",
+        )
     if result.row_count <= 0 or not result.rows:
-        return None, f"empty_primary_result:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="empty_primary_result",
+            failure_class="availability",
+            input_state="incomplete",
+            diagnostic=f"empty_primary_result:{slot.slot_id}",
+        )
     if (
         result.row_count != len(result.rows)
         or report.coverage_summary.get("row_count") != result.row_count
     ):
-        return None, f"primary_row_count_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="primary_row_count_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"primary_row_count_mismatch:{slot.slot_id}",
+        )
     missing_fields = tuple(
         field
         for field in slot.required_fields
@@ -681,7 +764,14 @@ def _match_exact_slot_with_validation_dependencies(
     if missing_fields:
         return (
             None,
-            f"required_fields_missing:{slot.slot_id}:{','.join(missing_fields)}",
+            _SlotFailure(
+                code="required_fields_missing",
+                failure_class="integrity",
+                input_state="invalid",
+                diagnostic=(
+                    f"required_fields_missing:{slot.slot_id}:{','.join(missing_fields)}"
+                ),
+            ),
         )
     missing_windows = tuple(
         window_id
@@ -691,19 +781,28 @@ def _match_exact_slot_with_validation_dependencies(
     if missing_windows:
         return (
             None,
-            f"required_windows_missing:{slot.slot_id}:{','.join(missing_windows)}",
+            _SlotFailure(
+                code="required_windows_missing",
+                failure_class="availability",
+                input_state="incomplete",
+                diagnostic=(
+                    f"required_windows_missing:{slot.slot_id}:"
+                    f"{','.join(missing_windows)}"
+                ),
+            ),
         )
-    coverage_required = tuple(
-        report.coverage_summary.get("required_windows") or ()
-    )
-    coverage_observed = tuple(
-        report.coverage_summary.get("observed_windows") or ()
-    )
+    coverage_required = tuple(report.coverage_summary.get("required_windows") or ())
+    coverage_observed = tuple(report.coverage_summary.get("observed_windows") or ())
     if any(
         window_id not in coverage_required or window_id not in coverage_observed
         for window_id in slot.required_window_ids
     ):
-        return None, f"required_window_provenance_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="required_window_provenance_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"required_window_provenance_mismatch:{slot.slot_id}",
+        )
     row_window_ids = {
         str(row["window_id"])
         for row in result.rows
@@ -712,22 +811,41 @@ def _match_exact_slot_with_validation_dependencies(
     if row_window_ids and any(
         window_id not in row_window_ids for window_id in slot.required_window_ids
     ):
-        return None, f"required_window_rows_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="required_window_rows_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"required_window_rows_mismatch:{slot.slot_id}",
+        )
 
     validation_dependencies = []
     for validation_ref in slot.validation_query_contract_refs:
         validation_result = results.get(validation_ref)
         if validation_result is None:
-            return None, f"missing_validation_query:{slot.slot_id}"
+            return None, _SlotFailure(
+                code="missing_validation_query",
+                failure_class="integrity",
+                input_state="invalid",
+                diagnostic=f"missing_validation_query:{slot.slot_id}",
+            )
         validation_report = reports.get(validation_ref)
         if validation_report is None:
-            return None, f"missing_validation_report:{slot.slot_id}"
+            return None, _SlotFailure(
+                code="missing_validation_report",
+                failure_class="integrity",
+                input_state="invalid",
+                diagnostic=f"missing_validation_report:{slot.slot_id}",
+            )
         if not _validation_dependency_ready(
             validation_ref,
             validation_result,
             validation_report,
         ):
-            return None, f"validation_report_not_ready:{slot.slot_id}"
+            return None, _report_slot_failure(
+                validation_report,
+                code="validation_report_not_ready",
+                diagnostic=f"validation_report_not_ready:{slot.slot_id}",
+            )
         validation_dependencies.append((validation_result, validation_report))
 
     if validation_dependencies and not _primary_reconciliation_provenance_matches(
@@ -736,7 +854,12 @@ def _match_exact_slot_with_validation_dependencies(
         report,
         tuple(validation_dependencies),
     ):
-        return None, f"validation_provenance_mismatch:{slot.slot_id}"
+        return None, _SlotFailure(
+            code="validation_provenance_mismatch",
+            failure_class="integrity",
+            input_state="invalid",
+            diagnostic=f"validation_provenance_mismatch:{slot.slot_id}",
+        )
 
     return (
         _SlotMatch(
@@ -744,7 +867,58 @@ def _match_exact_slot_with_validation_dependencies(
             report=report,
             validation_dependencies=tuple(validation_dependencies),
         ),
-        "",
+        None,
+    )
+
+
+def _report_slot_failure(
+    report: CompletenessReport,
+    *,
+    code: str,
+    diagnostic: str,
+) -> _SlotFailure:
+    failure_classes = set(completeness_report_failure_classes(report))
+    integrity_classes = {
+        CompletenessFailureClass.AUTHORITY_INTEGRITY.value,
+        CompletenessFailureClass.SCHEMA_INTEGRITY.value,
+        CompletenessFailureClass.RESULT_CONSISTENCY.value,
+        CompletenessFailureClass.RECONCILIATION_PENDING.value,
+    }
+    technical_classes = {
+        CompletenessFailureClass.EXECUTION_TECHNICAL.value,
+        CompletenessFailureClass.PROVIDER_TRUNCATION.value,
+    }
+    boundary_classes = {
+        CompletenessFailureClass.RECONCILIATION.value,
+        CompletenessFailureClass.ANALYTICAL_QUALITY.value,
+    }
+    availability_classes = {
+        CompletenessFailureClass.EMPTY_RESULT.value,
+        CompletenessFailureClass.AVAILABILITY.value,
+        CompletenessFailureClass.FRESHNESS.value,
+    }
+    known_classes = (
+        integrity_classes | technical_classes | boundary_classes | availability_classes
+    )
+    if not failure_classes or failure_classes - known_classes:
+        raise EvidenceIntegrityError("completeness_report_failure_class_invalid")
+    if failure_classes & integrity_classes:
+        failure_class = "integrity"
+        input_state = "invalid"
+    elif failure_classes & technical_classes:
+        failure_class = "technical"
+        input_state = "incomplete"
+    elif failure_classes & boundary_classes:
+        failure_class = "boundary"
+        input_state = "incomplete"
+    else:
+        failure_class = "availability"
+        input_state = "incomplete"
+    return _SlotFailure(
+        code=code,
+        failure_class=failure_class,
+        input_state=input_state,
+        diagnostic=diagnostic,
     )
 
 
@@ -781,7 +955,7 @@ def _primary_reconciliation_provenance_matches(
     assertions = tuple(
         assertion
         for assertion in report.assertion_results
-        if assertion.get("assertion") == "dimension_total_reconciliation"
+        if assertion.get("assertion") in _RECONCILIATION_ASSERTION_NAMES
         and assertion.get("passed") is True
     )
     if len(assertions) != 1:
@@ -841,24 +1015,36 @@ def _report_assertions_ready(report: CompletenessReport) -> bool:
     return bool(
         report.assertion_results
         and not report.failure_reasons
-        and all(assertion.get("passed") is True for assertion in report.assertion_results)
+        and all(
+            assertion.get("passed") is True for assertion in report.assertion_results
+        )
     )
 
 
 def _primary_report_accepted(report: CompletenessReport) -> bool:
     if report.completeness_status == "complete":
-        return report.analysis_readiness == "ready" and _report_assertions_ready(
-            report
-        )
+        return report.analysis_readiness == "ready" and _report_assertions_ready(report)
     execution_assertions = tuple(
         assertion
         for assertion in report.assertion_results
         if assertion.get("assertion") == "execution_succeeded"
     )
+    failure_classes = set(completeness_report_failure_classes(report))
+    boundary_classes = {
+        CompletenessFailureClass.ANALYTICAL_QUALITY.value,
+        CompletenessFailureClass.RECONCILIATION.value,
+    }
+    expected_readiness = (
+        "blocked"
+        if CompletenessFailureClass.RECONCILIATION.value in failure_classes
+        else "degraded"
+    )
     return bool(
-        report.analysis_readiness == "degraded"
+        report.analysis_readiness == expected_readiness
         and len(execution_assertions) == 1
         and execution_assertions[0].get("passed") is True
+        and failure_classes
+        and failure_classes <= boundary_classes
     )
 
 
@@ -894,17 +1080,42 @@ def _dedupe(values: Any) -> tuple[str, ...]:
 
 def _optional_failure_blocks(
     plan: CapabilityExecutionPlan,
-    reason: str,
+    issue: Mapping[str, Any],
 ) -> bool:
-    if reason.startswith("primary_query_ref_cardinality_invalid:"):
+    if issue.get("failure_class") == "integrity":
         return True
     policy_key = (
         "missing_optional_input"
-        if not reason or reason.startswith("missing_")
+        if issue.get("input_state") == "missing"
         else "incomplete_input"
     )
     action = str(plan.degradation_policy.get(policy_key) or "")
     return action not in NON_BLOCKING_DEGRADATION_ACTIONS
+
+
+def _slot_binding_issue(
+    slot: CapabilityInputSlot,
+    failure: _SlotFailure,
+) -> Mapping[str, Any]:
+    return {
+        "code": failure.code,
+        "failure_class": failure.failure_class,
+        "input_state": failure.input_state,
+        "slot_id": slot.slot_id,
+        "slot_role": "required" if slot.required else "optional",
+        "diagnostic": failure.diagnostic,
+    }
+
+
+def _plan_binding_issue(diagnostic: str) -> Mapping[str, Any]:
+    return {
+        "code": "binding_contract_invalid",
+        "failure_class": "integrity",
+        "input_state": "invalid",
+        "slot_id": "plan",
+        "slot_role": "plan",
+        "diagnostic": diagnostic,
+    }
 
 
 def _plan_schema_reasons(plan: CapabilityExecutionPlan) -> tuple[str, ...]:
@@ -944,8 +1155,12 @@ def _reference_collision_reasons(
         "primary_query_ref": tuple(
             (item.query_contract_ref, item) for item in primary_results
         ),
-        "primary_result_ref": tuple((item.result_ref, item) for item in primary_results),
-        "primary_report_ref": tuple((item.report_ref, item) for item in primary_reports),
+        "primary_result_ref": tuple(
+            (item.result_ref, item) for item in primary_results
+        ),
+        "primary_report_ref": tuple(
+            (item.report_ref, item) for item in primary_reports
+        ),
         "validation_query_ref": tuple(
             (item.query_contract_ref, item) for item in validation_results
         ),
@@ -1003,10 +1218,7 @@ def _create_bound_capability_input(
     runtime_registry: RuntimeContractRegistry | None = None,
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> BoundCapabilityInput:
-    frozen_values = {
-        key: _deep_freeze(value)
-        for key, value in values.items()
-    }
+    frozen_values = {key: _deep_freeze(value) for key, value in values.items()}
     manifest_payload = {
         "plan": _capability_plan_manifest(plan),
         "binding": _canonical_value(frozen_values),
@@ -1031,7 +1243,9 @@ def _create_bound_capability_input(
         digest = authority_record.binding_digest
         binding_ref = authority_record.record_ref
         if evidence_resolver is None or rows_loader is None or runtime_registry is None:
-            raise EvidenceIntegrityError("authoritative_query_chain_dependencies_missing")
+            raise EvidenceIntegrityError(
+                "authoritative_query_chain_dependencies_missing"
+            )
         validate_authoritative_query_chain(
             authority_record,
             resolver=evidence_resolver,
@@ -1069,10 +1283,7 @@ def validate_bound_capability_input(
     if not isinstance(binding, Mapping) or not isinstance(plan_manifest, Mapping):
         return "binding_manifest_schema_invalid"
     current = _canonical_value(
-        {
-            field_name: getattr(bound, field_name)
-            for field_name in _BOUND_VALUE_FIELDS
-        }
+        {field_name: getattr(bound, field_name) for field_name in _BOUND_VALUE_FIELDS}
     )
     if current != binding:
         return "binding_manifest_payload_mismatch"
@@ -1083,12 +1294,9 @@ def validate_bound_capability_input(
     if bound.binding_manifest_ref:
         if resolver is None:
             return "runtime_evidence_resolver_missing"
-        try:
-            authority_record = resolver.resolve_capability_binding(
-                bound.binding_manifest_ref
-            )
-        except Exception:
-            return "runtime_evidence_resolution_failed"
+        authority_record = resolver.resolve_capability_binding(
+            bound.binding_manifest_ref
+        )
         if authority_record is None:
             return "capability_binding_record_missing"
         if runtime_evidence_record_integrity_errors(authority_record):
@@ -1113,8 +1321,7 @@ def capability_binding_claim_ready(binding: Any) -> bool:
 
     status = str(getattr(binding, "status", "") or "")
     completeness = tuple(
-        str(item)
-        for item in getattr(binding, "input_completeness_statuses", ()) or ()
+        str(item) for item in getattr(binding, "input_completeness_statuses", ()) or ()
     )
     if not completeness or any(item != "complete" for item in completeness):
         return False
@@ -1132,68 +1339,17 @@ def capability_binding_claim_ready(binding: Any) -> bool:
     if not isinstance(plan, Mapping) or not isinstance(payload, Mapping):
         return False
 
-    required_slots = tuple(plan.get("required_input_slots") or ())
-    optional_slots = tuple(plan.get("optional_input_slots") or ())
-    if not required_slots or any(not isinstance(item, Mapping) for item in required_slots):
-        return False
-    if any(not isinstance(item, Mapping) for item in optional_slots):
-        return False
-
-    available_query_refs = {
-        str(ref)
-        for ref in getattr(binding, "query_contract_refs", ()) or ()
-        if ref
+    projection = {
+        **dict(payload),
+        "status": status,
+        "query_contract_refs": tuple(getattr(binding, "query_contract_refs", ()) or ()),
+        "validation_query_contract_refs": tuple(
+            getattr(binding, "validation_query_contract_refs", ()) or ()
+        ),
     }
-    available_validation_refs = {
-        str(ref)
-        for ref in getattr(binding, "validation_query_contract_refs", ()) or ()
-        if ref
-    }
-
-    def slot_ready(slot: Mapping[str, Any]) -> bool:
-        query_refs = tuple(
-            str(ref) for ref in slot.get("query_contract_refs") or () if ref
-        )
-        validation_refs = tuple(
-            str(ref)
-            for ref in slot.get("validation_query_contract_refs") or ()
-            if ref
-        )
-        return bool(
-            len(query_refs) == 1
-            and query_refs[0] in available_query_refs
-            and all(ref in available_validation_refs for ref in validation_refs)
-        )
-
-    required_mode = str(
-        (plan.get("minimum_readiness") or {}).get("required_slots") or ""
-    )
-    required_readiness = tuple(slot_ready(slot) for slot in required_slots)
-    if required_mode == "all":
-        minimum_ready = all(required_readiness)
-    elif required_mode == "at_least_one":
-        minimum_ready = any(required_readiness)
-    else:
-        minimum_ready = False
-    if not minimum_ready:
-        return False
-
     if status == "ready":
-        return True
-
-    return degraded_binding_projection_is_authorized(
-        plan,
-        {
-            **dict(payload),
-            "status": status,
-            "query_contract_refs": tuple(
-                getattr(binding, "query_contract_refs", ()) or ()
-            ),
-            "validation_query_contract_refs": tuple(
-                getattr(binding, "validation_query_contract_refs", ()) or ()
-            ),
-        },
-    )
+        return ready_binding_projection_is_authorized(plan, projection)
+    return degraded_binding_projection_is_authorized(plan, projection)
 
 
 def _blocked_bound(
@@ -1211,6 +1367,7 @@ def _blocked_bound(
             "status": "blocked",
             "rows_by_slot": {},
             "reasons": (reason,),
+            "issues": (_plan_binding_issue(reason),),
             "query_contract_refs": (),
             "result_refs": (),
             "query_execution_record_refs": (),
@@ -1245,46 +1402,7 @@ def _blocked_bound(
     )
 
 
-_BOUND_VALUE_FIELDS = (
-    "capability_id",
-    "capability_contract_ref",
-    "capability_contract_version",
-    "capability_contract_signature",
-    "analysis_contract_ref",
-    "status",
-    "rows_by_slot",
-    "reasons",
-    "query_contract_refs",
-    "result_refs",
-    "query_execution_record_refs",
-    "query_execution_record_digests",
-    "rows_refs",
-    "rows_metadata_record_refs",
-    "rows_metadata_record_digests",
-    "rows_content_hashes",
-    "completeness_report_refs",
-    "completeness_record_refs",
-    "completeness_record_digests",
-    "source_snapshot_refs",
-    "validation_query_contract_refs",
-    "validation_result_refs",
-    "validation_query_execution_record_refs",
-    "validation_query_execution_record_digests",
-    "validation_rows_refs",
-    "validation_rows_metadata_record_refs",
-    "validation_rows_metadata_record_digests",
-    "validation_rows_content_hashes",
-    "validation_completeness_report_refs",
-    "validation_completeness_record_refs",
-    "validation_completeness_record_digests",
-    "validation_source_snapshot_refs",
-    "supported_evidence_types",
-    "supported_claim_types",
-    "maximum_claim_strength",
-    "maximum_claim_strength_rank",
-    "claim_strength_taxonomy_version",
-    "input_completeness_statuses",
-)
+_BOUND_VALUE_FIELDS = CAPABILITY_BINDING_PAYLOAD_FIELDS
 
 
 def _capability_plan_manifest(plan: CapabilityExecutionPlan) -> dict[str, Any]:
@@ -1327,10 +1445,7 @@ def _capability_plan_manifest(plan: CapabilityExecutionPlan) -> dict[str, Any]:
 def _deep_freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType(
-            {
-                str(key): _deep_freeze(item)
-                for key, item in value.items()
-            }
+            {str(key): _deep_freeze(item) for key, item in value.items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)

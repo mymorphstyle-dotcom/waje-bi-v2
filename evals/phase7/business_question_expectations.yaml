@@ -7,7 +7,33 @@ execution_contract:
   prebound_sql: forbidden
   injected_rows: forbidden
   prebound_capabilities: forbidden
-  acceptance_source: persisted_answer_package
+  acceptance_source: persisted_customer_publication
+
+question_family_pairs:
+  pattern_explanation:
+    original_case_id: pattern_month_start_vs_mid_end
+    paraphrase_case_id: pattern_month_start_vs_mid_end_paraphrase
+  paid_amount_change_explanation:
+    original_case_id: drivers_q2_vs_q1
+    paraphrase_case_id: drivers_q2_vs_q1_paraphrase
+  business_object_impact_review:
+    original_case_id: business_object_campaign
+    paraphrase_case_id: business_object_campaign_paraphrase
+  revenue_health_review:
+    original_case_id: revenue_health_h1
+    paraphrase_case_id: revenue_health_h1_paraphrase
+  segment_or_factor_attribution:
+    original_case_id: dimension_channel_contribution
+    paraphrase_case_id: dimension_channel_contribution_paraphrase
+  anomaly_or_black_swan_review:
+    original_case_id: anomaly_q2_growth
+    paraphrase_case_id: anomaly_q2_growth_paraphrase
+  custom_baseline_comparison:
+    original_case_id: change_half_month
+    paraphrase_case_id: change_half_month_paraphrase
+  data_quality_or_evidence_review:
+    original_case_id: data_quality_channel_comparison
+    paraphrase_case_id: data_quality_channel_comparison_paraphrase
 
 cases:
   - case_id: pattern_month_start_vs_mid_end
@@ -46,6 +72,9 @@ cases:
   - case_id: drivers_q2_vs_q1
     user_message: "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？"
     review_focus: "把提升视为待验证前提；方向成立后再发布贡献结论。"
+  - case_id: daily_paid_amount_change_2026_06_01
+    user_message: "全量样本看，2026年6月1日付费金额为什么上涨？"
+    review_focus: "Case B 稳定性切片：先确认上涨及比较基线，再用完整合同轴解释；连续运行和进程重启后必须保持同一权威语义。"
   - case_id: clarification_channel_metric
     user_message: "WajeSpecial 最近几个月是不是比其他渠道好？"
     review_focus: "总金额与日均口径会改变结论时，给出带推荐项的业务澄清。"
@@ -82,3 +111,27 @@ cases:
   - case_id: composite_change_and_reason
     user_message: "2026年Q2为什么增长，主要渠道和付费用户数/单付费用户金额分别怎么贡献？"
     review_focus: "先验证增长前提，再并行处理核心公式因素和渠道辅助分解。"
+  - case_id: pattern_month_start_vs_mid_end_paraphrase
+    user_message: "把全部用户放在一起看，2024年1月至2026年6月，各月前10天的付费金额通常会超过11日至20日和21日以后吗？"
+    review_focus: "复述版本仍需先验证模式、稳定性和例外月份，不预置窗口查询。"
+  - case_id: drivers_q2_vs_q1_paraphrase
+    user_message: "2026年二季度相较一季度的付费金额变化，究竟更多来自付费人数，还是每位付费用户贡献的金额？"
+    review_focus: "把变化方向交给真实数据确认，再比较两类公式因素的贡献。"
+  - case_id: business_object_campaign_paraphrase
+    user_message: "看6月活动前后，付费金额有改善吗？现有证据能把多少变化归到活动影响？"
+    review_focus: "分开表达窗口对比与活动影响，因果证据不足时收紧归因强度。"
+  - case_id: revenue_health_h1_paraphrase
+    user_message: "从趋势、波动、异常和结构来看，2026年上半年付费金额经营得健康吗，最值得警惕的风险是什么？"
+    review_focus: "综合真实证据形成健康度判断，保留风险优先级和证据边界。"
+  - case_id: dimension_channel_contribution_paraphrase
+    user_message: "2026年二季度对比一季度的付费金额增减，各渠道分别拉动或拖累了多少？"
+    review_focus: "按当前渠道合同发布可核验贡献，失败的辅助维度不污染主结论。"
+  - case_id: anomaly_q2_growth_paraphrase
+    user_message: "二季度看起来的增长，会不会主要由极少数异常高的日期造成？"
+    review_focus: "先核验增长是否存在，再评估异常日期对结论的敏感度。"
+  - case_id: change_half_month_paraphrase
+    user_message: "把2026年6月16日以后与前15天相比，付费金额是否改善，变化主要由哪些因素贡献？"
+    review_focus: "使用用户给定的半月基线，验证窗口完整性、方向和因素贡献。"
+  - case_id: data_quality_channel_comparison_paraphrase
+    user_message: "按当前已发布的数据和口径，渠道之间的付费表现对比能得出多强的结论？"
+    review_focus: "依据 active release、查询完整性和渠道合同给出可发布强度。"

@@ -2,9 +2,9 @@ from bi_agent.conversation.models import (
     ContextManifest,
     ConversationRunRequest,
     ConversationTurnResult,
+    InteractionResponse,
     MemoryItem,
     MemoryProposal,
-    ReuseDecision,
     TopicState,
     TurnIntent,
 )
@@ -18,10 +18,10 @@ __all__ = [
     "ConversationRuntime",
     "ConversationTurnResult",
     "InMemoryConversationStore",
+    "InteractionResponse",
     "MemoryItem",
     "MemoryProposal",
     "PostgresConversationStore",
-    "ReuseDecision",
     "TopicState",
     "TurnIntent",
 ]

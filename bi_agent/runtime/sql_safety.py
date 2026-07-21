@@ -233,7 +233,9 @@ def _top_level_tokens(sql: str) -> list[str]:
         if depth == 0 and (char.isalpha() or char == "_"):
             start = index
             index += 1
-            while index < len(masked) and (masked[index].isalnum() or masked[index] == "_"):
+            while index < len(masked) and (
+                masked[index].isalnum() or masked[index] == "_"
+            ):
                 index += 1
             tokens.append(masked[start:index])
             continue

@@ -153,8 +153,7 @@ def candidate_crosswalk(
         "right_metric_coverage_detail": right_coverage_detail,
         "aligned_cell_count": len(aligned_rows),
         "complete_aligned_cell_count": sum(
-            bool(row["left_present"] and row["right_present"])
-            for row in aligned_rows
+            bool(row["left_present"] and row["right_present"]) for row in aligned_rows
         ),
     }
     return {
@@ -278,7 +277,9 @@ def _aggregate_source_cells(
     strategies: Mapping[str, str],
     raw_to_mapped: Mapping[str, str],
 ) -> dict[tuple[Any, str], dict[str, Any]]:
-    rows_by_source_cell: dict[tuple[Any, str], list[Mapping[str, Any]]] = defaultdict(list)
+    rows_by_source_cell: dict[tuple[Any, str], list[Mapping[str, Any]]] = defaultdict(
+        list
+    )
     for row in rows:
         raw = _group_value(row.get(group_key))
         rows_by_source_cell[(row[time_key], raw)].append(row)
@@ -292,8 +293,7 @@ def _aggregate_source_cells(
         if ratio_metrics:
             raise ValueError(
                 f"{side} ratio metrics require one upstream-aggregated row per "
-                "time x group cell: "
-                + ", ".join(ratio_metrics)
+                "time x group cell: " + ", ".join(ratio_metrics)
             )
 
     aggregated: dict[tuple[Any, str], dict[str, Any]] = {}

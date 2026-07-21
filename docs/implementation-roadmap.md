@@ -1,187 +1,244 @@
 # WAJE BI v2 Implementation Roadmap
 
-**Goal:** Turn the signed PRD into a production baseline implementation sequence for WAJE BI v2.
+Last rebased: 2026-07-18
+Architecture authority: [2026-07-17 single-authority workflow ADR](./adr/2026-07-17-single-authority-agent-workflow.md)
 
-**Architecture:** WAJE-owned contracts, compiler, capability APIs, evidence ledger, fixed restricted-output safety, source-connection access, and verifier hold BI truth. LangGraph carries visible execution, checkpointing, loops, repairs, and process events. The first vertical slice proves the generalized `pattern_explanation` problem class, with the month-start payment pattern as its first regression case.
+## Delivery objective
 
-**Tech Stack:** TypeScript frontend/gateway, Python BI Agent Core, LangGraph adapter, Postgres runtime mirror, ClickHouse analytical query access, versioned contract source files.
+Ship one production-complete BI analysis workflow across all eight launch
+question families. The workflow must preserve LLM exploration and writing
+freedom while keeping business truth inside typed, content-addressed WAJE
+records and hard evidence boundaries.
 
----
+The cutover has no backward-compatibility path. Superseded mutable aggregate,
+graph, recipe, replay-as-product, and duplicate compiler behavior is
+deleted with the tests that require it.
 
-## Principles
+## Authoritative path
 
-- Build a production baseline with full launch coverage.
-- Ship by business capability, with evidence, verifier, eval, and UI visibility included in each slice.
-- Keep table structures and final API schemas in technical design, while this roadmap defines build order and acceptance.
-- Treat recipe entries as starting templates. The accepted graph is compiled from user intent, contracts, evidence needs, fixed safety policy, source availability, and budget.
-- Keep the first slice generic to same-class pattern questions. The month-start case is a regression example for the broader pattern workflow.
+```text
+IntentRevision
+→ DecisionLedger
+→ AuthorityContext
+→ PlannerProposal
+→ ProposalAdmissionRecord
+→ PlanRevision
+→ CapabilityOutcome + EvidenceLedger
+→ ClaimGraph + ClaimVerifierReport
+→ sealed AuthorityBundle
+→ NarrativeDocument + block-verifier report
+→ PublicationProjection
+→ delivery outbox
+```
 
-## Phases 0-4: Historical Baseline
+LangGraph schedules and exposes progress. It does not own the business truth in
+these records.
 
-Status: superseded by the 2026-07-07 Post-Phase 4 Rebaseline below.
+## Working principles
 
-The original Phase 0-4 checklist described the first implementation program:
-contract setup, graph/compiler contracts, semantic-query handoff, and the first
-generalized pattern slice. Its checkbox criteria were useful during the initial
-build, but they are no longer the current launch acceptance source.
+- Bind open user language once through typed LLM output; local code validates
+  structure and known contract IDs.
+- Persist material baseline, time, scope, and comparison choices only in the
+  `DecisionLedger`.
+- Keep planner issue trees, hypotheses, and auxiliary axes before deterministic
+  admission so unsupported ideas remain visible without becoming executable.
+- Derive mandatory work from goals and claim obligations. A capability has no
+  run-wide required flag.
+- Let independent task failures affect only dependent obligations and claims.
+- Keep observed, derived, statistical, candidate-mechanism, scenario, and
+  boundary evidence distinct through claim settlement.
+- Let the writer choose structure, emphasis, synthesis, and professional prose
+  from the durably checkpointed `NarrativeMaterialProjection`. Verification may
+  veto and cannot rewrite.
+- Publish authority exactly once by bundle digest; deliver the fixed projection
+  idempotently through the outbox.
+- Use real Gateway, PostgreSQL, ClickHouse, and DeepSeek runs for business
+  acceptance. Replays and fixtures remain diagnostic or contract-test inputs.
 
-Current evidence for this historical segment lives in:
+## Phase 0: Contracts and RED invariants
 
-- [docs/phase-1-contract-foundation-breakdown.md](/Users/luka/work/waje-bi-v2/docs/phase-1-contract-foundation-breakdown.md:1)
-- [docs/reviews/phase4-ten-case-node-audit-20260707.md](/Users/luka/work/waje-bi-v2/docs/reviews/phase4-ten-case-node-audit-20260707.md:1)
+Deliver:
 
-Current launch acceptance starts at the Post-Phase 4 Rebaseline and is proven by
-Phase 5 through Phase 8 closeout evidence. Do not use old Phase 0-4 checkbox
-items as open launch gates.
+- immutable schemas, stable refs, digests, revision and supersession rules;
+- typed failure taxonomy and orthogonal lifecycle states;
+- hard checks that forbid downstream semantic reconstruction;
+- real-chain acceptance entry and unique artifact directories.
 
-## Post-Phase 4 Rebaseline
+Gate:
 
-Date: 2026-07-07
+- current dependencies and active releases are reachable;
+- Case B reaches the first legitimate material decision;
+- no harness manufactures a plan, answer, or clarification response.
 
-Current evidence: Phase 4 full-period retest has 10 live ClickHouse cases with 3 passed, 7 degraded, 0 blocked, and 0 failed. The pattern slice is runnable, Answer Package drafts exist, final summaries include evidence numbers, and replay has enough audit material for development review.
+## Phase 1: Durable intent and decisions
 
-Future phases should follow this order:
+Deliver:
 
-1. **Phase 5: Answer safety and eval gates.** Harden claim groups, verifier behavior, implicit clarification, failure attribution, and route-drift measurement on the existing pattern slice.
-2. **Phase 6: Question-family expansion.** Add the remaining question families only after Phase 5 can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
-3. **Phase 7: Frontend agent shell.** Build user-facing investigation UX on top of stable Answer Package and replay semantics.
-4. **Phase 8: Production gates.** Add release-grade observability, personal ownership, fixed output safety, source access, rerun comparability, rollback, and health checks after the workflow and UI contract are stable.
+- durable call journal and accepted transition head;
+- `IntentRevision`, `DecisionLedger`, clarification writeback, correction,
+  cancellation, and supersession;
+- stable option IDs and typed free-text slot binding.
 
-Deliberate deferrals:
+Gate:
 
-- Route drift between `compare_periods`, `compare_period_phases`, and `rolling_window_compare` remains measured in Phase 5 before adding deterministic compiler rules.
-- Broad composite-intent handling belongs to Phase 6. Phase 5 only tests whether latent ambiguity should trigger clarification.
-- Production dashboards and release operations stay in Phase 8.
+- repeated model wording yields stable material bindings;
+- one accepted baseline decision is reused after resume;
+- process termination after intent or decision persistence resumes without
+  replaying accepted semantic work.
 
-## Phase 5: Answer Package, Verifier, And Eval
+## Phase 2: One planner/compiler and pinned data authority
 
-Current plan: [docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-07-phase-5-from-phase-4-state.md:1)
+Deliver:
 
-Historical note (superseded): the 2026-07-08 node-by-node run remains an investigation artifact only and does not count as business acceptance. Current business acceptance enters through the production Conversation Gateway with real Postgres, ClickHouse, DeepSeek, authority records, and verifier checks. Local contract validation uses `ruby tools/evals/validate-current-contracts.rb`; real conversation evidence is stored under `artifacts/phase7/`.
+- latest-active-release `AuthorityContext` per run attempt;
+- immutable `PlannerProposal` and deterministic `ProposalAdmissionRecord`;
+- one accepted `PlanRevision` with obligations, axes, task DAG, assumptions,
+  budget, and contract versions;
+- atomic stage persistence and replay from exact refs.
 
-**Goal:** Make final answers auditable and regression-tested.
+Gate:
 
-**Business reason:** Production BI answers need clear claim boundaries, visible evidence strength, and repeatable acceptance.
+- one planner proposal, admission record, and accepted plan digest exist;
+- invalid auxiliary ideas remain recorded without a fallback proposal;
+- all tasks use one release and snapshot set;
+- Case B includes comparison, formula, eligible dimensions, temporal context,
+  and data-quality obligations.
 
-**Deliverables:**
+## Phase 3: Branch-isolated execution and evidence
 
-- [x] Claim group contract implemented and emitted in Answer Package summary.
-- [x] Answer verifier blocks unsupported strong claims and records visible limitations.
-- [x] Independent Causal Auditor LLM reviews causal implications and mechanism hypotheses from a structured evidence dossier.
-- [x] Local verifier remains a mechanical evidence checker for refs, numbers, scope, fixed restricted-output safety, source access, metric contracts, and auditor wording boundary.
-- [x] Launch eval harness uses real user wording plus structured expectation packages.
-- [x] Failure attribution labels include business failure type and system responsibility point.
-- [x] Implicit clarification eval suite covers latent ambiguity that can change claim quality.
-- [x] Route drift measurement records observed drift and impact without auto-promoting guardrails.
+Deliver:
 
-**Acceptance:**
+- dependency-aware scheduler with stable idempotency keys;
+- typed `CapabilityOutcome` for success, expected unavailability, integrity
+  failure, technical failure, skip, and supersession;
+- content-addressed `EvidenceLedger` with execution state, evidence kind,
+  evidence ceiling, scope, window, dimension path, and limitation refs;
+- formula graph compiled from reviewed metric/factor contracts;
+- atomic `evidence_ready` checkpoint and replay.
 
-- [x] Strong claims cannot publish when verifier fails.
-- [x] Eval case fields include allowed claim/evidence type and allowed strength or wording limit.
-- [x] Eval failures do not auto-promote into guardrails without human review and dual ownership.
-- [x] Smoke, affected-slice, and full acceptance eval runs are defined.
+Gate:
 
-Phase 5 closeout does not claim production release readiness. Broader composite intent coverage, full question-family expansion, production observability, and release gates continue in Phase 6 through Phase 8.
+- completion order cannot change evidence identity or numerical results;
+- an optional or branch-local failure does not erase independent evidence;
+- shared integrity failures propagate through dependency edges;
+- every terminal task closes to its admitted plan task and pinned authority.
 
-## Phase 6: Capability Expansion Across Eight Question Families
+## Phase 4: Claim settlement and authority seal
 
-Current plan: [docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md](/Users/luka/work/waje-bi-v2/docs/superpowers/plans/2026-07-08-phase-6-question-family-expansion.md:1)
+Deliver:
 
-Closeout evidence (2026-07-08): Phase 6 is ready to close as an engineering milestone. The latest real ClickHouse + real LLM run is `artifacts/phase-6/live-question-family/20260708-r9/`, with 12 representative cases passed, 231 workflow nodes completed, and 136 LLM calls recorded. Audit notes are in [docs/reviews/phase6-live-question-family-audit-20260708.md](/Users/luka/work/waje-bi-v2/docs/reviews/phase6-live-question-family-audit-20260708.md:1).
+- evidence-bounded claims with stable logical keys and content revisions;
+- explicit support edges, dependency claims, ceilings, assumptions, and
+  limitations;
+- obligation coverage and typed claim-verifier decisions;
+- immutable `ClaimGraph` and content-addressed `AuthorityBundle` manifest;
+- exact `user_required` obligation IDs sealed into the bundle manifest;
+- atomic exactly-once authority seal.
 
-**Goal:** Expand from the first pattern slice into the full baseline question-family matrix.
+`answer_verify` is a completion authority. It cannot appear as a capability task
+or produce evidence.
 
-Phase 6 starts only after Phase 5 eval gates can classify wrong intent, wrong baseline, weak evidence, route drift, and unsupported claims without manual log reading.
+Gate:
 
-**Business reason:** Paid amount impact and retrospective questions are multi-capability workflows, so launch needs all eight families represented end to end.
+- every verified claim closes to intent, decisions, plan, authority context,
+  evidence, and applicable contracts;
+- unavailable obligations produce explicit boundary state;
+- claim verification cannot create evidence or grant strength beyond a ceiling;
+- narrative or delivery failure leaves the sealed bundle unchanged.
 
-**Build order:**
+## Phase 5: Claim-aware narrative and publication verification
 
-- [x] `paid_amount_change_explanation`: operating-review spine, formula decomposition, attribution, anomaly, pattern, business object evidence, data quality, verifier.
-- [x] `business_object_impact_review`: object binding, object-specific evidence route, comparison/control, candidate impact, claim limits.
-- [x] `segment_or_factor_attribution`: one-dimensional screening, two-dimensional combination start, higher-order promotion loop, sparse and scope limits.
-- [x] `revenue_health_review`: trend, target, structure, funnel/formula, anomaly, data quality, risk wording.
-- [x] `anomaly_or_black_swan_review`: pseudo-anomaly rejection, local segment anomaly, metric-chain anomaly, internal/external candidate explanations.
-- [x] `custom_baseline_comparison`: user baseline, recommended baseline, multiple-baseline disagreement, comparability checks.
-- [x] `data_quality_or_evidence_review`: trust judgment, affected claims, degradation, contract, restricted-output, and source-access fixes.
+Deliver:
 
-**Acceptance:**
+- lossless `NarrativeMaterialProjection` over claim-material pairs, pooled
+  evidence facts, recommendations, limitations, boundary facets, and opaque
+  publication requirements;
+- provider fact bindings containing only claim and fact handles, with immutable
+  values resolved locally from the projection;
+- raw `NarrativeDocument` blocks with structured handles;
+- local schema, handle, numeric, date, scope, and output-safety checks;
+- one structural handle grammar shared by provider validation and typed block
+  construction, including recommendation-authorized business blocks;
+- semantic block verifier with veto-only authority;
+- focused retry for rejected required blocks under centralized LLM policy;
+- target-only retry output with deterministic mixed-origin revision merge;
+- status-specific required-block coverage for every sealed `user_required`
+  obligation.
 
-- [x] Every question family has at least one end-to-end representative case.
-- [x] Launch acceptance matrix covers representative SSOT factor groups and ledger states for every family.
-- [x] `answer_verify` runs for launch representative cases.
-- [x] `data_quality_check` runs for first-screen claims and strong claims.
+Gate:
 
-## Phase 7: Frontend Agent Shell
+- accepted provider text is retained byte-for-byte;
+- accepted typed blocks retain block ID, digest, and original writer-attempt
+  provenance across focused repair;
+- writer structure and emphasis are free within the supplied material projection;
+- requirement coverage constrains handles only and leaves prose, block layout,
+  ordering, emphasis, comparison, and synthesis with the writer;
+- verifier-accepted required blocks close every publication requirement, or the
+  narrative is withheld after focused repair;
+- no local template supplies a high-value business answer;
+- rejected blocks cannot leak into customer publication.
 
-**Goal:** Build the user-facing Codex-like investigation experience.
+## Phase 6: Publication transaction and delivery
 
-**Business reason:** Users need to see what the agent understood, what it checked, where evidence degraded, and what answer is safe to trust.
+Deliver:
 
-Current progress (2026-07-08, updated to current access semantics): Phase 7 runtime foundation has conversation contracts, Postgres conversation schema, Python Postgres store with audit writes, production-safe TypeScript gateway store selection, thread/topic/turn/run context assembly, result reuse decisions, memory proposals, Python Agent Core bridge, and the public gateway routes for threads, messages, run events, clarifications, artifact continue, artifact read/export, and memory proposal accept/reject. Conversation routing has an LLM-backed orchestrator for turn intent and topic relation, with local enum validation, pending-clarification checks, running-run queue normalization, and hard guards for off-topic and unsupported requests. Context manifests record result refs as first-class context sources, mark whether each source can support claims, and carry source version, expiry, claim-use, restricted-output, and source-access metadata; memory items carry TTL, refresh rule, confidence, and revocation path. Answer Package includes a validated `visualization_plan` derived from verified claim groups, and the workbench renders those visual blocks through the existing TraceRun UI contract. Clarification answers bind back to the pending topic, clear pending state, record the clarification outcome, and resume the same run through Agent Core. Runtime question tool blocks ambiguous runs with a structured clarification payload, recommended inference, `tell the agent to do differently`, pending clarification state, and run-level audit events; no-answer runs waiting for clarification appear in the agent workbench as business-readable process traces. Run event streams include a business-facing `process` summary while retaining raw payloads for audit/debug; persisted run nodes are emitted as business process events for intent, accepted plan, capability progress, repair/degrade/block, and verifier stages, and completed Postgres Answer Package runs inject recorded run nodes into the workbench timeline. The ordinary workbench hides raw audit JSON by default, with debug audit available only through an explicit `processSummary.debugAudit` gate. Artifact access persists refs in Postgres, validates personal ownership before open/continue/export, records allow/block/open/export audit events, and applies the same fixed customer-safe projection to every normal user. Claim support still requires matching result refs, snapshot, contract, restricted-output, and source-access checks. Current business acceptance questions and review focus live in `evals/phase7/business_question_expectations.yaml`; execution enters through the real Gateway one question at a time.
+- deterministic `PublicationProjection` proving that it added no fact;
+- atomic publication transaction binding bundle, narrative, verifier report,
+  projection, and outbox record;
+- idempotent delivery attempts with explicit retryable and permanent failure;
+- fixed customer-safe Gateway projection;
+- advisory six-dimension insight-quality review.
 
-**Deliverables:**
+Gate:
 
-- [x] TypeScript gateway routes for thread creation, message submission, run event stream handles, clarifications, artifact continue, and memory proposal decisions.
-- [x] Conversation runtime contracts for `Thread`, `Topic`, `Turn`, `Run`, `ContextManifest`, `ReuseDecision`, `MemoryItem`, and `MemoryProposal`.
-- [x] LLM-backed Conversation Orchestrator for turn intent, topic relation, clarification answer, challenge, artifact continue, capability question, off-topic, unsupported, memory update, and mixed-question routing, with local validation and audit.
-- [x] Gateway-triggered Python Agent Core bridge that records conversation intent, context manifest, LangGraph result, Answer Package, run nodes, and audit events.
-- [x] Answer Package emits validated visualization plan blocks from verified claim groups.
-- [x] Agent run workbench consumes persisted Postgres Answer Packages through the existing TraceRun contract.
-- [x] Clarification answer resume path with pending-topic binding, outcome audit, and same-run Agent Core execution.
-- [x] Continue investigation from saved artifacts with Postgres artifact refs, personal ownership checks, fixed customer-safe projection, audit events, and shared Agent Core execution.
-- [x] Artifact read-only open and Markdown export with personal ownership checks, fixed customer-safe Answer Package projection, and audit records.
-- [x] SDK decision for 21st Agent Elements or a better-fitting alternative.
-- [x] Process event rendering for intent, accepted plan, capability progress, question tool, repair/degrade/block/skip, evidence summary, verifier result.
-- [x] Dynamic first-screen answer cards from verified claim groups and validated visualization plan.
-- [x] Artifact read-only sharing, fixed customer-safe section rendering, and static export.
-- [x] Replace the in-memory-only gateway/runtime store handoff with Postgres persistence and audit writes; development fallback remains local-only.
+- delivery retry never restarts analysis or narrative generation;
+- a customer payload closes to one projection and one authority bundle digest;
+- the final `PublicationFlow` gate independently revalidates every
+  `user_required` obligation against published claim and limitation refs;
+- identity changes history ownership and audit only;
+- quality review cannot change or revoke sealed claims.
 
-**Acceptance:**
+## Phase 7: Delete old authority and finish product acceptance
 
-- [x] Conversation scenario suite covers at least 60 natural-language cases across follow-up, mixed questions, off-topic/tool/unsupported inputs, ownership/source-access/snapshots/memory, correction/challenge/clarification.
-- [x] Frontend renders WAJE-owned Answer Package and visualization plan.
-- [x] Frontend does not infer business truth from raw evidence payloads.
-- [x] Question tool supports up to 3-4 short questions, up to 3 options each, recommended inference, and `tell the agent to do differently`.
-- [x] Technical internals stay out of ordinary UI while audit/debug details remain available.
+Remove:
 
-## Phase 8: Production Gates
+- old aggregate-answer and mutable-plan runtime contracts;
+- duplicate planners, compilers, semantic binders, and compatibility readers;
+- fixed role/order narrative skeletons that do not protect a hard boundary;
+- artifact continue/export routes that rely on obsolete mutable artifacts;
+- eval assertions that require superseded capability or publication identities.
 
-**Goal:** Make launch behavior observable, auditable, repeatable, owner-safe, and customer-output-safe.
+Acceptance sequence:
 
-**Business reason:** BI claims affect business decisions, so failures must be visible and reruns must be explainable.
+1. freeze the current contracts and pass the automated contract, unit,
+   integration, fault-injection, Gateway, build, lint, and stale-reference
+   suites;
+2. run one fresh Case B through the real Gateway, PostgreSQL, ClickHouse, and
+   configured LLM chain;
+3. stop on clarification without an approved decision, typed failure,
+   publication withholding, or delivery failure;
+4. verify persisted authority closure, writer contract version, customer-safe
+   projection, and delivery identity automatically;
+5. generate the release manifest, update current documentation, capture one
+   durable long-term memory note, and start the release runtime.
 
-Current progress (2026-07-08, updated to current access semantics): Phase 8 production gates are in place. `GET /api/runs/:runId/audit-trace` returns the run, latest Answer Package, claim groups, verifier output, run nodes, evidence refs, result/query refs, contract versions, snapshot ids, and audit events from the Postgres runtime store. `GET /api/runs/:runId/rerun-comparability?candidateRunId=...` compares snapshot ids, contract versions, and query/result refs between two runs so reruns can state whether they are comparable to the original run. `GET /api/runs/launch-dashboard` lists slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, contract-mismatch, and ledger-mismatch runs for launch review. Artifact open, export, and continue-investigation paths enforce personal ownership, audit allowed and blocked access, and apply one fixed customer-safe projection to summary claims, claim groups, and visualization blocks. `GET /api/health` checks the gateway route, Python BI Agent Core import, Postgres runtime store, ClickHouse access, and LangGraph adapter readiness. Capability execution turns call budget exhaustion, row budget excess, result-ref budget excess, and timeout markers into blocked evidence envelopes that flow into Answer Package visible limitations. `bi_agent/runtime/release_manifest.json` records rollback refs, owners, paths, and required checks for contracts, ledgers, capability cards, prompt/recipe, and verifier policy. The release-candidate launch eval passed for all 8 expectation packages; see `docs/reviews/phase8-release-candidate-eval-20260708.md`.
+Completion requires the automated Case A-D and launch-question-family matrix,
+weak-evidence and missing-contract boundaries, branch isolation, restart/resume,
+duplicate dispatch, authority-seal idempotency, publication withholding,
+delivery retry, single-analysis parity, and fixed safe projection to pass, plus
+one post-freeze real-chain Case B run.
 
-**Deliverables:**
+## Current status
 
-- [x] Fixed restricted-output behavior, source-access isolation, personal artifact ownership, and customer-safe artifact projection.
-- [x] Audit trace from answer to run, contract version, evidence, claim, verifier result, and query refs.
-- [x] Snapshot and rerun comparability rules.
-- [x] Capability timeout, row/result budget, and degradation behavior.
-- [x] Health checks for frontend/gateway, Python BI Agent Core, Postgres runtime mirror, ClickHouse access, and LangGraph adapter.
-- [x] Version rollback for contract, ledger, capability card, prompt/recipe, and verifier policy.
-- [x] Launch dashboard for slow run, capability error, compiler block, verifier failure, contract mismatch, and ledger mismatch.
+The codebase is on the single-authority cutover path and the former authority
+objects are being removed directly. Phase completion is determined by the
+automated gates above and one persisted post-freeze real-chain acceptance. A
+technical `completed` status alone does not close the roadmap.
 
-**Acceptance:**
-
-- [x] Slow, failed, degraded, blocked, verifier-failed, capability-error, compiler-blocked, contract-mismatch, and ledger-mismatch runs are locatable.
-- [x] Budget skips enter Answer Package limitations or follow-up.
-- [x] Reruns state whether they are comparable to the original run.
-- [x] Release candidate runs full acceptance eval.
-
-## Implementation Order Summary
-
-1. Phase 0: Signoff baseline.
-2. Phase 1: Contract foundation.
-3. Phase 2: Core runtime contract.
-4. Phase 3: Semantic query and evidence layer.
-5. Phase 4: First generalized pattern vertical slice.
-6. Phase 5: Answer Package, verifier, and eval.
-7. Phase 6: Remaining question families and capability expansion.
-8. Phase 7: Frontend shell and artifacts.
-9. Phase 8: Production gates.
-
-## First Execution Cut
-
-Start with Phases 1-4 as one implementation program. It creates a focused production-shaped path for the first pattern class case while preserving the full baseline architecture. Phases 5-8 then harden answer safety, broaden question coverage, expose the investigation UI, and meet launch gates.
+The current closeout includes the required-publication contract prompted by the
+failed `verified-03` Case B attempt: mandatory obligation closure must enter the
+provider material projection and required-block repair path before publication.
+That artifact remains failure evidence. The final automated verification suite,
+one fresh Case B acceptance, release manifest, documentation, and runtime start
+form the remaining closeout work. Optional insight or wording-pair reviews may
+run after launch and cannot change sealed authority.

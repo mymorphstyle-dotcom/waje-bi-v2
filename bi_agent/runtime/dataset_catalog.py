@@ -121,9 +121,7 @@ class DatasetReleaseAuthorityRecord:
             "digest": self.digest,
             "logical_snapshot_id": self.logical_snapshot_id,
             "load_revision": self.load_revision,
-            "member_projections": [
-                item.to_dict() for item in self.member_projections
-            ],
+            "member_projections": [item.to_dict() for item in self.member_projections],
             "snapshot_refs": self.snapshot_refs,
             "integrity_errors": self.integrity_errors,
         }
@@ -134,6 +132,13 @@ class DatasetReleaseResolver(Protocol):
         self,
         release_ref: str,
     ) -> DatasetReleaseAuthorityRecord: ...
+
+
+class DatasetSnapshotStore(Protocol):
+    def list_dataset_snapshots(
+        self,
+        dataset_id: str = "",
+    ) -> tuple[Mapping[str, Any], ...]: ...
 
 
 class DatasetCatalog:
@@ -163,7 +168,9 @@ class DatasetCatalog:
         )
         if not eligible:
             raise KeyError(f"dataset_snapshot_unavailable:{dataset_id}")
-        return max(eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref))[1]
+        return max(
+            eligible, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref)
+        )[1]
 
     def as_of_candidates(
         self,
@@ -217,7 +224,11 @@ class DatasetCatalog:
             loaded_at_utc = _parse_datetime(item.loaded_at)
             if loaded_at_utc > as_of_utc:
                 future.append((loaded_at_utc, item))
-        return tuple(sorted(future, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref)))
+        return tuple(
+            sorted(
+                future, key=lambda candidate: (candidate[0], candidate[1].snapshot_ref)
+            )
+        )
 
     def common_watermark(self, dataset_ids: tuple[str, ...]) -> date:
         watermarks = []
@@ -225,7 +236,8 @@ class DatasetCatalog:
             candidates = [
                 date.fromisoformat(item.watermark)
                 for item in self._snapshots
-                if item.dataset_id == dataset_id and item.status == "active"
+                if item.dataset_id == dataset_id
+                and item.status == "active"
                 and item.evidence_state == "claim_ready"
                 and _snapshot_has_release_authority(item, self._release_resolver)
             ]
@@ -236,6 +248,171 @@ class DatasetCatalog:
 
     def snapshots(self) -> tuple[DatasetSnapshot, ...]:
         return self._snapshots
+
+
+def dataset_snapshots_from_records(
+    value: Mapping[str, Any] | Sequence[Any],
+) -> dict[str, DatasetSnapshot]:
+    if isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        items = (("", item) for item in value)
+    else:
+        raise ValueError("dataset_snapshots:mapping_or_sequence_required")
+    snapshots: dict[str, DatasetSnapshot] = {}
+    for index, (key, item) in enumerate(items):
+        path = f"dataset_snapshots[{index}]"
+        if isinstance(item, DatasetSnapshot):
+            snapshot = item
+        elif isinstance(item, Mapping):
+            snapshot = dataset_snapshot_from_mapping(item, path=path)
+        else:
+            raise ValueError(f"{path}:snapshot_required")
+        mapping_key = str(key or snapshot.snapshot_ref)
+        if mapping_key != snapshot.snapshot_ref:
+            raise ValueError(f"{path}:snapshot_ref_key_mismatch")
+        if mapping_key in snapshots:
+            raise ValueError(f"{path}:duplicate_snapshot_ref:{mapping_key}")
+        snapshots[mapping_key] = snapshot
+    return snapshots
+
+
+def trusted_active_dataset_snapshots(
+    store: DatasetSnapshotStore,
+    *,
+    dataset_id: str = "",
+    purpose: str = "claim",
+) -> dict[str, DatasetSnapshot]:
+    allowed_evidence = {
+        "claim": frozenset({"claim_ready"}),
+        "context": frozenset({"claim_ready", "context_only"}),
+    }
+    if purpose not in allowed_evidence:
+        raise ValueError(f"dataset_snapshot_purpose_invalid:{purpose}")
+    listed = store.list_dataset_snapshots(dataset_id)
+    fields = frozenset(DatasetSnapshot.__dataclass_fields__)
+    projected = []
+    for item in listed:
+        if not isinstance(item, Mapping):
+            raise ValueError("trusted_dataset_snapshot_mapping_required")
+        if item.get("status") != "active":
+            continue
+        evidence_state = item.get("evidence_state")
+        if not isinstance(evidence_state, str) or not evidence_state:
+            raise ValueError("trusted_dataset_snapshot_evidence_state_required")
+        if evidence_state not in allowed_evidence[purpose]:
+            continue
+        projected.append({key: value for key, value in item.items() if key in fields})
+    return dataset_snapshots_from_records(tuple(projected))
+
+
+def dataset_snapshot_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    path: str = "dataset_snapshot",
+) -> DatasetSnapshot:
+    fields = tuple(DatasetSnapshot.__dataclass_fields__)
+    required_fields = (
+        "snapshot_ref",
+        "dataset_id",
+        "physical_table",
+        "watermark",
+        "schema_fingerprint",
+        "schema_fields",
+        "contract_ref",
+        "loaded_at",
+        "status",
+        "evidence_state",
+        "reconciliation_status",
+    )
+    allowed_fields = {
+        *fields,
+        "requires_release",
+        "reconciliation",
+    }
+    missing = tuple(key for key in required_fields if key not in value)
+    if missing:
+        raise ValueError(f"{path}:missing:{','.join(missing)}")
+    unexpected = tuple(str(key) for key in value if key not in allowed_fields)
+    if unexpected:
+        raise ValueError(f"{path}:unexpected:{','.join(unexpected)}")
+    if "requires_release" in value and not isinstance(
+        value["requires_release"],
+        bool,
+    ):
+        raise ValueError(f"{path}.requires_release:boolean_required")
+    if "reconciliation" in value and not isinstance(
+        value["reconciliation"],
+        Mapping,
+    ):
+        raise ValueError(f"{path}.reconciliation:mapping_required")
+    row_count = value.get("row_count", -1)
+    if (
+        isinstance(row_count, bool)
+        or not isinstance(row_count, int)
+        or ("row_count" in value and row_count < 0)
+    ):
+        raise ValueError(f"{path}.row_count:integer_required")
+    source_checksums = value.get("source_checksums", {})
+    if not isinstance(source_checksums, Mapping):
+        raise ValueError(f"{path}.source_checksums:mapping_required")
+
+    def required_string(field_name: str) -> str:
+        field_value = value[field_name]
+        if (
+            not isinstance(field_value, str)
+            or not field_value
+            or field_value != field_value.strip()
+        ):
+            raise ValueError(f"{path}.{field_name}:string_required")
+        return field_value
+
+    def optional_string(field_name: str) -> str:
+        field_value = value.get(field_name, "")
+        if not isinstance(field_value, str) or field_value != field_value.strip():
+            raise ValueError(f"{path}.{field_name}:string_required")
+        return field_value
+
+    def string_tuple(field_name: str) -> tuple[str, ...]:
+        field_value = value.get(field_name, ())
+        if not isinstance(field_value, (tuple, list)) or any(
+            not isinstance(item, str) or not item or item != item.strip()
+            for item in field_value
+        ):
+            raise ValueError(f"{path}.{field_name}:sequence_required")
+        return tuple(field_value)
+
+    return DatasetSnapshot(
+        snapshot_ref=required_string("snapshot_ref"),
+        dataset_id=required_string("dataset_id"),
+        physical_table=required_string("physical_table"),
+        watermark=required_string("watermark"),
+        schema_fingerprint=required_string("schema_fingerprint"),
+        schema_fields=string_tuple("schema_fields"),
+        contract_ref=required_string("contract_ref"),
+        loaded_at=required_string("loaded_at"),
+        status=required_string("status"),
+        evidence_state=required_string("evidence_state"),
+        reconciliation_status=required_string("reconciliation_status"),
+        reconciliation_ref=optional_string("reconciliation_ref"),
+        logical_snapshot_id=optional_string("logical_snapshot_id"),
+        load_revision=optional_string("load_revision"),
+        release_ref=optional_string("release_ref"),
+        authority_record_ref=optional_string("authority_record_ref"),
+        rows_content_hash=optional_string("rows_content_hash"),
+        snapshot_id=optional_string("snapshot_id"),
+        source_load_manifest_ref=optional_string("source_load_manifest_ref"),
+        runtime_binding_ref=optional_string("runtime_binding_ref"),
+        source_checksums=tuple(
+            sorted(
+                (str(key), str(checksum)) for key, checksum in source_checksums.items()
+            )
+        ),
+        row_count=row_count,
+        date_range=string_tuple("date_range"),
+        no_data_partitions=string_tuple("no_data_partitions"),
+        no_data_partition_windows=string_tuple("no_data_partition_windows"),
+    )
 
 
 def dataset_snapshot_release_ref(
@@ -310,7 +487,9 @@ def dataset_release_authority_record_from_mapping(
         logical_snapshot_id=str(value.get("logical_snapshot_id") or ""),
         load_revision=str(value.get("load_revision") or ""),
         member_projections=members,
-        integrity_errors=tuple(str(item) for item in value.get("integrity_errors") or ()),
+        integrity_errors=tuple(
+            str(item) for item in value.get("integrity_errors") or ()
+        ),
     )
     errors = list(dataset_release_authority_integrity_errors(record))
     stored_refs = tuple(str(item) for item in value.get("snapshot_refs") or ())
@@ -325,12 +504,9 @@ def dataset_release_authority_integrity_errors(
     if type(record) is not DatasetReleaseAuthorityRecord:
         return ("dataset_release_authority_type",)
     errors: list[str] = []
-    if (
-        not record.member_projections
-        or any(
-            type(item) is not DatasetSnapshotImmutableProjection
-            for item in record.member_projections
-        )
+    if not record.member_projections or any(
+        type(item) is not DatasetSnapshotImmutableProjection
+        for item in record.member_projections
     ):
         errors.append("dataset_release_authority_member_count")
     if tuple(sorted(record.snapshot_refs)) != record.snapshot_refs:
@@ -352,14 +528,15 @@ def dataset_release_authority_integrity_errors(
         "release_ref": record.release_ref,
         "logical_snapshot_id": record.logical_snapshot_id,
         "load_revision": record.load_revision,
-        "member_projections": [
-            item.to_dict() for item in record.member_projections
-        ],
+        "member_projections": [item.to_dict() for item in record.member_projections],
     }
     expected_digest = _canonical_digest(content)
     if record.digest != expected_digest:
         errors.append("dataset_release_authority_digest")
-    if record.authority_record_ref != f"dataset-release-authority:sha256:{expected_digest}":
+    if (
+        record.authority_record_ref
+        != f"dataset-release-authority:sha256:{expected_digest}"
+    ):
         errors.append("dataset_release_authority_record_ref")
     if record.integrity_errors:
         errors.extend(record.integrity_errors)
@@ -395,8 +572,7 @@ def immutable_dataset_snapshot_projection(
     if isinstance(source_checksums, Mapping):
         checksum_pairs = tuple(
             sorted(
-                (str(key), str(checksum))
-                for key, checksum in source_checksums.items()
+                (str(key), str(checksum)) for key, checksum in source_checksums.items()
             )
         )
     elif isinstance(source_checksums, (tuple, list)):
@@ -430,16 +606,12 @@ def immutable_dataset_snapshot_projection(
         release_ref=str(payload.get("release_ref") or ""),
         rows_content_hash=str(payload.get("rows_content_hash") or ""),
         snapshot_id=str(payload.get("snapshot_id") or ""),
-        source_load_manifest_ref=str(
-            payload.get("source_load_manifest_ref") or ""
-        ),
+        source_load_manifest_ref=str(payload.get("source_load_manifest_ref") or ""),
         runtime_binding_ref=str(payload.get("runtime_binding_ref") or ""),
         source_checksums=checksum_pairs,
         row_count=row_count,
         date_range=_projection_string_tuple(payload.get("date_range")),
-        no_data_partitions=_projection_string_tuple(
-            payload.get("no_data_partitions")
-        ),
+        no_data_partitions=_projection_string_tuple(payload.get("no_data_partitions")),
         no_data_partition_windows=_projection_string_tuple(
             payload.get("no_data_partition_windows")
         ),
@@ -494,7 +666,10 @@ def canonical_dataset_release_members(dataset_id: str) -> tuple[str, ...]:
     normalized = tuple(sorted(members))
     for member in normalized:
         member_policy = registry.dataset(member).get("release_membership")
-        if not isinstance(member_policy, Mapping) or tuple(sorted(member_policy.get("dataset_ids") or ())) != normalized:
+        if (
+            not isinstance(member_policy, Mapping)
+            or tuple(sorted(member_policy.get("dataset_ids") or ())) != normalized
+        ):
             raise ValueError(f"dataset_release_membership_inconsistent:{dataset_id}")
     return normalized
 
@@ -505,16 +680,19 @@ def _snapshot_has_release_authority(
 ) -> bool:
     if not canonical_dataset_requires_release(snapshot.dataset_id):
         return True
-    if resolver is None or not snapshot.release_ref or not snapshot.authority_record_ref:
+    if (
+        resolver is None
+        or not snapshot.release_ref
+        or not snapshot.authority_record_ref
+    ):
         return False
     try:
         record = resolver.resolve_dataset_release(snapshot.release_ref)
     except (KeyError, TypeError, ValueError):
         return False
-    return (
-        not dataset_release_authority_integrity_errors(record)
-        and snapshot_matches_release_authority(snapshot, record)
-    )
+    return not dataset_release_authority_integrity_errors(
+        record
+    ) and snapshot_matches_release_authority(snapshot, record)
 
 
 def _canonical_digest(value: Mapping[str, Any]) -> str:
@@ -541,10 +719,14 @@ def validate_dataset_snapshot_release_payloads(
         )
     except (KeyError, StopIteration, ValueError) as exc:
         raise ValueError("dataset_snapshot_release_dataset_set") from exc
-    if dataset_ids != expected_dataset_ids or len(normalized) != len(expected_dataset_ids):
+    if dataset_ids != expected_dataset_ids or len(normalized) != len(
+        expected_dataset_ids
+    ):
         raise ValueError("dataset_snapshot_release_dataset_set")
     snapshot_refs = tuple(str(item.get("snapshot_ref") or "") for item in normalized)
-    if any(not ref for ref in snapshot_refs) or len(set(snapshot_refs)) != len(normalized):
+    if any(not ref for ref in snapshot_refs) or len(set(snapshot_refs)) != len(
+        normalized
+    ):
         raise ValueError("dataset_snapshot_release_snapshot_refs")
     logical_ids = {str(item.get("logical_snapshot_id") or "") for item in normalized}
     revisions = {str(item.get("load_revision") or "") for item in normalized}
@@ -566,7 +748,11 @@ def validate_dataset_snapshot_release_payloads(
         raise ValueError("dataset_snapshot_release_ref")
     allowed_evidence = {"claim_ready", "context_only", "blocked"}
     allowed_reconciliation = {
-        "matched", "mismatch", "incomplete", "not_comparable", "not_applicable"
+        "matched",
+        "mismatch",
+        "incomplete",
+        "not_comparable",
+        "not_applicable",
     }
     for item in normalized:
         if item.get("status") not in {"active", "no_data"}:
@@ -584,7 +770,9 @@ def validate_dataset_snapshot_release_payloads(
         if not str(item.get("schema_fingerprint") or ""):
             raise ValueError("dataset_snapshot_release_schema")
         row_hash = str(item.get("rows_content_hash") or "")
-        if len(row_hash) != 64 or any(character not in "0123456789abcdef" for character in row_hash):
+        if len(row_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in row_hash
+        ):
             raise ValueError("dataset_snapshot_release_rows_hash")
     return normalized, logical_id, revision, expected_release_ref
 

@@ -10,6 +10,7 @@ from bi_agent.runtime.analysis_contracts import (
     ResolvedWindow,
     query_contract_signature,
 )
+from bi_agent.runtime.temporal_comparison import EffectiveTemporalComparison
 
 
 class WindowMetricEvidenceError(ValueError):
@@ -140,7 +141,9 @@ def aggregate_window_metric_comparison(
         raise WindowMetricEvidenceError("window_metric_target_cardinality_invalid")
     if not baselines:
         raise WindowMetricEvidenceError("window_metric_baseline_missing")
-    target = _aggregate_window(targets[0], rows_by_window[targets[0].window_id], metric_id)
+    target = _aggregate_window(
+        targets[0], rows_by_window[targets[0].window_id], metric_id
+    )
     aggregated_baselines = tuple(
         _aggregate_window(window, rows_by_window[window.window_id], metric_id)
         for window in baselines
@@ -152,9 +155,7 @@ def aggregate_window_metric_comparison(
             if baseline.window_id == primary_baseline_window_id
         )
         if len(primary_candidates) != 1:
-            raise WindowMetricEvidenceError(
-                "window_metric_primary_baseline_invalid"
-            )
+            raise WindowMetricEvidenceError("window_metric_primary_baseline_invalid")
         primary_baseline = primary_candidates[0]
     else:
         primary_baseline = aggregated_baselines[0]
@@ -170,6 +171,73 @@ def aggregate_window_metric_comparison(
     )
 
 
+def validate_event_window_metric_authority(
+    contract: QueryContract,
+    temporal_authority: EffectiveTemporalComparison,
+    *,
+    primary_baseline_window_id: str,
+) -> None:
+    if (
+        not isinstance(temporal_authority, EffectiveTemporalComparison)
+        or temporal_authority.mode != "event_relative"
+        or not temporal_authority.event_ref
+        or temporal_authority.baseline_window is None
+    ):
+        raise WindowMetricEvidenceError("event_window_temporal_authority_invalid")
+    if not isinstance(contract, QueryContract):
+        raise WindowMetricEvidenceError("event_window_query_contract_invalid")
+    windows = tuple(contract.resolved_windows)
+    targets = tuple(window for window in windows if window.role == "target")
+    baselines = tuple(window for window in windows if window.role == "baseline")
+    if (
+        len(windows) != 2
+        or len(targets) != 1
+        or len(baselines) != 1
+        or targets[0].window_id != "target_day"
+        or baselines[0].window_id != "baseline_window"
+        or primary_baseline_window_id != baselines[0].window_id
+        or tuple(contract.window_refs) != (targets[0].window_id, baselines[0].window_id)
+        or tuple(contract.result_shape.required_window_ids)
+        != tuple(contract.window_refs)
+    ):
+        raise WindowMetricEvidenceError("event_window_physical_windows_invalid")
+    _validate_resolved_window_against_authority(
+        targets[0],
+        temporal_authority.target_window,
+    )
+    _validate_resolved_window_against_authority(
+        baselines[0],
+        temporal_authority.baseline_window,
+    )
+
+
+def _validate_resolved_window_against_authority(
+    window: ResolvedWindow,
+    authority_window: Any,
+) -> None:
+    try:
+        start = date.fromisoformat(str(authority_window.start or ""))
+        end = date.fromisoformat(str(authority_window.end or ""))
+    except (AttributeError, ValueError) as exc:
+        raise WindowMetricEvidenceError(
+            "event_window_temporal_material_invalid"
+        ) from exc
+    required_days = (end - start).days + 1
+    aggregation = authority_window.aggregation
+    if (
+        required_days <= 0
+        or not isinstance(aggregation, str)
+        or not aggregation
+        or window.role != authority_window.role
+        or window.start_inclusive != start.isoformat()
+        or window.end_exclusive != (end + timedelta(days=1)).isoformat()
+        or window.required_complete_days != required_days
+        or window.source_watermark_requirement != end.isoformat()
+        or window.aggregation != aggregation
+    ):
+        raise WindowMetricEvidenceError("event_window_temporal_material_drift")
+
+
 def _validate_contract(
     contract: QueryContract,
     *,
@@ -183,7 +251,9 @@ def _validate_contract(
     except (TypeError, ValueError) as exc:
         raise WindowMetricEvidenceError("window_metric_query_contract_invalid") from exc
     if not contract.contract_signature or signature != contract.contract_signature:
-        raise WindowMetricEvidenceError("window_metric_query_contract_signature_invalid")
+        raise WindowMetricEvidenceError(
+            "window_metric_query_contract_signature_invalid"
+        )
     if contract.query_intent not in allowed_query_intents:
         raise WindowMetricEvidenceError("window_metric_query_intent_invalid")
     if (
@@ -199,17 +269,22 @@ def _validate_contract(
     window_ids = tuple(window.window_id for window in windows)
     if not windows or len(window_ids) != len(set(window_ids)):
         raise WindowMetricEvidenceError("window_metric_window_contract_invalid")
-    if (
-        window_ids != tuple(contract.window_refs)
-        or window_ids != tuple(contract.result_shape.required_window_ids)
+    if window_ids != tuple(contract.window_refs) or window_ids != tuple(
+        contract.result_shape.required_window_ids
     ):
-        raise WindowMetricEvidenceError(
-            "window_metric_window_contract_order_invalid"
-        )
-    if any(window.role not in {"target", "baseline", "reference"} for window in windows):
+        raise WindowMetricEvidenceError("window_metric_window_contract_order_invalid")
+    if any(
+        window.role not in {"target", "baseline", "reference"} for window in windows
+    ):
         raise WindowMetricEvidenceError("window_metric_window_role_invalid")
     if any(
-        window.aggregation not in {"daily_total", "mean_of_complete_days", "daily_series"}
+        window.aggregation
+        not in {
+            "daily_total",
+            "sum_of_complete_days",
+            "mean_of_complete_days",
+            "daily_series",
+        }
         for window in windows
     ):
         raise WindowMetricEvidenceError("window_metric_aggregation_unsupported")
@@ -231,8 +306,7 @@ def _aggregate_window(
     if window.required_complete_days <= 0:
         raise WindowMetricEvidenceError("window_metric_required_days_invalid")
     expected_keys = tuple(
-        (start + timedelta(days=offset)).isoformat()
-        for offset in range(interval_days)
+        (start + timedelta(days=offset)).isoformat() for offset in range(interval_days)
     )
     observations = tuple(
         sorted(
@@ -256,16 +330,19 @@ def _aggregate_window(
         ):
             raise WindowMetricEvidenceError("window_metric_daily_total_incomplete")
         value = observations[0].value
-    elif window.aggregation == "mean_of_complete_days":
+    elif window.aggregation in {
+        "sum_of_complete_days",
+        "mean_of_complete_days",
+    }:
         if (
             interval_days != window.required_complete_days
             or len(observations) != window.required_complete_days
             or actual_keys != expected_keys
         ):
             raise WindowMetricEvidenceError("window_metric_complete_days_invalid")
-        value = sum((item.value for item in observations), Decimal(0)) / Decimal(
-            window.required_complete_days
-        )
+        value = sum((item.value for item in observations), Decimal(0))
+        if window.aggregation == "mean_of_complete_days":
+            value /= Decimal(window.required_complete_days)
     else:
         raise WindowMetricEvidenceError("window_metric_aggregation_unsupported")
     return WindowMetricAggregate(

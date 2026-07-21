@@ -8,11 +8,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
     DIMENSION_PRESENCE_POLICIES,
+    CompletenessFailureClass,
     CompletenessReport,
     MetricBinding,
     QueryContract,
     QueryResultEnvelope,
     canonical_exact_additive_count,
+    completeness_state_from_assertions,
 )
 from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseResolver,
@@ -57,6 +59,27 @@ _JOIN_AUDIT_FIELDS = (
     "__join_unmatched_rows",
 )
 
+_CONTEXT_ONLY_QUERY_INTENTS = frozenset(
+    {
+        "data_quality_probe",
+        "event_context_probe",
+        "association_outcome_timeseries",
+        "association_candidate_timeseries",
+        "channel_context_probe",
+        "channel_context_total_probe",
+        "source_reconciliation_probe",
+    }
+)
+
+_UNRECONCILED_DIMENSION_QUERY_INTENTS = frozenset(
+    {
+        "data_quality_probe",
+        "association_outcome_timeseries",
+        "association_candidate_timeseries",
+        "channel_context_probe",
+        "source_reconciliation_probe",
+    }
+)
 
 
 def validate_query_result(
@@ -101,11 +124,8 @@ def validate_query_result(
         (pending_reconciliation,) if pending_reconciliation is not None else ()
     )
     failure_reasons = _failure_reasons(assertions)
-    completeness_status, analysis_readiness = _statuses(
-        assertions,
-        failure_reasons=failure_reasons,
-        row_count=result.row_count,
-        execution_status=result.execution_status,
+    completeness_status, analysis_readiness = completeness_state_from_assertions(
+        assertions
     )
     window_day_counts, _ = _window_membership(contract, rows)
     coverage_summary = {
@@ -141,7 +161,7 @@ def validate_query_result(
         evidence_authority._runtime_writer() if evidence_authority is not None else None
     )
     if writer is not None:
-        report = _recorded_or_blocked(report, writer)
+        report = _recorded_report(report, writer)
     return report
 
 
@@ -184,13 +204,6 @@ def validate_query_set(
             _join_cardinality_assertion(contract, result),
             _paired_windows_assertion(contract, result),
         )
-        added_reasons = _failure_reasons(set_assertions)
-        retained_reasons = tuple(
-            reason
-            for reason in report.failure_reasons
-            if not reason.startswith("dimension_total_reconciliation_pending:")
-        )
-        failure_reasons = _dedupe((*retained_reasons, *added_reasons))
         base_assertions = tuple(
             assertion
             for assertion in report.assertion_results
@@ -201,23 +214,8 @@ def validate_query_set(
             }
         )
         assertion_results = (*base_assertions, *set_assertions)
-        status = report.completeness_status
-        readiness = report.analysis_readiness
-        if _report_pending_reconciliation_only(report):
-            status, readiness = _statuses(
-                assertion_results,
-                failure_reasons=failure_reasons,
-                row_count=result.row_count,
-                execution_status=result.execution_status,
-            )
-        elif added_reasons and status not in {
-            "invalid",
-            "truncated",
-            "stale",
-            "empty",
-        }:
-            status = "partial"
-            readiness = "blocked"
+        failure_reasons = _failure_reasons(assertion_results)
+        status, readiness = completeness_state_from_assertions(assertion_results)
         coverage_summary = {
             **dict(report.coverage_summary),
             "query_set_size": len(contracts),
@@ -242,43 +240,29 @@ def validate_query_set(
         evidence_authority._runtime_writer() if evidence_authority is not None else None
     )
     if writer is not None:
-        output = tuple(_recorded_or_blocked(report, writer) for report in output)
+        output = tuple(_recorded_report(report, writer) for report in output)
     return output
 
 
-def _recorded_or_blocked(
+def _recorded_report(
     report: CompletenessReport,
     writer: RuntimeEvidenceWriter,
 ) -> CompletenessReport:
     try:
         record = _record_completeness(writer, report)
-        invalid = (
-            runtime_evidence_record_integrity_errors(record)
-            or record.report_ref != report.report_ref
-            or record.query_contract_ref != report.query_contract_ref
-            or record.result_ref != report.result_ref
-            or canonical_digest(record.report_payload)
-            != canonical_digest(report.to_dict())
-        )
-    except (AttributeError, EvidenceIntegrityError, TypeError, ValueError):
-        invalid = True
-    if not invalid:
-        return report
-    assertion = {
-        "assertion": "runtime_evidence_authority_write",
-        "passed": False,
-        "failure_reasons": ("runtime_evidence_writer_record_invalid",),
-        "details": {"authority_status": "invalid"},
-    }
-    return replace(
-        report,
-        completeness_status="invalid",
-        analysis_readiness="blocked",
-        assertion_results=(*report.assertion_results, assertion),
-        failure_reasons=_dedupe(
-            (*report.failure_reasons, "runtime_evidence_writer_record_invalid")
-        ),
-    )
+    except EvidenceIntegrityError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError("runtime_evidence_writer_record_invalid") from exc
+    if (
+        runtime_evidence_record_integrity_errors(record)
+        or record.report_ref != report.report_ref
+        or record.query_contract_ref != report.query_contract_ref
+        or record.result_ref != report.result_ref
+        or canonical_digest(record.report_payload) != canonical_digest(report.to_dict())
+    ):
+        raise EvidenceIntegrityError("runtime_evidence_writer_record_invalid")
+    return report
 
 
 def _execution_assertion(
@@ -287,24 +271,38 @@ def _execution_assertion(
     rows: tuple[Mapping[str, Any], ...],
 ) -> Mapping[str, Any]:
     reasons = []
-    if result.execution_status != "succeeded":
+    failure_classes = []
+    if result.execution_status == "failed":
         reasons.append(f"execution_status:{result.execution_status}")
-        reasons.append(result.failure_reason or "execution_failure:unspecified")
+        reasons.append(result.failure_reason)
+        failure_classes.append(CompletenessFailureClass.EXECUTION_TECHNICAL)
+    elif result.execution_status == "blocked":
+        reasons.append(f"execution_status:{result.execution_status}")
+        reasons.append(result.failure_reason)
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if result.query_contract_ref != contract.query_contract_id:
         reasons.append(
             "query_contract_ref_mismatch:"
             f"{result.query_contract_ref}:{contract.query_contract_id}"
         )
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if tuple(result.source_snapshot_refs) != tuple(contract.dataset_snapshot_refs):
         reasons.append(
             "source_snapshot_refs_mismatch:"
             f"{','.join(result.source_snapshot_refs)}:"
             f"{','.join(contract.dataset_snapshot_refs)}"
         )
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if result.row_count != len(rows):
         reasons.append(f"row_count_mismatch:{result.row_count}:{len(rows)}")
-    reasons.extend(_metric_reconciliation_contract_reasons(contract))
-    reasons.extend(_join_expectation_contract_reasons(contract))
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
+    contract_reasons = (
+        *_metric_reconciliation_contract_reasons(contract),
+        *_join_expectation_contract_reasons(contract),
+    )
+    reasons.extend(contract_reasons)
+    if contract_reasons:
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     try:
         rows_content_hash = canonical_result_rows_hash(
             rows,
@@ -318,28 +316,43 @@ def _execution_assertion(
         contract.dataset_snapshot_refs,
         query_contract_ref=contract.query_contract_id,
         execution_attempt_ref=result.execution_attempt_ref,
-        rows_content_hash=(rows_content_hash if result.execution_status == "succeeded" else ""),
+        rows_content_hash=(
+            rows_content_hash if result.execution_status == "succeeded" else ""
+        ),
     )
     if result.result_ref != expected_refs.result_ref:
         reasons.append("result_ref_mismatch")
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if result.rows_ref != expected_refs.rows_ref:
         reasons.append("rows_ref_mismatch")
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if result.completeness_report_ref != expected_refs.completeness_report_ref:
         reasons.append("completeness_report_ref_mismatch")
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if not result.execution_attempt_ref:
         reasons.append("missing_execution_attempt_ref")
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     if result.execution_status == "succeeded":
         if not result.query_id:
             reasons.append("missing_query_id")
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if not result.query_hash:
             reasons.append("missing_query_hash")
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if not result.result_ref:
             reasons.append("missing_result_ref")
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if not result.rows_ref:
             reasons.append("missing_rows_ref")
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if not result.completeness_report_ref:
             reasons.append("missing_completeness_report_ref")
-    return _assertion("execution_succeeded", reasons)
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
+    return _assertion(
+        "execution_succeeded",
+        reasons,
+        failure_classes=failure_classes,
+    )
 
 
 def _watermark_assertion(
@@ -349,23 +362,28 @@ def _watermark_assertion(
     release_resolver: DatasetReleaseResolver | None,
 ) -> Mapping[str, Any]:
     reasons = []
+    failure_classes = []
     actual_refs = tuple(item.snapshot_ref for item in snapshots)
-    if set(actual_refs) != set(contract.dataset_snapshot_refs) or len(actual_refs) != len(
-        contract.dataset_snapshot_refs
-    ):
+    if set(actual_refs) != set(contract.dataset_snapshot_refs) or len(
+        actual_refs
+    ) != len(contract.dataset_snapshot_refs):
         reasons.append(
             "snapshot_refs_mismatch:"
             f"{','.join(actual_refs)}:{','.join(contract.dataset_snapshot_refs)}"
         )
+        failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     required_values = []
     for window in contract.resolved_windows:
         try:
-            required_values.append(date.fromisoformat(window.source_watermark_requirement))
+            required_values.append(
+                date.fromisoformat(window.source_watermark_requirement)
+            )
         except (TypeError, ValueError):
             reasons.append(
                 "source_watermark_requirement_invalid:"
                 f"{window.window_id}:{window.source_watermark_requirement}"
             )
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
     required = max(required_values) if required_values else None
     observed_by_ref = {}
     for snapshot in snapshots:
@@ -373,27 +391,19 @@ def _watermark_assertion(
             reasons.append(
                 f"snapshot_status_invalid:{snapshot.snapshot_ref}:{snapshot.status}"
             )
-        if snapshot.evidence_state != "claim_ready" and contract.query_intent not in {
-            "data_quality_probe",
-            "event_context_probe",
-            "association_outcome_timeseries",
-            "association_candidate_timeseries",
-            "channel_context_probe",
-            "source_reconciliation_probe",
-        }:
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
+        if (
+            snapshot.evidence_state != "claim_ready"
+            and contract.query_intent not in _CONTEXT_ONLY_QUERY_INTENTS
+        ):
             reasons.append(
                 "snapshot_evidence_state_invalid:"
                 f"{snapshot.snapshot_ref}:{snapshot.evidence_state}"
             )
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if (
             contract.dimension_bindings
-            and contract.query_intent not in {
-                "data_quality_probe",
-                "association_outcome_timeseries",
-                "association_candidate_timeseries",
-                "channel_context_probe",
-                "source_reconciliation_probe",
-            }
+            and contract.query_intent not in _UNRECONCILED_DIMENSION_QUERY_INTENTS
             and snapshot.reconciliation_ref
             and snapshot.reconciliation_status != "matched"
         ):
@@ -401,7 +411,11 @@ def _watermark_assertion(
                 "snapshot_reconciliation_status_invalid:"
                 f"{snapshot.snapshot_ref}:{snapshot.reconciliation_status}"
             )
-        if canonical_dataset_requires_release(snapshot.dataset_id) or snapshot.release_ref:
+            failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
+        if (
+            canonical_dataset_requires_release(snapshot.dataset_id)
+            or snapshot.release_ref
+        ):
             authority_valid = False
             if (
                 release_resolver is not None
@@ -413,18 +427,17 @@ def _watermark_assertion(
                     authority = release_resolver.resolve_dataset_release(
                         snapshot.release_ref
                     )
-                    authority_valid = (
-                        not dataset_release_authority_integrity_errors(authority)
-                        and snapshot_matches_release_authority(snapshot, authority)
-                    )
+                    authority_valid = not dataset_release_authority_integrity_errors(
+                        authority
+                    ) and snapshot_matches_release_authority(snapshot, authority)
                 except (KeyError, TypeError, ValueError):
                     authority_valid = False
             if not authority_valid:
-                reasons.append(
-                    f"snapshot_release_unverified:{snapshot.snapshot_ref}"
-                )
+                reasons.append(f"snapshot_release_unverified:{snapshot.snapshot_ref}")
+                failure_classes.append(CompletenessFailureClass.AUTHORITY_INTEGRITY)
         if not snapshot.schema_fingerprint:
             reasons.append(f"snapshot_schema_missing:{snapshot.snapshot_ref}")
+            failure_classes.append(CompletenessFailureClass.SCHEMA_INTEGRITY)
         required_source_fields = {
             field
             for binding in contract.metric_bindings
@@ -441,6 +454,7 @@ def _watermark_assertion(
                 f"snapshot_schema_fields_missing:{snapshot.snapshot_ref}:"
                 + ",".join(missing_fields)
             )
+            failure_classes.append(CompletenessFailureClass.SCHEMA_INTEGRITY)
         try:
             observed = date.fromisoformat(snapshot.watermark)
         except (TypeError, ValueError):
@@ -448,20 +462,19 @@ def _watermark_assertion(
             reasons.append(
                 f"snapshot_watermark_invalid:{snapshot.snapshot_ref}:{snapshot.watermark}"
             )
+            failure_classes.append(CompletenessFailureClass.SCHEMA_INTEGRITY)
         observed_by_ref[snapshot.snapshot_ref] = snapshot.watermark
         if observed is not None and required is not None and observed < required:
             reasons.append(
                 "snapshot_stale:"
-                + (
-                    f"{snapshot.snapshot_ref}:"
-                    if len(snapshots) > 1
-                    else ""
-                )
+                + (f"{snapshot.snapshot_ref}:" if len(snapshots) > 1 else "")
                 + f"{observed.isoformat()}:{required.isoformat()}"
             )
+            failure_classes.append(CompletenessFailureClass.FRESHNESS)
     return _assertion(
         "snapshot_watermark",
         reasons,
+        failure_classes=failure_classes,
         details={
             "observed": observed_by_ref,
             "required": required.isoformat() if required is not None else "",
@@ -479,15 +492,16 @@ def _normalize_snapshots(
     if isinstance(snapshots, Mapping):
         values = tuple(snapshots.values())
         if any(
-            not isinstance(item, DatasetSnapshot)
-            or str(key) != item.snapshot_ref
+            not isinstance(item, DatasetSnapshot) or str(key) != item.snapshot_ref
             for key, item in snapshots.items()
         ):
             return ()
         return values
     if isinstance(snapshots, Sequence) and not isinstance(snapshots, (str, bytes)):
         values = tuple(snapshots)
-        return values if all(isinstance(item, DatasetSnapshot) for item in values) else ()
+        return (
+            values if all(isinstance(item, DatasetSnapshot) for item in values) else ()
+        )
     return ()
 
 
@@ -497,10 +511,18 @@ def _required_fields_assertion(
     rows: tuple[Mapping[str, Any], ...],
 ) -> Mapping[str, Any]:
     reasons = []
+    failure_classes = []
+    mean_normalized_window_ids = {
+        window.window_id
+        for window in contract.resolved_windows
+        if contract.result_shape.result_semantics == "complete_window_aggregate"
+        and window.aggregation == "mean_of_complete_days"
+    }
     if rows:
         for field in contract.result_shape.required_fields:
             if any(field not in row for row in rows):
                 reasons.append(f"missing_field:{field}")
+                failure_classes.append(CompletenessFailureClass.AVAILABILITY)
         for binding in contract.metric_bindings:
             for row in rows:
                 if binding.metric_id not in row:
@@ -508,17 +530,22 @@ def _required_fields_assertion(
                 value = row[binding.metric_id]
                 if value is None:
                     reasons.append(f"null_required_metric:{binding.metric_id}")
+                    failure_classes.append(CompletenessFailureClass.AVAILABILITY)
                     break
                 if not _finite_number(value):
                     reasons.append(f"invalid_type:{binding.metric_id}")
+                    failure_classes.append(CompletenessFailureClass.SCHEMA_INTEGRITY)
                     break
-                if binding.reconciliation_strategy == "exact_additive_count" and (
-                    canonical_exact_additive_count(value) is None
+                if (
+                    binding.reconciliation_strategy == "exact_additive_count"
+                    and str(row.get("window_id") or "")
+                    not in mean_normalized_window_ids
+                    and canonical_exact_additive_count(value) is None
                 ):
                     reasons.append(
-                        "invalid_type:"
-                        f"{binding.metric_id}:exact_additive_count"
+                        f"invalid_type:{binding.metric_id}:exact_additive_count"
                     )
+                    failure_classes.append(CompletenessFailureClass.SCHEMA_INTEGRITY)
                     break
         expected_grain = tuple(contract.result_shape.grain)
         observed_grain = tuple(result.observed_grain)
@@ -527,9 +554,11 @@ def _required_fields_assertion(
                 "observed_grain_mismatch:"
                 f"{','.join(expected_grain)}:{','.join(observed_grain)}"
             )
+            failure_classes.append(CompletenessFailureClass.RESULT_CONSISTENCY)
     return _assertion(
         "required_fields",
         _dedupe(reasons),
+        failure_classes=failure_classes,
         details={
             "required": tuple(contract.result_shape.required_fields),
             "observed_grain": tuple(result.observed_grain),
@@ -542,19 +571,23 @@ def _required_windows_assertion(
     rows: tuple[Mapping[str, Any], ...],
 ) -> Mapping[str, Any]:
     observed = {
-        str(row["window_id"])
-        for row in rows
-        if row.get("window_id") not in (None, "")
+        str(row["window_id"]) for row in rows if row.get("window_id") not in (None, "")
     }
     reasons = ["empty_result"] if not rows else []
-    reasons.extend(
+    missing_windows = tuple(
         f"missing_required_window:{window_id}"
         for window_id in contract.result_shape.required_window_ids
         if window_id not in observed
     )
+    reasons.extend(missing_windows)
+    failure_classes = (
+        *((CompletenessFailureClass.EMPTY_RESULT,) if not rows else ()),
+        *((CompletenessFailureClass.AVAILABILITY,) if missing_windows else ()),
+    )
     return _assertion(
         "required_windows",
         reasons,
+        failure_classes=failure_classes,
         details={
             "required": tuple(contract.result_shape.required_window_ids),
             "observed": tuple(sorted(observed)),
@@ -575,7 +608,12 @@ def _complete_days_assertion(
                 f"incomplete_window:{window.window_id}:"
                 f"{actual}/{window.required_complete_days}"
             )
-    return _assertion("complete_window_days", reasons, details=dict(counts))
+    return _assertion(
+        "complete_window_days",
+        reasons,
+        failure_classes=((CompletenessFailureClass.AVAILABILITY,) if reasons else ()),
+        details=dict(counts),
+    )
 
 
 def _unique_key_assertion(
@@ -599,6 +637,9 @@ def _unique_key_assertion(
     return _assertion(
         "unique_key",
         _dedupe(reasons),
+        failure_classes=(
+            (CompletenessFailureClass.RESULT_CONSISTENCY,) if reasons else ()
+        ),
         details={"fields": key_fields, "unique_count": len(seen)},
     )
 
@@ -609,7 +650,9 @@ def _denominator_assertion(
 ) -> Mapping[str, Any]:
     reasons = []
     ratio_bindings = tuple(
-        binding for binding in contract.metric_bindings if binding.aggregation == "ratio"
+        binding
+        for binding in contract.metric_bindings
+        if binding.aggregation == "ratio"
     )
     for binding in ratio_bindings:
         for row in rows:
@@ -627,7 +670,13 @@ def _denominator_assertion(
                 reasons.append(f"zero_denominator_non_null:{binding.metric_id}")
             if value is not None and not _finite_number(value):
                 reasons.append(f"invalid_ratio:{binding.metric_id}")
-    return _assertion("valid_denominators", _dedupe(reasons))
+    return _assertion(
+        "valid_denominators",
+        _dedupe(reasons),
+        failure_classes=(
+            (CompletenessFailureClass.ANALYTICAL_QUALITY,) if reasons else ()
+        ),
+    )
 
 
 def _provider_bound_assertion(result: QueryResultEnvelope) -> Mapping[str, Any]:
@@ -648,7 +697,14 @@ def _provider_bound_assertion(result: QueryResultEnvelope) -> Mapping[str, Any]:
         reasons.append(
             f"provider_truncated:rows_before_limit_at_least={rows_before_limit}"
         )
-    return _assertion("provider_not_truncated", _dedupe(reasons), details=dict(stats))
+    return _assertion(
+        "provider_not_truncated",
+        _dedupe(reasons),
+        failure_classes=(
+            (CompletenessFailureClass.PROVIDER_TRUNCATION,) if reasons else ()
+        ),
+        details=dict(stats),
+    )
 
 
 def _aggregate_only_assertion(
@@ -657,16 +713,14 @@ def _aggregate_only_assertion(
 ) -> Mapping[str, Any]:
     allowed = frozenset(contract.result_shape.required_fields)
     unreviewed = sorted(
-        {
-            str(field)
-            for row in rows
-            for field in row
-            if str(field) not in allowed
-        }
+        {str(field) for row in rows for field in row if str(field) not in allowed}
     )
     return _assertion(
         "aggregate_only",
         tuple(f"unreviewed_output_field:{field}" for field in unreviewed),
+        failure_classes=(
+            (CompletenessFailureClass.SCHEMA_INTEGRITY,) if unreviewed else ()
+        ),
         details={
             "reviewed_output_fields": tuple(contract.result_shape.required_fields),
             "unreviewed_output_fields": tuple(unreviewed),
@@ -684,10 +738,8 @@ def _pending_reconciliation_assertion(
     assertion_name = _reconciliation_assertion_name(contract)
     return _assertion(
         assertion_name,
-        (
-            "dimension_total_reconciliation_pending:"
-            f"{binding.reference_query_role_ref}",
-        ),
+        (f"dimension_total_reconciliation_pending:{binding.reference_query_role_ref}",),
+        failure_classes=(CompletenessFailureClass.RECONCILIATION_PENDING,),
         details=_reconciliation_validation_details(
             contract,
             result,
@@ -716,10 +768,9 @@ def _report_pending_reconciliation_only(
         if assertion["assertion"] not in reconciliation_names
     ):
         return False
-    return bool(report.failure_reasons) and all(
-        reason.startswith("dimension_total_reconciliation_pending:")
-        for reason in report.failure_reasons
-    )
+    return set(pending_assertions[0]["failure_classes"]) == {
+        CompletenessFailureClass.RECONCILIATION_PENDING.value
+    }
 
 
 def _reconciliation_validation_details(
@@ -757,14 +808,10 @@ def _reconciliation_validation_details(
         total_contract, total_result, total_report = reference
         details.update(
             {
-                "validation_query_contract_ref": (
-                    total_contract.query_contract_id
-                ),
+                "validation_query_contract_ref": (total_contract.query_contract_id),
                 "validation_result_ref": total_result.result_ref,
                 "validation_report_ref": total_report.report_ref,
-                "validation_snapshot_refs": tuple(
-                    total_result.source_snapshot_refs
-                ),
+                "validation_snapshot_refs": tuple(total_result.source_snapshot_refs),
             }
         )
     return details
@@ -780,9 +827,7 @@ def _dimension_total_assertion(
 ) -> Mapping[str, Any]:
     assertion_name = _reconciliation_assertion_name(contract)
     if not contract.dimension_bindings or contract.reconciliation_binding is None:
-        return _assertion(
-            assertion_name, (), details={"applicable": False}
-        )
+        return _assertion(assertion_name, (), details={"applicable": False})
 
     standalone_ready = (
         report.completeness_status == "complete"
@@ -796,6 +841,7 @@ def _dimension_total_assertion(
                 f"{contract.query_contract_id}:"
                 f"{report.completeness_status}:{report.analysis_readiness}",
             ),
+            failure_classes=(CompletenessFailureClass.RECONCILIATION,),
             details=_reconciliation_validation_details(
                 contract,
                 result,
@@ -819,6 +865,7 @@ def _dimension_total_assertion(
         return _assertion(
             assertion_name,
             reference_reasons,
+            failure_classes=(CompletenessFailureClass.RECONCILIATION,),
             details=validation_details,
         )
     if reference is None:
@@ -836,6 +883,7 @@ def _dimension_total_assertion(
                 f"{total_report.completeness_status}:"
                 f"{total_report.analysis_readiness}",
             ),
+            failure_classes=(CompletenessFailureClass.RECONCILIATION,),
             details={
                 **validation_details,
                 "validation_query_contract_ref": total_contract.query_contract_id,
@@ -910,6 +958,7 @@ def _dimension_total_assertion(
     return _assertion(
         assertion_name,
         reasons,
+        failure_classes=((CompletenessFailureClass.RECONCILIATION,) if reasons else ()),
         details=validation_details,
     )
 
@@ -929,9 +978,7 @@ def _ratio_reconciliation_reasons(
         numerator = total_numerator.get(key)
         denominator = total_denominator.get(key)
         if None in (ratio, numerator, denominator):
-            reasons.append(
-                f"ratio_component_missing:{binding.metric_id}:{key[0]}"
-            )
+            reasons.append(f"ratio_component_missing:{binding.metric_id}:{key[0]}")
             continue
         expected = None if denominator == 0 else float(numerator) / float(denominator)
         if expected is None:
@@ -951,14 +998,10 @@ def _ratio_reconciliation_reasons(
         denominator = row.get(binding.denominator_metric)
         window_id = str(row.get("window_id") or "")
         if None in (ratio, numerator, denominator):
-            reasons.append(
-                f"ratio_component_missing:{binding.metric_id}:{window_id}"
-            )
+            reasons.append(f"ratio_component_missing:{binding.metric_id}:{window_id}")
             continue
         if not all(_finite_number(value) for value in (ratio, numerator, denominator)):
-            reasons.append(
-                f"ratio_component_invalid:{binding.metric_id}:{window_id}"
-            )
+            reasons.append(f"ratio_component_invalid:{binding.metric_id}:{window_id}")
             continue
         if denominator == 0:
             reasons.append(
@@ -993,20 +1036,11 @@ def _metric_reconciliation_contract_reasons(
             or not math.isfinite(float(tolerance))
             or tolerance < 0
         ):
-            reasons.append(
-                f"invalid_reconciliation_tolerance:{binding.metric_id}"
-            )
+            reasons.append(f"invalid_reconciliation_tolerance:{binding.metric_id}")
         if binding.reconciliation_strategy not in strategies:
-            reasons.append(
-                f"invalid_reconciliation_strategy:{binding.metric_id}"
-            )
-        if (
-            binding.reconciliation_strategy == "exact_additive_count"
-            and tolerance != 0
-        ):
-            reasons.append(
-                f"exact_count_tolerance_must_be_zero:{binding.metric_id}"
-            )
+            reasons.append(f"invalid_reconciliation_strategy:{binding.metric_id}")
+        if binding.reconciliation_strategy == "exact_additive_count" and tolerance != 0:
+            reasons.append(f"exact_count_tolerance_must_be_zero:{binding.metric_id}")
         if binding.reconciliation_strategy == "ratio_from_components":
             if (
                 not binding.numerator_metric
@@ -1085,6 +1119,9 @@ def _join_cardinality_assertion(
     return _assertion(
         "join_cardinality",
         reasons,
+        failure_classes=(
+            (CompletenessFailureClass.RESULT_CONSISTENCY,) if reasons else ()
+        ),
         details={
             "applicable": True,
             "expected": expected,
@@ -1104,6 +1141,7 @@ def _paired_windows_assertion(
         return _assertion(
             "paired_target_baseline",
             (f"dimension_presence_policy_invalid:{policy or 'missing'}",),
+            failure_classes=(CompletenessFailureClass.AUTHORITY_INTEGRITY,),
             details={"applicable": False, "dimension_presence_policy": policy},
         )
     if not contract.dimension_bindings:
@@ -1141,8 +1179,7 @@ def _paired_windows_assertion(
         roles_by_dimension.items(), key=lambda item: repr(item[0])
     ):
         label = ",".join(
-            f"{dimension_id}:{value}"
-            for dimension_id, value in zip(dimension_ids, key)
+            f"{dimension_id}:{value}" for dimension_id, value in zip(dimension_ids, key)
         )
         if "target" not in roles:
             reasons.append(f"unpaired_dimension:{label}:missing_target")
@@ -1151,6 +1188,9 @@ def _paired_windows_assertion(
     return _assertion(
         "paired_target_baseline",
         reasons,
+        failure_classes=(
+            (CompletenessFailureClass.RESULT_CONSISTENCY,) if reasons else ()
+        ),
         details={
             "applicable": True,
             "dimension_ids": dimension_ids,
@@ -1177,8 +1217,7 @@ def _total_reference(
             matches.append((candidate, result, report))
     if not matches:
         return None, (
-            "dimension_total_reference_missing:"
-            f"{binding.reference_query_role_ref}",
+            f"dimension_total_reference_missing:{binding.reference_query_role_ref}",
         )
     if len(matches) != 1:
         return None, (
@@ -1190,8 +1229,7 @@ def _total_reference(
     if candidate.contract_signature != binding.reference_contract_signature:
         return reference, ("dimension_total_reference_signature_mismatch",)
     overall_channel = (
-        _reconciliation_assertion_name(contract)
-        == "overall_channel_reconciliation"
+        _reconciliation_assertion_name(contract) == "overall_channel_reconciliation"
     )
     scope_fields = (
         "analysis_contract_ref",
@@ -1209,7 +1247,17 @@ def _total_reference(
     )
     if candidate.dimension_bindings:
         mismatches = (*mismatches, "dimension_total_scope_mismatch:dimensions")
-    if candidate.query_intent != "daily_metric_baselines":
+    expected_reference_intent = (
+        "channel_context_total_probe"
+        if overall_channel and contract.query_intent == "channel_context_probe"
+        else (
+            contract.query_intent
+            if contract.result_shape.result_semantics == "complete_window_aggregate"
+            and not overall_channel
+            else "daily_metric_baselines"
+        )
+    )
+    if candidate.query_intent != expected_reference_intent:
         mismatches = (*mismatches, "dimension_total_scope_mismatch:query_intent")
     if overall_channel and tuple(
         item.metric_id for item in candidate.metric_bindings
@@ -1241,76 +1289,25 @@ def _metric_values(
     return values
 
 
-def _statuses(
-    assertions: Sequence[Mapping[str, Any]],
-    *,
-    failure_reasons: tuple[str, ...],
-    row_count: int,
-    execution_status: str,
-) -> tuple[str, str]:
-    failures = {
-        str(item["assertion"])
-        for item in assertions
-        if not bool(item["passed"])
-    }
-    hard_invalid_prefixes = (
-        "query_contract_ref_mismatch:",
-        "source_snapshot_refs_mismatch:",
-        "snapshot_ref_mismatch:",
-        "row_count_mismatch:",
-        "result_ref_mismatch",
-        "rows_ref_mismatch",
-        "completeness_report_ref_mismatch",
-        "missing_result_ref",
-        "missing_query_id",
-        "missing_query_hash",
-        "missing_rows_ref",
-        "missing_completeness_report_ref",
-        "snapshot_release_unverified:",
-        "unreviewed_output_field:",
-        "invalid_type:",
-        "invalid_reconciliation_",
-        "exact_count_tolerance_must_be_zero:",
-        "ratio_reconciliation_components_missing:",
-        "invalid_join_expectation",
-    )
-    if any(reason.startswith(hard_invalid_prefixes) for reason in failure_reasons):
-        return "invalid", "blocked"
-    if "provider_not_truncated" in failures:
-        return "truncated", "blocked"
-    if execution_status != "succeeded":
-        return "invalid", "blocked"
-    if "snapshot_watermark" in failures:
-        return "stale", "blocked"
-    if row_count == 0:
-        return "empty", "blocked"
-    if failures & {
-        "required_fields",
-        "required_windows",
-        "complete_window_days",
-        "unique_key",
-        "dimension_total_reconciliation",
-        "overall_channel_reconciliation",
-        "join_cardinality",
-        "paired_target_baseline",
-    }:
-        return "partial", "blocked"
-    if failures:
-        return "partial", "degraded"
-    return "complete", "ready"
-
-
 def _assertion(
     name: str,
     reasons: Iterable[str],
     *,
+    failure_classes: Iterable[CompletenessFailureClass | str] = (),
     details: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     typed_reasons = tuple(str(reason) for reason in reasons)
+    typed_failure_classes = _dedupe(
+        failure_class.value
+        if isinstance(failure_class, CompletenessFailureClass)
+        else str(failure_class)
+        for failure_class in failure_classes
+    )
     return {
         "assertion": name,
         "passed": not typed_reasons,
         "failure_reasons": typed_reasons,
+        "failure_classes": typed_failure_classes,
         "details": dict(details or {}),
     }
 
@@ -1320,6 +1317,7 @@ def _not_evaluated_assertion(name: str) -> Mapping[str, Any]:
         "assertion": name,
         "passed": True,
         "failure_reasons": (),
+        "failure_classes": (),
         "details": {"evaluated": False, "reason": "execution_not_succeeded"},
     }
 
@@ -1340,6 +1338,8 @@ def _window_membership(
 ) -> tuple[dict[str, int], tuple[str, ...]]:
     if contract.result_shape.result_semantics == "complete_context_rows":
         return _context_window_membership(contract, tuple(rows))
+    if contract.result_shape.result_semantics == "complete_window_aggregate":
+        return _aggregate_window_membership(contract, tuple(rows))
     windows = {window.window_id: window for window in contract.resolved_windows}
     observations: dict[str, set[str]] = {}
     reasons = []
@@ -1367,9 +1367,7 @@ def _window_membership(
             start = date.fromisoformat(window.start_inclusive)
             end = date.fromisoformat(window.end_exclusive)
         except (TypeError, ValueError):
-            reasons.append(
-                f"invalid_window_observation:{window_id}:{observation_key}"
-            )
+            reasons.append(f"invalid_window_observation:{window_id}:{observation_key}")
             valid = False
         else:
             if not start <= observed_date < end:
@@ -1386,8 +1384,39 @@ def _window_membership(
             for window in contract.resolved_windows
             if window.window_id in observations
         },
-        _canonical_membership_reasons(contract, reasons),
+        _canonical_membership_reasons(reasons),
     )
+
+
+def _aggregate_window_membership(
+    contract: QueryContract,
+    rows: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    windows = {window.window_id: window for window in contract.resolved_windows}
+    observed_days: dict[str, int] = {}
+    reasons: list[str] = []
+    for row in rows:
+        window_id = str(row.get("window_id") or "")
+        window = windows.get(window_id)
+        if window is None:
+            reasons.append(f"unexpected_window:{window_id or 'missing'}")
+            continue
+        if str(row.get("window_role") or "") != window.role:
+            reasons.append(f"window_role_mismatch:{window_id}")
+        if str(row.get("observation_key") or "") != window_id:
+            reasons.append(f"invalid_window_aggregate_identity:{window_id}")
+        complete_days = row.get("source_complete_days")
+        if (
+            isinstance(complete_days, bool)
+            or not isinstance(complete_days, int)
+            or complete_days < 0
+        ):
+            reasons.append(f"invalid_source_complete_days:{window_id}")
+            continue
+        previous = observed_days.setdefault(window_id, complete_days)
+        if previous != complete_days:
+            reasons.append(f"inconsistent_source_complete_days:{window_id}")
+    return observed_days, _canonical_membership_reasons(reasons)
 
 
 def _context_window_membership(
@@ -1465,20 +1494,30 @@ def _context_window_membership(
                     reasons.append(f"invalid_context_event_identity:{window_id}")
                     valid = False
                 if row.get("event_count") != 1:
-                    reasons.append(f"invalid_context_event_count:{window_id}:{event_id}")
+                    reasons.append(
+                        f"invalid_context_event_count:{window_id}:{event_id}"
+                    )
                     valid = False
                 if any(not str(row.get(field) or "") for field in content_fields):
                     reasons.append(f"incomplete_context_event:{window_id}:{event_id}")
                     valid = False
                 try:
-                    event_start = date.fromisoformat(str(row.get("event_start_date") or ""))
+                    event_start = date.fromisoformat(
+                        str(row.get("event_start_date") or "")
+                    )
                     event_end = date.fromisoformat(str(row.get("event_end_date") or ""))
                 except (TypeError, ValueError):
-                    reasons.append(f"invalid_context_event_interval:{window_id}:{event_id}")
+                    reasons.append(
+                        f"invalid_context_event_interval:{window_id}:{event_id}"
+                    )
                     valid = False
                     continue
-                if event_start > event_end or not (event_start < end and event_end >= start):
-                    reasons.append(f"context_event_outside_window:{window_id}:{event_id}")
+                if event_start > event_end or not (
+                    event_start < end and event_end >= start
+                ):
+                    reasons.append(
+                        f"context_event_outside_window:{window_id}:{event_id}"
+                    )
                     valid = False
                 if not _event_recurrence_occurs_in_window(row, start, end):
                     reasons.append(
@@ -1487,30 +1526,13 @@ def _context_window_membership(
                     valid = False
         if valid:
             counts[window_id] = window.required_complete_days
-    return counts, _canonical_membership_reasons(contract, reasons)
+    return counts, _canonical_membership_reasons(reasons)
 
 
 def _canonical_membership_reasons(
-    contract: QueryContract,
     reasons: Iterable[str],
 ) -> tuple[str, ...]:
-    window_order = {
-        window.window_id: index
-        for index, window in enumerate(contract.resolved_windows)
-    }
-    unknown_rank = len(window_order)
-
-    def reason_key(reason: str) -> tuple[int, str, str]:
-        fields = reason.split(":", 2)
-        window_id = fields[1] if len(fields) > 1 else ""
-        rank = window_order.get(window_id, unknown_rank)
-        return (
-            rank,
-            "" if rank < unknown_rank else window_id,
-            reason,
-        )
-
-    return tuple(sorted({str(reason) for reason in reasons}, key=reason_key))
+    return tuple(sorted({str(reason) for reason in reasons}))
 
 
 def _event_recurrence_occurs_in_window(
@@ -1552,9 +1574,7 @@ def _event_recurrence_occurs_in_window(
     for offset in range((end - start).days):
         current = start + timedelta(days=offset)
         code = current.month * 100 + current.day
-        if (
-            start_code <= end_code and start_code <= code <= end_code
-        ) or (
+        if (start_code <= end_code and start_code <= code <= end_code) or (
             start_code > end_code and (code >= start_code or code <= end_code)
         ):
             return True

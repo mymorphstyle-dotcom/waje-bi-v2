@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from bi_agent.runtime.analysis_contracts import (
     CapabilityExecutionPlan,
@@ -7,10 +8,12 @@ from bi_agent.runtime.analysis_contracts import (
     QueryResultEnvelope,
 )
 from bi_agent.runtime.capability_execution import (
+    _primary_reconciliation_provenance_matches,
     bind_capability_inputs,
     capability_plan_has_executable_query_contracts,
     validate_bound_capability_input,
 )
+from bi_agent.runtime.authoritative_query_chain import AuthoritativeQueryChainError
 
 
 def slot(
@@ -48,7 +51,9 @@ def plan(
             "required_slots": (
                 required_mode
                 if required_mode is not None
-                else "all" if required_slots else "none"
+                else "all"
+                if required_slots
+                else "none"
             ),
             "accepted_completeness": ("complete",),
         },
@@ -108,6 +113,7 @@ def report(
                     "assertion": "execution_succeeded",
                     "passed": True,
                     "failure_reasons": (),
+                    "failure_classes": (),
                     "details": {},
                 },
             )
@@ -126,6 +132,141 @@ def report(
 
 
 class CapabilityExecutionTest(unittest.TestCase):
+    def test_channel_reconciliation_uses_the_same_typed_provenance_closure(self):
+        primary = result("query:channel:1")
+        validation = result("query:channel-total:1")
+        validation_report = report("query:channel-total:1")
+        provenance = {
+            "status": "passed",
+            "primary_query_contract_ref": primary.query_contract_ref,
+            "primary_result_ref": primary.result_ref,
+            "primary_report_ref": primary.completeness_report_ref,
+            "primary_snapshot_refs": primary.source_snapshot_refs,
+            "validation_query_contract_ref": validation.query_contract_ref,
+            "validation_result_ref": validation.result_ref,
+            "validation_report_ref": validation_report.report_ref,
+            "validation_snapshot_refs": validation.source_snapshot_refs,
+        }
+        primary_report = report(
+            primary.query_contract_ref,
+            coverage={
+                "row_count": 1,
+                "required_windows": ("target_day",),
+                "observed_windows": ("target_day",),
+                "snapshot_ref": "snapshot:paid:1",
+                "reconciliation_validation": provenance,
+            },
+            assertions=(
+                {
+                    "assertion": "overall_channel_reconciliation",
+                    "passed": True,
+                    "failure_reasons": (),
+                    "failure_classes": (),
+                    "details": provenance,
+                },
+            ),
+        )
+
+        self.assertTrue(
+            _primary_reconciliation_provenance_matches(
+                primary.query_contract_ref,
+                primary,
+                primary_report,
+                ((validation, validation_report),),
+            )
+        )
+
+    def test_typed_capability_contract_error_becomes_blocked_boundary(self):
+        dependency = object()
+
+        with (
+            patch(
+                "bi_agent.runtime.capability_execution.runtime_registry_integrity_error",
+                return_value="",
+            ),
+            patch(
+                "bi_agent.runtime.capability_execution.validate_capability_plan_semantics",
+                side_effect=AuthoritativeQueryChainError(
+                    "capability_contract_plan_policy_mismatch"
+                ),
+            ),
+        ):
+            bound = bind_capability_inputs(
+                plan(required_slots=(slot(),)),
+                results={"query:joint:1": result("query:joint:1")},
+                reports={"query:joint:1": report("query:joint:1")},
+                evidence_resolver=dependency,
+                rows_loader=dependency,
+                evidence_writer=dependency,
+                runtime_registry=dependency,
+            )
+
+        self.assertEqual(bound.status, "blocked")
+        self.assertEqual(
+            bound.reasons,
+            (
+                "capability_contract_resolution_failed:"
+                "capability_contract_plan_policy_mismatch",
+            ),
+        )
+
+    def test_capability_contract_programming_error_propagates(self):
+        sentinel = ValueError("unexpected_capability_contract_shape")
+        dependency = object()
+
+        with (
+            patch(
+                "bi_agent.runtime.capability_execution.runtime_registry_integrity_error",
+                return_value="",
+            ),
+            patch(
+                "bi_agent.runtime.capability_execution.validate_capability_plan_semantics",
+                side_effect=sentinel,
+            ),
+        ):
+            with self.assertRaises(ValueError) as captured:
+                bind_capability_inputs(
+                    plan(required_slots=(slot(),)),
+                    results={"query:joint:1": result("query:joint:1")},
+                    reports={"query:joint:1": report("query:joint:1")},
+                    evidence_resolver=dependency,
+                    rows_loader=dependency,
+                    evidence_writer=dependency,
+                    runtime_registry=dependency,
+                )
+
+        self.assertIs(captured.exception, sentinel)
+
+    def test_unexpected_authority_resolution_error_propagates(self):
+        sentinel = RuntimeError("unexpected_authority_resolution_error")
+        dependency = object()
+
+        with (
+            patch(
+                "bi_agent.runtime.capability_execution.runtime_registry_integrity_error",
+                return_value="",
+            ),
+            patch(
+                "bi_agent.runtime.capability_execution.validate_capability_plan_semantics"
+            ),
+            patch(
+                "bi_agent.runtime.capability_execution._resolve_authoritative_inputs",
+                side_effect=sentinel,
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as captured:
+                bind_capability_inputs(
+                    plan(required_slots=(slot(),)),
+                    results={"query:joint:1": result("query:joint:1")},
+                    reports={"query:joint:1": report("query:joint:1")},
+                    evidence_resolver=dependency,
+                    rows_loader=dependency,
+                    evidence_writer=dependency,
+                    runtime_registry=dependency,
+                )
+
+        self.assertIs(captured.exception, sentinel)
+
     def test_at_least_one_plan_is_executable_with_one_complete_required_slot(self):
         grouped = plan(
             required_slots=(
@@ -145,9 +286,7 @@ class CapabilityExecutionTest(unittest.TestCase):
                 {"query:first:1"},
             )
         )
-        self.assertFalse(
-            capability_plan_has_executable_query_contracts(grouped, set())
-        )
+        self.assertFalse(capability_plan_has_executable_query_contracts(grouped, set()))
         self.assertFalse(
             capability_plan_has_executable_query_contracts(
                 plan(required_slots=grouped.required_input_slots),
@@ -177,6 +316,7 @@ class CapabilityExecutionTest(unittest.TestCase):
             validate_bound_capability_input(bound),
             "runtime_evidence_authority_missing",
         )
+
 
 if __name__ == "__main__":
     unittest.main()

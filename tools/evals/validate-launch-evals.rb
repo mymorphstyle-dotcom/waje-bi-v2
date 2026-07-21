@@ -51,17 +51,19 @@ BUSINESS_FAILURE_TYPES = %w[
   restricted_output_leak
 ].freeze
 SYSTEM_POINTS = %w[
-  LLM_reasoner
-  graph_compiler
-  semantic_compiler
+  intent_planner_llm
+  plan_admission_compiler
+  query_contract_compiler
   capability_execution
   capability_API
-  evidence_reducer
-  answer_synthesizer
-  answer_verifier
-  visualization_planner
+  claim_settlement
+  narrative_writer
+  answer_completion_authority
+  publication_projection
   restricted_output_policy
+  source_access_policy
 ].freeze
+COMPLETION_AUTHORITIES = %w[answer_verify].freeze
 
 def list(value)
   value.is_a?(Array) ? value : []
@@ -126,6 +128,11 @@ packages.each do |pkg|
   (list(pkg["required_capabilities"]) + list(pkg["optional_capabilities"]) + list(pkg["forbidden_capabilities"])).each do |capability|
     require_in(errors, owner, "capability", capability, capabilities)
   end
+  completion_authorities = list(pkg["required_completion_authorities"])
+  require_present(errors, owner, "required_completion_authorities", completion_authorities)
+  completion_authorities.each do |authority|
+    require_in(errors, owner, "completion_authority", authority, COMPLETION_AUTHORITIES)
+  end
 
   list(pkg["expected_compiler_actions"]).each do |action|
     outcome = action["outcome"]
@@ -180,7 +187,7 @@ packages.each do |pkg|
       require_in(errors, envelope_owner, "limitation_ref", ref, known_limitation_refs)
     end
   end
-  require_present(errors, owner, "semantic_evidence_expectations.answer_package_handoff", semantic && semantic["answer_package_handoff"])
+  require_present(errors, owner, "semantic_evidence_expectations.publication_handoff", semantic && semantic["publication_handoff"])
 
   attribution = pkg["failure_attribution"] || {}
   list(attribution["business_failure_types"]).each do |value|

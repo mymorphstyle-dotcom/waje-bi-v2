@@ -55,17 +55,18 @@ CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
   dispatch_id text PRIMARY KEY,
   producer_kind text NOT NULL
     CONSTRAINT run_dispatch_producer_kind_check
-    CHECK (producer_kind IN (
-      'thread_message', 'artifact_continue', 'clarification_resume',
-      'clarification_retry'
-    )),
+    CHECK (producer_kind IN ('thread_message', 'clarification_resolution')),
   scope_ref text NOT NULL,
   request_identity text NOT NULL,
-  request_digest text NOT NULL,
-  request_payload jsonb NOT NULL,
+  request_digest text NOT NULL
+    CONSTRAINT run_dispatch_request_digest_check
+    CHECK (length(request_digest) = 64),
+  request_payload jsonb NOT NULL
+    CONSTRAINT run_dispatch_request_payload_check
+    CHECK (jsonb_typeof(request_payload) = 'object'),
   thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
-  run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  message_id text UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
+  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
   dispatch_state text NOT NULL DEFAULT 'pending'
     CONSTRAINT run_dispatch_state_check
     CHECK (dispatch_state IN ('pending', 'leased', 'running', 'terminal')),
@@ -78,6 +79,10 @@ CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(producer_kind, scope_ref, request_identity),
+  CONSTRAINT run_dispatch_scope_shape_check CHECK (
+    (producer_kind = 'thread_message' AND scope_ref = thread_id)
+    OR (producer_kind = 'clarification_resolution' AND scope_ref = run_id)
+  ),
   CONSTRAINT run_dispatch_owner_shape_check CHECK (
     dispatch_state NOT IN ('leased', 'running')
     OR (owner_id IS NOT NULL AND lease_expires_at IS NOT NULL)
@@ -89,55 +94,96 @@ CREATE INDEX IF NOT EXISTS idx_run_dispatch_recovery
   WHERE dispatch_state IN ('pending', 'leased', 'running');
 
 ALTER TABLE waje_runtime.run_dispatches
-  ALTER COLUMN message_id DROP NOT NULL;
+  DROP CONSTRAINT IF EXISTS run_dispatches_run_id_key;
+
+ALTER TABLE waje_runtime.run_dispatches
+  ALTER COLUMN message_id SET NOT NULL;
 
 ALTER TABLE waje_runtime.run_dispatches
   DROP CONSTRAINT IF EXISTS run_dispatch_producer_kind_check;
 
 ALTER TABLE waje_runtime.run_dispatches
   ADD CONSTRAINT run_dispatch_producer_kind_check
-  CHECK (producer_kind IN (
-    'thread_message', 'artifact_continue', 'clarification_resume',
-    'clarification_retry'
-  ));
+  CHECK (producer_kind IN ('thread_message', 'clarification_resolution'))
+  NOT VALID;
 
-CREATE TABLE IF NOT EXISTS waje_runtime.clarification_resolutions (
-  resolution_id text PRIMARY KEY,
-  source_run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
-  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
-  owner_id text NOT NULL,
-  submission jsonb NOT NULL,
-  accepted_choice jsonb NOT NULL,
-  message_id text NOT NULL UNIQUE REFERENCES waje_runtime.conversation_messages(message_id) ON DELETE CASCADE,
-  source_request_digest text NOT NULL,
-  resolution_digest text NOT NULL,
-  status text NOT NULL DEFAULT 'accepted'
-    CONSTRAINT clarification_resolution_status_check
-    CHECK (status = 'accepted'),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  accepted_at timestamptz NOT NULL DEFAULT now()
-);
+ALTER TABLE waje_runtime.run_dispatches
+  VALIDATE CONSTRAINT run_dispatch_producer_kind_check;
 
-CREATE TABLE IF NOT EXISTS waje_runtime.clarification_execution_attempts (
-  attempt_run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  resolution_id text NOT NULL REFERENCES waje_runtime.clarification_resolutions(resolution_id) ON DELETE CASCADE,
-  previous_attempt_run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
-  attempt_number integer NOT NULL CHECK (attempt_number > 0),
-  request_identity text NOT NULL,
-  request_digest text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE(resolution_id, attempt_number),
-  UNIQUE(resolution_id, request_identity),
-  UNIQUE(resolution_id, previous_attempt_run_id),
+ALTER TABLE waje_runtime.run_dispatches
+  DROP CONSTRAINT IF EXISTS run_dispatch_request_digest_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  ADD CONSTRAINT run_dispatch_request_digest_check
+  CHECK (length(request_digest) = 64)
+  NOT VALID;
+
+ALTER TABLE waje_runtime.run_dispatches
+  VALIDATE CONSTRAINT run_dispatch_request_digest_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  DROP CONSTRAINT IF EXISTS run_dispatch_request_payload_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  ADD CONSTRAINT run_dispatch_request_payload_check
+  CHECK (jsonb_typeof(request_payload) = 'object')
+  NOT VALID;
+
+ALTER TABLE waje_runtime.run_dispatches
+  VALIDATE CONSTRAINT run_dispatch_request_payload_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  DROP CONSTRAINT IF EXISTS run_dispatch_scope_shape_check;
+
+ALTER TABLE waje_runtime.run_dispatches
+  ADD CONSTRAINT run_dispatch_scope_shape_check
   CHECK (
-    previous_attempt_run_id IS NULL
-    OR previous_attempt_run_id <> attempt_run_id
+    (producer_kind = 'thread_message' AND scope_ref = thread_id)
+    OR (producer_kind = 'clarification_resolution' AND scope_ref = run_id)
   )
-);
+  NOT VALID;
 
-CREATE INDEX IF NOT EXISTS idx_clarification_attempt_resolution
-  ON waje_runtime.clarification_execution_attempts(resolution_id, attempt_number);
+ALTER TABLE waje_runtime.run_dispatches
+  VALIDATE CONSTRAINT run_dispatch_scope_shape_check;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_run_dispatch_one_active_per_run
+  ON waje_runtime.run_dispatches(run_id)
+  WHERE dispatch_state IN ('pending', 'leased', 'running');
+
+CREATE OR REPLACE FUNCTION waje_runtime.enforce_run_dispatch_command_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.dispatch_id IS DISTINCT FROM OLD.dispatch_id
+     OR NEW.producer_kind IS DISTINCT FROM OLD.producer_kind
+     OR NEW.scope_ref IS DISTINCT FROM OLD.scope_ref
+     OR NEW.request_identity IS DISTINCT FROM OLD.request_identity
+     OR NEW.request_digest IS DISTINCT FROM OLD.request_digest
+     OR NEW.request_payload IS DISTINCT FROM OLD.request_payload
+     OR NEW.thread_id IS DISTINCT FROM OLD.thread_id
+     OR NEW.run_id IS DISTINCT FROM OLD.run_id
+     OR NEW.message_id IS DISTINCT FROM OLD.message_id
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
+  THEN
+    RAISE EXCEPTION 'run_dispatch_command_immutable'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS run_dispatch_command_immutable
+  ON waje_runtime.run_dispatches;
+CREATE TRIGGER run_dispatch_command_immutable
+  BEFORE UPDATE ON waje_runtime.run_dispatches
+  FOR EACH ROW
+  EXECUTE FUNCTION waje_runtime.enforce_run_dispatch_command_immutable();
+
+COMMENT ON TABLE waje_runtime.run_dispatches IS
+  'One immutable user-command envelope per dispatch; lifecycle lease fields remain mutable.';
+COMMENT ON COLUMN waje_runtime.run_dispatches.request_digest IS
+  'SHA-256 of canonical JSON {producer_kind,scope_ref,thread_id,request_payload}; request_identity belongs to the separate idempotency tuple.';
 
 CREATE TABLE IF NOT EXISTS waje_runtime.run_nodes (
   node_id text PRIMARY KEY,
@@ -155,54 +201,6 @@ CREATE TABLE IF NOT EXISTS waje_runtime.context_manifests (
   turn_id text REFERENCES waje_runtime.conversation_turns(turn_id) ON DELETE SET NULL,
   can_support_claims boolean NOT NULL,
   items jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.result_refs (
-  result_ref text PRIMARY KEY,
-  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
-  snapshot_id text NOT NULL,
-  contract_version text NOT NULL,
-  semantic_scope text NOT NULL,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.evidence_refs (
-  evidence_ref text PRIMARY KEY,
-  run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  result_ref text REFERENCES waje_runtime.result_refs(result_ref) ON DELETE SET NULL,
-  payload jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.answer_packages (
-  package_id text PRIMARY KEY,
-  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  artifact_id text,
-  status text NOT NULL,
-  payload jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.analysis_assets (
-  asset_id text PRIMARY KEY,
-  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
-  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
-  asset_type text NOT NULL,
-  status text NOT NULL,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.investigation_artifacts (
-  artifact_id text PRIMARY KEY,
-  thread_id text NOT NULL REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
-  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
-  run_id text REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE SET NULL,
-  snapshot_id text NOT NULL,
-  follow_up_context text NOT NULL,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -461,122 +459,12 @@ ALTER TABLE waje_runtime.context_manifests
   ADD COLUMN IF NOT EXISTS manifest_digest text NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb;
 
-CREATE TABLE IF NOT EXISTS waje_runtime.claim_provenance_records (
-  record_ref text PRIMARY KEY,
-  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  record_digest text NOT NULL,
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.answer_package_artifacts (
-  artifact_ref text PRIMARY KEY,
-  run_id text NOT NULL UNIQUE REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  canonical_path text NOT NULL,
-  payload_digest text NOT NULL CHECK (length(payload_digest) = 64),
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.verified_claims (
-  claim_ref text PRIMARY KEY,
-  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  context_manifest_ref text NOT NULL REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE,
-  provenance_record_ref text NOT NULL REFERENCES waje_runtime.claim_provenance_records(record_ref),
-  claim_digest text NOT NULL,
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.evidence_manifests (
-  evidence_ref text PRIMARY KEY,
-  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  binding_record_ref text NOT NULL REFERENCES waje_runtime.capability_binding_authority(record_ref),
-  context_manifest_ref text NOT NULL,
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.claim_evidence_links (
-  claim_ref text NOT NULL REFERENCES waje_runtime.verified_claims(claim_ref) ON DELETE CASCADE,
-  evidence_ref text NOT NULL REFERENCES waje_runtime.evidence_manifests(evidence_ref) ON DELETE CASCADE,
-  context_manifest_ref text NOT NULL REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE,
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  PRIMARY KEY (claim_ref, evidence_ref)
-);
-
-CREATE TABLE IF NOT EXISTS waje_runtime.analysis_runtime_publications (
-  run_id text PRIMARY KEY REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  analysis_contract_id text NOT NULL REFERENCES waje_runtime.analysis_contracts(analysis_contract_id) ON DELETE CASCADE,
-  topic_id text NOT NULL REFERENCES waje_runtime.conversation_topics(topic_id) ON DELETE CASCADE,
-  bundle_digest text NOT NULL CHECK (length(bundle_digest) = 64),
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'claim_evidence_links_claim_ref_fkey'
-      AND conrelid = 'waje_runtime.claim_evidence_links'::regclass
-  ) THEN
-    ALTER TABLE waje_runtime.claim_evidence_links
-      ADD CONSTRAINT claim_evidence_links_claim_ref_fkey
-      FOREIGN KEY (claim_ref) REFERENCES waje_runtime.verified_claims(claim_ref) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'claim_evidence_links_context_manifest_ref_fkey'
-      AND conrelid = 'waje_runtime.claim_evidence_links'::regclass
-  ) THEN
-    ALTER TABLE waje_runtime.claim_evidence_links
-      ADD CONSTRAINT claim_evidence_links_context_manifest_ref_fkey
-      FOREIGN KEY (context_manifest_ref) REFERENCES waje_runtime.context_manifests(manifest_id);
-  END IF;
-END $$;
-
-ALTER TABLE waje_runtime.verified_claims
-  DROP CONSTRAINT IF EXISTS verified_claims_context_manifest_ref_fkey;
-ALTER TABLE waje_runtime.verified_claims
-  ADD CONSTRAINT verified_claims_context_manifest_ref_fkey
-  FOREIGN KEY (context_manifest_ref)
-  REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE;
-ALTER TABLE waje_runtime.claim_evidence_links
-  DROP CONSTRAINT IF EXISTS claim_evidence_links_context_manifest_ref_fkey;
-ALTER TABLE waje_runtime.claim_evidence_links
-  ADD CONSTRAINT claim_evidence_links_context_manifest_ref_fkey
-  FOREIGN KEY (context_manifest_ref)
-  REFERENCES waje_runtime.context_manifests(manifest_id) ON DELETE CASCADE;
-
-CREATE TABLE IF NOT EXISTS waje_runtime.query_repair_attempts (
-  attempt_ref text PRIMARY KEY,
-  run_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
-  failed_signature text NOT NULL,
-  action text NOT NULL,
-  reason text NOT NULL,
-  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE INDEX IF NOT EXISTS idx_analysis_contracts_run
   ON waje_runtime.analysis_contracts(run_id);
 CREATE INDEX IF NOT EXISTS idx_query_contracts_run
   ON waje_runtime.query_contracts(run_id, analysis_contract_id);
 CREATE INDEX IF NOT EXISTS idx_query_runs_run
   ON waje_runtime.query_runs(run_id, query_contract_id);
-CREATE INDEX IF NOT EXISTS idx_evidence_manifests_run
-  ON waje_runtime.evidence_manifests(run_id, binding_record_ref);
-CREATE INDEX IF NOT EXISTS idx_claim_evidence_links_evidence
-  ON waje_runtime.claim_evidence_links(evidence_ref);
-CREATE INDEX IF NOT EXISTS idx_query_repair_attempts_run
-  ON waje_runtime.query_repair_attempts(run_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_verified_claims_run
-  ON waje_runtime.verified_claims(run_id, context_manifest_ref);
-CREATE INDEX IF NOT EXISTS idx_claim_provenance_records_run
-  ON waje_runtime.claim_provenance_records(run_id);
-CREATE INDEX IF NOT EXISTS idx_answer_package_artifacts_run
-  ON waje_runtime.answer_package_artifacts(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_contracts_run_identity
   ON waje_runtime.analysis_contracts(run_id, analysis_contract_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_query_contracts_run_identity
@@ -586,11 +474,2312 @@ DROP INDEX IF EXISTS waje_runtime.idx_query_execution_authority_rows_ref;
 CREATE INDEX IF NOT EXISTS idx_conversation_topics_thread ON waje_runtime.conversation_topics(thread_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread ON waje_runtime.conversation_turns(thread_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_thread ON waje_runtime.analysis_runs(thread_id);
-CREATE INDEX IF NOT EXISTS idx_result_refs_topic ON waje_runtime.result_refs(topic_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_assets_topic ON waje_runtime.analysis_assets(topic_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_investigation_artifacts_topic ON waje_runtime.investigation_artifacts(topic_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_thread ON waje_runtime.audit_events(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup
   ON waje_runtime.dataset_snapshots(dataset_id, status, loaded_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dataset_snapshot_releases_identity
   ON waje_runtime.dataset_snapshot_releases(logical_snapshot_id, load_revision);
+
+-- Current single-authority workflow slice. These tables are the durable
+-- authority for intent, planning, provider calls, capability execution,
+-- evidence, claims, narrative, publication, and delivery. run_nodes remains a
+-- business-process projection.
+CREATE TABLE IF NOT EXISTS waje_runtime.schema_migrations (
+  migration_id text PRIMARY KEY,
+  migration_digest text NOT NULL CHECK (length(migration_digest) = 64),
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE waje_runtime.analysis_runs
+  ADD COLUMN IF NOT EXISTS run_attempt_id text,
+  ADD COLUMN IF NOT EXISTS intent_revision_id text;
+
+UPDATE waje_runtime.analysis_runs
+SET run_attempt_id = run_id
+WHERE run_attempt_id IS NULL OR run_attempt_id = '';
+
+ALTER TABLE waje_runtime.analysis_runs
+  ALTER COLUMN run_attempt_id SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS waje_runtime.intent_revisions (
+  intent_revision_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  supersedes_intent_revision_id text REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  original_user_text text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  material_binding_digest text NOT NULL CHECK (length(material_binding_digest) = 64),
+  schema_version text NOT NULL,
+  prompt_version text NOT NULL,
+  model_version text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, content_digest),
+  CHECK (supersedes_intent_revision_id IS NULL OR supersedes_intent_revision_id <> intent_revision_id)
+);
+
+ALTER TABLE waje_runtime.intent_revisions
+  DROP CONSTRAINT IF EXISTS intent_revisions_run_attempt_id_key;
+
+CREATE TABLE IF NOT EXISTS waje_runtime.intent_revision_supersessions (
+  supersession_id text PRIMARY KEY,
+  superseded_intent_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  successor_intent_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  affected_plan_fields jsonb NOT NULL CHECK (jsonb_typeof(affected_plan_fields) = 'array'),
+  reason_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (superseded_intent_revision_id <> successor_intent_revision_id)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.decision_options (
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  slot_id text NOT NULL,
+  option_id text NOT NULL,
+  typed_value jsonb NOT NULL,
+  display_label text NOT NULL,
+  display_description text NOT NULL DEFAULT '',
+  recommended boolean NOT NULL DEFAULT false,
+  option_set_digest text NOT NULL CHECK (length(option_set_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (intent_revision_id, slot_id, option_id)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.decision_records (
+  ledger_position bigint NOT NULL,
+  decision_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  slot_id text NOT NULL,
+  option_id text,
+  source text NOT NULL CHECK (source IN (
+    'user', 'accepted_recommendation', 'safe_inference', 'inherited', 'system'
+  )),
+  status text NOT NULL CHECK (status IN (
+    'unresolved', 'inferred', 'user_confirmed', 'invalidated'
+  )),
+  materiality text NOT NULL CHECK (materiality IN ('material', 'non_material')),
+  invalidated_by_revision_id text
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  supersedes_decision_id text
+    REFERENCES waje_runtime.decision_records(decision_id) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (
+    (status = 'invalidated' AND invalidated_by_revision_id IS NOT NULL AND supersedes_decision_id IS NOT NULL)
+    OR (status <> 'invalidated' AND invalidated_by_revision_id IS NULL)
+  )
+);
+
+ALTER TABLE waje_runtime.decision_records
+  ADD COLUMN IF NOT EXISTS run_attempt_id text;
+
+UPDATE waje_runtime.decision_records record
+SET run_attempt_id = revision.run_attempt_id
+FROM waje_runtime.intent_revisions revision
+WHERE record.intent_revision_id = revision.intent_revision_id
+  AND (record.run_attempt_id IS NULL OR record.run_attempt_id = '');
+
+ALTER TABLE waje_runtime.decision_records
+  ALTER COLUMN run_attempt_id SET NOT NULL,
+  ALTER COLUMN ledger_position DROP DEFAULT,
+  DROP CONSTRAINT IF EXISTS decision_records_ledger_position_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_records_ledger_position
+  ON waje_runtime.decision_records(run_attempt_id, ledger_position);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_records_option_idempotency
+  ON waje_runtime.decision_records(intent_revision_id, slot_id, option_id)
+  WHERE option_id IS NOT NULL AND status <> 'invalidated';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_records_content_idempotency
+  ON waje_runtime.decision_records(intent_revision_id, slot_id, content_digest);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.workflow_transition_attempts (
+  attempt_id text PRIMARY KEY,
+  transition_id text NOT NULL,
+  node_name text NOT NULL,
+  parent_transition_id text,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  decision_ledger_position bigint NOT NULL DEFAULT 0 CHECK (decision_ledger_position >= 0),
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  output_digest text CHECK (output_digest IS NULL OR length(output_digest) = 64),
+  execution_attempt integer NOT NULL CHECK (execution_attempt > 0),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  status text NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  acceptance_state text NOT NULL CHECK (acceptance_state IN (
+    'pending', 'accepted', 'rejected', 'orphaned'
+  )),
+  next_transition text NOT NULL,
+  input_payload jsonb NOT NULL CHECK (jsonb_typeof(input_payload) = 'object'),
+  output_payload jsonb CHECK (output_payload IS NULL OR jsonb_typeof(output_payload) = 'object'),
+  failure_ref text,
+  started_at timestamptz NOT NULL,
+  finished_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(transition_id, execution_attempt),
+  CHECK (acceptance_state <> 'accepted' OR status = 'succeeded')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_transition_one_accepted
+  ON waje_runtime.workflow_transition_attempts(transition_id)
+  WHERE acceptance_state = 'accepted';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_transition_resume_once
+  ON waje_runtime.workflow_transition_attempts(
+    run_attempt_id, node_name, input_digest
+  )
+  WHERE acceptance_state = 'accepted';
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_resume
+  ON waje_runtime.workflow_transition_attempts(
+    run_attempt_id, node_name, input_digest, acceptance_state, execution_attempt DESC
+  );
+
+CREATE TABLE IF NOT EXISTS waje_runtime.failure_records (
+  failure_id text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  layer text NOT NULL,
+  kind text NOT NULL,
+  scope text NOT NULL,
+  affected_refs jsonb NOT NULL CHECK (jsonb_typeof(affected_refs) = 'array'),
+  integrity_level text NOT NULL,
+  retryability text NOT NULL,
+  user_actionable boolean NOT NULL,
+  business_boundary text NOT NULL,
+  technical_detail_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (run_attempt_id, failure_id)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.interaction_directives (
+  directive_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  kind text NOT NULL CHECK (
+    kind IN ('material_intent_change', 'cancel', 'challenge')
+  ),
+  target_refs jsonb NOT NULL CHECK (jsonb_typeof(target_refs) = 'array'),
+  original_user_text text NOT NULL,
+  source text NOT NULL CHECK (source = 'user'),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.run_lifecycle_state_revisions (
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  state_revision integer NOT NULL CHECK (state_revision > 0),
+  execution_state text NOT NULL,
+  interaction_state text NOT NULL,
+  evidence_state text NOT NULL,
+  publication_state text NOT NULL,
+  delivery_state text NOT NULL,
+  retry_state text NOT NULL,
+  cancellation_state text NOT NULL,
+  supersession_state text NOT NULL,
+  prior_state_digest text CHECK (prior_state_digest IS NULL OR length(prior_state_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (run_attempt_id, state_revision),
+  UNIQUE(run_attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.orphaned_results (
+  orphaned_result_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  result_intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  active_intent_revision_id text
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  source_transition_id text NOT NULL,
+  result_ref text NOT NULL,
+  reason text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, result_ref, content_digest)
+);
+
+CREATE OR REPLACE FUNCTION waje_runtime.reject_append_only_authority_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'append_only_authority_record:%', TG_TABLE_NAME;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS intent_revisions_append_only ON waje_runtime.intent_revisions;
+CREATE TRIGGER intent_revisions_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.intent_revisions
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS intent_revision_supersessions_append_only ON waje_runtime.intent_revision_supersessions;
+CREATE TRIGGER intent_revision_supersessions_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.intent_revision_supersessions
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS decision_options_append_only ON waje_runtime.decision_options;
+CREATE TRIGGER decision_options_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.decision_options
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS decision_records_append_only ON waje_runtime.decision_records;
+CREATE TRIGGER decision_records_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.decision_records
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS failure_records_append_only ON waje_runtime.failure_records;
+CREATE TRIGGER failure_records_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.failure_records
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS interaction_directives_append_only ON waje_runtime.interaction_directives;
+CREATE TRIGGER interaction_directives_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.interaction_directives
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS run_lifecycle_state_revisions_append_only ON waje_runtime.run_lifecycle_state_revisions;
+CREATE TRIGGER run_lifecycle_state_revisions_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.run_lifecycle_state_revisions
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS orphaned_results_append_only ON waje_runtime.orphaned_results;
+CREATE TRIGGER orphaned_results_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.orphaned_results
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+
+-- vNext Phase 2 immutable planning authority. Active state is derived from the
+-- append-only supersession relation; no mutable plan status is stored.
+CREATE TABLE IF NOT EXISTS waje_runtime.authority_contexts (
+  authority_context_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  actual_as_of timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.planner_proposals (
+  planner_proposal_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  schema_version text NOT NULL,
+  prompt_version text NOT NULL,
+  model_version text NOT NULL,
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.proposal_admission_records (
+  proposal_admission_id text PRIMARY KEY,
+  planner_proposal_ref text NOT NULL
+    REFERENCES waje_runtime.planner_proposals(planner_proposal_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  compiler_version text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(planner_proposal_ref, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.plan_revisions (
+  plan_revision_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  planner_proposal_ref text NOT NULL
+    REFERENCES waje_runtime.planner_proposals(planner_proposal_id) ON DELETE RESTRICT,
+  proposal_admission_ref text NOT NULL
+    REFERENCES waje_runtime.proposal_admission_records(proposal_admission_id) ON DELETE RESTRICT,
+  supersedes_plan_revision_id text
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, content_digest),
+  CHECK (
+    supersedes_plan_revision_id IS NULL
+    OR supersedes_plan_revision_id <> plan_revision_id
+  )
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.plan_revision_supersessions (
+  supersession_id text PRIMARY KEY,
+  superseded_plan_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  successor_plan_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (superseded_plan_revision_id <> successor_plan_revision_id)
+);
+
+DROP TRIGGER IF EXISTS authority_contexts_append_only ON waje_runtime.authority_contexts;
+CREATE TRIGGER authority_contexts_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.authority_contexts
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS planner_proposals_append_only ON waje_runtime.planner_proposals;
+CREATE TRIGGER planner_proposals_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.planner_proposals
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS proposal_admission_records_append_only ON waje_runtime.proposal_admission_records;
+CREATE TRIGGER proposal_admission_records_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.proposal_admission_records
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS plan_revisions_append_only ON waje_runtime.plan_revisions;
+CREATE TRIGGER plan_revisions_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.plan_revisions
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+DROP TRIGGER IF EXISTS plan_revision_supersessions_append_only ON waje_runtime.plan_revision_supersessions;
+CREATE TRIGGER plan_revision_supersessions_append_only
+  BEFORE UPDATE OR DELETE ON waje_runtime.plan_revision_supersessions
+  FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation();
+
+CREATE INDEX IF NOT EXISTS idx_planner_proposals_run
+  ON waje_runtime.planner_proposals(run_attempt_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plan_revisions_run
+  ON waje_runtime.plan_revisions(run_attempt_id, created_at);
+
+-- Every external provider or capability invocation is journaled before the
+-- call starts. Attempts and events are append-only. A single acceptance row is
+-- the compare-and-swap winner for one logical input, and stage bindings close
+-- an accepted transition over those already-persisted winners.
+CREATE TABLE IF NOT EXISTS waje_runtime.durable_call_attempts (
+  attempt_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  plan_revision_id text
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  task_id text,
+  stage_name text NOT NULL,
+  call_kind text NOT NULL,
+  operation_name text NOT NULL,
+  input_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  idempotency_key text NOT NULL CHECK (length(idempotency_key) = 64),
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  retry_reason text NOT NULL CHECK (
+    retry_reason IN (
+      'initial', 'previous_attempt_incomplete', 'previous_attempt_failed'
+    )
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, attempt_ref),
+  UNIQUE(run_attempt_id, idempotency_key, attempt_number)
+);
+
+ALTER TABLE waje_runtime.durable_call_attempts
+  DROP CONSTRAINT IF EXISTS durable_call_attempts_call_kind_check;
+ALTER TABLE waje_runtime.durable_call_attempts
+  DROP CONSTRAINT IF EXISTS durable_call_attempts_check;
+ALTER TABLE waje_runtime.durable_call_attempts
+  DROP CONSTRAINT IF EXISTS durable_call_attempts_scope_check;
+ALTER TABLE waje_runtime.durable_call_attempts
+  ADD CONSTRAINT durable_call_attempts_call_kind_check CHECK (call_kind IN (
+    'conversation_provider', 'topic_selection', 'intent_provider',
+    'clarification_provider',
+    'planner_provider', 'plan_patch_provider', 'query', 'capability',
+    'semantic_provider', 'narrative_provider'
+  ));
+ALTER TABLE waje_runtime.durable_call_attempts
+  ADD CONSTRAINT durable_call_attempts_scope_check CHECK (
+    (call_kind IN ('conversation_provider', 'topic_selection', 'intent_provider')
+      AND intent_revision_id IS NULL
+      AND plan_revision_id IS NULL
+      AND task_id IS NULL)
+    OR (call_kind IN ('clarification_provider', 'planner_provider')
+      AND intent_revision_id IS NOT NULL
+      AND plan_revision_id IS NULL
+      AND task_id IS NULL)
+    OR (call_kind IN (
+        'plan_patch_provider', 'semantic_provider', 'narrative_provider'
+      )
+      AND intent_revision_id IS NOT NULL
+      AND plan_revision_id IS NOT NULL
+      AND task_id IS NULL)
+    OR (call_kind IN ('query', 'capability')
+      AND intent_revision_id IS NOT NULL
+      AND plan_revision_id IS NOT NULL
+      AND task_id IS NOT NULL)
+  );
+
+CREATE TABLE IF NOT EXISTS waje_runtime.durable_call_attempt_events (
+  event_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  attempt_ref text NOT NULL,
+  event_sequence integer NOT NULL CHECK (event_sequence BETWEEN 1 AND 3),
+  status text NOT NULL CHECK (status IN (
+    'claimed', 'started', 'succeeded', 'failed'
+  )),
+  success_disposition text CHECK (
+    success_disposition IN ('accepted', 'orphaned')
+  ),
+  output_digest text CHECK (
+    output_digest IS NULL OR length(output_digest) = 64
+  ),
+  output_payload jsonb CHECK (
+    output_payload IS NULL OR jsonb_typeof(output_payload) = 'object'
+  ),
+  failure_code text,
+  failure_payload jsonb CHECK (
+    failure_payload IS NULL OR jsonb_typeof(failure_payload) = 'object'
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(attempt_ref, event_sequence),
+  FOREIGN KEY (run_attempt_id, attempt_ref)
+    REFERENCES waje_runtime.durable_call_attempts(
+      run_attempt_id, attempt_ref
+    ) ON DELETE RESTRICT,
+  CHECK (
+    (status = 'claimed' AND event_sequence = 1)
+    OR (status = 'started' AND event_sequence = 2)
+    OR (status IN ('succeeded', 'failed') AND event_sequence = 3)
+  ),
+  CHECK (
+    (status = 'succeeded'
+      AND success_disposition IN ('accepted', 'orphaned')
+      AND output_digest IS NOT NULL
+      AND output_payload IS NOT NULL AND failure_code IS NULL)
+    OR (status = 'failed' AND output_digest IS NULL
+      AND output_payload IS NULL AND failure_code IS NOT NULL
+      AND success_disposition IS NULL)
+    OR (status IN ('claimed', 'started') AND output_digest IS NULL
+      AND output_payload IS NULL AND failure_code IS NULL
+      AND failure_payload IS NULL AND success_disposition IS NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.durable_call_acceptances (
+  acceptance_ref text NOT NULL UNIQUE,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  idempotency_key text NOT NULL CHECK (length(idempotency_key) = 64),
+  accepted_attempt_ref text NOT NULL,
+  output_digest text NOT NULL CHECK (length(output_digest) = 64),
+  output_payload jsonb NOT NULL CHECK (jsonb_typeof(output_payload) = 'object'),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(run_attempt_id, idempotency_key),
+  UNIQUE(run_attempt_id, accepted_attempt_ref),
+  FOREIGN KEY (run_attempt_id, accepted_attempt_ref)
+    REFERENCES waje_runtime.durable_call_attempts(
+      run_attempt_id, attempt_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.durable_stage_attempt_seals (
+  stage_seal_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  transition_attempt_id text NOT NULL
+    REFERENCES waje_runtime.workflow_transition_attempts(attempt_id)
+      ON DELETE RESTRICT,
+  stage_name text NOT NULL,
+  attempt_set_digest text NOT NULL CHECK (length(attempt_set_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, stage_seal_ref),
+  UNIQUE(run_attempt_id, transition_attempt_id, stage_name)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.durable_stage_attempt_bindings (
+  binding_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  stage_seal_ref text NOT NULL,
+  transition_attempt_id text NOT NULL
+    REFERENCES waje_runtime.workflow_transition_attempts(attempt_id)
+      ON DELETE RESTRICT,
+  stage_name text NOT NULL,
+  accepted_attempt_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, transition_attempt_id, accepted_attempt_ref),
+  FOREIGN KEY (run_attempt_id, stage_seal_ref)
+    REFERENCES waje_runtime.durable_stage_attempt_seals(
+      run_attempt_id, stage_seal_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (run_attempt_id, accepted_attempt_ref)
+    REFERENCES waje_runtime.durable_call_acceptances(
+      run_attempt_id, accepted_attempt_ref
+    ) ON DELETE RESTRICT
+);
+
+DO $$
+DECLARE journal_table text;
+BEGIN
+  FOREACH journal_table IN ARRAY ARRAY[
+    'durable_call_attempts',
+    'durable_call_attempt_events',
+    'durable_call_acceptances',
+    'durable_stage_attempt_seals',
+    'durable_stage_attempt_bindings'
+  ]
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS %I_append_only ON waje_runtime.%I',
+      journal_table,
+      journal_table
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I_append_only BEFORE UPDATE OR DELETE ON waje_runtime.%I '
+      'FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation()',
+      journal_table,
+      journal_table
+    );
+  END LOOP;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_durable_call_attempts_logical_call
+  ON waje_runtime.durable_call_attempts(
+    run_attempt_id, idempotency_key, attempt_number DESC
+  );
+CREATE INDEX IF NOT EXISTS idx_durable_stage_attempt_bindings_transition
+  ON waje_runtime.durable_stage_attempt_bindings(
+    run_attempt_id, transition_attempt_id, stage_name
+  );
+
+-- vNext Phase 3 task-scoped execution authority. CapabilityTask definitions
+-- remain embedded in the immutable PlanRevision. Dispatch leases are mutable
+-- operational coordination only; attempts, outcomes, evidence ledger entries,
+-- stop records, and settled snapshots are append-only authority.
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_task_attempts (
+  attempt_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  task_id text NOT NULL,
+  task_idempotency_key text NOT NULL CHECK (length(task_idempotency_key) = 64),
+  execution_attempt integer NOT NULL CHECK (execution_attempt > 0),
+  normalized_input_digest text NOT NULL CHECK (length(normalized_input_digest) = 64),
+  release_set_digest text NOT NULL CHECK (length(release_set_digest) = 64),
+  contract_versions_digest text NOT NULL CHECK (length(contract_versions_digest) = 64),
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (run_attempt_id, attempt_id)
+    REFERENCES waje_runtime.durable_call_attempts(
+      run_attempt_id, attempt_ref
+    ) ON DELETE RESTRICT,
+  UNIQUE(plan_revision_id, task_id, execution_attempt),
+  UNIQUE(task_idempotency_key, execution_attempt)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_failure_records (
+  failure_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  task_id text NOT NULL,
+  attempt_id text NOT NULL
+    REFERENCES waje_runtime.capability_task_attempts(attempt_id) ON DELETE RESTRICT,
+  layer text NOT NULL CHECK (layer IN ('query', 'capability', 'evidence', 'persistence')),
+  kind text NOT NULL,
+  integrity_level text NOT NULL CHECK (integrity_level IN ('expected_boundary', 'task', 'shared_authority')),
+  retryability text NOT NULL CHECK (retryability IN ('never', 'same_input', 'replan_required')),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_outcomes (
+  outcome_ref text PRIMARY KEY,
+  attempt_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.capability_task_attempts(attempt_id) ON DELETE RESTRICT,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  task_id text NOT NULL,
+  status text NOT NULL CHECK (
+    status IN (
+      'succeeded', 'unavailable', 'integrity_failed',
+      'technical_failed', 'skipped', 'superseded'
+    )
+  ),
+  retryability text NOT NULL CHECK (retryability IN ('never', 'same_input', 'replan_required')),
+  failure_ref text
+    REFERENCES waje_runtime.capability_failure_records(failure_ref) ON DELETE RESTRICT,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  output_digest text NOT NULL CHECK (length(output_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(plan_revision_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_evidence_ledger_entries (
+  entry_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  task_id text NOT NULL,
+  outcome_ref text NOT NULL
+    REFERENCES waje_runtime.capability_outcomes(outcome_ref) ON DELETE RESTRICT,
+  evidence_ref text NOT NULL,
+  binding_record_ref text
+    REFERENCES waje_runtime.capability_binding_authority(record_ref) ON DELETE RESTRICT,
+  execution_state text NOT NULL CHECK (
+    execution_state IN ('available', 'unavailable', 'integrity_failed', 'technical_failed')
+  ),
+  evidence_kind text NOT NULL
+    CONSTRAINT capability_evidence_ledger_entries_evidence_kind_check
+    CHECK (
+      evidence_kind IN ('boundary', 'observed', 'derived', 'scenario', 'statistical_association')
+    ),
+  data_contract_state text NOT NULL,
+  maximum_claim_strength text NOT NULL,
+  result_membership_digest text NOT NULL CHECK (length(result_membership_digest) = 64),
+  completeness_membership_digest text NOT NULL CHECK (length(completeness_membership_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(outcome_ref, evidence_ref, content_digest)
+);
+
+ALTER TABLE waje_runtime.capability_evidence_ledger_entries
+  DROP CONSTRAINT IF EXISTS capability_evidence_ledger_entries_evidence_kind_check;
+
+ALTER TABLE waje_runtime.capability_evidence_ledger_entries
+  ADD CONSTRAINT capability_evidence_ledger_entries_evidence_kind_check
+  CHECK (
+    evidence_kind IN ('boundary', 'observed', 'derived', 'scenario', 'statistical_association')
+  ) NOT VALID;
+
+ALTER TABLE waje_runtime.capability_evidence_ledger_entries
+  VALIDATE CONSTRAINT capability_evidence_ledger_entries_evidence_kind_check;
+
+CREATE TABLE IF NOT EXISTS waje_runtime.exploration_stop_records (
+  stop_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  evaluated_outcome_set_digest text NOT NULL CHECK (length(evaluated_outcome_set_digest) = 64),
+  budget_policy_ref text NOT NULL,
+  reason text NOT NULL CHECK (
+    reason IN ('plan_exhausted', 'hard_budget_reached', 'no_ready_tasks', 'shared_authority_failure')
+  ),
+  used_budget_units integer NOT NULL CHECK (used_budget_units >= 0),
+  hard_budget_limit integer CHECK (hard_budget_limit IS NULL OR hard_budget_limit >= 0),
+  policy_decision jsonb NOT NULL CHECK (
+    jsonb_typeof(policy_decision) = 'object'
+    AND policy_decision ?& ARRAY[
+      'required_obligations', 'remaining_materiality',
+      'next_information_gain', 'actionability', 'statistical_risk',
+      'budget', 'next_task_id'
+    ]
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_execution_snapshots (
+  execution_snapshot_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL UNIQUE
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  stop_ref text NOT NULL UNIQUE
+    REFERENCES waje_runtime.exploration_stop_records(stop_ref) ON DELETE RESTRICT,
+  outcome_set_digest text NOT NULL CHECK (length(outcome_set_digest) = 64),
+  evidence_ledger_digest text NOT NULL CHECK (length(evidence_ledger_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE waje_runtime.capability_execution_snapshots
+  DROP CONSTRAINT IF EXISTS capability_execution_snapshots_run_attempt_id_key;
+
+CREATE INDEX IF NOT EXISTS idx_capability_execution_snapshots_run
+  ON waje_runtime.capability_execution_snapshots(run_attempt_id, created_at);
+
+-- Mutable worker coordination. These fields never grant analytical authority.
+CREATE TABLE IF NOT EXISTS waje_runtime.capability_task_dispatches (
+  task_id text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  attempt_id text
+    REFERENCES waje_runtime.capability_task_attempts(attempt_id) ON DELETE RESTRICT,
+  dispatch_state text NOT NULL CHECK (dispatch_state IN ('pending', 'leased', 'terminal')),
+  lease_owner text,
+  lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+  lease_expires_at timestamptz,
+  accepted_outcome_ref text
+    REFERENCES waje_runtime.capability_outcomes(outcome_ref) ON DELETE RESTRICT,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+DECLARE authority_table text;
+BEGIN
+  FOREACH authority_table IN ARRAY ARRAY[
+    'capability_task_attempts',
+    'capability_failure_records',
+    'capability_outcomes',
+    'capability_evidence_ledger_entries',
+    'exploration_stop_records',
+    'capability_execution_snapshots'
+  ]
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS %I_append_only ON waje_runtime.%I',
+      authority_table,
+      authority_table
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I_append_only BEFORE UPDATE OR DELETE ON waje_runtime.%I '
+      'FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation()',
+      authority_table,
+      authority_table
+    );
+  END LOOP;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_capability_task_attempts_plan
+  ON waje_runtime.capability_task_attempts(plan_revision_id, task_id, execution_attempt);
+CREATE INDEX IF NOT EXISTS idx_capability_outcomes_plan
+  ON waje_runtime.capability_outcomes(plan_revision_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_capability_evidence_ledger_plan
+  ON waje_runtime.capability_evidence_ledger_entries(plan_revision_id, task_id, evidence_ref);
+
+-- vNext Phase 4-6 sealed authority, publication, and delivery. Every authority
+-- record carries its owner and run scope directly. Composite foreign keys keep
+-- child records inside that exact scope; content digests express equality but
+-- never grant cross-owner access. The existing run_lifecycle_state_revisions
+-- table remains the single append-only lifecycle authority.
+CREATE TABLE IF NOT EXISTS waje_runtime.restricted_provider_responses (
+  provider_response_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  attempt_id text NOT NULL,
+  purpose text NOT NULL CHECK (
+    purpose IN (
+      'candidate_claim_proposal', 'claim_verification',
+      'recommendation_proposal', 'recommendation_verification',
+      'narrative_writer', 'block_verification'
+    )
+  ),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  input_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  raw_response_content text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, provider_response_ref),
+  UNIQUE(owner_ref, run_attempt_id, attempt_id),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, purpose, input_ref, input_digest, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_authority_namespaces (
+  authority_namespace_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  thread_ref text NOT NULL
+    REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id),
+  UNIQUE(owner_ref, run_attempt_id, authority_namespace_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_keys (
+  claim_key text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  goal_id text NOT NULL,
+  claim_kind text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, claim_key),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_support_edges (
+  support_edge_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  target_claim_key text NOT NULL,
+  source_type text NOT NULL CHECK (source_type IN ('evidence', 'claim', 'assumption')),
+  source_ref text NOT NULL,
+  edge_kind text NOT NULL CHECK (
+    edge_kind IN ('supports', 'qualifies', 'depends_on', 'contradicts', 'contextualizes')
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, support_edge_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, target_claim_key)
+    REFERENCES waje_runtime.claim_keys(owner_ref, run_attempt_id, claim_key)
+    ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_revisions (
+  claim_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  claim_key text NOT NULL,
+  claim_class text NOT NULL CHECK (
+    claim_class IN (
+      'observed_fact', 'accounting_identity_contribution',
+      'dimension_localization', 'statistical_association',
+      'candidate_mechanism', 'causal_effect', 'scenario', 'boundary'
+    )
+  ),
+  claim_status text NOT NULL CHECK (claim_status IN ('proposed', 'verified', 'withheld')),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, claim_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_key)
+    REFERENCES waje_runtime.claim_keys(owner_ref, run_attempt_id, claim_key)
+    ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_settlement_checkpoints (
+  checkpoint_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  execution_result_ref text NOT NULL,
+  execution_result_digest text NOT NULL CHECK (length(execution_result_digest) = 64),
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, checkpoint_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, execution_result_ref, plan_revision_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_obligation_settlement_bases (
+  basis_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  checkpoint_ref text NOT NULL,
+  obligation_id text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, basis_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, checkpoint_ref, obligation_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, checkpoint_ref)
+    REFERENCES waje_runtime.claim_settlement_checkpoints(
+      owner_ref, run_attempt_id, checkpoint_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_verification_attempts (
+  verification_attempt_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  checkpoint_ref text NOT NULL,
+  authority_input_ref text NOT NULL,
+  authority_input_digest text NOT NULL CHECK (length(authority_input_digest) = 64),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  raw_provider_response_ref text NOT NULL,
+  raw_provider_response_digest text NOT NULL CHECK (length(raw_provider_response_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, authority_input_ref, input_digest, attempt_number),
+  CHECK (authority_input_ref = checkpoint_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, checkpoint_ref)
+    REFERENCES waje_runtime.claim_settlement_checkpoints(
+      owner_ref, run_attempt_id, checkpoint_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, raw_provider_response_ref)
+    REFERENCES waje_runtime.restricted_provider_responses(
+      owner_ref, run_attempt_id, provider_response_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_verification_decisions (
+  verification_decision_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  verification_attempt_ref text NOT NULL,
+  subject_ref text NOT NULL,
+  disposition text NOT NULL CHECK (disposition IN ('accepted', 'vetoed')),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verification_decision_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref, subject_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.claim_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.local_boundary_authorities (
+  local_boundary_authority_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  checkpoint_ref text NOT NULL,
+  checkpoint_digest text NOT NULL CHECK (length(checkpoint_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, local_boundary_authority_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, checkpoint_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, checkpoint_ref)
+    REFERENCES waje_runtime.claim_settlement_checkpoints(
+      owner_ref, run_attempt_id, checkpoint_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_verification_reports (
+  verifier_report_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  verification_mode text NOT NULL CHECK (
+    verification_mode IN ('semantic_verifier', 'local_boundary_authority')
+  ),
+  checkpoint_ref text NOT NULL,
+  verification_attempt_ref text,
+  local_boundary_authority_ref text,
+  authority_input_ref text NOT NULL,
+  authority_input_digest text NOT NULL CHECK (length(authority_input_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verifier_report_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
+  CHECK (authority_input_ref = checkpoint_ref),
+  CHECK (
+    (
+      verification_mode = 'semantic_verifier'
+      AND verification_attempt_ref IS NOT NULL
+      AND local_boundary_authority_ref IS NULL
+    )
+    OR (
+      verification_mode = 'local_boundary_authority'
+      AND verification_attempt_ref IS NULL
+      AND local_boundary_authority_ref IS NOT NULL
+    )
+  ),
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.claim_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, local_boundary_authority_ref)
+    REFERENCES waje_runtime.local_boundary_authorities(
+      owner_ref, run_attempt_id, local_boundary_authority_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, checkpoint_ref)
+    REFERENCES waje_runtime.claim_settlement_checkpoints(
+      owner_ref, run_attempt_id, checkpoint_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_obligation_coverages (
+  coverage_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  obligation_id text NOT NULL,
+  claim_verifier_report_ref text NOT NULL,
+  coverage_state text NOT NULL CHECK (
+    coverage_state IN (
+      'satisfied', 'contradicted', 'mixed', 'unavailable',
+      'unresolved', 'not_requested'
+    )
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, coverage_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, obligation_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_verifier_report_ref)
+    REFERENCES waje_runtime.claim_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_graphs (
+  claim_graph_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  authority_mode text NOT NULL CHECK (authority_mode IN ('claim_bearing', 'boundary_only')),
+  claim_verifier_report_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, claim_graph_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_verifier_report_ref)
+    REFERENCES waje_runtime.claim_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.claim_settlements (
+  settlement_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  checkpoint_ref text NOT NULL,
+  claim_graph_ref text NOT NULL,
+  claim_graph_digest text NOT NULL CHECK (length(claim_graph_digest) = 64),
+  execution_result_ref text NOT NULL,
+  execution_result_digest text NOT NULL CHECK (length(execution_result_digest) = 64),
+  claim_verifier_report_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, settlement_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, checkpoint_ref)
+    REFERENCES waje_runtime.claim_settlement_checkpoints(
+      owner_ref, run_attempt_id, checkpoint_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_graph_ref)
+    REFERENCES waje_runtime.claim_graphs(owner_ref, run_attempt_id, claim_graph_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_verifier_report_ref)
+    REFERENCES waje_runtime.claim_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.recommendation_proposals (
+  recommendation_proposal_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  claim_graph_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, recommendation_proposal_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_graph_ref)
+    REFERENCES waje_runtime.claim_graphs(owner_ref, run_attempt_id, claim_graph_ref)
+    ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.recommendation_verification_attempts (
+  verification_attempt_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  recommendation_proposal_ref text NOT NULL,
+  authority_input_ref text NOT NULL,
+  authority_input_digest text NOT NULL CHECK (length(authority_input_digest) = 64),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  raw_provider_response_ref text NOT NULL,
+  raw_provider_response_digest text NOT NULL CHECK (length(raw_provider_response_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, recommendation_proposal_ref, input_digest, attempt_number),
+  FOREIGN KEY (owner_ref, run_attempt_id, recommendation_proposal_ref)
+    REFERENCES waje_runtime.recommendation_proposals(
+      owner_ref, run_attempt_id, recommendation_proposal_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, raw_provider_response_ref)
+    REFERENCES waje_runtime.restricted_provider_responses(
+      owner_ref, run_attempt_id, provider_response_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.recommendation_verification_decisions (
+  verification_decision_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  verification_attempt_ref text NOT NULL,
+  recommendation_proposal_ref text NOT NULL,
+  disposition text NOT NULL CHECK (disposition IN ('accepted', 'vetoed')),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verification_decision_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref, recommendation_proposal_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.recommendation_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, recommendation_proposal_ref)
+    REFERENCES waje_runtime.recommendation_proposals(
+      owner_ref, run_attempt_id, recommendation_proposal_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.recommendation_records (
+  recommendation_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  recommendation_proposal_ref text NOT NULL,
+  verification_attempt_ref text NOT NULL,
+  verification_decision_ref text NOT NULL,
+  claim_graph_ref text NOT NULL,
+  claim_verifier_report_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, recommendation_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, recommendation_proposal_ref)
+    REFERENCES waje_runtime.recommendation_proposals(
+      owner_ref, run_attempt_id, recommendation_proposal_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.recommendation_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_decision_ref)
+    REFERENCES waje_runtime.recommendation_verification_decisions(
+      owner_ref, run_attempt_id, verification_decision_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_graph_ref)
+    REFERENCES waje_runtime.claim_graphs(owner_ref, run_attempt_id, claim_graph_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_verifier_report_ref)
+    REFERENCES waje_runtime.claim_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.authority_bundles (
+  bundle_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_namespace_ref text NOT NULL,
+  bundle_revision integer NOT NULL CHECK (bundle_revision > 0),
+  supersedes_bundle_ref text
+    REFERENCES waje_runtime.authority_bundles(bundle_ref) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  execution_result_ref text NOT NULL,
+  execution_result_digest text NOT NULL CHECK (length(execution_result_digest) = 64),
+  claim_settlement_ref text NOT NULL,
+  claim_settlement_digest text NOT NULL CHECK (length(claim_settlement_digest) = 64),
+  claim_graph_ref text NOT NULL,
+  claim_graph_digest text NOT NULL CHECK (length(claim_graph_digest) = 64),
+  authority_mode text NOT NULL CHECK (authority_mode IN ('claim_bearing', 'boundary_only')),
+  obligation_coverage_refs jsonb NOT NULL CHECK (jsonb_typeof(obligation_coverage_refs) = 'array'),
+  claim_verifier_report_ref text NOT NULL,
+  bundle_digest text NOT NULL CHECK (length(bundle_digest) = 64),
+  seal_state text NOT NULL CHECK (seal_state = 'sealed'),
+  sealed_at timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, bundle_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, bundle_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_namespace_ref)
+    REFERENCES waje_runtime.claim_authority_namespaces(
+      owner_ref, run_attempt_id, authority_namespace_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_settlement_ref)
+    REFERENCES waje_runtime.claim_settlements(
+      owner_ref, run_attempt_id, settlement_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_graph_ref)
+    REFERENCES waje_runtime.claim_graphs(owner_ref, run_attempt_id, claim_graph_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_verifier_report_ref)
+    REFERENCES waje_runtime.claim_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_bundles_one_sealed_per_run
+  ON waje_runtime.authority_bundles(run_attempt_id)
+  WHERE seal_state = 'sealed';
+
+CREATE TABLE IF NOT EXISTS waje_runtime.publication_visibility_policies (
+  policy_ref text NOT NULL,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  policy_id text NOT NULL,
+  policy_revision integer NOT NULL CHECK (policy_revision > 0),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, policy_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, policy_id, policy_revision)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.public_claim_palettes (
+  palette_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  authority_mode text NOT NULL CHECK (authority_mode IN ('claim_bearing', 'boundary_only')),
+  field_visibility_policy_ref text NOT NULL,
+  field_visibility_policy_digest text NOT NULL CHECK (length(field_visibility_policy_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, authority_bundle_ref, field_visibility_policy_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, field_visibility_policy_ref)
+    REFERENCES waje_runtime.publication_visibility_policies(
+      owner_ref, run_attempt_id, policy_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.public_claims (
+  public_claim_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  palette_ref text NOT NULL,
+  claim_ref text NOT NULL,
+  claim_key_ref text NOT NULL,
+  claim_class text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, public_claim_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref, claim_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, palette_ref)
+    REFERENCES waje_runtime.public_claim_palettes(
+      owner_ref, run_attempt_id, palette_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_ref)
+    REFERENCES waje_runtime.claim_revisions(
+      owner_ref, run_attempt_id, claim_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_key_ref)
+    REFERENCES waje_runtime.claim_keys(
+      owner_ref, run_attempt_id, claim_key
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.public_fact_descriptors (
+  fact_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  palette_ref text NOT NULL,
+  public_claim_ref text NOT NULL,
+  claim_ref text NOT NULL,
+  source_material_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, fact_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, palette_ref)
+    REFERENCES waje_runtime.public_claim_palettes(
+      owner_ref, run_attempt_id, palette_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, public_claim_ref)
+    REFERENCES waje_runtime.public_claims(
+      owner_ref, run_attempt_id, public_claim_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_ref)
+    REFERENCES waje_runtime.claim_revisions(
+      owner_ref, run_attempt_id, claim_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.public_recommendations (
+  public_recommendation_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  palette_ref text NOT NULL,
+  recommendation_ref text NOT NULL,
+  recommendation_digest text NOT NULL CHECK (length(recommendation_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, public_recommendation_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref, recommendation_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, palette_ref)
+    REFERENCES waje_runtime.public_claim_palettes(
+      owner_ref, run_attempt_id, palette_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, recommendation_ref)
+    REFERENCES waje_runtime.recommendation_records(
+      owner_ref, run_attempt_id, recommendation_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.public_limitations (
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  palette_ref text NOT NULL,
+  limitation_ref text NOT NULL,
+  limitation_handle text NOT NULL,
+  public_context jsonb NOT NULL CHECK (jsonb_typeof(public_context) = 'object'),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, palette_ref, limitation_ref),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref, limitation_handle),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, palette_ref)
+    REFERENCES waje_runtime.public_claim_palettes(
+      owner_ref, run_attempt_id, palette_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_material_projections (
+  projection_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  palette_ref text NOT NULL,
+  palette_digest text NOT NULL CHECK (length(palette_digest) = 64),
+  claim_settlement_ref text NOT NULL,
+  claim_settlement_digest text NOT NULL CHECK (length(claim_settlement_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, projection_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, palette_ref, claim_settlement_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, palette_ref)
+    REFERENCES waje_runtime.public_claim_palettes(
+      owner_ref, run_attempt_id, palette_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, claim_settlement_ref)
+    REFERENCES waje_runtime.claim_settlements(
+      owner_ref, run_attempt_id, settlement_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_writer_attempts (
+  writer_attempt_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  attempt_id text NOT NULL,
+  authority_bundle_ref text NOT NULL,
+  material_projection_ref text NOT NULL,
+  input_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  provider_response_ref text NOT NULL,
+  provider_response_digest text NOT NULL CHECK (length(provider_response_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, writer_attempt_ref),
+  UNIQUE(owner_ref, run_attempt_id, attempt_id),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, input_ref, input_digest, attempt_number),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(
+      owner_ref, run_attempt_id, bundle_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, material_projection_ref)
+    REFERENCES waje_runtime.narrative_material_projections(
+      owner_ref, run_attempt_id, projection_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, provider_response_ref)
+    REFERENCES waje_runtime.restricted_provider_responses(
+      owner_ref, run_attempt_id, provider_response_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_documents (
+  narrative_id text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_bundle_ref text NOT NULL,
+  material_projection_ref text NOT NULL,
+  writer_attempt_ref text NOT NULL,
+  parent_narrative_id text,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, writer_attempt_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, material_projection_ref)
+    REFERENCES waje_runtime.narrative_material_projections(owner_ref, run_attempt_id, projection_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, writer_attempt_ref)
+    REFERENCES waje_runtime.narrative_writer_attempts(
+      owner_ref, run_attempt_id, writer_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, parent_narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_blocks (
+  block_id text NOT NULL,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  narrative_id text NOT NULL,
+  writer_attempt_id text NOT NULL,
+  role text NOT NULL CHECK (
+    role IN (
+      'executive_answer', 'direction', 'accounting_drivers',
+      'dimension_localization', 'contextual_pattern', 'boundary', 'next_action'
+    )
+  ),
+  required boolean NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, narrative_id, block_id),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(
+      owner_ref, run_attempt_id, narrative_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, writer_attempt_id)
+    REFERENCES waje_runtime.narrative_writer_attempts(
+      owner_ref, run_attempt_id, attempt_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_fact_bindings (
+  binding_ref text NOT NULL,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  narrative_id text NOT NULL,
+  block_id text NOT NULL,
+  claim_handle text NOT NULL,
+  fact_handle text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, narrative_id, block_id, binding_ref),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id, block_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(
+      owner_ref, run_attempt_id, narrative_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id, block_id)
+    REFERENCES waje_runtime.narrative_blocks(
+      owner_ref, run_attempt_id, narrative_id, block_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.sensitive_output_findings (
+  finding_ref text NOT NULL,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  narrative_id text NOT NULL,
+  block_id text NOT NULL,
+  field_visibility_policy_ref text NOT NULL,
+  policy_rule_ref text NOT NULL,
+  material_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, narrative_id, finding_ref),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id, block_id)
+    REFERENCES waje_runtime.narrative_blocks(owner_ref, run_attempt_id, narrative_id, block_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, field_visibility_policy_ref)
+    REFERENCES waje_runtime.publication_visibility_policies(
+      owner_ref, run_attempt_id, policy_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.block_local_validation_reports (
+  local_report_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  narrative_id text NOT NULL,
+  narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
+  material_projection_ref text NOT NULL,
+  material_projection_digest text NOT NULL CHECK (length(material_projection_digest) = 64),
+  field_visibility_policy_ref text NOT NULL,
+  finding_refs jsonb NOT NULL CHECK (jsonb_typeof(finding_refs) = 'array'),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, local_report_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, material_projection_ref)
+    REFERENCES waje_runtime.narrative_material_projections(owner_ref, run_attempt_id, projection_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, field_visibility_policy_ref)
+    REFERENCES waje_runtime.publication_visibility_policies(
+      owner_ref, run_attempt_id, policy_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.block_local_issues (
+  issue_ref text NOT NULL,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  local_report_ref text NOT NULL,
+  narrative_id text NOT NULL,
+  block_id text NOT NULL,
+  issue_code text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_ref, run_attempt_id, local_report_ref, issue_ref),
+  UNIQUE(owner_ref, run_attempt_id, local_report_ref, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, local_report_ref)
+    REFERENCES waje_runtime.block_local_validation_reports(
+      owner_ref, run_attempt_id, local_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id, block_id)
+    REFERENCES waje_runtime.narrative_blocks(
+      owner_ref, run_attempt_id, narrative_id, block_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.block_verification_attempts (
+  verification_attempt_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  narrative_id text NOT NULL,
+  narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
+  local_report_ref text NOT NULL,
+  local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
+  attempt_id text NOT NULL,
+  input_ref text NOT NULL,
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  provider_ref text NOT NULL,
+  model_ref text NOT NULL,
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  provider_response_ref text NOT NULL,
+  provider_response_digest text NOT NULL CHECK (length(provider_response_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
+  UNIQUE(owner_ref, run_attempt_id, attempt_id),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, narrative_id, input_ref, input_digest, attempt_number),
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, local_report_ref)
+    REFERENCES waje_runtime.block_local_validation_reports(
+      owner_ref, run_attempt_id, local_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, provider_response_ref)
+    REFERENCES waje_runtime.restricted_provider_responses(
+      owner_ref, run_attempt_id, provider_response_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.block_vetoes (
+  veto_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  verification_attempt_ref text NOT NULL,
+  narrative_id text NOT NULL,
+  block_id text NOT NULL,
+  reason_code text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, veto_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref, block_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.block_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(
+      owner_ref, run_attempt_id, narrative_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id, block_id)
+    REFERENCES waje_runtime.narrative_blocks(
+      owner_ref, run_attempt_id, narrative_id, block_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.block_verification_reports (
+  verifier_report_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  verification_attempt_ref text NOT NULL,
+  verification_attempt_digest text NOT NULL CHECK (length(verification_attempt_digest) = 64),
+  narrative_id text NOT NULL,
+  narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
+  local_report_ref text NOT NULL,
+  local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, verifier_report_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, verification_attempt_ref)
+    REFERENCES waje_runtime.block_verification_attempts(
+      owner_ref, run_attempt_id, verification_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, local_report_ref)
+    REFERENCES waje_runtime.block_local_validation_reports(
+      owner_ref, run_attempt_id, local_report_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.publication_projections (
+  projection_id text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  material_projection_ref text NOT NULL,
+  material_projection_digest text NOT NULL CHECK (length(material_projection_digest) = 64),
+  narrative_id text NOT NULL,
+  narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
+  local_report_ref text NOT NULL,
+  local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
+  block_verifier_report_ref text NOT NULL,
+  block_verifier_report_digest text NOT NULL CHECK (length(block_verifier_report_digest) = 64),
+  field_visibility_policy_ref text NOT NULL,
+  field_visibility_policy_digest text NOT NULL CHECK (length(field_visibility_policy_digest) = 64),
+  recommendation_refs jsonb NOT NULL CHECK (jsonb_typeof(recommendation_refs) = 'array'),
+  projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, projection_id),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, projection_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, material_projection_ref)
+    REFERENCES waje_runtime.narrative_material_projections(owner_ref, run_attempt_id, projection_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, local_report_ref)
+    REFERENCES waje_runtime.block_local_validation_reports(
+      owner_ref, run_attempt_id, local_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, block_verifier_report_ref)
+    REFERENCES waje_runtime.block_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, field_visibility_policy_ref)
+    REFERENCES waje_runtime.publication_visibility_policies(
+      owner_ref, run_attempt_id, policy_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.publication_revisions (
+  publication_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  revision integer NOT NULL CHECK (revision > 0),
+  supersedes_publication_ref text,
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  narrative_id text NOT NULL,
+  narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
+  narrative_attempt_id text NOT NULL,
+  local_report_ref text NOT NULL,
+  local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
+  block_verifier_report_ref text NOT NULL,
+  block_verifier_report_digest text NOT NULL CHECK (length(block_verifier_report_digest) = 64),
+  projection_id text NOT NULL,
+  projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
+  publication_digest text NOT NULL CHECK (length(publication_digest) = 64),
+  published_at timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, publication_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, publication_digest),
+  UNIQUE(owner_ref, run_attempt_id, revision),
+  UNIQUE(owner_ref, run_attempt_id, supersedes_publication_ref),
+  CHECK (
+    (revision = 1 AND supersedes_publication_ref IS NULL)
+    OR (revision > 1 AND supersedes_publication_ref IS NOT NULL)
+  ),
+  FOREIGN KEY (owner_ref, run_attempt_id, supersedes_publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_attempt_id)
+    REFERENCES waje_runtime.narrative_writer_attempts(owner_ref, run_attempt_id, attempt_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, local_report_ref)
+    REFERENCES waje_runtime.block_local_validation_reports(
+      owner_ref, run_attempt_id, local_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, block_verifier_report_ref)
+    REFERENCES waje_runtime.block_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
+    REFERENCES waje_runtime.publication_projections(
+      owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.delivery_outbox_records (
+  outbox_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  publication_ref text NOT NULL,
+  publication_digest text NOT NULL CHECK (length(publication_digest) = 64),
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  projection_id text NOT NULL,
+  projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
+  destination_ref text NOT NULL,
+  channel text NOT NULL,
+  idempotency_key text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, outbox_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, publication_ref, destination_ref, channel),
+  UNIQUE(owner_ref, run_attempt_id, idempotency_key),
+  FOREIGN KEY (owner_ref, run_attempt_id, publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
+    REFERENCES waje_runtime.publication_projections(
+      owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.publication_customer_payloads (
+  customer_payload_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  outbox_ref text NOT NULL,
+  publication_ref text NOT NULL,
+  publication_digest text NOT NULL CHECK (length(publication_digest) = 64),
+  projection_id text NOT NULL,
+  projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
+  field_visibility_policy_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  customer_payload jsonb NOT NULL CHECK (jsonb_typeof(customer_payload) = 'object'),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, customer_payload_ref),
+  UNIQUE(owner_ref, run_attempt_id, outbox_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, outbox_ref)
+    REFERENCES waje_runtime.delivery_outbox_records(
+      owner_ref, run_attempt_id, outbox_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
+    REFERENCES waje_runtime.publication_projections(
+      owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, field_visibility_policy_ref)
+    REFERENCES waje_runtime.publication_visibility_policies(
+      owner_ref, run_attempt_id, policy_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.delivery_attempts (
+  attempt_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  outbox_ref text NOT NULL,
+  publication_ref text NOT NULL,
+  publication_digest text NOT NULL CHECK (length(publication_digest) = 64),
+  projection_id text NOT NULL,
+  projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
+  destination_ref text NOT NULL,
+  channel text NOT NULL,
+  idempotency_key text NOT NULL,
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  previous_attempt_ref text,
+  status text NOT NULL CHECK (
+    status IN ('published', 'retryable_failed', 'permanently_failed')
+  ),
+  transport_receipt_ref text,
+  failure_code text,
+  attempted_at timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, attempt_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, outbox_ref, attempt_number),
+  CHECK (
+    (status = 'published' AND transport_receipt_ref IS NOT NULL AND failure_code IS NULL)
+    OR (status <> 'published' AND transport_receipt_ref IS NULL AND failure_code IS NOT NULL)
+  ),
+  FOREIGN KEY (owner_ref, run_attempt_id, outbox_ref)
+    REFERENCES waje_runtime.delivery_outbox_records(
+      owner_ref, run_attempt_id, outbox_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
+    REFERENCES waje_runtime.publication_projections(
+      owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, previous_attempt_ref)
+    REFERENCES waje_runtime.delivery_attempts(owner_ref, run_attempt_id, attempt_ref)
+    ON DELETE RESTRICT
+);
+
+-- Mutable operational coordination. It can schedule and lease an immutable
+-- outbox command, while carrying no analytical or publication authority.
+CREATE TABLE IF NOT EXISTS waje_runtime.delivery_dispatches (
+  outbox_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  dispatch_state text NOT NULL CHECK (
+    dispatch_state IN ('pending', 'leased', 'retry_scheduled', 'terminal')
+  ),
+  lease_owner text,
+  lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+  lease_expires_at timestamptz,
+  next_attempt_at timestamptz,
+  accepted_attempt_ref text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (owner_ref, run_attempt_id, outbox_ref)
+    REFERENCES waje_runtime.delivery_outbox_records(
+      owner_ref, run_attempt_id, outbox_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, accepted_attempt_ref)
+    REFERENCES waje_runtime.delivery_attempts(owner_ref, run_attempt_id, attempt_ref)
+    ON DELETE RESTRICT,
+  CHECK (
+    dispatch_state <> 'leased'
+    OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.customer_publications (
+  customer_publication_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  outbox_ref text NOT NULL,
+  delivery_attempt_ref text NOT NULL,
+  publication_ref text NOT NULL,
+  projection_id text NOT NULL,
+  destination_ref text NOT NULL,
+  channel text NOT NULL,
+  transport_receipt_ref text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, customer_publication_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, outbox_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, outbox_ref)
+    REFERENCES waje_runtime.delivery_outbox_records(
+      owner_ref, run_attempt_id, outbox_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, delivery_attempt_ref)
+    REFERENCES waje_runtime.delivery_attempts(owner_ref, run_attempt_id, attempt_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
+    REFERENCES waje_runtime.publication_projections(
+      owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_attempt_requests (
+  request_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  source_publication_ref text NOT NULL,
+  source_publication_digest text NOT NULL CHECK (length(source_publication_digest) = 64),
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  source_narrative_id text NOT NULL,
+  source_narrative_attempt_id text NOT NULL,
+  requested_attempt_id text NOT NULL,
+  reason_dimensions jsonb NOT NULL CHECK (jsonb_typeof(reason_dimensions) = 'array'),
+  requested_by text NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, request_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, requested_attempt_id),
+  FOREIGN KEY (owner_ref, run_attempt_id, source_publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(owner_ref, run_attempt_id, bundle_ref)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, source_narrative_id)
+    REFERENCES waje_runtime.narrative_documents(owner_ref, run_attempt_id, narrative_id)
+    ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.insight_quality_evaluations (
+  evaluation_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  source_publication_ref text NOT NULL,
+  source_publication_digest text NOT NULL CHECK (length(source_publication_digest) = 64),
+  authority_bundle_ref text NOT NULL,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  source_narrative_id text NOT NULL,
+  source_narrative_attempt_id text NOT NULL,
+  rubric_ref text NOT NULL,
+  rubric_digest text NOT NULL CHECK (length(rubric_digest) = 64),
+  rubric jsonb NOT NULL CHECK (jsonb_typeof(rubric) = 'object'),
+  evaluation_case_ref text NOT NULL,
+  evaluation_case_digest text NOT NULL CHECK (length(evaluation_case_digest) = 64),
+  evaluation_case jsonb NOT NULL CHECK (jsonb_typeof(evaluation_case) = 'object'),
+  model_profile_ref text NOT NULL,
+  model_profile_digest text NOT NULL CHECK (length(model_profile_digest) = 64),
+  model_profile jsonb NOT NULL CHECK (jsonb_typeof(model_profile) = 'object'),
+  reviewer_ref text NOT NULL,
+  scores jsonb NOT NULL CHECK (jsonb_typeof(scores) = 'object'),
+  human_reasons jsonb NOT NULL CHECK (jsonb_typeof(human_reasons) = 'object'),
+  result text NOT NULL CHECK (
+    result IN ('retain_publication', 'request_independent_narrative_attempt')
+  ),
+  narrative_attempt_request_ref text,
+  advisory boolean NOT NULL CHECK (advisory),
+  reviewed_at timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, evaluation_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(
+    owner_ref,
+    run_attempt_id,
+    source_publication_ref,
+    evaluation_case_ref,
+    model_profile_ref,
+    reviewer_ref
+  ),
+  FOREIGN KEY (owner_ref, run_attempt_id, source_publication_ref)
+    REFERENCES waje_runtime.publication_revisions(
+      owner_ref, run_attempt_id, publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(
+      owner_ref, run_attempt_id, bundle_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, source_narrative_id)
+    REFERENCES waje_runtime.narrative_documents(
+      owner_ref, run_attempt_id, narrative_id
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, narrative_attempt_request_ref)
+    REFERENCES waje_runtime.narrative_attempt_requests(
+      owner_ref, run_attempt_id, request_ref
+    ) ON DELETE RESTRICT,
+  CHECK (
+    (result = 'retain_publication' AND narrative_attempt_request_ref IS NULL)
+    OR (
+      result = 'request_independent_narrative_attempt'
+      AND narrative_attempt_request_ref IS NOT NULL
+    )
+  )
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.guardrail_promotion_records (
+  promotion_ref text PRIMARY KEY,
+  governance_scope_ref text NOT NULL,
+  evaluation_refs jsonb NOT NULL CHECK (jsonb_typeof(evaluation_refs) = 'array'),
+  case_refs jsonb NOT NULL CHECK (jsonb_typeof(case_refs) = 'array'),
+  generalizable_pattern_ref text NOT NULL,
+  recurrence_evidence_refs jsonb NOT NULL CHECK (jsonb_typeof(recurrence_evidence_refs) = 'array'),
+  human_validation_ref text NOT NULL,
+  business_owner_ref text NOT NULL,
+  system_owner_ref text NOT NULL,
+  runtime_guardrail_ref text NOT NULL,
+  approved_at timestamptz NOT NULL,
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(governance_scope_ref, promotion_ref),
+  UNIQUE(governance_scope_ref, content_digest),
+  UNIQUE(governance_scope_ref, runtime_guardrail_ref),
+  CHECK (business_owner_ref <> system_owner_ref)
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.post_seal_failure_terminals (
+  terminal_ref text PRIMARY KEY,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  attempt_number integer NOT NULL CHECK (attempt_number > 0),
+  supersedes_terminal_ref text,
+  status text NOT NULL CHECK (
+    status IN ('narrative_failed', 'publication_failed')
+  ),
+  authority_bundle_ref text NOT NULL
+    REFERENCES waje_runtime.authority_bundles(bundle_ref) ON DELETE RESTRICT,
+  authority_bundle_digest text NOT NULL CHECK (length(authority_bundle_digest) = 64),
+  authority_transition_id text NOT NULL,
+  failure_id text NOT NULL,
+  lifecycle_state_digest text NOT NULL CHECK (length(lifecycle_state_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_attempt_id, terminal_ref),
+  UNIQUE(run_attempt_id, attempt_number),
+  UNIQUE(run_attempt_id, content_digest),
+  FOREIGN KEY (run_attempt_id, supersedes_terminal_ref)
+    REFERENCES waje_runtime.post_seal_failure_terminals(
+      run_attempt_id, terminal_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (run_attempt_id, failure_id)
+    REFERENCES waje_runtime.failure_records(run_attempt_id, failure_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY (run_attempt_id, lifecycle_state_digest)
+    REFERENCES waje_runtime.run_lifecycle_state_revisions(
+      run_attempt_id, content_digest
+    ) ON DELETE RESTRICT,
+  CHECK (
+    (attempt_number = 1 AND supersedes_terminal_ref IS NULL)
+    OR (attempt_number > 1 AND supersedes_terminal_ref IS NOT NULL)
+  )
+);
+
+-- All records above are authority except delivery_dispatches. Authority records
+-- reject UPDATE and DELETE; insertion with an existing ref must be resolved by
+-- an exact payload-and-digest comparison in the transaction layer.
+DO $$
+DECLARE authority_table text;
+BEGIN
+  FOREACH authority_table IN ARRAY ARRAY[
+    'conversation_turns',
+    'claim_authority_namespaces',
+    'claim_keys',
+    'claim_support_edges',
+    'claim_revisions',
+    'claim_settlement_checkpoints',
+    'claim_obligation_settlement_bases',
+    'claim_verification_attempts',
+    'claim_verification_decisions',
+    'local_boundary_authorities',
+    'claim_verification_reports',
+    'claim_obligation_coverages',
+    'claim_graphs',
+    'claim_settlements',
+    'recommendation_proposals',
+    'recommendation_verification_attempts',
+    'recommendation_verification_decisions',
+    'recommendation_records',
+    'authority_bundles',
+    'restricted_provider_responses',
+    'publication_visibility_policies',
+    'public_claim_palettes',
+    'public_claims',
+    'public_fact_descriptors',
+    'public_recommendations',
+    'public_limitations',
+    'narrative_material_projections',
+    'narrative_writer_attempts',
+    'narrative_documents',
+    'narrative_blocks',
+    'narrative_fact_bindings',
+    'sensitive_output_findings',
+    'block_local_validation_reports',
+    'block_local_issues',
+    'block_verification_attempts',
+    'block_vetoes',
+    'block_verification_reports',
+    'publication_projections',
+    'publication_revisions',
+    'delivery_outbox_records',
+    'publication_customer_payloads',
+    'delivery_attempts',
+    'customer_publications',
+    'narrative_attempt_requests',
+    'insight_quality_evaluations',
+    'guardrail_promotion_records',
+    'post_seal_failure_terminals'
+  ]
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS %I_append_only ON waje_runtime.%I',
+      authority_table,
+      authority_table
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I_append_only BEFORE UPDATE OR DELETE ON waje_runtime.%I '
+      'FOR EACH ROW EXECUTE FUNCTION waje_runtime.reject_append_only_authority_mutation()',
+      authority_table,
+      authority_table
+    );
+  END LOOP;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_claim_revisions_run_key
+  ON waje_runtime.claim_revisions(run_attempt_id, claim_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_claim_support_edges_target
+  ON waje_runtime.claim_support_edges(run_attempt_id, target_claim_key);
+CREATE INDEX IF NOT EXISTS idx_narrative_documents_bundle
+  ON waje_runtime.narrative_documents(run_attempt_id, authority_bundle_ref, created_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_outbox_dispatch
+  ON waje_runtime.delivery_dispatches(dispatch_state, next_attempt_at, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
+  ON waje_runtime.delivery_attempts(run_attempt_id, outbox_ref, attempt_number);
+
+INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
+VALUES (
+  'single-authority-workflow.v9',
+  '76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1'
+)
+ON CONFLICT (migration_id) DO NOTHING;

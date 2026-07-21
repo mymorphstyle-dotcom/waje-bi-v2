@@ -1,7 +1,11 @@
 from typing import Any, Iterable, Optional
 
 from bi_agent.capabilities import make_evidence_envelope
-from bi_agent.capabilities.segment_bridge import SPARSE_THRESHOLD, _has_sensitive_keys, _sample_size
+from bi_agent.capabilities.segment_bridge import (
+    SPARSE_THRESHOLD,
+    _has_sensitive_keys,
+    _sample_size,
+)
 
 
 def joint_attribution(
@@ -27,24 +31,32 @@ def joint_attribution(
         )
         residual = payload.get("residual", residual)
         fit = payload.get("fit", fit)
-    needs_escalation = force_run or segment_evidence is None or abs(residual) > 0.10 or fit < 0.80
-    dimension_keys = dimension_keys or _infer_dimension_keys(rows, group_key, amount_key)
+    needs_escalation = (
+        force_run or segment_evidence is None or abs(residual) > 0.10 or fit < 0.80
+    )
+    dimension_keys = dimension_keys or _infer_dimension_keys(
+        rows, group_key, amount_key
+    )
     if segment_evidence is None and (not rows or len(dimension_keys) < 2):
         return make_evidence_envelope(
             "joint_attribution",
             evidence_type="insufficient_evidence",
             strength="low",
             wording_limit="blocked",
-            typed_payload={"dimension_keys": dimension_keys, "residual": residual, "fit": fit},
+            typed_payload={
+                "dimension_keys": dimension_keys,
+                "residual": residual,
+                "fit": fit,
+            },
             limitations=("segment_bridge_required",),
             result_refs=result_refs,
         )
     if not needs_escalation:
         return make_evidence_envelope(
             "joint_attribution",
-            evidence_type="contextual_evidence",
-            strength="low",
-            wording_limit="not_run",
+            evidence_type="insufficient_evidence",
+            strength="insufficient",
+            wording_limit="insufficient",
             typed_payload={
                 "dimension_keys": dimension_keys,
                 "residual": residual,
@@ -61,7 +73,11 @@ def joint_attribution(
             evidence_type="insufficient_evidence",
             strength="low",
             wording_limit="insufficient",
-            typed_payload={"dimension_keys": dimension_keys, "residual": residual, "fit": fit},
+            typed_payload={
+                "dimension_keys": dimension_keys,
+                "residual": residual,
+                "fit": fit,
+            },
             limitations=("joint_dimensions_required",),
             result_refs=result_refs,
         )
@@ -70,7 +86,9 @@ def joint_attribution(
     sample_sizes = tuple(_sample_size(row) for row in rows)
     has_unverified_sample = any(size is None for size in sample_sizes)
     safe_rows = tuple(
-        row for row, size in zip(rows, sample_sizes) if size is None or size >= SPARSE_THRESHOLD
+        row
+        for row, size in zip(rows, sample_sizes)
+        if size is None or size >= SPARSE_THRESHOLD
     )
     skipped_sparse = len(rows) - len(safe_rows)
     if has_sensitive or has_unverified_sample:
@@ -85,7 +103,7 @@ def joint_attribution(
         )
         return make_evidence_envelope(
             "joint_attribution",
-            evidence_type="insufficient",
+            evidence_type="insufficient_evidence",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={
@@ -101,7 +119,7 @@ def joint_attribution(
     if skipped_sparse and not safe_rows:
         return make_evidence_envelope(
             "joint_attribution",
-            evidence_type="insufficient",
+            evidence_type="insufficient_evidence",
             strength="insufficient",
             wording_limit="blocked",
             typed_payload={
@@ -148,7 +166,9 @@ def joint_attribution(
         )
 
     combinations.sort(key=lambda item: abs(item["delta"]), reverse=True)
-    marginals = _marginal_contributions(combinations, dimension_keys, absolute_total_delta)
+    marginals = _marginal_contributions(
+        combinations, dimension_keys, absolute_total_delta
+    )
     decision = _dimension_decision(combinations, marginals)
     leading = combinations[0]
     top_3_absolute_delta_share = sum(
@@ -156,7 +176,7 @@ def joint_attribution(
     )
     return make_evidence_envelope(
         "joint_attribution",
-        evidence_type="statistical_association",
+        evidence_type="accounting_contribution",
         strength="medium",
         wording_limit="candidate",
         typed_payload={
@@ -218,7 +238,11 @@ def _combination_deltas(
     pairs: dict[tuple[str, ...], dict[str, float]] = {}
     skipped = 0
     for row in rows:
-        values = tuple(str(row.get(key)) for key in dimension_keys if row.get(key) not in (None, ""))
+        values = tuple(
+            str(row.get(key))
+            for key in dimension_keys
+            if row.get(key) not in (None, "")
+        )
         group = row.get(group_key)
         amount = _number(row.get(amount_key))
         if len(values) != len(dimension_keys) or group is None or amount is None:
@@ -287,16 +311,24 @@ def _dimension_decision(
         if not top_values:
             continue
         candidate = {"dimension": marginal["dimension"], **top_values[0]}
-        if best_marginal is None or candidate["absolute_delta_share"] > best_marginal["absolute_delta_share"]:
+        if (
+            best_marginal is None
+            or candidate["absolute_delta_share"] > best_marginal["absolute_delta_share"]
+        ):
             best_marginal = candidate
 
-    if best_marginal and best_marginal["absolute_delta_share"] >= max(0.80, top_joint_share):
+    if best_marginal and best_marginal["absolute_delta_share"] >= max(
+        0.80, top_joint_share
+    ):
         return {
             "action": "downgrade_to_single_dimension",
             "dimension": best_marginal["dimension"],
             "reason": "single_dimension_explains_most_joint_movement",
         }
-    return {"action": "keep_joint", "reason": "joint_cells_explain_movement_better_than_any_single_dimension"}
+    return {
+        "action": "keep_joint",
+        "reason": "joint_cells_explain_movement_better_than_any_single_dimension",
+    }
 
 
 def _number(value):

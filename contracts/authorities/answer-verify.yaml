@@ -1,0 +1,69 @@
+contract_version: "1"
+authority_id: answer_verify
+authority_kind: completion
+business_name: Claim and publication verification authority
+review_status: accepted
+
+purpose:
+  - Complete claim settlement by producing a ClaimVerifierReport over proposed claims, evidence ceilings, obligations, assumptions, and limitations.
+  - Complete publication verification by producing block-level verifier decisions over a NarrativeDocument and its sealed AuthorityBundle.
+  - Veto unsupported claims or narrative blocks before authority sealing or customer publication.
+
+inputs:
+  claim_settlement:
+    - authority_namespace_ref
+    - intent_revision_id
+    - decision_refs
+    - plan_revision_id
+    - authority_context_ref
+    - capability_outcome_refs
+    - evidence_refs
+    - proposed_claim_refs
+    - obligation_refs
+    - assumption_refs
+    - limitation_refs
+  publication:
+    - authority_bundle_ref
+    - narrative_id
+    - narrative_block_ids
+    - material_fact_bindings
+    - claim_handles
+    - limitation_handles
+
+outputs:
+  claim_settlement:
+    - claim_verifier_report_ref
+    - verified_claim_refs
+    - withheld_claim_refs
+    - obligation_coverage_ref
+  publication:
+    - block_verifier_report_ref
+    - accepted_block_ids
+    - rejected_block_ids
+    - vetoes
+
+hard_boundaries:
+  - Verification may veto; it cannot create evidence, grant a claim, increase a publication ceiling, or rewrite provider text.
+  - Every accepted claim closes to the pinned AuthorityContext, PlanRevision, EvidenceLedger, and applicable contract versions.
+  - Every accepted narrative block closes to claims and limitations in the sealed AuthorityBundle.
+  - A missing required reference, invalid digest, broken ownership namespace, SQL-safety violation, or fixed output-safety violation fails closed.
+
+completion_semantics:
+  claim_settlement: A ClaimGraph can enter an AuthorityBundle only through an accepted ClaimVerifierReport with complete obligation coverage or an explicit verified boundary.
+  publication: A PublicationProjection can include only unchanged NarrativeDocument blocks accepted by the block verifier.
+  delivery: Delivery and customer projection cannot re-run verification or alter business authority.
+
+non_uses:
+  - This authority is not a CapabilityTask and never appears in PlanRevision.capability_tasks.
+  - It does not query data or produce a CapabilityOutcome or EvidenceLedger record.
+  - It does not generate replacement prose, local fallback conclusions, or compatibility aggregates.
+
+typical_question_families:
+  - paid_amount_change_explanation
+  - pattern_explanation
+  - business_object_impact_review
+  - revenue_health_review
+  - segment_or_factor_attribution
+  - anomaly_or_black_swan_review
+  - custom_baseline_comparison
+  - data_quality_or_evidence_review

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import Enum
 import hashlib
 import secrets
 from typing import Any, Mapping, Sequence
@@ -117,31 +118,14 @@ class ClickHouseQueryExecutor:
         def finish(envelope: QueryResultEnvelope) -> QueryResultEnvelope:
             return self._record_current_execution(contract, envelope, snapshots)
 
-        attempt_ref = execution_attempt_ref or (
-            "attempt:" + secrets.token_urlsafe(18)
+        attempt_ref = execution_attempt_ref or ("attempt:" + secrets.token_urlsafe(18))
+        attempt_identity = hashlib.sha256(attempt_ref.encode("utf-8")).hexdigest()[:12]
+        compiled = compile_clickhouse_query(
+            contract,
+            snapshots,
+            registry=self._runtime_registry,
+            release_resolver=release_resolver or self.release_resolver,
         )
-        attempt_identity = hashlib.sha256(
-            attempt_ref.encode("utf-8")
-        ).hexdigest()[:12]
-        blocked_query_id = (
-            f"clickhouse:{contract.query_contract_id}:blocked:{attempt_identity}"
-        )
-        try:
-            compiled = compile_clickhouse_query(
-                contract,
-                snapshots,
-                registry=self._runtime_registry,
-                release_resolver=release_resolver or self.release_resolver,
-            )
-        except (KeyError, PermissionError, TypeError, ValueError) as exc:
-            return finish(_failed_envelope(
-                contract,
-                query_id=blocked_query_id,
-                query_hash="",
-                reason=str(exc),
-                execution_status="blocked",
-                execution_attempt_ref=attempt_ref,
-            ))
         query_hash = audit_query_hash(compiled.sql_text, compiled.parameters)
         query_id = (
             f"clickhouse:{contract.query_contract_id}:"
@@ -155,48 +139,40 @@ class ClickHouseQueryExecutor:
             aggregate=not bounded_context,
         )
         if not validation.ok:
-            return finish(_failed_envelope(
-                contract,
-                query_id=query_id,
-                query_hash=query_hash,
-                reason=validation.reason,
-                execution_status="blocked",
-                execution_attempt_ref=attempt_ref,
-            ))
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=query_id,
+                    query_hash=query_hash,
+                    reason=validation.reason,
+                    execution_status="blocked",
+                    execution_attempt_ref=attempt_ref,
+                )
+            )
 
-        try:
-            execute = (
-                self.runtime.bounded_context
-                if bounded_context
-                else self.runtime.aggregate
-            )
-            result = execute(
-                compiled.sql_text,
-                query_id=query_id,
-                parameters=compiled.parameters,
-                settings=compiled.settings,
-                execution_attempt_ref=attempt_ref,
-            )
-        except TypeError as exc:
-            return finish(_failed_envelope(
-                contract,
-                query_id=query_id,
-                query_hash=query_hash,
-                reason=f"clickhouse_provider_type_error:{exc}",
-                execution_status="failed",
-                execution_attempt_ref=attempt_ref,
-            ))
+        execute = (
+            self.runtime.bounded_context if bounded_context else self.runtime.aggregate
+        )
+        result = execute(
+            compiled.sql_text,
+            query_id=query_id,
+            parameters=compiled.parameters,
+            settings=compiled.settings,
+            execution_attempt_ref=attempt_ref,
+        )
         effective_hash = result.query_hash or query_hash
         if not result.ok:
-            return finish(_failed_envelope(
-                contract,
-                query_id=result.query_id or query_id,
-                query_hash=effective_hash,
-                reason=result.reason,
-                provider_stats=result.provider_stats,
-                execution_status="failed",
-                execution_attempt_ref=attempt_ref,
-            ))
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=result.query_id or query_id,
+                    query_hash=effective_hash,
+                    reason=result.reason,
+                    provider_stats=result.provider_stats,
+                    execution_status="failed",
+                    execution_attempt_ref=attempt_ref,
+                )
+            )
 
         if (
             bounded_context
@@ -210,52 +186,41 @@ class ClickHouseQueryExecutor:
                     "max_context_rows": compiled.max_context_rows,
                 }
             )
-            return finish(_failed_envelope(
-                contract,
-                query_id=result.query_id or query_id,
-                query_hash=effective_hash,
-                reason=f"context_row_bound_exceeded:{compiled.max_context_rows}",
-                provider_stats=provider_stats,
-                execution_status="failed",
-                execution_attempt_ref=attempt_ref,
-            ))
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=result.query_id or query_id,
+                    query_hash=effective_hash,
+                    reason=f"context_row_bound_exceeded:{compiled.max_context_rows}",
+                    provider_stats=provider_stats,
+                    execution_status="failed",
+                    execution_attempt_ref=attempt_ref,
+                )
+            )
 
-        rows, join_audit_stats, failure_reason = _aggregate_rows(
+        aggregation = _aggregate_rows(
             result.rows,
             contract,
         )
-        if failure_reason:
-            return finish(_failed_envelope(
-                contract,
-                query_id=result.query_id or query_id,
-                query_hash=effective_hash,
-                reason=failure_reason,
-                provider_stats=result.provider_stats,
-                execution_status=(
-                    "blocked"
-                    if failure_reason.startswith(
-                        "unreviewed_output_field_rejected:"
-                    )
-                    else "failed"
-                ),
-                execution_attempt_ref=attempt_ref,
-            ))
-
-        try:
-            rows_content_hash = canonical_result_rows_hash(
-                rows,
-                contract.result_shape.unique_key,
+        if aggregation.status is _RowAggregationStatus.BLOCKED:
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=result.query_id or query_id,
+                    query_hash=effective_hash,
+                    reason=aggregation.failure_reason,
+                    provider_stats=result.provider_stats,
+                    execution_status="blocked",
+                    execution_attempt_ref=attempt_ref,
+                )
             )
-        except EvidenceIntegrityError as exc:
-            return finish(_failed_envelope(
-                contract,
-                query_id=result.query_id or query_id,
-                query_hash=effective_hash,
-                reason=f"invalid_result_rows:{exc}",
-                provider_stats=result.provider_stats,
-                execution_status="failed",
-                execution_attempt_ref=attempt_ref,
-            ))
+        rows = aggregation.rows
+        join_audit_stats = aggregation.join_audit_stats
+
+        rows_content_hash = canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        )
         audit_refs = query_audit_refs(
             effective_hash,
             contract.contract_signature,
@@ -273,116 +238,42 @@ class ClickHouseQueryExecutor:
         )
         provider_stats = dict(result.provider_stats)
         provider_stats.update(join_audit_stats)
-        return finish(QueryResultEnvelope(
-            query_contract_ref=contract.query_contract_id,
-            query_id=result.query_id or query_id,
-            query_hash=effective_hash,
-            result_ref=audit_refs.result_ref,
-            execution_status="succeeded",
-            rows_ref=rows_ref,
-            row_count=len(rows),
-            completeness_report_ref=audit_refs.completeness_report_ref,
-            rows=rows,
-            observed_schema=_observed_schema(rows),
-            observed_windows=_observed_windows(rows, contract),
-            observed_grain=_observed_grain(rows, contract.result_shape.grain),
-            source_snapshot_refs=contract.dataset_snapshot_refs,
-            provider_stats=provider_stats,
-            execution_attempt_ref=attempt_ref,
-        ))
+        return finish(
+            QueryResultEnvelope(
+                query_contract_ref=contract.query_contract_id,
+                query_id=result.query_id or query_id,
+                query_hash=effective_hash,
+                result_ref=audit_refs.result_ref,
+                execution_status="succeeded",
+                rows_ref=rows_ref,
+                row_count=len(rows),
+                completeness_report_ref=audit_refs.completeness_report_ref,
+                rows=rows,
+                observed_schema=_observed_schema(rows),
+                observed_windows=_observed_windows(rows, contract),
+                observed_grain=_observed_grain(rows, contract.result_shape.grain),
+                source_snapshot_refs=contract.dataset_snapshot_refs,
+                provider_stats=provider_stats,
+                execution_attempt_ref=attempt_ref,
+            )
+        )
 
-    def materialize_reuse(
+    def accept_durable_result(
         self,
         contract: QueryContract,
         snapshots: Mapping[str, DatasetSnapshot],
-        *,
-        source_result: QueryResultEnvelope,
-        source_rows: Sequence[Mapping[str, Any]],
-        source_result_ref: str,
-        candidate_signature: str,
-        execution_attempt_ref: str = "",
-        release_resolver: DatasetReleaseResolver | None = None,
+        result: QueryResultEnvelope,
     ) -> QueryResultEnvelope:
-        if source_result.execution_status != "succeeded":
-            raise EvidenceIntegrityError("reuse_source_execution_not_succeeded")
-        if source_result.result_ref != source_result_ref:
-            raise EvidenceIntegrityError("reuse_source_result_ref_mismatch")
-        compiled = compile_clickhouse_query(
-            contract,
-            snapshots,
-            registry=self._runtime_registry,
-            release_resolver=release_resolver or self.release_resolver,
-        )
-        query_hash = audit_query_hash(compiled.sql_text, compiled.parameters)
-        if query_hash != source_result.query_hash:
-            raise EvidenceIntegrityError("reuse_query_hash_mismatch")
-        bounded_context = (
-            contract.result_shape.result_semantics == "complete_context_rows"
-        )
-        validation = validate_select_only(
-            compiled.sql_text,
-            aggregate=not bounded_context,
-        )
-        if not validation.ok:
-            raise EvidenceIntegrityError(
-                f"reuse_query_safety_invalid:{validation.reason}"
-            )
-        rows, join_audit_stats, failure_reason = _aggregate_rows(
-            source_rows,
-            contract,
-        )
-        if failure_reason:
-            raise EvidenceIntegrityError(
-                f"reuse_rows_contract_mismatch:{failure_reason}"
-            )
-        rows_content_hash = canonical_result_rows_hash(
-            rows,
-            contract.result_shape.unique_key,
-        )
-        attempt_ref = execution_attempt_ref or (
-            "attempt:" + secrets.token_urlsafe(18)
-        )
-        audit_refs = query_audit_refs(
-            query_hash,
-            contract.contract_signature,
-            contract.dataset_snapshot_refs,
-            query_contract_ref=contract.query_contract_id,
-            execution_attempt_ref=attempt_ref,
-            rows_content_hash=rows_content_hash,
-        )
-        rows_ref = self.rows_store.persist(
-            query_hash,
-            contract.contract_signature,
-            contract.dataset_snapshot_refs,
-            rows,
-            contract.result_shape.unique_key,
-        )
-        provider_stats = {
-            **dict(source_result.provider_stats),
-            **dict(join_audit_stats),
-            "cache_hit": True,
-            "cache_source": "validated_authoritative_query_chain",
-            "source_result_ref": source_result_ref,
-            "candidate_signature": candidate_signature,
-        }
-        envelope = QueryResultEnvelope(
-            query_contract_ref=contract.query_contract_id,
-            query_id=f"cache-hit:{contract.query_contract_id}:{query_hash[:12]}",
-            query_hash=query_hash,
-            result_ref=audit_refs.result_ref,
-            execution_status="succeeded",
-            rows_ref=rows_ref,
-            row_count=len(rows),
-            completeness_report_ref=audit_refs.completeness_report_ref,
-            rows=rows,
-            observed_schema=_observed_schema(rows),
-            observed_windows=_observed_windows(rows, contract),
-            observed_grain=_observed_grain(rows, contract.result_shape.grain),
-            source_snapshot_refs=contract.dataset_snapshot_refs,
-            provider_stats=provider_stats,
-            execution_attempt_ref=attempt_ref,
-        )
-        return self._record_current_execution(contract, envelope, snapshots)
+        if (
+            not isinstance(contract, QueryContract)
+            or not isinstance(snapshots, Mapping)
+            or type(result) is not QueryResultEnvelope
+            or result.query_contract_ref != contract.query_contract_id
+            or not result.execution_attempt_ref
+        ):
+            raise EvidenceIntegrityError("query_durable_result_invalid")
+        self._record_current_execution(contract, result, snapshots)
+        return result
 
     def _record_current_execution(
         self,
@@ -455,10 +346,23 @@ def _failed_envelope(
     )
 
 
+class _RowAggregationStatus(str, Enum):
+    ACCEPTED = "accepted"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class _RowAggregationOutcome:
+    status: _RowAggregationStatus
+    rows: tuple[Mapping[str, Any], ...] = ()
+    join_audit_stats: Mapping[str, Any] = field(default_factory=dict)
+    failure_reason: str = ""
+
+
 def _aggregate_rows(
     raw_rows: Sequence[Any],
     contract: QueryContract,
-) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, Any], str]:
+) -> _RowAggregationOutcome:
     allowed = set(contract.result_shape.required_fields)
     audit_fields = (
         set(contract.join_expectation.audit_fields)
@@ -471,27 +375,23 @@ def _aggregate_rows(
         for binding in contract.metric_bindings
         if binding.reconciliation_strategy == "exact_additive_count"
     }
-    audit_values: dict[str, list[Any]] = {
-        field: [] for field in audit_fields
-    }
+    audit_values: dict[str, list[Any]] = {field_name: [] for field_name in audit_fields}
     for raw_row in raw_rows:
         if not isinstance(raw_row, Mapping):
-            return (), {}, "invalid_clickhouse_row_shape"
+            raise EvidenceIntegrityError("invalid_clickhouse_row_shape")
         raw_keys = {str(key) for key in raw_row}
         unreviewed = raw_keys - allowed - audit_fields
         if unreviewed:
-            return (), {}, (
-                "unreviewed_output_field_rejected:"
-                + ",".join(sorted(unreviewed))
+            return _RowAggregationOutcome(
+                status=_RowAggregationStatus.BLOCKED,
+                failure_reason=(
+                    "unreviewed_output_field_rejected:" + ",".join(sorted(unreviewed))
+                ),
             )
-        for field in audit_fields:
-            if field in raw_row:
-                audit_values[field].append(raw_row[field])
-        row = {
-            str(key): value
-            for key, value in raw_row.items()
-            if str(key) in allowed
-        }
+        for field_name in audit_fields:
+            if field_name in raw_row:
+                audit_values[field_name].append(raw_row[field_name])
+        row = {str(key): value for key, value in raw_row.items() if str(key) in allowed}
         for metric_id in exact_count_metrics.intersection(row):
             canonical = canonical_exact_additive_count(row[metric_id])
             if canonical is not None:
@@ -499,8 +399,8 @@ def _aggregate_rows(
         rows.append(row)
     join_audit_stats: dict[str, Any] = {}
     if contract.join_expectation is not None:
-        for field, values in audit_values.items():
-            provider_field = field.removeprefix("__")
+        for field_name, values in audit_values.items():
+            provider_field = field_name.removeprefix("__")
             if values and all(
                 isinstance(value, int) and not isinstance(value, bool)
                 for value in values
@@ -508,7 +408,11 @@ def _aggregate_rows(
                 join_audit_stats[provider_field] = sum(values)
             elif values:
                 join_audit_stats[provider_field] = values[0]
-    return tuple(rows), join_audit_stats, ""
+    return _RowAggregationOutcome(
+        status=_RowAggregationStatus.ACCEPTED,
+        rows=tuple(rows),
+        join_audit_stats=join_audit_stats,
+    )
 
 
 def _observed_schema(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -531,9 +435,7 @@ def _observed_windows(
     contract: QueryContract,
 ) -> tuple[str, ...]:
     observed = {
-        str(row["window_id"])
-        for row in rows
-        if row.get("window_id") not in (None, "")
+        str(row["window_id"]) for row in rows if row.get("window_id") not in (None, "")
     }
     contract_order = tuple(
         dict.fromkeys(
@@ -556,11 +458,7 @@ def _observed_grain(
 ) -> tuple[str, ...]:
     if not rows:
         return ()
-    return tuple(
-        field
-        for field in expected_grain
-        if all(field in row for row in rows)
-    )
+    return tuple(field for field in expected_grain if all(field in row for row in rows))
 
 
 def _type_name(value: Any) -> str:

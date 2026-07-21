@@ -14,6 +14,7 @@ from bi_agent.runtime.analysis_contracts import (
     ReconciliationBinding,
     ResolvedWindow,
     ResultShape,
+    completeness_report_failure_classes,
     query_contract_signature,
 )
 from bi_agent.runtime.dataset_catalog import (
@@ -26,7 +27,6 @@ from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     RuntimeEvidenceAuthority,
     canonical_result_rows_hash,
-    canonical_rows_hash,
 )
 from bi_agent.runtime.analysis_contract_compiler import compile_analysis_contract
 from bi_agent.runtime.dataset_catalog import DatasetCatalog
@@ -46,12 +46,12 @@ from bi_agent.runtime.query_completeness import (
     validate_query_result as _validate_query_result,
     validate_query_set,
 )
-from bi_agent.runtime.query_repair import plan_query_repair
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from tests.phase4.test_clickhouse_query_compiler import (
     contract as reviewed_contract,
     snapshot as reviewed_snapshot,
 )
+from tests.support.temporal_authority import resolved_test_daily_pair_authority
 
 
 class _TransientClickHouseClient:
@@ -94,7 +94,9 @@ class _PaidReleaseResolver:
     def add(self, record: DatasetReleaseAuthorityRecord) -> None:
         self.records[record.release_ref] = record
 
-    def resolve_dataset_release(self, release_ref: str) -> DatasetReleaseAuthorityRecord:
+    def resolve_dataset_release(
+        self, release_ref: str
+    ) -> DatasetReleaseAuthorityRecord:
         return self.records[release_ref]
 
 
@@ -149,7 +151,9 @@ def paid_snapshot(watermark="2026-07-04", snapshot_ref="snapshot:paid:1"):
 
 
 def paid_catalog(snapshot):
-    authorized = authorize_paid_snapshot(snapshot) if not snapshot.release_ref else snapshot
+    authorized = (
+        authorize_paid_snapshot(snapshot) if not snapshot.release_ref else snapshot
+    )
     return (
         DatasetCatalog((authorized,), release_resolver=_PAID_RELEASE_RESOLVER),
         _PAID_RELEASE_RESOLVER,
@@ -394,7 +398,11 @@ def successful_result(
     for row in rows:
         for key, value in row.items():
             schema[str(key)] = (
-                "null" if value is None else "number" if isinstance(value, (int, float)) else "string"
+                "null"
+                if value is None
+                else "number"
+                if isinstance(value, (int, float))
+                else "string"
             )
     attempt_ref = execution_attempt_ref or (
         f"attempt:test:{contract.query_contract_id}"
@@ -488,20 +496,478 @@ def complete_rows(*, metric_id="paid_amount", target=120.0, baseline=100.0):
     )
 
 
-def repair_report(contract, *reasons):
-    return CompletenessReport(
-        report_ref=f"completeness:{contract.query_contract_id}",
-        result_ref=f"result:{contract.query_contract_id}",
-        query_contract_ref=contract.query_contract_id,
-        completeness_status="partial",
-        analysis_readiness="blocked",
-        assertion_results=(),
-        failure_reasons=tuple(reasons),
-        coverage_summary={},
-    )
-
-
 class QueryCompletenessTest(unittest.TestCase):
+    def test_window_aggregate_coverage_is_window_level_and_tamper_evident(self):
+        base = baseline_contract(
+            query_id="query:window-aggregate:1",
+            required_windows=("rolling_7_day_baseline",),
+            dimensions=(channel_dimension(),),
+        )
+        aggregate_window = replace(
+            base.resolved_windows[0],
+            aggregation="mean_of_complete_days",
+        )
+        aggregate_contract = replace(
+            base,
+            resolved_windows=(aggregate_window,),
+            result_shape=ResultShape(
+                required_fields=(
+                    "window_id",
+                    "window_role",
+                    "observation_key",
+                    "source_complete_days",
+                    "paid_amount",
+                    "channel",
+                ),
+                unique_key=("window_id", "observation_key", "channel"),
+                grain=("window_id", "observation_key", "channel"),
+                required_window_ids=("rolling_7_day_baseline",),
+                result_semantics="complete_window_aggregate",
+                dimension_presence_policy="sparse_allowed",
+            ),
+        )
+        complete_rows = (
+            {
+                "window_id": "rolling_7_day_baseline",
+                "window_role": "baseline",
+                "observation_key": "rolling_7_day_baseline",
+                "source_complete_days": 7,
+                "paid_amount": 20.0,
+                "channel": "A",
+            },
+            {
+                "window_id": "rolling_7_day_baseline",
+                "window_role": "baseline",
+                "observation_key": "rolling_7_day_baseline",
+                "source_complete_days": 7,
+                "paid_amount": 10.0,
+                "channel": "B",
+            },
+        )
+
+        complete = validate_query_result(
+            aggregate_contract,
+            successful_result(aggregate_contract, rows=complete_rows),
+            paid_snapshot(),
+        )
+        self.assertEqual(complete.completeness_status, "complete")
+        self.assertEqual(
+            complete.coverage_summary["window_day_counts"],
+            {"rolling_7_day_baseline": 7},
+        )
+
+        mean_count_contract = replace(
+            aggregate_contract,
+            query_contract_id="query:window-aggregate-count:1",
+            metric_bindings=(count_metric(),),
+            dimension_bindings=(),
+            result_shape=ResultShape(
+                required_fields=(
+                    "window_id",
+                    "window_role",
+                    "observation_key",
+                    "source_complete_days",
+                    "paid_orders",
+                ),
+                unique_key=("window_id", "observation_key"),
+                grain=("window_id", "observation_key"),
+                required_window_ids=("rolling_7_day_baseline",),
+                result_semantics="complete_window_aggregate",
+            ),
+        )
+        mean_count_rows = (
+            {
+                "window_id": "rolling_7_day_baseline",
+                "window_role": "baseline",
+                "observation_key": "rolling_7_day_baseline",
+                "source_complete_days": 7,
+                "paid_orders": 12.5,
+            },
+        )
+        mean_count = validate_query_result(
+            mean_count_contract,
+            successful_result(mean_count_contract, rows=mean_count_rows),
+            paid_snapshot(),
+        )
+        self.assertEqual(mean_count.completeness_status, "complete")
+
+        inconsistent_rows = (
+            complete_rows[0],
+            {**complete_rows[1], "source_complete_days": 6},
+        )
+        inconsistent = validate_query_result(
+            aggregate_contract,
+            successful_result(aggregate_contract, rows=inconsistent_rows),
+            paid_snapshot(),
+        )
+        self.assertIn(
+            "inconsistent_source_complete_days:rolling_7_day_baseline",
+            inconsistent.failure_reasons,
+        )
+        self.assertEqual(inconsistent.analysis_readiness, "blocked")
+
+        incomplete_rows = tuple(
+            {**row, "source_complete_days": 6} for row in complete_rows
+        )
+        incomplete = validate_query_result(
+            aggregate_contract,
+            successful_result(aggregate_contract, rows=incomplete_rows),
+            paid_snapshot(),
+        )
+        self.assertIn(
+            "incomplete_window:rolling_7_day_baseline:6/7",
+            incomplete.failure_reasons,
+        )
+
+    def test_failed_assertion_requires_typed_failure_class(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_assertion_failure_classes_missing",
+        ):
+            CompletenessReport(
+                report_ref="completeness:typed-failure",
+                result_ref="result:typed-failure",
+                query_contract_ref="query:typed-failure",
+                completeness_status="invalid",
+                analysis_readiness="blocked",
+                assertion_results=(
+                    {
+                        "assertion": "execution_succeeded",
+                        "passed": False,
+                        "failure_reasons": ("opaque diagnostic",),
+                        "details": {},
+                    },
+                ),
+                failure_reasons=("opaque diagnostic",),
+                coverage_summary={},
+            )
+
+    def test_passed_assertion_requires_current_exact_shape(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_assertion_shape_invalid",
+        ):
+            CompletenessReport(
+                report_ref="completeness:passed-shape",
+                result_ref="result:passed-shape",
+                query_contract_ref="query:passed-shape",
+                completeness_status="complete",
+                analysis_readiness="ready",
+                assertion_results=(
+                    {
+                        "assertion": "execution_succeeded",
+                        "passed": True,
+                        "failure_reasons": (),
+                        "details": {},
+                    },
+                ),
+                failure_reasons=(),
+                coverage_summary={},
+            )
+
+    def test_report_state_must_equal_typed_assertion_state(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_report_state_mismatch",
+        ):
+            CompletenessReport(
+                report_ref="completeness:state-drift",
+                result_ref="result:state-drift",
+                query_contract_ref="query:state-drift",
+                completeness_status="partial",
+                analysis_readiness="blocked",
+                assertion_results=(
+                    {
+                        "assertion": "execution_succeeded",
+                        "passed": True,
+                        "failure_reasons": (),
+                        "failure_classes": (),
+                        "details": {},
+                    },
+                ),
+                failure_reasons=(),
+                coverage_summary={},
+            )
+
+    def test_report_reasons_must_equal_ordered_assertion_reasons(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_report_failure_reasons_mismatch",
+        ):
+            CompletenessReport(
+                report_ref="completeness:reason-drift",
+                result_ref="result:reason-drift",
+                query_contract_ref="query:reason-drift",
+                completeness_status="partial",
+                analysis_readiness="blocked",
+                assertion_results=(
+                    {
+                        "assertion": "required_windows",
+                        "passed": False,
+                        "failure_reasons": ("missing window",),
+                        "failure_classes": ("availability",),
+                        "details": {},
+                    },
+                ),
+                failure_reasons=("different report diagnostic",),
+                coverage_summary={},
+            )
+
+    def test_report_coverage_summary_must_be_mapping(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_report_coverage_summary_invalid",
+        ):
+            CompletenessReport(
+                report_ref="completeness:coverage-shape",
+                result_ref="result:coverage-shape",
+                query_contract_ref="query:coverage-shape",
+                completeness_status="complete",
+                analysis_readiness="ready",
+                assertion_results=(),
+                failure_reasons=(),
+                coverage_summary=(),
+            )
+
+    def test_query_result_execution_status_contract_is_closed(self):
+        contract = baseline_contract()
+        result = successful_result(contract, rows=complete_rows())
+        cases = (
+            ({"execution_status": "unknown"}, "status_invalid"),
+            (
+                {"failure_reason": "unexpected failure"},
+                "succeeded_failure_reason_present",
+            ),
+            (
+                {"execution_status": "failed"},
+                "failure_reason_missing",
+            ),
+        )
+
+        for changes, error in cases:
+            with self.subTest(error=error):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"query_result_execution_{error}",
+                ):
+                    replace(result, **changes)
+
+    def test_typed_failure_classes_drive_every_status_boundary(self):
+        contract = baseline_contract()
+        invalid_metric_rows = tuple(
+            {**row, "paid_amount": "not-a-number"} for row in complete_rows()
+        )
+        missing_window_rows = (complete_rows()[1],)
+        scenarios = (
+            (
+                "execution technical",
+                validate_query_result(
+                    contract,
+                    failed_result(
+                        contract,
+                        status="failed",
+                        reason="opaque provider diagnostic",
+                    ),
+                    paid_snapshot(),
+                ),
+                "execution_technical",
+                "invalid",
+            ),
+            (
+                "authority integrity",
+                _validate_query_result(
+                    contract,
+                    successful_result(contract, rows=complete_rows()),
+                    raw_paid_snapshot(),
+                ),
+                "authority_integrity",
+                "invalid",
+            ),
+            (
+                "schema integrity",
+                validate_query_result(
+                    contract,
+                    successful_result(contract, rows=invalid_metric_rows),
+                    paid_snapshot(),
+                ),
+                "schema_integrity",
+                "invalid",
+            ),
+            (
+                "empty availability",
+                validate_query_result(
+                    contract,
+                    successful_result(contract, rows=()),
+                    paid_snapshot(),
+                ),
+                "empty_result",
+                "empty",
+            ),
+            (
+                "missing window availability",
+                validate_query_result(
+                    contract,
+                    successful_result(contract, rows=missing_window_rows),
+                    paid_snapshot(),
+                ),
+                "availability",
+                "partial",
+            ),
+            (
+                "freshness",
+                validate_query_result(
+                    contract,
+                    successful_result(contract, rows=complete_rows()),
+                    paid_snapshot("2026-06-01"),
+                ),
+                "freshness",
+                "stale",
+            ),
+            (
+                "provider truncation",
+                validate_query_result(
+                    contract,
+                    successful_result(
+                        contract,
+                        rows=(),
+                        provider_stats={"result_overflow_mode": "break"},
+                    ),
+                    paid_snapshot(),
+                ),
+                "provider_truncation",
+                "truncated",
+            ),
+        )
+
+        for label, report, failure_class, status in scenarios:
+            with self.subTest(label=label):
+                typed_classes = {
+                    value
+                    for assertion in report.assertion_results
+                    if not assertion["passed"]
+                    for value in assertion.get("failure_classes", ())
+                }
+                self.assertIn(failure_class, typed_classes)
+                self.assertEqual(report.completeness_status, status)
+                self.assertEqual(report.analysis_readiness, "blocked")
+
+    def test_integrity_class_wins_over_freshness_in_mixed_failure(self):
+        contract = baseline_contract()
+        report = _validate_query_result(
+            contract,
+            successful_result(contract, rows=complete_rows()),
+            raw_paid_snapshot("2026-06-01"),
+        )
+
+        watermark = next(
+            assertion
+            for assertion in report.assertion_results
+            if assertion["assertion"] == "snapshot_watermark"
+        )
+        self.assertEqual(
+            set(watermark.get("failure_classes", ())),
+            {"authority_integrity", "freshness"},
+        )
+        self.assertEqual(
+            completeness_report_failure_classes(report),
+            ("authority_integrity", "freshness"),
+        )
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertEqual(report.analysis_readiness, "blocked")
+
+    def test_aggregate_failure_class_helper_revalidates_assertion_contract(self):
+        assertion = {
+            "assertion": "execution_succeeded",
+            "passed": False,
+            "failure_reasons": ("opaque diagnostic",),
+            "failure_classes": ("execution_technical",),
+            "details": {},
+        }
+        report = CompletenessReport(
+            report_ref="completeness:mutable-assertion",
+            result_ref="result:mutable-assertion",
+            query_contract_ref="query:mutable-assertion",
+            completeness_status="invalid",
+            analysis_readiness="blocked",
+            assertion_results=(assertion,),
+            failure_reasons=("opaque diagnostic",),
+            coverage_summary={},
+        )
+        assertion.pop("failure_classes")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "completeness_assertion_failure_classes_missing",
+        ):
+            completeness_report_failure_classes(report)
+
+    def test_reconciliation_pending_boundary_uses_typed_class_not_reason_text(self):
+        total_contract = baseline_contract(query_id="query:typed-total")
+        dimension_contract = bind_dimension_reference(
+            baseline_contract(
+                query_id="query:typed-dimension",
+                dimensions=(channel_dimension(),),
+            ),
+            total_contract,
+        )
+        total_result = successful_result(
+            total_contract,
+            rows=complete_rows(target=100.0, baseline=80.0),
+        )
+        dimension_result = successful_result(
+            dimension_contract,
+            rows=(
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 100.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_amount": 80.0,
+                },
+            ),
+        )
+        total_report = validate_query_result(
+            total_contract,
+            total_result,
+            paid_snapshot(),
+        )
+        pending_report = validate_query_result(
+            dimension_contract,
+            dimension_result,
+            paid_snapshot(),
+        )
+        assertions = tuple(
+            {
+                **assertion,
+                "failure_reasons": ("opaque pending diagnostic",),
+            }
+            if assertion["assertion"] == "dimension_total_reconciliation"
+            else assertion
+            for assertion in pending_report.assertion_results
+        )
+        pending_report = replace(
+            pending_report,
+            assertion_results=assertions,
+            failure_reasons=("opaque pending diagnostic",),
+        )
+
+        reconciled = validate_query_set(
+            (total_contract, dimension_contract),
+            (total_result, dimension_result),
+            (total_report, pending_report),
+        )[1]
+
+        self.assertEqual(reconciled.completeness_status, "complete")
+        self.assertEqual(reconciled.analysis_readiness, "ready")
+        self.assertNotIn("opaque pending diagnostic", reconciled.failure_reasons)
+
     def test_cross_year_annual_recurrence_occurs_on_both_sides_only(self):
         row = {
             "recurrence_kind": "annual_month_day_range",
@@ -540,10 +1006,7 @@ class QueryCompletenessTest(unittest.TestCase):
             metrics=(),
         )
         snapshot = reviewed_snapshot("external_event")
-        row = {
-            field: ""
-            for field in contract.result_shape.required_fields
-        }
+        row = {field: "" for field in contract.result_shape.required_fields}
         row.update(
             {
                 "window_id": contract.window_refs[0],
@@ -728,10 +1191,7 @@ class QueryCompletenessTest(unittest.TestCase):
             query_intent="event_context_probe",
             metrics=(),
         )
-        row = {
-            field: ""
-            for field in contract.result_shape.required_fields
-        }
+        row = {field: "" for field in contract.result_shape.required_fields}
         row.update(
             {
                 "window_id": "target_day",
@@ -763,13 +1223,16 @@ class QueryCompletenessTest(unittest.TestCase):
         )
         self.assertEqual(report.completeness_status, "invalid")
         self.assertTrue(
-            any("context_event_recurrence_outside_window" in reason for reason in report.failure_reasons),
+            any(
+                "context_event_recurrence_outside_window" in reason
+                for reason in report.failure_reasons
+            ),
             report.failure_reasons,
         )
 
     def test_executor_rejects_wrong_type_query_execution_record(self):
         contract = reviewed_contract()
-        snapshot = reviewed_snapshot()
+        snapshot = authorize_paid_snapshot(reviewed_snapshot())
         authority = RuntimeEvidenceAuthority()
 
         class WrongWriter:
@@ -787,6 +1250,7 @@ class QueryCompletenessTest(unittest.TestCase):
             evidence_resolver=authority,
             evidence_writer=WrongWriter(),
             rows_loader=authority.rows_loader,
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
 
         with self.assertRaisesRegex(
@@ -799,7 +1263,7 @@ class QueryCompletenessTest(unittest.TestCase):
                 execution_attempt_ref="attempt:wrong-writer",
             )
 
-    def test_completeness_wrong_writer_returns_typed_blocked_report(self):
+    def test_completeness_wrong_writer_fails_fast(self):
         class WrongWriter:
             def record_query_execution(self, contract, result, snapshots):
                 return object()
@@ -811,39 +1275,51 @@ class QueryCompletenessTest(unittest.TestCase):
                 return object()
 
         contract = baseline_contract()
-        report = validate_query_result(
-            contract,
-            successful_result(contract, rows=complete_rows()),
-            paid_snapshot(),
-            evidence_writer=WrongWriter(),
-        )
-
-        self.assertEqual(report.completeness_status, "invalid")
-        self.assertEqual(report.analysis_readiness, "blocked")
-        self.assertIn(
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
             "runtime_evidence_writer_record_invalid",
-            report.failure_reasons,
-        )
-        self.assertFalse(
-            next(
-                assertion
-                for assertion in report.assertion_results
-                if assertion["assertion"] == "runtime_evidence_authority_write"
-            )["passed"]
-        )
+        ):
+            validate_query_result(
+                contract,
+                successful_result(contract, rows=complete_rows()),
+                paid_snapshot(),
+                evidence_writer=WrongWriter(),
+            )
+
+    def test_completeness_writer_preserves_authority_integrity_error(self):
+        class CollisionWriter:
+            def record_query_execution(self, contract, result, snapshots):
+                return object()
+
+            def record_completeness(self, report):
+                raise EvidenceIntegrityError("authority_ref_collision:completeness")
+
+            def record_capability_binding(self, plan, binding_payload):
+                return object()
+
+        contract = baseline_contract()
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "authority_ref_collision:completeness",
+        ):
+            validate_query_result(
+                contract,
+                successful_result(contract, rows=complete_rows()),
+                paid_snapshot(),
+                evidence_writer=CollisionWriter(),
+            )
 
     def test_executor_does_not_hide_authority_collision(self):
         contract = reviewed_contract()
-        snapshot = reviewed_snapshot()
+        snapshot = authorize_paid_snapshot(reviewed_snapshot())
         executor = ClickHouseQueryExecutor(
-            ClickHouseRuntime(client=_SuccessfulClickHouseClient())
+            ClickHouseRuntime(client=_SuccessfulClickHouseClient()),
+            release_resolver=_PAID_RELEASE_RESOLVER,
         )
 
         with patch(
             "bi_agent.runtime.query_executor._record_query_execution",
-            side_effect=EvidenceIntegrityError(
-                "authority_ref_collision:query:result"
-            ),
+            side_effect=EvidenceIntegrityError("authority_ref_collision:query:result"),
         ):
             with self.assertRaisesRegex(
                 EvidenceIntegrityError,
@@ -999,12 +1475,19 @@ class QueryCompletenessTest(unittest.TestCase):
                 contract.dataset_snapshot_refs,
             )
             self.assertTrue(
-                any(reason.startswith(f"snapshot_stale:{second_ref}:") for reason in report.failure_reasons)
+                any(
+                    reason.startswith(f"snapshot_stale:{second_ref}:")
+                    for reason in report.failure_reasons
+                )
             )
 
     def test_blocked_and_failed_execution_are_invalid(self):
         contract = baseline_contract()
-        for status in ("blocked", "failed"):
+        expected_classes = {
+            "blocked": "authority_integrity",
+            "failed": "execution_technical",
+        }
+        for status, expected_class in expected_classes.items():
             with self.subTest(status=status):
                 report = validate_query_result(
                     contract,
@@ -1015,6 +1498,15 @@ class QueryCompletenessTest(unittest.TestCase):
                 self.assertEqual(report.analysis_readiness, "blocked")
                 self.assertIn(f"execution_status:{status}", report.failure_reasons)
                 self.assertIn(f"{status}_cause", report.failure_reasons)
+                assertion = next(
+                    item
+                    for item in report.assertion_results
+                    if item["assertion"] == "execution_succeeded"
+                )
+                self.assertEqual(
+                    assertion["failure_classes"],
+                    (expected_class,),
+                )
 
     def test_unsigned_required_release_snapshot_fails_closed(self):
         contract = baseline_contract()
@@ -1161,8 +1653,7 @@ class QueryCompletenessTest(unittest.TestCase):
             report.failure_reasons,
         )
         self.assertIn(
-            "observation_outside_window:target_day:2026-06-03:"
-            "2026-06-02:2026-06-03",
+            "observation_outside_window:target_day:2026-06-03:2026-06-02:2026-06-03",
             report.failure_reasons,
         )
         self.assertIn("incomplete_window:target_day:0/1", report.failure_reasons)
@@ -1189,9 +1680,7 @@ class QueryCompletenessTest(unittest.TestCase):
     def test_required_metric_null_is_partial_and_blocked(self):
         contract = baseline_contract()
         rows = tuple(
-            {**row, "paid_amount": None}
-            if row["window_id"] == "target_day"
-            else row
+            {**row, "paid_amount": None} if row["window_id"] == "target_day" else row
             for row in complete_rows()
         )
 
@@ -1235,15 +1724,41 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 60.0},
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_amount": 39.995},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 50.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 30.0},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 60.0,
+                },
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "B",
+                    "paid_amount": 39.995,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_amount": 50.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "B",
+                    "paid_amount": 30.0,
+                },
             ),
         )
         reports = (
             validate_query_result(total_contract, total_result, paid_snapshot()),
-            validate_query_result(dimension_contract, dimension_result, paid_snapshot()),
+            validate_query_result(
+                dimension_contract, dimension_result, paid_snapshot()
+            ),
         )
         self.assertEqual(reports[1].completeness_status, "partial")
         self.assertEqual(reports[1].analysis_readiness, "blocked")
@@ -1276,7 +1791,9 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertEqual(assertion["details"]["tolerance"], 0.01)
         self.assertEqual(dimension_report.completeness_status, "complete")
 
-    def test_non_additive_context_metric_does_not_block_additive_dimension_reconciliation(self):
+    def test_non_additive_context_metric_does_not_block_additive_dimension_reconciliation(
+        self,
+    ):
         metrics = (
             paid_metric(),
             count_metric(),
@@ -1410,10 +1927,34 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 60.0},
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_amount": 40.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 50.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 30.0},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 60.0,
+                },
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "B",
+                    "paid_amount": 40.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_amount": 50.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "B",
+                    "paid_amount": 30.0,
+                },
             ),
         )
         total_report = validate_query_result(
@@ -1511,7 +2052,10 @@ class QueryCompletenessTest(unittest.TestCase):
         )
 
     def test_overall_channel_reconciliation_executes_match_mismatch_and_partial(self):
-        overall = baseline_contract(query_id="query:overall:closure")
+        overall = replace(
+            baseline_contract(query_id="query:overall:closure"),
+            query_intent="channel_context_total_probe",
+        )
         channel = bind_dimension_reference(
             baseline_contract(
                 query_id="query:channel:closure",
@@ -1529,10 +2073,34 @@ class QueryCompletenessTest(unittest.TestCase):
             (
                 "match",
                 (
-                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 60.0},
-                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_amount": 40.0},
-                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 50.0},
-                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 30.0},
+                    {
+                        "window_id": "target_day",
+                        "window_role": "target",
+                        "observation_key": "2026-06-02",
+                        "channel": "A",
+                        "paid_amount": 60.0,
+                    },
+                    {
+                        "window_id": "target_day",
+                        "window_role": "target",
+                        "observation_key": "2026-06-02",
+                        "channel": "B",
+                        "paid_amount": 40.0,
+                    },
+                    {
+                        "window_id": "previous_day",
+                        "window_role": "baseline",
+                        "observation_key": "2026-06-01",
+                        "channel": "A",
+                        "paid_amount": 50.0,
+                    },
+                    {
+                        "window_id": "previous_day",
+                        "window_role": "baseline",
+                        "observation_key": "2026-06-01",
+                        "channel": "B",
+                        "paid_amount": 30.0,
+                    },
                 ),
                 "complete",
                 "ready",
@@ -1540,8 +2108,20 @@ class QueryCompletenessTest(unittest.TestCase):
             (
                 "mismatch",
                 (
-                    {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 99.0},
-                    {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0},
+                    {
+                        "window_id": "target_day",
+                        "window_role": "target",
+                        "observation_key": "2026-06-02",
+                        "channel": "A",
+                        "paid_amount": 99.0,
+                    },
+                    {
+                        "window_id": "previous_day",
+                        "window_role": "baseline",
+                        "observation_key": "2026-06-01",
+                        "channel": "A",
+                        "paid_amount": 80.0,
+                    },
                 ),
                 "partial",
                 "blocked",
@@ -1556,8 +2136,16 @@ class QueryCompletenessTest(unittest.TestCase):
                         successful_result(channel, rows=channel_rows),
                     ),
                     (
-                        validate_query_result(overall, successful_result(overall, rows=overall_rows), paid_snapshot()),
-                        validate_query_result(channel, successful_result(channel, rows=channel_rows), paid_snapshot()),
+                        validate_query_result(
+                            overall,
+                            successful_result(overall, rows=overall_rows),
+                            paid_snapshot(),
+                        ),
+                        validate_query_result(
+                            channel,
+                            successful_result(channel, rows=channel_rows),
+                            paid_snapshot(),
+                        ),
                     ),
                 )
                 assertion = next(
@@ -1597,8 +2185,16 @@ class QueryCompletenessTest(unittest.TestCase):
                 successful_result(channel, rows=scenarios[0][1]),
             ),
             (
-                validate_query_result(overall, successful_result(overall, rows=incomplete_overall_rows), paid_snapshot()),
-                validate_query_result(channel, successful_result(channel, rows=scenarios[0][1]), paid_snapshot()),
+                validate_query_result(
+                    overall,
+                    successful_result(overall, rows=incomplete_overall_rows),
+                    paid_snapshot(),
+                ),
+                validate_query_result(
+                    channel,
+                    successful_result(channel, rows=scenarios[0][1]),
+                    paid_snapshot(),
+                ),
             ),
         )
         self.assertEqual(reports[1].completeness_status, "partial")
@@ -1608,6 +2204,53 @@ class QueryCompletenessTest(unittest.TestCase):
                 reason.startswith("dimension_total_reference_incomplete:")
                 for reason in reports[1].failure_reasons
             )
+        )
+
+    def test_channel_context_total_probe_accepts_context_only_snapshot(self):
+        snapshot = authorize_paid_snapshot(
+            replace(
+                raw_paid_snapshot(),
+                evidence_state="context_only",
+                reconciliation_status="mismatch",
+            )
+        )
+        contract = replace(
+            baseline_contract(query_id="query:channel-context-total:1"),
+            query_intent="channel_context_total_probe",
+        )
+        result = successful_result(
+            contract,
+            rows=complete_rows(target=100.0, baseline=80.0),
+        )
+
+        report = validate_query_result(contract, result, snapshot)
+
+        self.assertEqual(report.completeness_status, "complete")
+        self.assertEqual(report.analysis_readiness, "ready")
+        self.assertNotIn(
+            "snapshot_evidence_state_invalid", " ".join(report.failure_reasons)
+        )
+
+    def test_claim_query_still_rejects_context_only_snapshot(self):
+        snapshot = authorize_paid_snapshot(
+            replace(
+                raw_paid_snapshot(),
+                evidence_state="context_only",
+                reconciliation_status="mismatch",
+            )
+        )
+        contract = baseline_contract(query_id="query:claim-total:context-only")
+        result = successful_result(
+            contract,
+            rows=complete_rows(target=100.0, baseline=80.0),
+        )
+
+        report = validate_query_result(contract, result, snapshot)
+
+        self.assertEqual(report.completeness_status, "invalid")
+        self.assertEqual(report.analysis_readiness, "blocked")
+        self.assertIn(
+            "snapshot_evidence_state_invalid", " ".join(report.failure_reasons)
         )
 
     def test_count_reconciliation_is_exact_by_default(self):
@@ -1630,13 +2273,27 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_orders": 11},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_orders": 8},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_orders": 11,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_orders": 8,
+                },
             ),
         )
         reports = (
             validate_query_result(total_contract, total_result, paid_snapshot()),
-            validate_query_result(dimension_contract, dimension_result, paid_snapshot()),
+            validate_query_result(
+                dimension_contract, dimension_result, paid_snapshot()
+            ),
         )
         self.assertEqual(reports[1].completeness_status, "partial")
         self.assertEqual(reports[1].analysis_readiness, "blocked")
@@ -1699,8 +2356,20 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_orders": 10.5},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_orders": 8.5},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_orders": 10.5,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_orders": 8.5,
+                },
             ),
         )
 
@@ -1721,7 +2390,9 @@ class QueryCompletenessTest(unittest.TestCase):
                 report.failure_reasons,
             )
 
-    def test_exact_additive_count_accepts_integral_decimal_and_canonicalizes_to_int(self):
+    def test_exact_additive_count_accepts_integral_decimal_and_canonicalizes_to_int(
+        self,
+    ):
         contract = baseline_contract(
             query_id="query:decimal-count:1",
             metric=count_metric(),
@@ -1732,16 +2403,17 @@ class QueryCompletenessTest(unittest.TestCase):
             baseline=Decimal("8"),
         )
 
-        normalized, _, failure_reason = _aggregate_rows(decimal_rows, contract)
+        aggregation = _aggregate_rows(decimal_rows, contract)
         report = validate_query_result(
             contract,
             successful_result(contract, rows=decimal_rows),
             paid_snapshot(),
         )
 
-        self.assertEqual(failure_reason, "")
-        self.assertIs(type(normalized[0]["paid_orders"]), int)
-        self.assertEqual(normalized[0]["paid_orders"], 10)
+        self.assertEqual(aggregation.status.value, "accepted")
+        self.assertEqual(aggregation.failure_reason, "")
+        self.assertIs(type(aggregation.rows[0]["paid_orders"]), int)
+        self.assertEqual(aggregation.rows[0]["paid_orders"], 10)
         self.assertEqual(report.completeness_status, "complete")
 
     def test_exact_additive_count_rejects_fractional_and_nonfinite_decimal(self):
@@ -1796,7 +2468,9 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertEqual(repeated, first)
         self.assertNotEqual(changed, first)
 
-    def test_succeeded_legacy_rows_ref_is_rejected_while_failed_ref_stays_compatible(self):
+    def test_succeeded_legacy_rows_ref_is_rejected_while_failed_ref_stays_compatible(
+        self,
+    ):
         contract = baseline_contract(query_id="query:legacy-rows-ref:1")
         succeeded = successful_result(contract, rows=complete_rows())
         legacy = replace(
@@ -1820,7 +2494,11 @@ class QueryCompletenessTest(unittest.TestCase):
         self.assertNotIn("rows_ref_mismatch", failed_report.failure_reasons)
 
     def test_ratio_reconciliation_uses_components_in_multi_metric_result(self):
-        metrics = (count_metric(), replace(count_metric(), metric_id="paid_users"), ratio_metric())
+        metrics = (
+            count_metric(),
+            replace(count_metric(), metric_id="paid_users"),
+            ratio_metric(),
+        )
         total_contract = multi_metric_contract(
             query_id="query:ratio-total:1",
             metrics=metrics,
@@ -1834,14 +2512,60 @@ class QueryCompletenessTest(unittest.TestCase):
             total_contract,
         )
         total_rows = (
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "paid_orders": 5, "paid_users": 20, "paid_frequency": 0.5},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "paid_orders": 4, "paid_users": 20, "paid_frequency": 0.2},
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_orders": 5,
+                "paid_users": 20,
+                "paid_frequency": 0.5,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "paid_orders": 4,
+                "paid_users": 20,
+                "paid_frequency": 0.2,
+            },
         )
         dimension_rows = (
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_orders": 2, "paid_users": 10, "paid_frequency": 0.2},
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "B", "paid_orders": 3, "paid_users": 10, "paid_frequency": 0.3},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_orders": 2, "paid_users": 10, "paid_frequency": 0.2},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_orders": 2, "paid_users": 10, "paid_frequency": 0.2},
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "A",
+                "paid_orders": 2,
+                "paid_users": 10,
+                "paid_frequency": 0.2,
+            },
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "B",
+                "paid_orders": 3,
+                "paid_users": 10,
+                "paid_frequency": 0.3,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "A",
+                "paid_orders": 2,
+                "paid_users": 10,
+                "paid_frequency": 0.2,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "B",
+                "paid_orders": 2,
+                "paid_users": 10,
+                "paid_frequency": 0.2,
+            },
         )
         total_result = successful_result(total_contract, rows=total_rows)
         dimension_result = successful_result(
@@ -1921,12 +2645,42 @@ class QueryCompletenessTest(unittest.TestCase):
             total_contract,
         )
         total_rows = (
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "paid_amount": 100.0, "paid_orders": 10, "avg_order_amount": 10.0},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "paid_amount": 80.0, "paid_orders": 8, "avg_order_amount": 10.0},
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "paid_amount": 100.0,
+                "paid_orders": 10,
+                "avg_order_amount": 10.0,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "paid_amount": 80.0,
+                "paid_orders": 8,
+                "avg_order_amount": 10.0,
+            },
         )
         dimension_rows = (
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 99.995, "paid_orders": 10, "avg_order_amount": 9.9995},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0, "paid_orders": 8, "avg_order_amount": 10.0},
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "A",
+                "paid_amount": 99.995,
+                "paid_orders": 10,
+                "avg_order_amount": 9.9995,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "A",
+                "paid_amount": 80.0,
+                "paid_orders": 8,
+                "avg_order_amount": 10.0,
+            },
         )
         total_result = successful_result(total_contract, rows=total_rows)
         dimension_result = successful_result(
@@ -1967,14 +2721,41 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 100.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_amount": 80.0,
+                },
             ),
         )
+        total_report = validate_query_result(
+            total_contract,
+            total_result,
+            paid_snapshot(),
+        )
         total_report = replace(
-            validate_query_result(total_contract, total_result, paid_snapshot()),
+            total_report,
             completeness_status="partial",
             analysis_readiness="blocked",
+            assertion_results=(
+                *total_report.assertion_results,
+                {
+                    "assertion": "audited_total_available",
+                    "passed": False,
+                    "failure_reasons": ("missing_field:audited_total",),
+                    "failure_classes": ("availability",),
+                    "details": {},
+                },
+            ),
             failure_reasons=("missing_field:audited_total",),
         )
         dimension_report = validate_query_result(
@@ -2016,8 +2797,20 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 100.0,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "A",
+                    "paid_amount": 80.0,
+                },
             ),
         )
         reports = (
@@ -2041,7 +2834,7 @@ class QueryCompletenessTest(unittest.TestCase):
         )
         self.assertEqual(reconciled[1].analysis_readiness, "blocked")
 
-    def test_segment_only_compiler_query_set_can_be_ready(self):
+    def test_candidate_dimension_screen_query_set_can_be_ready(self):
         snapshot = replace(
             reviewed_snapshot(),
             loaded_at="2026-06-03T00:00:00Z",
@@ -2052,13 +2845,24 @@ class QueryCompletenessTest(unittest.TestCase):
             proposal={
                 "target_metrics": ["paid_amount"],
                 "requested_dimensions": ["channel"],
-                "baselines": ["previous_day"],
                 "claim_intents": ["segment_contribution_or_mix_shift"],
+                "scope": {"type": "full_sample"},
+                "grain": "window_id",
+                "capability_roles": {
+                    "candidate_dimension_screen": {
+                        "analysis_role": "required",
+                        "sources": ("closed_contract_test",),
+                    }
+                },
             },
-            accepted_capabilities=("segment_contribution",),
+            accepted_capabilities=("candidate_dimension_screen",),
             catalog=catalog,
             registry=RuntimeContractRegistry.from_path(
                 "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            temporal_authority=resolved_test_daily_pair_authority(
+                target="2026-06-02",
+                baseline_id="previous_day",
             ),
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
             release_resolver=release_resolver,
@@ -2072,15 +2876,57 @@ class QueryCompletenessTest(unittest.TestCase):
             if query.query_role_ref
             == dimension_contract.reconciliation_binding.reference_query_role_ref
         )
+        self.assertEqual(
+            companion_contract.query_intent,
+            dimension_contract.query_intent,
+        )
+        self.assertEqual(
+            companion_contract.result_shape.result_semantics,
+            "complete_window_aggregate",
+        )
+        self.assertFalse(companion_contract.dimension_bindings)
         companion_result = successful_result(
             companion_contract,
-            rows=complete_rows(target=100.0, baseline=80.0),
+            rows=(
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "target_day",
+                    "source_complete_days": 1,
+                    "paid_amount": 100.0,
+                    "paid_users": 8,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "previous_day",
+                    "source_complete_days": 1,
+                    "paid_amount": 80.0,
+                    "paid_users": 7,
+                },
+            ),
         )
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100.0},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 80.0},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "target_day",
+                    "source_complete_days": 1,
+                    "channel": "A",
+                    "paid_amount": 100.0,
+                    "paid_users": 8,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "previous_day",
+                    "source_complete_days": 1,
+                    "channel": "A",
+                    "paid_amount": 80.0,
+                    "paid_users": 7,
+                },
             ),
         )
         reports = (
@@ -2136,9 +2982,7 @@ class QueryCompletenessTest(unittest.TestCase):
         )
         self.assertEqual(len(reconciliation_assertions), 1)
         self.assertTrue(reconciliation_assertions[0]["passed"])
-        provenance = reconciled[1].coverage_summary[
-            "reconciliation_validation"
-        ]
+        provenance = reconciled[1].coverage_summary["reconciliation_validation"]
         self.assertEqual(
             provenance["validation_query_contract_ref"],
             companion_contract.query_contract_id,
@@ -2197,8 +3041,20 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_result = successful_result(
             dimension_contract,
             rows=(
-                {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100},
-                {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 80},
+                {
+                    "window_id": "target_day",
+                    "window_role": "target",
+                    "observation_key": "2026-06-02",
+                    "channel": "A",
+                    "paid_amount": 100,
+                },
+                {
+                    "window_id": "previous_day",
+                    "window_role": "baseline",
+                    "observation_key": "2026-06-01",
+                    "channel": "B",
+                    "paid_amount": 80,
+                },
             ),
             provider_stats={
                 "join_input_rows": 2,
@@ -2209,7 +3065,9 @@ class QueryCompletenessTest(unittest.TestCase):
         )
         reports = (
             validate_query_result(total_contract, total_result, paid_snapshot()),
-            validate_query_result(dimension_contract, dimension_result, paid_snapshot()),
+            validate_query_result(
+                dimension_contract, dimension_result, paid_snapshot()
+            ),
         )
 
         reconciled = validate_query_set(
@@ -2221,7 +3079,10 @@ class QueryCompletenessTest(unittest.TestCase):
         dimension_report = reconciled[1]
         self.assertEqual(dimension_report.completeness_status, "partial")
         self.assertEqual(dimension_report.analysis_readiness, "blocked")
-        self.assertIn("unpaired_dimension:channel:A:missing_baseline", dimension_report.failure_reasons)
+        self.assertIn(
+            "unpaired_dimension:channel:A:missing_baseline",
+            dimension_report.failure_reasons,
+        )
         self.assertIn(
             "join_row_expansion:2:3",
             dimension_report.failure_reasons,
@@ -2233,9 +3094,27 @@ class QueryCompletenessTest(unittest.TestCase):
 
     def test_dimension_presence_policy_controls_cross_window_pairing(self):
         rows = (
-            {"window_id": "target_day", "window_role": "target", "observation_key": "2026-06-02", "channel": "A", "paid_amount": 100},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "A", "paid_amount": 501},
-            {"window_id": "previous_day", "window_role": "baseline", "observation_key": "2026-06-01", "channel": "B", "paid_amount": 80},
+            {
+                "window_id": "target_day",
+                "window_role": "target",
+                "observation_key": "2026-06-02",
+                "channel": "A",
+                "paid_amount": 100,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "A",
+                "paid_amount": 501,
+            },
+            {
+                "window_id": "previous_day",
+                "window_role": "baseline",
+                "observation_key": "2026-06-01",
+                "channel": "B",
+                "paid_amount": 80,
+            },
         )
         outcomes = {}
         for policy in ("paired_required", "sparse_allowed"):
@@ -2333,21 +3212,7 @@ class QueryCompletenessTest(unittest.TestCase):
             report.failure_reasons,
         )
 
-    def test_repair_retries_same_signature_only_for_transient_transport(self):
-        contract = baseline_contract()
-        transient = repair_report(contract, "transient_clickhouse:connection_reset")
-
-        decision = plan_query_repair(
-            contract,
-            transient,
-            attempted_signatures=(contract.contract_signature,),
-        )
-
-        self.assertEqual(decision.action, "retry_same")
-        self.assertEqual(decision.report_ref, transient.report_ref)
-        self.assertEqual(decision.failure_reasons, transient.failure_reasons)
-
-    def test_runtime_failure_preserves_transient_type_through_repair(self):
+    def test_runtime_failure_is_typed_technical_and_persists_authority(self):
         contract = reviewed_contract()
         snapshot = authorize_paid_snapshot(reviewed_snapshot())
         executor = ClickHouseQueryExecutor(
@@ -2362,14 +3227,11 @@ class QueryCompletenessTest(unittest.TestCase):
             snapshot,
             evidence_authority=executor.evidence_authority,
         )
-        decision = plan_query_repair(
-            contract,
-            report,
-            attempted_signatures=(contract.contract_signature,),
-        )
-
         self.assertEqual(envelope.execution_status, "failed")
-        self.assertTrue(envelope.failure_reason.startswith("transient_clickhouse:"))
+        self.assertIn(
+            "execution_technical",
+            completeness_report_failure_classes(report),
+        )
         expected_refs = query_audit_refs(
             envelope.query_hash,
             contract.contract_signature,
@@ -2390,12 +3252,16 @@ class QueryCompletenessTest(unittest.TestCase):
                 for reason in report.failure_reasons
             )
         )
-        self.assertEqual(decision.action, "retry_same")
         authority_record = executor.evidence_authority.resolve_query_execution(
             envelope.result_ref
         )
-        self.assertEqual(authority_record.contract_signature, contract.contract_signature)
-        self.assertEqual(authority_record.rows_content_hash, canonical_rows_hash((), ()))
+        self.assertEqual(
+            authority_record.contract_signature, contract.contract_signature
+        )
+        self.assertEqual(
+            authority_record.rows_content_hash,
+            canonical_result_rows_hash((), ()),
+        )
         completeness_record = executor.evidence_authority.resolve_completeness(
             executor.evidence_authority.resolve_latest_completeness(
                 report.report_ref
@@ -2407,23 +3273,6 @@ class QueryCompletenessTest(unittest.TestCase):
             report.failure_reasons,
         )
 
-    def test_transient_mixed_with_hard_failure_does_not_retry_same(self):
-        contract = baseline_contract()
-        report = repair_report(
-            contract,
-            "transient_clickhouse:connection_error",
-            "contract_gap:channel",
-        )
-
-        decision = plan_query_repair(
-            contract,
-            report,
-            attempted_signatures=(contract.contract_signature,),
-        )
-
-        self.assertEqual(decision.action, "degrade")
-        self.assertNotEqual(decision.reason, "transient_clickhouse")
-
     def test_runtime_confirmed_provider_break_is_truncated(self):
         contract = reviewed_contract()
         snapshot = authorize_paid_snapshot(reviewed_snapshot())
@@ -2433,56 +3282,8 @@ class QueryCompletenessTest(unittest.TestCase):
         ).execute(contract, {snapshot.snapshot_ref: snapshot})
 
         report = validate_query_result(contract, envelope, snapshot)
-        decision = plan_query_repair(contract, report, attempted_signatures=())
-
         self.assertEqual(envelope.execution_status, "failed")
         self.assertEqual(report.completeness_status, "truncated")
-        self.assertNotEqual(decision.action, "retry_same")
-
-    def test_repair_prevents_repeating_non_transient_signature(self):
-        contract = baseline_contract()
-        report = repair_report(contract, "missing_field:paid_amount")
-
-        repeated = plan_query_repair(
-            contract,
-            report,
-            attempted_signatures=(contract.contract_signature,),
-        )
-        fresh = plan_query_repair(contract, report, attempted_signatures=())
-
-        self.assertEqual(repeated.action, "degrade")
-        self.assertEqual(repeated.reason, "repeated_query_contract_signature")
-        self.assertEqual(repeated.failure_reasons, report.failure_reasons)
-        self.assertEqual(fresh.action, "recompile")
-        self.assertEqual(fresh.report_ref, report.report_ref)
-
-    def test_contract_source_and_sample_gaps_do_not_retry_same_query(self):
-        contract = baseline_contract()
-        for reason in (
-            "contract_gap:metric:paid_amount",
-            "source_unbound:market_dashboard",
-            "insufficient_sample:channel:A",
-        ):
-            with self.subTest(reason=reason):
-                report = repair_report(contract, reason)
-                decision = plan_query_repair(contract, report, attempted_signatures=())
-                self.assertEqual(decision.action, "degrade")
-                self.assertEqual(decision.failure_reasons, (reason,))
-
-    def test_window_coverage_repair_blocks_with_exact_failure_context(self):
-        contract = baseline_contract()
-        report = repair_report(contract, "missing_required_window:target_day")
-
-        decision = plan_query_repair(contract, report, attempted_signatures=())
-
-        self.assertEqual(decision.action, "block")
-        self.assertFalse(decision.requires_llm)
-        self.assertFalse(decision.requires_clarification)
-        self.assertEqual(decision.report_ref, report.report_ref)
-        self.assertEqual(
-            decision.failure_reasons,
-            ("missing_required_window:target_day",),
-        )
 
 
 if __name__ == "__main__":

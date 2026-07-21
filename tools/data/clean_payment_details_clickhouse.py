@@ -17,7 +17,9 @@ DAILY_TABLE = "paid_order_success_daily_20240101_20260704"
 LATEST_TABLE = "paid_order_success_latest_key_20240101_20260704"
 METADATA_TABLE = "load_metadata_20240101_20260704"
 REPORT_PATH = ROOT / "docs/reviews/full-payment-data-cleaning-20240101-20260704.md"
-PROFILE_PATH = ROOT / "artifacts/data-cleaning/payment_details_20240101_20260704_profile.json"
+PROFILE_PATH = (
+    ROOT / "artifacts/data-cleaning/payment_details_20240101_20260704_profile.json"
+)
 
 CSV_MEMBERS = (
     "pay_data/2024-01-01_2024-12-31.csv",
@@ -120,7 +122,9 @@ def ch(container: str, query: str, *, fmt: str | None = None) -> str:
     result = subprocess.run(cmd, text=True, capture_output=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
-        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     return result.stdout.strip()
 
 
@@ -329,8 +333,12 @@ def collect_profile(container: str, zip_path: Path) -> dict:
         "clean_paid_amount_ngn": float(
             scalar(f"SELECT sum(paid_amount_ngn) FROM {CLEAN_TABLE}")
         ),
-        "clean_date_start": scalar(f"SELECT toString(min(business_date_lagos)) FROM {CLEAN_TABLE}"),
-        "clean_date_end": scalar(f"SELECT toString(max(business_date_lagos)) FROM {CLEAN_TABLE}"),
+        "clean_date_start": scalar(
+            f"SELECT toString(min(business_date_lagos)) FROM {CLEAN_TABLE}"
+        ),
+        "clean_date_end": scalar(
+            f"SELECT toString(max(business_date_lagos)) FROM {CLEAN_TABLE}"
+        ),
         "duplicate_success_rows_removed": int(
             scalar(
                 f"""
@@ -474,7 +482,9 @@ def collect_profile(container: str, zip_path: Path) -> dict:
 def write_outputs(profile: dict) -> None:
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+    PROFILE_PATH.write_text(
+        json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     REPORT_PATH.write_text(render_report(profile), encoding="utf-8")
 
 
@@ -523,23 +533,51 @@ def render_report(profile: dict) -> str:
     ]
     for row in profile["status_distribution"]:
         lines.append(f"| {row['status']} | {fmt_int(row['rows'])} |")
-    lines.extend(["", "## Currency Distribution", "", "| Currency | Rows | Paid Amount NGN |", "|---|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Currency Distribution",
+            "",
+            "| Currency | Rows | Paid Amount NGN |",
+            "|---|---:|---:|",
+        ]
+    )
     for row in profile["currency_distribution"]:
         lines.append(
             f"| {row['currency']} | {fmt_int(row['rows'])} | {fmt_money(row['paid_amount_ngn'])} |"
         )
-    lines.extend(["", "## Missing Clean Fields", "", "| Field | Missing Rows |", "|---|---:|"])
+    lines.extend(
+        ["", "## Missing Clean Fields", "", "| Field | Missing Rows |", "|---|---:|"]
+    )
     for row in profile["missing_clean_fields"]:
         lines.append(f"| {row['field']} | {fmt_int(row['missing_rows'])} |")
-    lines.extend(["", "## Top Payment Methods", "", "| Payment Method | Rows | Paid Amount NGN |", "|---|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Top Payment Methods",
+            "",
+            "| Payment Method | Rows | Paid Amount NGN |",
+            "|---|---:|---:|",
+        ]
+    )
     for row in profile["top_payment_methods"]:
         lines.append(
             f"| {row['payment_method']} | {fmt_int(row['rows'])} | {fmt_money(row['paid_amount_ngn'])} |"
         )
-    lines.extend(["", "## Top Channels", "", "| Channel | Rows | Paid Amount NGN |", "|---|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Top Channels",
+            "",
+            "| Channel | Rows | Paid Amount NGN |",
+            "|---|---:|---:|",
+        ]
+    )
     for row in profile["top_channels"]:
         channel = row["channel"] if row["channel"] else "(blank)"
-        lines.append(f"| {channel} | {fmt_int(row['rows'])} | {fmt_money(row['paid_amount_ngn'])} |")
+        lines.append(
+            f"| {channel} | {fmt_int(row['rows'])} | {fmt_money(row['paid_amount_ngn'])} |"
+        )
     lines.extend(
         [
             "",

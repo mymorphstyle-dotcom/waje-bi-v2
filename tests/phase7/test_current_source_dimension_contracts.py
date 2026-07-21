@@ -2,7 +2,6 @@ from pathlib import Path
 
 import yaml
 
-from bi_agent.conversation.runtime import _is_unsupported_request
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -55,17 +54,18 @@ def test_geo_device_factor_and_capability_are_available_with_quality_boundaries(
     )
     assert factor["data_contract_state"] == "contract_backed"
     assert factor["default_business_evidence_state"] == "quantifiable"
-    assert "contracts/sources/paid-order-detail.source.yaml" in factor["source_refs"][
-        "source_contracts"
-    ]
+    assert (
+        "contracts/sources/paid-order-detail.source.yaml"
+        in factor["source_refs"]["source_contracts"]
+    )
     assert factor["known_gaps"] == [
         "geo_device_environment_quality_policy",
         "external_context_event_contracts",
     ]
     assert "limitation_refs" not in factor
-    assert "causal_attribution_without_mechanism_evidence" in factor[
-        "unsupported_grains"
-    ]
+    assert (
+        "causal_attribution_without_mechanism_evidence" in factor["unsupported_grains"]
+    )
 
     support = _record(
         capability_support["support_records"],
@@ -131,21 +131,12 @@ def test_raw_identifier_boundary_is_limited_to_present_user_and_order_ids():
         "sensitive_identifier_output_policy",
     )
     assert policy["data_contract_state"] == "contract_backed"
-    assert policy["affected_factor_groups"] == [
-        "sensitive_identity_and_dedup_fields"
-    ]
+    assert policy["affected_factor_groups"] == ["sensitive_identity_and_dedup_fields"]
     assert policy["source_refs"]["template_fields"] == ["用户ID", "订单ID"]
-    assert "safe aggregate geo, device, channel, and metric analysis remains independent" in policy[
-        "launch_impact"
-    ]
-
-
-def test_runtime_raw_identifier_gate_matches_fields_that_currently_exist():
-    assert _is_unsupported_request("导出原始用户ID明细")
-    assert _is_unsupported_request("逐条列出订单ID")
-    assert not _is_unsupported_request("按设备型号聚合付费金额")
-    assert not _is_unsupported_request("查询原始设备ID明细")
-    assert not _is_unsupported_request("查询原始IP明细")
+    assert (
+        "safe aggregate geo, device, channel, and metric analysis remains independent"
+        in policy["launch_impact"]
+    )
 
 
 def test_runtime_exposes_every_direct_geo_and_device_field_as_aggregate_only():
@@ -165,3 +156,14 @@ def test_runtime_exposes_every_direct_geo_and_device_field_as_aggregate_only():
         dimension = registry.dimension(dimension_id)
         assert dimension["automatic_screening"] == "allowed"
         assert dimension["output_policy"] == "aggregate_only"
+
+
+def test_runtime_filter_contract_excludes_raw_identifiers_at_source_admission():
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+
+    paid_order_filters = set(registry.customer_safe_filter_fields("paid_order_success"))
+    assert {"channel", "region", "paid_amount_ngn"} <= paid_order_filters
+    assert {"user_id", "order_id", "payment_started_ms"}.isdisjoint(paid_order_filters)
+    assert set(registry.restricted_output_fields).isdisjoint(
+        registry.all_customer_safe_filter_fields
+    )

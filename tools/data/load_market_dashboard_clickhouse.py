@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# This executable bootstraps the repository root before importing project modules.
+# ruff: noqa: E402
+
 import argparse
 import csv
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -42,14 +44,16 @@ from tools.data.source_loader_common import (
 
 
 SOURCE_CONTRACT_PATH = ROOT / "contracts" / "sources" / "market-dashboard.source.yaml"
-RUNTIME_BINDING_PATH = ROOT / "contracts" / "runtime" / "clickhouse-analysis-bindings.yaml"
+RUNTIME_BINDING_PATH = (
+    ROOT / "contracts" / "runtime" / "clickhouse-analysis-bindings.yaml"
+)
 DDL_PATH = ROOT / "tools" / "data" / "clickhouse-analysis-sources.sql"
 OVERALL_TABLE = "market_dashboard_daily"
 CHANNEL_TABLE = "market_dashboard_channel_daily"
 OVERALL_DATASET_ID = "market_dashboard"
 CHANNEL_DATASET_ID = "market_dashboard_channel"
 CONTRACT_REF = "contracts/sources/market-dashboard.source.yaml@0.1"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@1"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
 CHANNEL_FILENAME_PATTERN = re.compile(
     r"^(?P<channel>.+)_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$"
 )
@@ -194,7 +198,9 @@ def load_market_dashboard_rows(
     overall = Path(overall_path)
     if not overall.is_file():
         raise DashboardLoadError(f"source_file_missing:{overall}")
-    overall_bounds = _filename_bounds(overall, pattern=OVERALL_FILENAME_PATTERN, kind="overall")
+    overall_bounds = _filename_bounds(
+        overall, pattern=OVERALL_FILENAME_PATTERN, kind="overall"
+    )
     overall_rows = _read_source_file(
         overall,
         expected_headers=expected_headers,
@@ -212,7 +218,9 @@ def load_market_dashboard_rows(
     channel_window_ends: list[date] = []
     all_paths = [overall]
     seen_names = {overall.name}
-    for raw_path in sorted((Path(path) for path in channel_paths), key=lambda path: path.name):
+    for raw_path in sorted(
+        (Path(path) for path in channel_paths), key=lambda path: path.name
+    ):
         if not raw_path.is_file():
             raise DashboardLoadError(f"source_file_missing:{raw_path}")
         if raw_path.name in seen_names:
@@ -233,7 +241,9 @@ def load_market_dashboard_rows(
             channel_rows.extend(parsed)
         else:
             no_data_partitions.append(channel)
-            no_data_partition_windows.append(f"{channel}@{start.isoformat()}:{end.isoformat()}")
+            no_data_partition_windows.append(
+                f"{channel}@{start.isoformat()}:{end.isoformat()}"
+            )
         all_paths.append(raw_path)
 
     overall_source_row_count = len(overall_rows)
@@ -394,9 +404,7 @@ def reconcile_paid_amount(
         else:
             difference = overall_amount - channel_amount
             status = (
-                "matched"
-                if abs(difference) <= Decimal(str(tolerance))
-                else "mismatch"
+                "matched" if abs(difference) <= Decimal(str(tolerance)) else "mismatch"
             )
             if status == "mismatch":
                 reasons.append(f"paid_amount_mismatch:{business_date}")
@@ -439,7 +447,10 @@ def stage_market_dashboard_release(
         client, manifest.physical_table, rows.snapshot_id, manifest.load_revision
     )
     existing_channel = _read_persisted_rows(
-        client, manifest.channel_physical_table, rows.snapshot_id, manifest.load_revision
+        client,
+        manifest.channel_physical_table,
+        rows.snapshot_id,
+        manifest.load_revision,
     )
     if existing_overall or existing_channel:
         try:
@@ -450,7 +461,8 @@ def stage_market_dashboard_release(
                 raise DashboardLoadError("active_load_revision_invalid")
             for table in (manifest.physical_table, manifest.channel_physical_table):
                 client.command(
-                    "DELETE FROM " + table
+                    "DELETE FROM "
+                    + table
                     + " WHERE snapshot_id = {snapshot_id:String}"
                     + " AND load_revision = {load_revision:String}",
                     parameters={
@@ -474,12 +486,17 @@ def validate_persisted_snapshot(
         client, manifest.physical_table, rows.snapshot_id, manifest.load_revision
     )
     channel_persisted = _read_persisted_rows(
-        client, manifest.channel_physical_table, rows.snapshot_id, manifest.load_revision
+        client,
+        manifest.channel_physical_table,
+        rows.snapshot_id,
+        manifest.load_revision,
     )
     if len(overall_persisted) != manifest.row_count:
         raise DashboardLoadError("persisted_row_count_mismatch:market_dashboard")
     if len(channel_persisted) != manifest.channel_row_count:
-        raise DashboardLoadError("persisted_row_count_mismatch:market_dashboard_channel")
+        raise DashboardLoadError(
+            "persisted_row_count_mismatch:market_dashboard_channel"
+        )
     _validate_persisted_unique_keys(
         overall_persisted, OVERALL_ORDER_BY, OVERALL_DATASET_ID
     )
@@ -489,10 +506,15 @@ def validate_persisted_snapshot(
     if rows_content_hash(overall_persisted) != manifest.overall_rows_content_hash:
         raise DashboardLoadError("persisted_rows_hash_mismatch:market_dashboard")
     if rows_content_hash(channel_persisted) != manifest.channel_rows_content_hash:
-        raise DashboardLoadError("persisted_rows_hash_mismatch:market_dashboard_channel")
+        raise DashboardLoadError(
+            "persisted_rows_hash_mismatch:market_dashboard_channel"
+        )
     overall_range = _date_range(overall_persisted)
     channel_range = _date_range(channel_persisted) if channel_persisted else ()
-    if overall_range != manifest.date_range or channel_range != manifest.channel_date_range:
+    if (
+        overall_range != manifest.date_range
+        or channel_range != manifest.channel_date_range
+    ):
         raise DashboardLoadError("persisted_date_range_mismatch")
     reconciliation = reconcile_paid_amount(overall_persisted, channel_persisted)
     if asdict(reconciliation) != asdict(manifest.reconciliation):
@@ -611,10 +633,7 @@ def persist_dataset_snapshot_payloads(
     if dataset_release_authority_integrity_errors(authority):
         raise DashboardLoadError("postgres_release_authority_invalid")
     persisted = tuple(store.list_dataset_snapshots())
-    by_ref = {
-        str(item.get("snapshot_ref") or ""): dict(item)
-        for item in persisted
-    }
+    by_ref = {str(item.get("snapshot_ref") or ""): dict(item) for item in persisted}
     for payload in normalized:
         current = {
             item["snapshot_ref"]
@@ -629,9 +648,11 @@ def persist_dataset_snapshot_payloads(
             raise DashboardLoadError(
                 f"postgres_snapshot_roundtrip_failed:{payload['dataset_id']}"
             )
-        if payload["status"] == "active" and by_ref.get(
-            str(payload["snapshot_ref"]), {}
-        ).get("authority_record_ref") != authority.authority_record_ref:
+        if (
+            payload["status"] == "active"
+            and by_ref.get(str(payload["snapshot_ref"]), {}).get("authority_record_ref")
+            != authority.authority_record_ref
+        ):
             raise DashboardLoadError(
                 f"postgres_snapshot_release_unverified:{payload['dataset_id']}"
             )
@@ -655,8 +676,7 @@ def apply_clickhouse_ddl(
     if not overall_table or not channel_table:
         overall_table, channel_table = _current_physical_tables()
     existing = tuple(
-        str(client.command(f"EXISTS TABLE {table}")).strip().lower()
-        in {"1", "true"}
+        str(client.command(f"EXISTS TABLE {table}")).strip().lower() in {"1", "true"}
         for table in (overall_table, channel_table)
     )
     if not all(existing):
@@ -667,10 +687,7 @@ def apply_clickhouse_ddl(
         ddl = ddl.replace("__OVERALL_TABLE__", overall_table).replace(
             "__CHANNEL_TABLE__", channel_table
         )
-        statements = [
-            statement.strip()
-            for statement in ddl.split(";")
-        ]
+        statements = [statement.strip() for statement in ddl.split(";")]
         for statement in statements:
             if statement:
                 client.command(statement)
@@ -734,7 +751,9 @@ def validate_clickhouse_schema(
     ):
         row = table_rows.get(table, {})
         normalized_sorting = re.sub(r"[()`\s]", "", str(row.get("sorting_key") or ""))
-        if row.get("engine") != TABLE_ENGINE or normalized_sorting != ",".join(order_by):
+        if row.get("engine") != TABLE_ENGINE or normalized_sorting != ",".join(
+            order_by
+        ):
             raise DashboardLoadError(f"clickhouse_schema_drift:table:{table}")
 
 
@@ -782,7 +801,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.clickhouse_container:
         database = os.environ.get("WAJE_CLICKHOUSE_DATABASE", "")
         if not database:
-            raise DashboardLoadError("missing_clickhouse_binding:WAJE_CLICKHOUSE_DATABASE")
+            raise DashboardLoadError(
+                "missing_clickhouse_binding:WAJE_CLICKHOUSE_DATABASE"
+            )
         client = DockerClickHouseClient(args.clickhouse_container, database)
     else:
         runtime = ClickHouseRuntime.from_env()
@@ -870,7 +891,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "reconciliation_status": manifest.reconciliation.status,
                 "reconciliation_reason_count": len(manifest.reconciliation.reasons),
                 "postgres_snapshot_refs": postgres_result.active_refs,
-                "postgres_superseded_snapshot_count": len(postgres_result.superseded_refs),
+                "postgres_superseded_snapshot_count": len(
+                    postgres_result.superseded_refs
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -946,7 +969,9 @@ def _field_contracts(
             "additive_sum",
             "single_nonzero_signal",
         }:
-            raise DashboardLoadError(f"source_field_contract_aggregation_invalid:{field}")
+            raise DashboardLoadError(
+                f"source_field_contract_aggregation_invalid:{field}"
+            )
         if spec["canonicalization_version"] != CANONICALIZATION_VERSION:
             raise DashboardLoadError(
                 f"source_field_contract_canonicalization_invalid:{field}"
@@ -957,7 +982,9 @@ def _field_contracts(
             "reject_invalid",
             "round_to_declared_scale",
         }:
-            raise DashboardLoadError(f"source_field_contract_loss_policy_invalid:{field}")
+            raise DashboardLoadError(
+                f"source_field_contract_loss_policy_invalid:{field}"
+            )
         result[str(field)] = spec
     return result
 
@@ -986,14 +1013,18 @@ def _read_source_file(
                 raise DashboardLoadError(
                     f"source_row_missing_cells:{path}:row={row_number}"
                 )
-            business_date = _parse_date(raw[field_mapping["business_date"]], path, row_number)
+            business_date = _parse_date(
+                raw[field_mapping["business_date"]], path, row_number
+            )
             if not date_bounds[0] <= business_date <= date_bounds[1]:
                 raise DashboardLoadError(
                     f"business_date_outside_filename_range:{path}:row={row_number}"
                 )
             game = str(raw[field_mapping["game"]] or "").strip()
             if not game:
-                raise DashboardLoadError(f"grain_key_empty:game:{path}:row={row_number}")
+                raise DashboardLoadError(
+                    f"grain_key_empty:game:{path}:row={row_number}"
+                )
             allowed_games = tuple(field_contracts["game"].get("allowed_values") or ())
             if allowed_games and game not in allowed_games:
                 raise DashboardLoadError(f"game_scope_mismatch:{path}:row={row_number}")
@@ -1019,7 +1050,9 @@ def _read_source_file(
         return rows
 
 
-def _validate_headers(path: Path, actual: Sequence[str], expected: Sequence[str]) -> None:
+def _validate_headers(
+    path: Path, actual: Sequence[str], expected: Sequence[str]
+) -> None:
     if tuple(actual) == tuple(expected):
         return
     missing = tuple(field for field in expected if field not in actual)
@@ -1088,10 +1121,14 @@ def _parse_date(value: Any, path: Path, row_number: int) -> date:
     try:
         return date.fromisoformat(str(value or "").strip())
     except ValueError as exc:
-        raise DashboardLoadError(f"invalid_business_date:{path}:row={row_number}") from exc
+        raise DashboardLoadError(
+            f"invalid_business_date:{path}:row={row_number}"
+        ) from exc
 
 
-def _filename_bounds(path: Path, *, pattern: re.Pattern[str], kind: str) -> tuple[date, date]:
+def _filename_bounds(
+    path: Path, *, pattern: re.Pattern[str], kind: str
+) -> tuple[date, date]:
     match = pattern.fullmatch(path.name)
     if not match:
         raise DashboardLoadError(f"{kind}_filename_contract_mismatch:{path.name}")
@@ -1190,7 +1227,9 @@ def _table_schema_descriptor(
         clickhouse_type = str(spec["clickhouse_type"])
         if spec["nullable"]:
             clickhouse_type = f"Nullable({clickhouse_type})"
-        fields.append(f"{field}:{clickhouse_type}:{'nullable' if spec['nullable'] else 'not_null'}")
+        fields.append(
+            f"{field}:{clickhouse_type}:{'nullable' if spec['nullable'] else 'not_null'}"
+        )
         fields.append(
             "policy:"
             f"{field}:{spec['rounding_mode']}:{spec['loss_policy']}:"
@@ -1296,7 +1335,7 @@ def _read_persisted_rows(
         FROM {table}
         WHERE snapshot_id = {{snapshot_id:String}}
           AND load_revision = {{load_revision:String}}
-        ORDER BY snapshot_id, load_revision, business_date, game{', channel' if _is_channel_table(table) else ''}
+        ORDER BY snapshot_id, load_revision, business_date, game{", channel" if _is_channel_table(table) else ""}
         """,
         parameters={"snapshot_id": snapshot_id, "load_revision": load_revision},
     )
@@ -1305,8 +1344,7 @@ def _read_persisted_rows(
     else:
         columns = tuple(getattr(result, "column_names", ()) or ())
         raw_rows = tuple(
-            dict(zip(columns, row))
-            for row in getattr(result, "result_rows", ()) or ()
+            dict(zip(columns, row)) for row in getattr(result, "result_rows", ()) or ()
         )
     contract = load_contract(SOURCE_CONTRACT_PATH)
     specs = _field_contracts(contract, _field_mapping(contract))

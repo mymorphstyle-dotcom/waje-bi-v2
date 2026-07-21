@@ -221,8 +221,6 @@ def test_duplicate_additive_rows_sum_but_ratio_rows_are_rejected():
             right,
             time_key="day",
             group_key="channel",
-            metric_strategies=_strategies(
-                left={"paid_amount": "sum", "rate": "ratio"}
-            ),
+            metric_strategies=_strategies(left={"paid_amount": "sum", "rate": "ratio"}),
             candidate_rules=RULES,
         )

@@ -5,9 +5,6 @@ from datetime import date, datetime, timezone
 import math
 from typing import Any, Iterable, Mapping
 
-from bi_agent.conversation.clarification_authority import (
-    canonical_execution_grain,
-)
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
     CapabilityExecutionPlan,
@@ -35,7 +32,13 @@ from bi_agent.runtime.dataset_catalog import (
     DatasetSnapshot,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from bi_agent.runtime.window_resolver import WindowResolution, resolve_revenue_windows
+from bi_agent.runtime.temporal_comparison import (
+    EffectiveTemporalComparison,
+    capability_supports_temporal_authority,
+)
+from bi_agent.runtime.window_resolver import (
+    resolve_temporal_windows,
+)
 
 
 _CANONICAL_FIXED_WINDOW_ORDER = (
@@ -47,20 +50,8 @@ _CANONICAL_FIXED_WINDOW_ORDER = (
     "anomaly_history",
 )
 
-_FULL_SAMPLE_SCOPE_ALIASES = frozenset(
-    {
-        "full_sample",
-        "full-sample",
-        "all_platform",
-        "all-platform",
-        "all_sample",
-        "overall",
-        "global",
-        "全平台",
-        "全量",
-        "全样本",
-        "整体",
-    }
+_LEGACY_TEMPORAL_PROPOSAL_FIELDS = frozenset(
+    {"target_semantic", "baselines", "fixed_window_bounds"}
 )
 
 
@@ -77,13 +68,7 @@ def _validated_capability_roles(
 ) -> dict[str, dict[str, Any]]:
     raw_roles = proposal.get("capability_roles")
     if raw_roles is None:
-        return {
-            capability_id: {
-                "analysis_role": "required",
-                "sources": ("compiler_fail_closed",),
-            }
-            for capability_id in accepted_capabilities
-        }
+        raise ValueError("analysis_capability_roles_invalid:missing")
     if not isinstance(raw_roles, Mapping) or set(raw_roles) != set(
         accepted_capabilities
     ):
@@ -103,9 +88,7 @@ def _validated_capability_roles(
             or not isinstance(sources, (list, tuple))
             or not sources
             or any(
-                not isinstance(source, str)
-                or not source
-                or source != source.strip()
+                not isinstance(source, str) or not source or source != source.strip()
                 for source in sources
             )
             or len(sources) != len(set(sources))
@@ -147,14 +130,34 @@ def compile_analysis_contract(
     accepted_capabilities: Iterable[str],
     catalog: DatasetCatalog,
     registry: RuntimeContractRegistry,
+    temporal_authority: EffectiveTemporalComparison,
     as_of: datetime,
     release_resolver: DatasetReleaseResolver | None = None,
 ) -> AnalysisCompileOutcome:
+    legacy_temporal_fields = sorted(
+        _LEGACY_TEMPORAL_PROPOSAL_FIELDS.intersection(proposal)
+    )
+    if legacy_temporal_fields:
+        raise ValueError(
+            "analysis_legacy_temporal_fields_forbidden:"
+            + ",".join(legacy_temporal_fields)
+        )
     capabilities = _dedupe(accepted_capabilities)
     capability_roles = _validated_capability_roles(proposal, capabilities)
+    if not isinstance(temporal_authority, EffectiveTemporalComparison):
+        raise ValueError("analysis_temporal_authority_invalid")
+    for capability_id in capabilities:
+        capability = _registry_entry(registry.capability_inputs, capability_id)
+        if capability is None or not capability_supports_temporal_authority(
+            capability,
+            temporal_authority,
+        ):
+            raise ValueError(
+                f"analysis_capability_temporal_unsupported:{capability_id}"
+            )
     proposal = {
         **proposal,
-        "grain": canonical_execution_grain(proposal.get("grain")),
+        "grain": _validated_execution_grain(proposal.get("grain")),
     }
     dependencies = _build_dependency_index(proposal, capabilities, registry)
     capability_dependencies = _capability_dependency_sets(
@@ -212,23 +215,16 @@ def compile_analysis_contract(
         accepted_capabilities=capabilities,
         registry=registry,
     )
-    resolution = _resolve_advisory_windows(
-        target_semantic=str(proposal.get("target_semantic") or "yesterday"),
-        baselines=_dedupe(_ordered_values(proposal, "baselines")),
+    resolution = resolve_temporal_windows(
+        temporal_authority,
         context_window_specs=context_window_specs,
         as_of=as_of,
         timezone_name=registry.business_timezone,
         dataset_watermarks={
-            item.dataset_id: date.fromisoformat(item.watermark)
-            for item in snapshots
+            item.dataset_id: date.fromisoformat(item.watermark) for item in snapshots
         },
         affected_capabilities=affected_capabilities,
         affected_claim_types=accepted_claim_intents,
-        fixed_window_bounds=(
-            proposal.get("fixed_window_bounds")
-            if isinstance(proposal.get("fixed_window_bounds"), Mapping)
-            else {}
-        ),
     )
     analysis_contract_id = f"analysis:{run_id}:1"
     query_contracts, query_refs_by_capability = _build_query_contracts(
@@ -241,7 +237,8 @@ def compile_analysis_contract(
         metric_bindings,
         dimension_bindings,
         registry,
-        capability_dependencies,
+        temporal_authority=temporal_authority,
+        capability_dependencies=capability_dependencies,
     )
     capability_plans = _build_capability_plans(
         capabilities,
@@ -304,6 +301,7 @@ def compile_analysis_contract(
         claim_intents=accepted_claim_intents,
         scope=_scope(
             proposal,
+            registry=registry,
             requested_metric_ids=dependencies.metric_ids,
             requested_dimension_ids=dependencies.dimension_ids,
         ),
@@ -317,6 +315,12 @@ def compile_analysis_contract(
         contract_gaps=tuple(gaps),
     )
     return AnalysisCompileOutcome(analysis, query_contracts, capability_plans)
+
+
+def _validated_execution_grain(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("analysis_contract_grain_invalid")
+    return value
 
 
 def _required_metric_ids(
@@ -455,9 +459,7 @@ def _build_dependency_index(
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if contract is None or str(contract.get("dimension_mode") or "") != "requested":
             continue
-        allowed_dimensions = set(
-            _mapping_values(contract, "allowed_dimensions")
-        )
+        allowed_dimensions = set(_mapping_values(contract, "allowed_dimensions"))
         for dimension_id in dimension_ids:
             if allowed_dimensions and dimension_id not in allowed_dimensions:
                 continue
@@ -474,8 +476,7 @@ def _build_dependency_index(
         contract = _registry_entry(registry.capability_inputs, capability_id)
         if (
             contract is None
-            or str(contract.get("source_mode") or "")
-            != "requested_context_sources"
+            or str(contract.get("source_mode") or "") != "requested_context_sources"
         ):
             continue
         for dataset_id in requested_sources:
@@ -507,12 +508,15 @@ def _build_dependency_index(
                 affected_claim_types=requested_claim_intents,
             )
         except (KeyError, TypeError, ValueError):
-            selected, selection_gaps = (), (
-                _contract_gap(
-                    gap_type="contract_absent",
-                    gap_id=f"metric:{metric_id}:contract_absent",
-                    affected_capabilities=tuple(metric_owners[metric_id]),
-                    repair_options=("register_metric_contract",),
+            selected, selection_gaps = (
+                (),
+                (
+                    _contract_gap(
+                        gap_type="contract_absent",
+                        gap_id=f"metric:{metric_id}:contract_absent",
+                        affected_capabilities=tuple(metric_owners[metric_id]),
+                        repair_options=("register_metric_contract",),
+                    ),
                 ),
             )
         metric_dataset_ids[metric_id] = selected
@@ -535,12 +539,15 @@ def _build_dependency_index(
                 affected_claim_types=(),
             )
         except (KeyError, TypeError, ValueError):
-            selected, selection_gaps = (), (
-                _contract_gap(
-                    gap_type="contract_absent",
-                    gap_id=f"dimension:{dimension_id}:contract_absent",
-                    affected_capabilities=tuple(dimension_owners[dimension_id]),
-                    repair_options=("register_dimension_contract",),
+            selected, selection_gaps = (
+                (),
+                (
+                    _contract_gap(
+                        gap_type="contract_absent",
+                        gap_id=f"dimension:{dimension_id}:contract_absent",
+                        affected_capabilities=tuple(dimension_owners[dimension_id]),
+                        repair_options=("register_dimension_contract",),
+                    ),
                 ),
             )
         dimension_dataset_ids[dimension_id] = selected
@@ -619,10 +626,7 @@ def _validate_dataset_contracts(
         gaps.append(
             _contract_gap(
                 gap_type="contract_partial",
-                gap_id=(
-                    f"dataset:{dataset_id}:contract_partial:"
-                    f"{','.join(issues)}"
-                ),
+                gap_id=(f"dataset:{dataset_id}:contract_partial:{','.join(issues)}"),
                 dataset_id=dataset_id,
                 affected_capabilities=dataset_owners.get(
                     dataset_id,
@@ -683,8 +687,7 @@ def _resolve_snapshots(
                     _contract_gap(
                         gap_type="dataset_snapshot_unavailable_as_of",
                         gap_id=(
-                            f"dataset:{dataset_id}:"
-                            "dataset_snapshot_unavailable_as_of"
+                            f"dataset:{dataset_id}:dataset_snapshot_unavailable_as_of"
                         ),
                         dataset_id=dataset_id,
                         affected_capabilities=affected_capabilities,
@@ -779,7 +782,31 @@ def _snapshot_evidence_gaps(
                     ),
                 )
             )
-            if unsupported or snapshot.evidence_state == "context_only":
+            resolution = _window_reconciliation_resolution(
+                capability,
+                capability_id=capability_id,
+                snapshot_id=snapshot.dataset_id,
+            )
+            if (
+                not unsupported
+                and snapshot.evidence_state == "context_only"
+                and resolution is not None
+            ):
+                gaps.append(
+                    _contract_gap(
+                        gap_type="contract_partial",
+                        gap_id=(
+                            f"dataset:{snapshot.dataset_id}:requires_window_"
+                            f"reconciliation:capability:{capability_id}"
+                        ),
+                        dataset_id=snapshot.dataset_id,
+                        affected_capabilities=(capability_id,),
+                        owner="runtime_owner",
+                        repair_options=("execute_current_window_reconciliation",),
+                        diagnostic_context=resolution,
+                    )
+                )
+            elif unsupported or snapshot.evidence_state == "context_only":
                 gaps.append(
                     _contract_gap(
                         gap_type="contract_partial",
@@ -798,6 +825,34 @@ def _snapshot_evidence_gaps(
                     )
                 )
     return tuple(gaps)
+
+
+def _window_reconciliation_resolution(
+    capability: Mapping[str, Any],
+    *,
+    capability_id: str,
+    snapshot_id: str,
+) -> dict[str, str] | None:
+    binding = capability.get("task_input_binding")
+    if not isinstance(binding, Mapping):
+        return None
+    parameters = binding.get("parameters")
+    if not isinstance(parameters, Mapping):
+        return None
+    if (
+        parameters.get("context_only_resolution")
+        != "current_window_reconciliation"
+        or parameters.get("partition_source_id") != snapshot_id
+    ):
+        return None
+    contract_id = parameters.get("reconciliation_contract")
+    if not isinstance(contract_id, str) or not contract_id:
+        return None
+    return {
+        "resolution_mode": "current_window_reconciliation",
+        "resolver_capability_id": capability_id,
+        "reconciliation_contract": contract_id,
+    }
 
 
 def _snapshot_supports_query(
@@ -820,6 +875,7 @@ def _snapshot_supports_query(
         "association_outcome_timeseries",
         "association_candidate_timeseries",
         "channel_context_probe",
+        "channel_context_total_probe",
         "source_reconciliation_probe",
     }
     if query_family in context_families:
@@ -982,8 +1038,7 @@ def _reconciliation_strategy(
     tolerance: float,
 ) -> str | None:
     strategy = str(
-        contract.get("reconciliation_strategy")
-        or "unsupported_non_additive"
+        contract.get("reconciliation_strategy") or "unsupported_non_additive"
     )
     if strategy not in {
         "additive_sum",
@@ -1109,19 +1164,14 @@ def _bind_claim_intents(
 
     capability_ceiling = reviewed_claims(accepted_capabilities)
     if explicit:
-        required_claim_intents = set(
-            _values(proposal, "required_claim_intents")
-        )
-        candidate_claim_intents = set(
-            _values(proposal, "candidate_claim_intents")
-        )
+        required_claim_intents = set(_values(proposal, "required_claim_intents"))
+        candidate_claim_intents = set(_values(proposal, "candidate_claim_intents"))
         if (
             "required_claim_intents" in proposal
             or "candidate_claim_intents" in proposal
         ) and (
             required_claim_intents.intersection(candidate_claim_intents)
-            or required_claim_intents.union(candidate_claim_intents)
-            != set(explicit)
+            or required_claim_intents.union(candidate_claim_intents) != set(explicit)
         ):
             raise ValueError("claim_intent_role_partition_invalid")
         supported = tuple(
@@ -1218,62 +1268,6 @@ def _bind_claim_intents(
     )
 
 
-def _resolve_advisory_windows(
-    *,
-    target_semantic: str,
-    baselines: tuple[str, ...],
-    context_window_specs: tuple[Mapping[str, Any], ...],
-    as_of: datetime,
-    timezone_name: str,
-    dataset_watermarks: Mapping[str, date],
-    affected_capabilities: tuple[str, ...],
-    affected_claim_types: tuple[str, ...],
-    fixed_window_bounds: Mapping[str, tuple[str, str]],
-) -> WindowResolution:
-    try:
-        return resolve_revenue_windows(
-            target_semantic=target_semantic,
-            baselines=baselines,
-            context_window_specs=context_window_specs,
-            as_of=as_of,
-            timezone_name=timezone_name,
-            dataset_watermarks=dataset_watermarks,
-            affected_capabilities=affected_capabilities,
-            affected_claim_types=affected_claim_types,
-            fixed_window_bounds=fixed_window_bounds,
-        )
-    except ValueError as exc:
-        reason = str(exc)
-        error_type = reason.partition(":")[0]
-        if error_type not in {
-            "unsupported_target_semantic",
-            "unsupported_baseline",
-            "duplicate_baseline",
-            "context_window_specs_invalid",
-            "context_window_spec_invalid",
-            "unsupported_context_window_relation",
-            "unsupported_context_window_unit",
-        }:
-            raise
-        return WindowResolution(
-            windows=(),
-            gaps=(
-                ContractGap(
-                    gap_type="contract_partial",
-                    gap_id=f"window:{reason}",
-                    affected_capabilities=affected_capabilities,
-                    affected_claim_types=affected_claim_types,
-                    owner="contract_owner",
-                    repair_options=(
-                        "choose_supported_window",
-                        "clarify_window_contract",
-                    ),
-                    requires_clarification=True,
-                ),
-            ),
-        )
-
-
 def _capability_contract_gaps(
     accepted_capabilities: tuple[str, ...],
     registry: RuntimeContractRegistry,
@@ -1292,7 +1286,9 @@ def _capability_contract_gaps(
                 )
             )
             continue
-        missing = tuple(field for field in required_plan_fields if field not in contract)
+        missing = tuple(
+            field for field in required_plan_fields if field not in contract
+        )
         if missing:
             gaps.append(
                 _contract_gap(
@@ -1349,12 +1345,13 @@ def _build_query_contracts(
     metric_bindings: tuple[MetricBinding, ...],
     dimension_bindings: tuple[DimensionBinding, ...],
     registry: RuntimeContractRegistry,
+    temporal_authority: EffectiveTemporalComparison,
     capability_dependencies: tuple[CapabilityDependencySet, ...] = (),
 ) -> tuple[tuple[QueryContract, ...], dict[str, tuple[str, ...]]]:
+    if not isinstance(temporal_authority, EffectiveTemporalComparison):
+        raise ValueError("analysis_temporal_authority_invalid")
     if not windows:
-        return (), {
-            capability_id: () for capability_id in accepted_capabilities
-        }
+        return (), {capability_id: () for capability_id in accepted_capabilities}
     snapshot_by_dataset = {item.dataset_id: item for item in snapshots}
     metric_ids_available = {item.metric_id for item in metric_bindings}
     filters = _filters(proposal)
@@ -1383,8 +1380,8 @@ def _build_query_contracts(
         query_windows = _query_windows_for_capability(
             capability_id=capability_id,
             capability=capability,
-            proposal=proposal,
             windows=canonical_windows,
+            temporal_authority=temporal_authority,
         )
         if not query_windows:
             continue
@@ -1406,9 +1403,7 @@ def _build_query_contracts(
                 continue
             configured_metrics = family_metrics.get(query_family)
             if str(capability.get("metric_mode") or "") == "requested":
-                allowed_metrics = set(
-                    _mapping_values(capability, "allowed_metrics")
-                )
+                allowed_metrics = set(_mapping_values(capability, "allowed_metrics"))
                 metric_ids = tuple(
                     metric_id
                     for metric_id in _values(proposal, "target_metrics")
@@ -1453,7 +1448,10 @@ def _build_query_contracts(
             by_dataset: dict[str, list[MetricBinding]] = {}
             for binding in selected_metrics:
                 by_dataset.setdefault(binding.dataset_id, []).append(binding)
-            if not by_dataset and capability.get("source_mode") == "requested_context_sources":
+            if (
+                not by_dataset
+                and capability.get("source_mode") == "requested_context_sources"
+            ):
                 by_dataset = {
                     dataset_id: []
                     for dataset_id in (
@@ -1467,7 +1465,9 @@ def _build_query_contracts(
                 snapshot = snapshot_by_dataset.get(dataset_id)
                 if snapshot is None:
                     continue
-                include_dimensions = str(capability.get("dimension_mode") or "") == "requested"
+                include_dimensions = (
+                    str(capability.get("dimension_mode") or "") == "requested"
+                )
                 if not _snapshot_supports_query(
                     snapshot,
                     query_family,
@@ -1483,7 +1483,8 @@ def _build_query_contracts(
                         (
                             item
                             for item in dimension_bindings
-                            if include_dimensions and item.dataset_id == dataset_id
+                            if include_dimensions
+                            and item.dataset_id == dataset_id
                             and (
                                 dependency_set is None
                                 or item.dimension_id
@@ -1528,10 +1529,15 @@ def _build_query_contracts(
                             "required_windows_complete",
                             "unique_result_grain",
                             "source_snapshot_matches_contract",
+                            *(
+                                ("overall_channel_reconciliation",)
+                                if query_shape.get("reconciliation")
+                                == "overall_channel_required"
+                                else ()
+                            ),
                         ),
                         "workload_class": str(
-                            capability.get("workload_class")
-                            or "interactive_aggregate"
+                            capability.get("workload_class") or "interactive_aggregate"
                         ),
                         "query_parameters": _query_parameters(query_shape),
                         "query_role_ref": "",
@@ -1539,20 +1545,39 @@ def _build_query_contracts(
                         "join_expectation": _join_expectation(query_shape),
                     }
                     if query_dimensions and query_family not in {
-                        "channel_context_probe",
                         "data_quality_probe",
                         "association_outcome_timeseries",
                         "association_candidate_timeseries",
                     }:
+                        configured_companion = query_shape.get(
+                            "reconciliation_reference_query_family"
+                        )
+                        if configured_companion is not None and (
+                            type(configured_companion) is not str
+                            or not configured_companion
+                        ):
+                            raise ValueError(
+                                "query_shape_reconciliation_reference_invalid:"
+                                f"{query_family}"
+                            )
+                        companion_query_family = str(
+                            configured_companion
+                            or (
+                                query_family
+                                if result_shape.result_semantics
+                                == "complete_window_aggregate"
+                                else "daily_metric_baselines"
+                            )
+                        )
                         companion_shape_contract = _registry_entry(
                             registry.query_shape,
-                            "daily_metric_baselines",
+                            companion_query_family,
                         )
                         if companion_shape_contract is None:
                             continue
                         companion = {
                             **logical,
-                            "query_intent": "daily_metric_baselines",
+                            "query_intent": companion_query_family,
                             "dimension_bindings": (),
                             "result_shape": _result_shape(
                                 normalized_metrics,
@@ -1627,6 +1652,34 @@ def _build_capability_plans(
         optional_families = set(_mapping_values(contract, "optional_query_families"))
         required_windows = _mapping_values(contract, "required_windows")
         owned_query_refs = set(query_refs_by_capability.get(capability_id, ()))
+        owned_queries = tuple(
+            query
+            for query in query_contracts
+            if query.query_contract_id in owned_query_refs
+        )
+        validation_queries_by_primary: dict[str, tuple[QueryContract, ...]] = {}
+        validation_query_refs: set[str] = set()
+        for query in owned_queries:
+            reconciliation = query.reconciliation_binding
+            if reconciliation is None:
+                continue
+            validation_queries = tuple(
+                candidate
+                for candidate in owned_queries
+                if candidate.query_role_ref == reconciliation.reference_query_role_ref
+                and candidate.contract_signature
+                == reconciliation.reference_contract_signature
+            )
+            if (
+                len(validation_queries) != 1
+                or validation_queries[0].query_contract_id == query.query_contract_id
+            ):
+                raise ValueError(
+                    "capability_reconciliation_query_invalid:"
+                    f"{capability_id}:{query.query_contract_id}"
+                )
+            validation_queries_by_primary[query.query_contract_id] = validation_queries
+            validation_query_refs.add(validation_queries[0].query_contract_id)
         accepted_completeness = _mapping_values(
             minimum_readiness,
             "accepted_completeness",
@@ -1636,27 +1689,22 @@ def _build_capability_plans(
         for query_family in _mapping_values(contract, "query_families"):
             primary_queries = tuple(
                 query
-                for query in query_contracts
-                if query.query_contract_id in owned_query_refs
-                and query.query_intent == query_family
+                for query in owned_queries
+                if query.query_intent == query_family
+                and query.query_contract_id not in validation_query_refs
             )
             required = query_family not in optional_families
-            slot_primaries: tuple[QueryContract | None, ...] = (
-                primary_queries or (None,)
+            slot_primaries: tuple[QueryContract | None, ...] = primary_queries or (
+                None,
             )
             for primary in slot_primaries:
-                companion_role = (
-                    primary.reconciliation_binding.reference_query_role_ref
+                validation_queries = (
+                    validation_queries_by_primary.get(
+                        primary.query_contract_id,
+                        (),
+                    )
                     if primary is not None
-                    and primary.reconciliation_binding is not None
-                    else ""
-                )
-                validation_queries = tuple(
-                    query
-                    for query in query_contracts
-                    if query.query_contract_id in owned_query_refs
-                    and companion_role
-                    and query.query_role_ref == companion_role
+                    else ()
                 )
                 dimension_suffix = "+".join(
                     item.dimension_id
@@ -1675,9 +1723,7 @@ def _build_capability_plans(
                 slot = CapabilityInputSlot(
                     slot_id=slot_id,
                     query_contract_refs=(
-                        (primary.query_contract_id,)
-                        if primary is not None
-                        else ()
+                        (primary.query_contract_id,) if primary is not None else ()
                     ),
                     required=required,
                     accepted_completeness=accepted_completeness,
@@ -1699,9 +1745,23 @@ def _build_capability_plans(
                     ),
                 )
                 (required_slots if required else optional_slots).append(slot)
-        capability_signature = registry.capability_contract_signature(
-            capability_id
-        )
+        primary_query_refs = {
+            query_ref
+            for slot in (*required_slots, *optional_slots)
+            for query_ref in slot.query_contract_refs
+        }
+        validation_slot_refs = {
+            query_ref
+            for slot in (*required_slots, *optional_slots)
+            for query_ref in slot.validation_query_contract_refs
+        }
+        role_collisions = sorted(primary_query_refs.intersection(validation_slot_refs))
+        if role_collisions:
+            raise ValueError(
+                "capability_query_role_collision:"
+                f"{capability_id}:" + ",".join(role_collisions)
+            )
+        capability_signature = registry.capability_contract_signature(capability_id)
         capability_ref = registry.capability_contract_ref(capability_id)
         plans.append(
             CapabilityExecutionPlan(
@@ -1749,9 +1809,7 @@ def _reconcile_capability_inputs(
     registry: RuntimeContractRegistry,
 ) -> tuple[ContractGap, ...]:
     available_windows = {window.window_id for window in windows}
-    plan_by_capability = {
-        plan.capability_id: plan for plan in capability_plans
-    }
+    plan_by_capability = {plan.capability_id: plan for plan in capability_plans}
     gaps: dict[str, ContractGap] = {}
     for capability_id in accepted_capabilities:
         contract = _registry_entry(registry.capability_inputs, capability_id)
@@ -1775,9 +1833,7 @@ def _reconcile_capability_inputs(
         }
         # An auxiliary path may block its own claim, but it cannot reopen a
         # material clarification after the primary comparison is bound.
-        requires_input_clarification = (
-            gap_context["analysis_role"] != "auxiliary"
-        )
+        requires_input_clarification = gap_context["analysis_role"] != "auxiliary"
         context_window_state = _context_window_binding_state(
             capability_id,
             windows,
@@ -1854,10 +1910,10 @@ def _reconcile_capability_inputs(
                     diagnostic_context=gap_context,
                 )
                 gaps[gap.gap_id] = gap
-        if (
-            str(contract.get("source_mode") or "")
-            == "requested_context_sources"
-            and not _values(proposal, "requested_context_sources")
+        if str(
+            contract.get("source_mode") or ""
+        ) == "requested_context_sources" and not _values(
+            proposal, "requested_context_sources"
         ):
             gap = _contract_gap(
                 gap_type="contract_partial",
@@ -1898,8 +1954,7 @@ def _reconcile_capability_inputs(
             gap = _contract_gap(
                 gap_type="contract_partial",
                 gap_id=(
-                    f"capability:{capability_id}:required_query:"
-                    f"{slot.slot_id}:unbound"
+                    f"capability:{capability_id}:required_query:{slot.slot_id}:unbound"
                 ),
                 affected_capabilities=(capability_id,),
                 repair_options=(
@@ -1963,12 +2018,8 @@ def _result_shape(
             *dimension_ids,
         )
     )
-    unique_key = _dedupe(
-        (*_mapping_values(query_shape, "unique_key"), *dimension_ids)
-    )
-    grain = _dedupe(
-        (*_mapping_values(query_shape, "grain"), *dimension_ids)
-    )
+    unique_key = _dedupe((*_mapping_values(query_shape, "unique_key"), *dimension_ids))
+    grain = _dedupe((*_mapping_values(query_shape, "grain"), *dimension_ids))
     return ResultShape(
         required_fields=required_fields,
         unique_key=unique_key,
@@ -1997,12 +2048,10 @@ def _scope_gaps(
             capabilities,
             registry=registry,
         )
-        unscoped_direct_source_ambiguity = (
-            is_unscoped_direct_analysis_source_ambiguity(
-                gap,
-                capabilities,
-                registry=registry,
-            )
+        unscoped_direct_source_ambiguity = is_unscoped_direct_analysis_source_ambiguity(
+            gap,
+            capabilities,
+            registry=registry,
         )
         claim_types = gap.affected_claim_types
         if (
@@ -2025,19 +2074,21 @@ def _scope_gaps(
             else claim_types or affected_claim_types
         )
         if registry is not None and scoped_claim_types:
-            capabilities = _dedupe((
-                *capabilities,
-                *(
-                    capability_id
-                    for capability_id in affected_capabilities
-                    if capability_id not in capabilities
-                    and _queryless_capability_blocks_claims(
-                        capability_id,
-                        scoped_claim_types,
-                        registry,
-                    )
-                ),
-            ))
+            capabilities = _dedupe(
+                (
+                    *capabilities,
+                    *(
+                        capability_id
+                        for capability_id in affected_capabilities
+                        if capability_id not in capabilities
+                        and _queryless_capability_blocks_claims(
+                            capability_id,
+                            scoped_claim_types,
+                            registry,
+                        )
+                    ),
+                )
+            )
         diagnostic_context = gap.diagnostic_context
         if scoped_claim_types and (
             direct_source_ambiguity or unscoped_direct_source_ambiguity
@@ -2091,9 +2142,7 @@ def _apply_capability_role_to_gaps(
             and "analysis_contract" not in set(gap.affected_capabilities)
             and all(
                 str(
-                    (capability_roles.get(capability_id) or {}).get(
-                        "analysis_role"
-                    )
+                    (capability_roles.get(capability_id) or {}).get("analysis_role")
                     or "required"
                 )
                 == "auxiliary"
@@ -2124,9 +2173,9 @@ def _apply_capability_role_to_gaps(
             dict.fromkeys(
                 str(source)
                 for capability_id in affected
-                for source in (
-                    capability_roles.get(capability_id) or {}
-                ).get("sources", ())
+                for source in (capability_roles.get(capability_id) or {}).get(
+                    "sources", ()
+                )
                 if str(source)
             )
         )
@@ -2168,16 +2217,12 @@ def _merge_contract_gaps(
             existing,
             affected_capabilities=tuple(
                 sorted(
-                    set(existing.affected_capabilities).union(
-                        gap.affected_capabilities
-                    )
+                    set(existing.affected_capabilities).union(gap.affected_capabilities)
                 )
             ),
             affected_claim_types=tuple(
                 sorted(
-                    set(existing.affected_claim_types).union(
-                        gap.affected_claim_types
-                    )
+                    set(existing.affected_claim_types).union(gap.affected_claim_types)
                 )
             ),
             repair_options=tuple(
@@ -2215,18 +2260,17 @@ def _contract_gap(
 def _scope(
     proposal: Mapping[str, Any],
     *,
+    registry: RuntimeContractRegistry,
     requested_metric_ids: tuple[str, ...] | None = None,
     requested_dimension_ids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     value = proposal.get("scope")
-    if isinstance(value, Mapping):
-        scope = dict(value)
-    elif value not in (None, ""):
-        scope = {"type": str(value)}
-    else:
-        scope = {"type": "full_sample"}
-    if "type" in scope:
-        scope["type"] = _canonical_scope_type(scope["type"])
+    if not isinstance(value, Mapping) or set(value) != {"type"}:
+        raise ValueError("analysis_scope_invalid:shape")
+    scope_type = value.get("type")
+    if not isinstance(scope_type, str) or scope_type not in registry.public_scope_types:
+        raise ValueError("analysis_scope_invalid:catalog_ref")
+    scope = {"type": scope_type}
     scope["requested_metric_ids"] = (
         requested_metric_ids
         if requested_metric_ids is not None
@@ -2247,14 +2291,23 @@ def _canonical_query_windows(
         window_id: index
         for index, window_id in enumerate(_CANONICAL_FIXED_WINDOW_ORDER)
     }
-    fallback_rank = len(fixed_rank)
     role_rank = {"target": 0, "baseline": 1, "reference": 2}
+    unknown_roles = tuple(
+        (window.window_id, window.role)
+        for window in windows
+        if window.role not in role_rank
+    )
+    if unknown_roles:
+        raise ValueError(
+            "analysis_window_role_invalid:"
+            + ",".join(f"{window_id}={role}" for window_id, role in unknown_roles)
+        )
     return tuple(
         sorted(
             windows,
             key=lambda item: (
-                fixed_rank.get(item.window_id, fallback_rank),
-                role_rank.get(item.role, 3),
+                role_rank[item.role],
+                fixed_rank.get(item.window_id, len(fixed_rank)),
                 item.start_inclusive,
                 item.end_exclusive,
                 item.window_id,
@@ -2267,59 +2320,46 @@ def _query_windows_for_capability(
     *,
     capability_id: str,
     capability: Mapping[str, Any],
-    proposal: Mapping[str, Any],
     windows: tuple[ResolvedWindow, ...],
+    temporal_authority: EffectiveTemporalComparison,
 ) -> tuple[ResolvedWindow, ...]:
-    """Bind each query path only to the windows that path can consume.
+    """Select physical windows from the capability's reviewed temporal contract."""
 
-    Target plus the user-confirmed comparison baselines form the primary
-    analysis window set. Auxiliary context belongs only to capabilities named
-    by its reviewed window specification (or by a capability's explicit
-    required_windows contract). This keeps a missing context series from
-    changing the completeness of formula, segment, or direction queries.
-    """
-
-    owned_context_ids = {
-        window.window_id
-        for window in windows
-        if capability_id in tuple(window.capability_refs or ())
-    }
-    required_window_ids = set(
-        _mapping_values(capability, "required_windows")
-    )
-    if isinstance(capability.get("context_window_policy"), Mapping) and not (
-        owned_context_ids
-        or any(
-            window.role == "baseline"
-            and window.window_id in required_window_ids
-            for window in windows
-        )
+    if not capability_supports_temporal_authority(
+        capability,
+        temporal_authority,
     ):
-        return ()
-    selected_ids = {
-        "target_day",
-        *_values(proposal, "baselines"),
-        *required_window_ids,
-        *owned_context_ids,
-    }
-    selected = tuple(
-        window for window in windows if window.window_id in selected_ids
-    )
-    if not selected or selected[0].window_id != "target_day":
-        raise ValueError(
-            f"capability_query_target_window_missing:{capability_id}"
+        raise ValueError(f"capability_query_temporal_unsupported:{capability_id}")
+    compatibility = capability.get("temporal_compatibility")
+    if not isinstance(compatibility, Mapping):
+        raise ValueError(f"capability_query_temporal_contract_missing:{capability_id}")
+    roles = compatibility.get("window_roles")
+    semantics = compatibility.get("consumption_semantics")
+    if not isinstance(roles, (list, tuple)) or not isinstance(semantics, (list, tuple)):
+        raise ValueError(f"capability_query_temporal_contract_invalid:{capability_id}")
+    role_set = set(roles)
+    if "capability_context" in set(semantics):
+        owned_context = tuple(
+            window
+            for window in windows
+            if window.role == "reference"
+            and capability_id in tuple(window.capability_refs or ())
         )
+        if len(owned_context) != 1:
+            raise ValueError(f"capability_query_context_window_missing:{capability_id}")
+        primary_roles = role_set - {"reference"}
+        primary_windows = tuple(
+            window for window in windows if window.role in primary_roles
+        )
+        if "target" in primary_roles and not any(
+            window.role == "target" for window in primary_windows
+        ):
+            raise ValueError(f"capability_query_target_window_missing:{capability_id}")
+        return (*primary_windows, *owned_context)
+    selected = tuple(window for window in windows if window.role in role_set)
+    if not selected or "target" not in role_set or selected[0].role != "target":
+        raise ValueError(f"capability_query_target_window_missing:{capability_id}")
     return selected
-
-
-def _canonical_scope_type(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    normalized = value.strip()
-    alias_key = normalized.casefold().replace(" ", "_")
-    if alias_key in _FULL_SAMPLE_SCOPE_ALIASES or normalized in _FULL_SAMPLE_SCOPE_ALIASES:
-        return "full_sample"
-    return normalized
 
 
 def _filters(proposal: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
@@ -2382,9 +2422,7 @@ def _select_sources_per_owner(
 ) -> tuple[tuple[str, ...], tuple[ContractGap, ...]]:
     owner_ids = _dedupe(owners)
     requested = tuple(
-        dataset_id
-        for dataset_id in sources
-        if dataset_id in requested_datasets
+        dataset_id for dataset_id in sources if dataset_id in requested_datasets
     )
     sibling_coverage_resolved = _requested_sources_resolve_by_capability(
         requested,
@@ -2439,9 +2477,7 @@ def _source_selection_claim_types(
         return ()
     supported = set(_mapping_values(contract, "supported_claim_types"))
     return tuple(
-        claim_type
-        for claim_type in requested_claim_types
-        if claim_type in supported
+        claim_type for claim_type in requested_claim_types if claim_type in supported
     )
 
 
@@ -2512,9 +2548,7 @@ def _select_source_datasets(
         for contract in owner_contracts
     )
     requested = tuple(
-        dataset_id
-        for dataset_id in candidates
-        if dataset_id in requested_datasets
+        dataset_id for dataset_id in candidates if dataset_id in requested_datasets
     )
     reviewed_requested = tuple(
         dataset_id for dataset_id in requested if dataset_id in allowed
@@ -2533,35 +2567,27 @@ def _select_source_datasets(
         affected,
         registry,
     )
-    selected = (
-        requested
-        if (
-            purpose_resolved
-            or not allowed
-        )
-        else reviewed_requested
-    )
+    selected = requested if (purpose_resolved or not allowed) else reviewed_requested
     if selected:
-        if (
-            all_required
-            or purpose_resolved
-            or len(selected) == 1
-        ):
+        if all_required or purpose_resolved or len(selected) == 1:
             excluded_requested = tuple(
                 dataset_id for dataset_id in requested if dataset_id not in selected
             )
             if excluded_requested:
                 if sibling_coverage_resolved:
                     return selected, None
-                restricted_owners = tuple(
-                    owner
-                    for owner in affected
-                    if owner != "analysis_contract"
-                    and any(
-                        not _capability_reviews_dataset(owner, dataset_id, registry)
-                        for dataset_id in excluded_requested
+                restricted_owners = (
+                    tuple(
+                        owner
+                        for owner in affected
+                        if owner != "analysis_contract"
+                        and any(
+                            not _capability_reviews_dataset(owner, dataset_id, registry)
+                            for dataset_id in excluded_requested
+                        )
                     )
-                ) or affected
+                    or affected
+                )
                 return selected, _requested_source_unreviewed_gap(
                     item_kind=item_kind,
                     item_id=item_id,
@@ -2631,8 +2657,7 @@ def _requested_source_unreviewed_gap(
     return _contract_gap(
         gap_type="contract_partial",
         gap_id=(
-            f"{item_kind}:{item_id}:requested_source_unreviewed:"
-            f"{','.join(excluded)}"
+            f"{item_kind}:{item_id}:requested_source_unreviewed:{','.join(excluded)}"
         ),
         dataset_id=excluded[0] if len(excluded) == 1 else "",
         affected_capabilities=affected,
@@ -2695,8 +2720,7 @@ def _requested_sources_resolve_by_capability(
             else tuple(dataset_id for dataset_id in requested if dataset_id in allowed)
         )
         all_required = (
-            str(contract.get("source_selection") or "")
-            == "all_required_datasets"
+            str(contract.get("source_selection") or "") == "all_required_datasets"
         )
         if len(owned) > 1 and not all_required:
             return False
@@ -2722,8 +2746,7 @@ def _source_ambiguity_gap(
     return _contract_gap(
         gap_type="contract_partial",
         gap_id=(
-            f"{item_kind}:{item_id}:source_ambiguous:"
-            f"{','.join(canonical_datasets)}"
+            f"{item_kind}:{item_id}:source_ambiguous:{','.join(canonical_datasets)}"
         ),
         affected_capabilities=affected,
         affected_claim_types=affected_claim_types,
@@ -2823,11 +2846,7 @@ def _context_window_specs(
             )
         except KeyError:
             policy = None
-        bounds = (
-            policy.get("count_bounds")
-            if isinstance(policy, Mapping)
-            else None
-        )
+        bounds = policy.get("count_bounds") if isinstance(policy, Mapping) else None
         unit_bounds = bounds.get(unit) if isinstance(bounds, Mapping) else None
         valid_count = (
             isinstance(count, int)
@@ -2858,7 +2877,9 @@ def _context_window_specs(
 
 
 def _dedupe(values: Iterable[Any]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    return tuple(
+        dict.fromkeys(str(value).strip() for value in values if str(value).strip())
+    )
 
 
 def _append_owner(
@@ -2911,18 +2932,12 @@ def _query_parameters(query_shape: Mapping[str, Any]) -> dict[str, Any]:
     value = query_shape.get("query_parameters") or {}
     if not isinstance(value, Mapping):
         raise ValueError("query_shape_parameters_must_be_mapping")
-    return {
-        str(key): _freeze_contract_value(item)
-        for key, item in value.items()
-    }
+    return {str(key): _freeze_contract_value(item) for key, item in value.items()}
 
 
 def _freeze_contract_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _freeze_contract_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): _freeze_contract_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_contract_value(item) for item in value)
     return value

@@ -32,7 +32,6 @@ backlog:
       - outlier_scan
       - segment_bridge
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - pattern_explanation
@@ -107,7 +106,6 @@ backlog:
       - formula_decompose
       - segment_bridge
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - revenue_health_review
@@ -139,7 +137,6 @@ backlog:
     affected_capabilities:
       - formula_decompose
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - revenue_health_review
@@ -174,7 +171,6 @@ backlog:
       - event_evidence
       - outlier_scan
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - pattern_explanation
       - anomaly_or_black_swan_review
@@ -209,7 +205,6 @@ backlog:
       - formula_decompose
       - joint_attribution
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - business_object_impact_review
@@ -283,7 +278,6 @@ backlog:
       - formula_decompose
       - outlier_scan
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - anomaly_or_black_swan_review
@@ -333,7 +327,6 @@ backlog:
       - segment_bridge
       - joint_attribution
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - segment_or_factor_attribution
@@ -369,7 +362,6 @@ backlog:
       - joint_attribution
       - outlier_scan
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - segment_or_factor_attribution
       - anomaly_or_black_swan_review
@@ -406,7 +398,6 @@ backlog:
       - segment_bridge
       - joint_attribution
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - segment_or_factor_attribution
       - data_quality_or_evidence_review
@@ -434,7 +425,6 @@ backlog:
       - pattern_scan
       - event_evidence
       - outlier_scan
-      - answer_verify
     affected_question_families:
       - pattern_explanation
       - business_object_impact_review
@@ -467,7 +457,6 @@ backlog:
       - event_evidence
       - joint_attribution
       - outlier_scan
-      - answer_verify
     affected_question_families:
       - business_object_impact_review
       - anomaly_or_black_swan_review
@@ -515,7 +504,6 @@ backlog:
       - event_evidence
       - outlier_scan
       - joint_attribution
-      - answer_verify
     affected_question_families:
       - anomaly_or_black_swan_review
       - pattern_explanation
@@ -561,7 +549,6 @@ backlog:
       - segment_bridge
       - joint_attribution
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - revenue_health_review
@@ -619,7 +606,6 @@ backlog:
     affected_capabilities:
       - event_evidence
       - joint_attribution
-      - answer_verify
     affected_question_families:
       - business_object_impact_review
       - custom_baseline_comparison
@@ -653,7 +639,6 @@ backlog:
       - pattern_scan
       - outlier_scan
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - pattern_explanation
       - revenue_health_review
@@ -682,7 +667,6 @@ backlog:
       - segment_bridge
       - joint_attribution
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - paid_amount_change_explanation
       - revenue_health_review
@@ -725,7 +709,6 @@ backlog:
       - pattern_scan
       - outlier_scan
       - data_quality_check
-      - answer_verify
     affected_question_families:
       - pattern_explanation
       - anomaly_or_black_swan_review
@@ -751,7 +734,6 @@ backlog:
       - event_evidence
       - outlier_scan
       - joint_attribution
-      - answer_verify
     affected_question_families:
       - anomaly_or_black_swan_review
       - business_object_impact_review

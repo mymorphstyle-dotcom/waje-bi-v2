@@ -200,8 +200,56 @@ def test_constant_parent_is_coverage_only_and_informative_descendants_form_reado
     assert hierarchy["coverage_dimensions"] == ("market",)
     assert hierarchy["business_readout_dimensions"] == ("area", "locality")
     assert hierarchy["dimension_path"] == ("market", "area", "locality")
-    assert payload["cross_dimension_additivity_allowed"] is False
-    assert payload["within_dimension_amount_contribution_additive"] is True
+    assert payload["interpretation_contract"] == {
+        "contract_id": "dimension-localization-interpretation.v1",
+        "analysis_role": "auxiliary_localization",
+        "ranking_scope": "cross_dimension_diagnostic_priority",
+        "ranking_subject": "dimension_view",
+        "ranking_measure": "diagnostic_priority_score",
+        "ranking_order": "diagnostic_priority_score_descending",
+        "ranking_position_measure": "priority_rank",
+        "priority_rank_order": "ascending",
+        "ranking_formula": ("excess_change_differentiation_primary_factor_alignment"),
+        "cross_dimension_overlap": "overlapping_marginal_views",
+        "cross_dimension_additivity": "forbidden",
+        "cross_dimension_contribution_ranking": "forbidden",
+        "within_dimension_additivity": {
+            "scope": "complete_reconciled_partition",
+            "additive_measures": (
+                "baseline_amount",
+                "target_amount",
+                "delta",
+            ),
+            "zero_sum_measures": ("excess_delta",),
+            "zero_sum_condition": "all_measure_values_defined",
+            "non_additive_measures": (
+                "dimension_differentiation_score",
+                "diagnostic_priority_score",
+            ),
+        },
+        "contribution_semantics": {
+            "delta": "within_dimension_accounting_change",
+            "excess_delta": "baseline_mix_structural_deviation",
+            "diagnostic_priority_score": "cross_dimension_ranking_only",
+        },
+        "excess_delta_definition": (
+            "target_amount_minus_target_total_at_baseline_share"
+        ),
+        "formula_decomposition_relationship": (
+            "co_report_only_no_shared_rank_sum_or_share"
+        ),
+        "causal_interpretation": "forbidden",
+        "representative_member_selection": ("separate_from_dimension_priority_ranking"),
+    }
+    priorities = {item["dimension"]: item for item in payload["diagnostic_priorities"]}
+    for finding in payload["dimension_findings"]:
+        priority = priorities[finding["dimension_id"]]
+        assert finding["priority_rank"] == priority["priority_rank"]
+        assert (
+            finding["diagnostic_priority_score"]
+            == priority["diagnostic_priority_score"]
+        )
+        assert "business_readout" not in finding
 
 
 def test_near_constant_parent_does_not_outrank_material_child():
@@ -342,8 +390,9 @@ def test_all_informative_hierarchies_survive_global_priority_ranking():
 
     payload = evidence.typed_payload
     assert set(payload["eligible_dimensions"]) == {"region", "device_brand"}
-    assert {
-        item["dimension_id"] for item in payload["dimension_findings"]
-    } == {"region", "device_brand"}
+    assert {item["dimension_id"] for item in payload["dimension_findings"]} == {
+        "region",
+        "device_brand",
+    }
     assert "地区" in payload["business_readout"]
     assert "设备品牌" in payload["business_readout"]
