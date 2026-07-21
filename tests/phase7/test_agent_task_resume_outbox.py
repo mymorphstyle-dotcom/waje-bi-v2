@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from bi_agent.runtime.agent_task_resume_outbox import (
+    AgentTaskResumeEnvelope,
+    AgentTaskResumeLeaseLost,
+    process_agent_task_resume_outbox,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class FakeOutbox:
+    def __init__(self) -> None:
+        self.envelopes = (
+            AgentTaskResumeEnvelope(
+                resume_ref="agent-task-resume:run-1",
+                thread_id="thread-1",
+                task_ref="run-1",
+                attempt_count=1,
+                lease_owner_id="worker-1",
+                lease_epoch=1,
+            ),
+            AgentTaskResumeEnvelope(
+                resume_ref="agent-task-resume:run-2",
+                thread_id="thread-2",
+                task_ref="run-2",
+                attempt_count=2,
+                lease_owner_id="worker-1",
+                lease_epoch=1,
+            ),
+        )
+        self.completed: list[str] = []
+        self.failed: list[tuple[str, str]] = []
+
+    def enqueue_ready(self, *, limit: int = 100):
+        assert limit == 5
+        return ("agent-task-resume:run-1", "agent-task-resume:run-2")
+
+    def claim_ready(self, *, limit: int = 100, lease_owner_id: str):
+        assert limit == 5
+        assert lease_owner_id == "worker-1"
+        return self.envelopes
+
+    def complete(self, envelope: AgentTaskResumeEnvelope) -> None:
+        self.completed.append(envelope.task_ref)
+
+    def fail(
+        self,
+        envelope: AgentTaskResumeEnvelope,
+        *,
+        error_code: str,
+    ) -> None:
+        self.failed.append((envelope.task_ref, error_code))
+
+
+def test_resume_outbox_completes_and_retries_with_stable_task_identity() -> None:
+    outbox = FakeOutbox()
+
+    def resume(thread_id: str, task_ref: str):
+        assert thread_id == f"thread-{task_ref[-1]}"
+        if task_ref == "run-2":
+            raise RuntimeError("provider temporarily unavailable")
+        return {"status": "completed", "task_ref": task_ref}
+
+    result = process_agent_task_resume_outbox(
+        outbox=outbox,  # type: ignore[arg-type]
+        resume_runner=resume,
+        limit=5,
+        worker_id="worker-1",
+    )
+
+    assert result["enqueued"] == [
+        "agent-task-resume:run-1",
+        "agent-task-resume:run-2",
+    ]
+    assert result["claimed"] == ["run-1", "run-2"]
+    assert outbox.completed == ["run-1"]
+    assert outbox.failed == [("run-2", "RuntimeError")]
+    assert result["superseded"] == []
+
+
+def test_resume_outbox_fencing_prevents_a_stale_worker_from_overwriting() -> None:
+    class LeaseLostOutbox(FakeOutbox):
+        def __init__(self) -> None:
+            super().__init__()
+            self.envelopes = self.envelopes[:1]
+
+        def complete(self, envelope: AgentTaskResumeEnvelope) -> None:
+            raise AgentTaskResumeLeaseLost("lease_lost")
+
+        def fail(
+            self,
+            envelope: AgentTaskResumeEnvelope,
+            *,
+            error_code: str,
+        ) -> None:
+            raise AssertionError("stale worker must not update the reclaimed row")
+
+    outbox = LeaseLostOutbox()
+    result = process_agent_task_resume_outbox(
+        outbox=outbox,  # type: ignore[arg-type]
+        resume_runner=lambda _thread_id, _task_ref: {"status": "completed"},
+        limit=5,
+        worker_id="worker-1",
+    )
+
+    assert result["completed"] == []
+    assert result["failed"] == []
+    assert result["superseded"] == ["run-1"]
+
+
+def test_resume_outbox_is_discovered_from_terminal_bi_authority_and_checkpoint() -> None:
+    schema = (ROOT / "tools/runtime/conversation-runtime.sql").read_text(
+        encoding="utf-8"
+    )
+    module = (ROOT / "bi_agent/runtime/agent_task_resume_outbox.py").read_text(
+        encoding="utf-8"
+    )
+    worker = (ROOT / "tools/runtime/recover_run_dispatches.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "CREATE TABLE IF NOT EXISTS waje_runtime.agent_task_resume_outbox" in schema
+    assert "UNIQUE(thread_id, task_ref)" in schema
+    assert "run.status IN ('completed', 'failed')" in module
+    assert "checkpointKind" in module
+    assert "awaitedTaskRef" in module
+    assert "FOR UPDATE SKIP LOCKED" in module
+    assert "lease_expires_at <= now()" in module
+    assert "lease_epoch = lease_epoch + 1" in module
+    assert "lease_owner_id" in schema
+    assert "lease_expires_at" in schema
+    assert "process_agent_task_resume_outbox" in worker

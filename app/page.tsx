@@ -48,15 +48,15 @@ import {
 } from "./api/_customerAnalysisContract";
 
 const ACTIVE_THREAD_KEY = "waje-active-thread:v2";
-const PENDING_OPERATION_PREFIX = "waje-pending-operation:v2:";
+const PENDING_OPERATION_PREFIX = "waje-pending-operation:v3:";
 const INITIAL_MESSAGE_SCOPE = "message:new";
 const PENDING_OPERATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 type PendingOperation = {
-  version: 2;
+  version: 3;
   operationId: string;
   scope: string;
-  kind: "message" | "clarification" | "topic_choice";
+  kind: "message" | "clarification" | "topic_choice" | "agent_action";
   threadHandle: string;
   actionHandle: string | null;
   message: string;
@@ -128,11 +128,11 @@ function loadPendingOperation(scope: string): PendingOperation | null {
     const value: unknown = JSON.parse(raw);
     if (
       !isRecord(value)
-      || value.version !== 2
+      || value.version !== 3
       || typeof value.operationId !== "string"
       || typeof value.scope !== "string"
       || value.scope !== scope
-      || !["message", "clarification", "topic_choice"].includes(String(value.kind))
+      || !["message", "clarification", "topic_choice", "agent_action"].includes(String(value.kind))
       || typeof value.threadHandle !== "string"
       || typeof value.message !== "string"
       || typeof value.createdAt !== "string"
@@ -205,7 +205,7 @@ function stableOperation(input: Omit<
   if (existing) return existing;
   const createdAt = new Date();
   const operation: PendingOperation = {
-    version: 2,
+    version: 3,
     operationId: crypto.randomUUID(),
     scope,
     ...input,
@@ -254,9 +254,15 @@ function isNewerSnapshot(
 ) {
   if (!current) return true;
   if (current.transport.threadHandle !== next.transport.threadHandle) return true;
+  const currentCursor = current.transport.eventCursor;
+  const nextCursor = next.transport.eventCursor;
   try {
+    if (BigInt(nextCursor) !== BigInt(currentCursor)) {
+      return BigInt(nextCursor) > BigInt(currentCursor);
+    }
     return BigInt(next.stateVersion) > BigInt(current.stateVersion);
   } catch {
+    if (nextCursor !== currentCursor) return nextCursor > currentCursor;
     return next.stateVersion > current.stateVersion;
   }
 }
@@ -531,6 +537,9 @@ export default function Home() {
         next.transport.runHandle
           ? loadPendingOperation(`topic_choice:${next.transport.runHandle}`)
           : null,
+        next.transport.actionKind === "agent_pending_action" && next.transport.actionHandle
+          ? loadPendingOperation(`agent_action:${next.transport.actionHandle}`)
+          : null,
       ].find((operation): operation is PendingOperation => Boolean(operation)) ?? null;
       if (!restored) return null;
       if (next.transport.acceptedOperationIds.includes(restored.operationId)) {
@@ -730,6 +739,17 @@ export default function Home() {
         delete body.message;
         body.answer = currentOperation.message;
         body.selectedOptionId = currentOperation.optionKey;
+      } else if (currentOperation.kind === "agent_action") {
+        const decision = currentOperation.optionKey === "approved"
+          || currentOperation.optionKey === "rejected"
+          ? currentOperation.optionKey
+          : "answered";
+        body.pendingActionResolution = {
+          actionRef: currentOperation.actionHandle,
+          decision,
+          selectedOptionId: decision === "answered" ? currentOperation.optionKey : null,
+          answerText: currentOperation.message,
+        };
       } else if (currentOperation.kind === "topic_choice") {
         if (currentOperation.optionKey) {
           body.topicSelection = {
@@ -811,9 +831,11 @@ export default function Home() {
   function submitInput(answer: string, optionKey?: string) {
     if (!snapshot || snapshot.state.status !== "needs_input" || pending) return;
     const operation = stableOperation({
-      kind: snapshot.state.input.kind === "clarification"
-        ? "clarification"
-        : "topic_choice",
+      kind: snapshot.transport.actionKind === "agent_pending_action"
+        ? "agent_action"
+        : snapshot.state.input.kind === "clarification"
+          ? "clarification"
+          : "topic_choice",
       threadHandle: snapshot.transport.threadHandle,
       actionHandle: snapshot.transport.actionHandle,
       message: answer,

@@ -170,8 +170,9 @@ def test_phase03_gateway_routes_and_ui_declare_evidence_ready_terminal_delivery(
 
     store = sources["app/api/_conversationStore.ts"]
     assert 'event: "execution_result_ready"' in store
-    for route in ("app/api/threads/[threadId]/messages/route.ts",):
-        assert 'terminalStatus === "evidence_ready"' in sources[route]
+    message_route = sources["app/api/threads/[threadId]/messages/route.ts"]
+    assert "runGeneralAgentTurn" in message_route
+    assert 'terminalStatus === "evidence_ready"' not in message_route
     clarification_route = sources["app/api/runs/[runId]/clarifications/route.ts"]
     assert 'agentCore.status !== "started"' in clarification_route
     assert "loadCustomerAnalysisSnapshot" in clarification_route

@@ -96,7 +96,10 @@ export type CustomerAnalysisTransport = {
   threadHandle: string;
   runHandle: string | null;
   actionHandle: string | null;
+  actionKind: "agent_pending_action" | "bi_clarification" | "topic_choice" | null;
   eventsUrl: string | null;
+  eventCursor: string;
+  latestItemSequence: number;
   acceptedOperationIds: string[];
   technicalDetailRef: string | null;
 };
@@ -160,8 +163,21 @@ export type CustomerSnapshotSource = {
   customerPublication: CustomerPublication | null;
   acceptedOperationIds: string[];
   progressPhase?: CustomerPhase | null;
+  agentHead?: {
+    status: CustomerMainStatus;
+    activeTaskRef: string | null;
+    pendingActionRef: string | null;
+  };
+  agentTerminal?: {
+    status: "completed" | "completed_with_limits" | "failed";
+    finalOutput: Record<string, unknown> | null;
+    errorCode: string | null;
+  } | null;
+  pendingAction?: Record<string, unknown> | null;
   confirmedAt: string;
   stateVersion: string;
+  eventCursor?: string;
+  latestItemSequence?: number;
 };
 
 const PHASE_INDEX = new Map(
@@ -231,6 +247,19 @@ export function projectCustomerAnalysisSnapshot(
     thread: { title, createdAt: source.thread.createdAt },
     messages: source.messages,
   } as const;
+
+  const agentState = stateFromAgentHead(source);
+  if (agentState) {
+    return {
+      ...base,
+      state: agentState.state,
+      transport: transportFrom(
+        source,
+        agentState.runHandle,
+        agentState.actionHandle,
+      ),
+    };
+  }
 
   if (!source.run) {
     return {
@@ -678,10 +707,181 @@ function transportFrom(
     threadHandle: source.thread.id,
     runHandle,
     actionHandle,
-    eventsUrl: runHandle ? `/api/runs/${encodeURIComponent(runHandle)}/events` : null,
+    actionKind: actionHandle
+      ? source.agentHead?.status === "needs_input"
+        ? "agent_pending_action"
+        : source.run?.status === "interaction_completed"
+          ? "topic_choice"
+          : "bi_clarification"
+      : null,
+    eventsUrl: `/api/threads/${encodeURIComponent(source.thread.id)}/events`,
+    eventCursor: source.eventCursor ?? source.stateVersion,
+    latestItemSequence: source.latestItemSequence ?? source.messages.length,
     acceptedOperationIds: [...new Set(source.acceptedOperationIds)],
     technicalDetailRef: stringValue(operationalFailure?.failure_ref) || null,
   };
+}
+
+function stateFromAgentHead(source: CustomerSnapshotSource): {
+  state: CustomerAnalysisState;
+  runHandle: string | null;
+  actionHandle: string | null;
+} | null {
+  const head = source.agentHead;
+  if (!head || head.status === "idle") return null;
+  const terminal = source.agentTerminal;
+  const lastAssistant = [...source.messages]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (
+    (head.status === "completed" || head.status === "completed_with_limits")
+    && terminal
+    && terminal.status === head.status
+    && lastAssistant
+  ) {
+    const finalOutput = terminal.finalOutput;
+    const materialRefs = stringArray(finalOutput?.materialRefs);
+    const limitationRefs = stringArray(finalOutput?.limitationRefs);
+    return {
+      state: {
+        status: head.status,
+        phase: "delivering",
+        title: head.status === "completed_with_limits"
+          ? "回复已生成，内容有适用边界"
+          : "回复已生成",
+        description: head.status === "completed_with_limits"
+          ? "请结合回复中列出的材料和限制进行业务判断。"
+          : "当前回复已持久化，可继续追问。",
+        updates: [{
+          key: "delivering",
+          text: "已生成回复",
+          status: "completed",
+          confirmedAt: source.confirmedAt,
+        }],
+        answer: {
+          blocks: [{ key: "agent-response", kind: "summary", text: lastAssistant.text }],
+          warnings: limitationRefs,
+          evidenceCount: materialRefs.length,
+          limitationCount: limitationRefs.length,
+        },
+      },
+      runHandle: null,
+      actionHandle: null,
+    };
+  }
+  if (head.status === "failed") {
+    return {
+      state: {
+        status: "failed",
+        phase: "understanding",
+        title: "当前请求未完成",
+        description: lastAssistant?.text || "当前请求遇到故障，技术详情已进入服务端审计。",
+        updates: [{
+          key: "understanding",
+          text: "请求未完成",
+          status: "failed",
+          confirmedAt: source.confirmedAt,
+        }],
+        recovery: "retry",
+      },
+      runHandle: null,
+      actionHandle: null,
+    };
+  }
+  if (head.status === "needs_input") {
+    const input = inputFromPendingAction(source.pendingAction);
+    if (!input || !head.pendingActionRef) {
+      throw new Error("customer_pending_action_missing");
+    }
+    return {
+      state: {
+        status: "needs_input",
+        phase: "understanding",
+        title: "需要你的确认",
+        description: "提交后会从当前持久化 checkpoint 继续。",
+        updates: [{
+          key: "understanding",
+          text: "等待确认",
+          status: "active",
+          confirmedAt: source.confirmedAt,
+        }],
+        input,
+      },
+      runHandle: null,
+      actionHandle: head.pendingActionRef,
+    };
+  }
+  if (
+    head.status === "working"
+    && (!source.run || head.activeTaskRef !== source.run.id)
+  ) {
+    return {
+      state: {
+        status: "working",
+        phase: "understanding",
+        title: "正在处理当前请求",
+        description: "可以关闭页面，进度和最终回复会从持久化状态恢复。",
+        updates: [{
+          key: "understanding",
+          text: "处理请求",
+          status: "active",
+          confirmedAt: source.confirmedAt,
+        }],
+        safeToClose: true,
+      },
+      runHandle: head.activeTaskRef,
+      actionHandle: null,
+    };
+  }
+  return null;
+}
+
+function inputFromPendingAction(
+  value: Record<string, unknown> | null | undefined,
+): CustomerInputRequest | null {
+  if (!value) return null;
+  const actionRef = stringValue(value.actionRef);
+  const actionType = stringValue(value.actionType);
+  const prompt = stringValue(value.prompt);
+  if (!actionRef || !prompt) return null;
+  if (actionType === "ask_user" && Array.isArray(value.options)) {
+    const options = value.options.flatMap((raw) => {
+      const item = optionalObject(raw);
+      const optionKey = stringValue(item?.optionId);
+      const label = stringValue(item?.label);
+      const description = stringValue(item?.description);
+      if (!optionKey || !label || !description) return [];
+      return [{ optionKey, label, description, recommended: item?.recommended === true }];
+    });
+    if (options.length < 2 || options.length > 3) return null;
+    return {
+      kind: "clarification",
+      title: "需要确认后继续",
+      question: prompt,
+      explanation: "",
+      options,
+      allowFreeform: true,
+    };
+  }
+  if (actionType === "request_approval") {
+    return {
+      kind: "clarification",
+      title: "需要批准后继续",
+      question: prompt,
+      explanation: stringValue(value.sideEffectScope),
+      options: [
+        { optionKey: "approved", label: "批准", description: "允许执行所述操作。", recommended: false },
+        { optionKey: "rejected", label: "拒绝", description: "不执行所述操作。", recommended: false },
+      ],
+      allowFreeform: false,
+    };
+  }
+  return null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function conversationTitle(messages: CustomerMessage[]) {
@@ -808,11 +1008,26 @@ function validateTransport(value: unknown) {
     "threadHandle",
     "runHandle",
     "actionHandle",
+    "actionKind",
     "eventsUrl",
+    "eventCursor",
+    "latestItemSequence",
     "acceptedOperationIds",
     "technicalDetailRef",
   ], "customer_snapshot_invalid");
   requiredString(transport.threadHandle, "customer_snapshot_invalid");
+  requiredString(transport.eventCursor, "customer_snapshot_invalid");
+  if (transport.actionKind !== null && ![
+    "agent_pending_action",
+    "bi_clarification",
+    "topic_choice",
+  ].includes(String(transport.actionKind))) {
+    throw new Error("customer_snapshot_invalid");
+  }
+  if (!Number.isInteger(transport.latestItemSequence)
+    || Number(transport.latestItemSequence) < 0) {
+    throw new Error("customer_snapshot_invalid");
+  }
   if (!Array.isArray(transport.acceptedOperationIds)
     || transport.acceptedOperationIds.some((item) => typeof item !== "string" || !item)) {
     throw new Error("customer_snapshot_invalid");

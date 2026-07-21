@@ -7,6 +7,10 @@ from typing import Any
 
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.postgres_store import PostgresConversationStore
+from bi_agent.runtime.agent_task_resume_outbox import (
+    PostgresAgentTaskResumeOutbox,
+    process_agent_task_resume_outbox,
+)
 
 
 DispatchRunner = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -212,6 +216,10 @@ def main() -> int:
     try:
         summary = recover_pending_run_dispatches(
             store=store,
+            limit=args.limit,
+        )
+        summary["agent_task_resumes"] = process_agent_task_resume_outbox(
+            outbox=PostgresAgentTaskResumeOutbox(store.connection),
             limit=args.limit,
         )
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))

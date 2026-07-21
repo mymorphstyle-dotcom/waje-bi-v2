@@ -241,6 +241,36 @@ CREATE TABLE IF NOT EXISTS waje_runtime.run_dispatches (
   )
 );
 
+CREATE TABLE IF NOT EXISTS waje_runtime.agent_task_resume_outbox (
+  resume_ref text PRIMARY KEY,
+  thread_id text NOT NULL
+    REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  task_ref text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
+  outbox_state text NOT NULL DEFAULT 'pending'
+    CHECK (outbox_state IN ('pending', 'processing', 'completed', 'failed')),
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  lease_owner_id text,
+  lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+  lease_expires_at timestamptz,
+  last_error_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(thread_id, task_ref)
+);
+
+ALTER TABLE waje_runtime.agent_task_resume_outbox
+  ADD COLUMN IF NOT EXISTS lease_owner_id text,
+  ADD COLUMN IF NOT EXISTS lease_epoch bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz;
+
+DROP INDEX IF EXISTS waje_runtime.idx_agent_task_resume_outbox_ready;
+CREATE INDEX idx_agent_task_resume_outbox_ready
+  ON waje_runtime.agent_task_resume_outbox(
+    outbox_state, lease_expires_at, updated_at, resume_ref
+  )
+  WHERE outbox_state IN ('pending', 'failed', 'processing');
+
 CREATE INDEX IF NOT EXISTS idx_run_dispatch_recovery
   ON waje_runtime.run_dispatches(dispatch_state, lease_expires_at)
   WHERE dispatch_state IN ('pending', 'leased', 'running');
@@ -2931,7 +2961,7 @@ CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
 
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v10',
-  'e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044'
+  'single-authority-workflow.v11',
+  '33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3'
 )
 ON CONFLICT (migration_id) DO NOTHING;

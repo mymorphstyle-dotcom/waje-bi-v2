@@ -111,5 +111,5 @@ BI 分析工具提交边界已经由
 
 - durable long-tool checkpoint、lease、heartbeat 和 worker recovery；
 - clarification / approval interruption；
-- Conversation 正常入口和 SSE cursor 的完整切换；
+- 已在 P1 transport cutover 完成 Conversation 正常入口和 thread SSE cursor 切换；
 - context compaction、动态工具发现和受控多 Agent。

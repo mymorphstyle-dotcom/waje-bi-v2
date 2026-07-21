@@ -45,7 +45,7 @@ class HomeGatewayContractTest(unittest.TestCase):
         self.assertNotIn("deliveryStatus", self.page)
 
     def test_one_time_actions_keep_a_versioned_idempotency_identity(self):
-        self.assertIn('PENDING_OPERATION_PREFIX = "waje-pending-operation:v2:"', self.page)
+        self.assertIn('PENDING_OPERATION_PREFIX = "waje-pending-operation:v3:"', self.page)
         self.assertIn('INITIAL_MESSAGE_SCOPE = "message:new"', self.page)
         self.assertIn("PENDING_OPERATION_TTL_MS", self.page)
         self.assertIn("const existing = loadPendingOperation(scope)", self.page)

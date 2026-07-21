@@ -9,8 +9,13 @@ Runner 选择长工具后立即交回 WAJE Runtime；Runtime 从同一 ThreadIte
 
 现有 `run_dispatches` worker 继续承担 BI 任务 lease、heartbeat、回收和终局写入。
 Runtime 新增权威 completion loader，可从 `analysis_runs` 状态和 customer-safe publication
-恢复原 agent turn。生产 worker 完成后的自动触发、Agent Runtime 正常入口切换、SSE cursor
-和浏览器多标签页验收仍在 P1 后续范围。
+恢复原 agent turn。生产 worker 已通过 `agent_task_resume_outbox` 自动触发恢复；正常消息入口
+已切换到 Agent Runtime，thread SSE 已接入独立 cursor。浏览器多标签页、断网、关闭页面与
+stale cursor 验收已经通过。
+
+resume outbox 使用可过期 lease 与单调 fencing epoch。claim 后崩溃的 worker 会被重领，持有
+旧 epoch 的迟到 worker 无权提交 completed 或 failed，确保恢复投递不会永久停在 processing，
+也不会覆盖新 owner 的结果。
 
 ## 运行链
 
@@ -109,10 +114,7 @@ ThreadHead。失败终局无需再次调用模型。
 - ask_user 与 request_approval 的 typed resolution 均有测试；
 - 客户投影不包含 task/checkpoint/技术错误身份。
 
-## P1 剩余工作
+## 后续阶段
 
-- 在生产 worker 终局回调中调用 `resume_ready_task`，并为恢复调用建立 outbox 投递；
-- 将正常 Conversation 入口切换到 AgentTurnRuntime；
-- 为新的客户 transport 增加 snapshot + state version + event cursor；
-- 完成刷新、断网、关闭页面与多标签页的真实浏览器验收；
-- 增加长对话 compaction 前的 checkpoint/source closure 压力测试。
+长对话 compaction、summary 版本化、source closure 压力测试、动态工具发现与受控多 Agent
+进入 P2，不再属于 P1 transport 范围。

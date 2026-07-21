@@ -4,7 +4,10 @@ const baseTransport = {
   threadHandle: "thread-handle",
   runHandle: "run-handle",
   actionHandle: "run-handle",
+  actionKind: "bi_clarification",
   eventsUrl: null,
+  eventCursor: "2000",
+  latestItemSequence: 1,
   acceptedOperationIds: [] as string[],
   technicalDetailRef: null,
 };
@@ -98,6 +101,7 @@ function completedSnapshot(operationId = "operation-accepted") {
     transport: {
       ...baseTransport,
       actionHandle: null,
+      actionKind: null,
       acceptedOperationIds: [operationId],
     },
   };
@@ -154,7 +158,10 @@ function idleSnapshot(threadHandle = "thread-created") {
       threadHandle,
       runHandle: null,
       actionHandle: null,
+      actionKind: null,
       eventsUrl: null,
+      eventCursor: "1000",
+      latestItemSequence: 0,
       acceptedOperationIds: [] as string[],
       technicalDetailRef: null,
     },
@@ -219,7 +226,19 @@ function failedSnapshot() {
       }],
       recovery: "new_analysis",
     },
-    transport: { ...baseTransport, actionHandle: null },
+    transport: { ...baseTransport, actionHandle: null, actionKind: null },
+  };
+}
+
+function agentWaitingSnapshot() {
+  return {
+    ...waitingSnapshot,
+    transport: {
+      ...baseTransport,
+      runHandle: null,
+      actionHandle: "pending-action:1",
+      actionKind: "agent_pending_action",
+    },
   };
 }
 
@@ -282,6 +301,203 @@ test("澄清只可操作一次，刷新后恢复完整业务参考", async ({ pa
   await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "请选择比较基线" })).toHaveCount(0);
   expect(observed.clarificationPosts).toBe(1);
+});
+
+test("Agent pending action 通过统一消息入口提交 typed resolution", async ({ page }) => {
+  let current: Record<string, unknown> = agentWaitingSnapshot();
+  const submitted: Array<Record<string, unknown>> = [];
+  await page.route("**/api/threads", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        threads: [{
+          title: waitingSnapshot.thread.title,
+          status: "needs_input",
+          updatedAt: waitingSnapshot.confirmedAt,
+          transport: { threadHandle: "thread-handle" },
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/threads/thread-handle", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+  await page.route("**/api/threads/thread-handle/messages", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    submitted.push(body);
+    current = {
+      ...completedSnapshot(String(body.requestIdentity)),
+      transport: {
+        ...completedSnapshot(String(body.requestIdentity)).transport,
+        runHandle: null,
+        actionHandle: null,
+        actionKind: null,
+      },
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /前一天/ }).click();
+
+  await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(1);
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0].pendingActionResolution).toEqual({
+    actionRef: "pending-action:1",
+    decision: "answered",
+    selectedOptionId: "previous",
+    answerText: "前一天",
+  });
+  expect(submitted[0]).not.toHaveProperty("topicSelection");
+  expect(submitted[0]).not.toHaveProperty("topicChoiceAnswer");
+});
+
+test("多标签页复用同一持久化消息操作身份", async ({ browser }) => {
+  const context = await browser.newContext();
+  let current: Record<string, unknown> = idleSnapshot("thread-created");
+  const operationIds: string[] = [];
+  await context.route("**/api/threads", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          threads: [{
+            title: "新分析",
+            status: "idle",
+            updatedAt: "2026-07-20T00:00:01.000Z",
+            transport: { threadHandle: "thread-created" },
+          }],
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await context.route("**/api/threads/thread-created", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+  await context.route("**/api/threads/thread-created/messages", async (route) => {
+    const body = route.request().postDataJSON() as {
+      message: string;
+      requestIdentity: string;
+    };
+    operationIds.push(body.requestIdentity);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    current = workingSnapshot(body.requestIdentity, body.message);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+
+  const first = await context.newPage();
+  const second = await context.newPage();
+  await Promise.all([first.goto("/"), second.goto("/")]);
+  const question = "检查本周转化变化";
+  await first.getByRole("textbox", { name: "业务问题", exact: true }).fill(question);
+  await second.getByRole("textbox", { name: "业务问题", exact: true }).fill(question);
+  await first.getByRole("textbox", { name: "业务问题", exact: true }).press("Enter");
+  await second.getByRole("textbox", { name: "业务问题", exact: true }).press("Enter");
+  await expect(first.getByText("正在查询和分析数据")).toHaveCount(1);
+  await expect(second.getByText("正在查询和分析数据")).toHaveCount(1);
+
+  expect(operationIds).toHaveLength(2);
+  expect(operationIds[1]).toBe(operationIds[0]);
+  await context.close();
+});
+
+test("较旧 event cursor 不会覆盖标签页中的较新 snapshot", async ({ page }) => {
+  let current: Record<string, unknown> = {
+    ...workingSnapshot("operation-current", "检查本周转化变化"),
+    stateVersion: "5",
+    transport: {
+      ...workingSnapshot("operation-current", "检查本周转化变化").transport,
+      eventCursor: "5000",
+    },
+  };
+  await page.route("**/api/threads", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        threads: [{
+          title: "检查本周转化变化",
+          status: "working",
+          updatedAt: "2026-07-20T00:00:05.000Z",
+          transport: { threadHandle: "thread-created" },
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/threads/thread-created", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("正在查询和分析数据")).toHaveCount(1);
+  current = {
+    ...completedSnapshot("operation-old"),
+    stateVersion: "9999",
+    transport: {
+      ...completedSnapshot("operation-old").transport,
+      threadHandle: "thread-created",
+      eventCursor: "4000",
+    },
+  };
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(250);
+
+  await expect(page.getByText("正在查询和分析数据")).toHaveCount(1);
+  await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(0);
+});
+
+test("关闭页面后从 thread snapshot 恢复长任务", async ({ browser }) => {
+  const context = await browser.newContext();
+  const current = workingSnapshot("operation-long-task", "检查长期留存变化");
+  await context.route("**/api/threads", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        threads: [{
+          title: "检查长期留存变化",
+          status: "working",
+          updatedAt: current.confirmedAt,
+          transport: { threadHandle: "thread-created" },
+        }],
+      }),
+    });
+  });
+  await context.route("**/api/threads/thread-created", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot: current }),
+    });
+  });
+
+  const first = await context.newPage();
+  await first.goto("/");
+  await expect(first.getByText("正在查询和分析数据")).toHaveCount(1);
+  await first.close();
+
+  const restored = await context.newPage();
+  await restored.goto("/");
+  await expect(restored.getByText("正在查询和分析数据")).toHaveCount(1);
+  await expect(restored.getByText("检查长期留存变化").first()).toBeVisible();
+  await context.close();
 });
 
 test("首次提问快速重复发送只创建一个会话和一个运行", async ({ page }) => {

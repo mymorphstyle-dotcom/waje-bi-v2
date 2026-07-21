@@ -15,6 +15,7 @@
 - [General Agent Runtime P0 existing material explanation](./specs/general-agent-runtime/p0-existing-material-explanation.md)
 - [General Agent Runtime P1 BI analysis tool boundary](./specs/general-agent-runtime/p1-bi-analysis-tools.md)
 - [General Agent Runtime P1 durable tool supervision](./specs/general-agent-runtime/p1-durable-tool-supervision.md)
+- [General Agent Runtime P1 transport cutover](./specs/general-agent-runtime/p1-transport-cutover.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)
@@ -49,9 +50,13 @@ loop after submission, persist an SDK-neutral checkpoint in the same thread ledg
 preserve the background task in ThreadHead, and recover completed customer-safe
 publications through a typed completion loader. IntentRevision, PlanRevision,
 LangGraph, evidence, claim, publication, and delivery remain the only BI
-authority chain. Production worker-to-resume delivery, the Conversation entry
-cutover, SSE cursor, and browser recovery acceptance remain later work, so the
-target architecture does not yet supersede the current customer entry.
+authority chain. The normal message route now starts the General Agent without
+pre-creating a BI run. Production recovery scans terminal BI tasks into an
+idempotent Agent resume outbox, and thread SSE carries an independent event
+cursor alongside ThreadHead state version and item sequence. Refresh,
+disconnect, close-page, stale-cursor, pending-action, and multi-tab browser
+acceptance are covered by the current Playwright suite. P1 transport is closed;
+context compaction and controlled multi-Agent work remain in P2.
 
 The launch gate is fully automated except for one fresh post-freeze Case B run
 through the real service chain. Manual truth review, manual insight scoring, and

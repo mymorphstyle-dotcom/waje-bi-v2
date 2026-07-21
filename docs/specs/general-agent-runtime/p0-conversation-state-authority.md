@@ -85,4 +85,5 @@ item cursor 成为统一增量源。
 
 - 将所有现有 Conversation 请求全面切到 `AgentTurnRuntime`；
 - durable long-tool checkpoint、lease 后恢复 SDK run state；
-- clarification/approval interruption 和完整 SSE cursor cutover。
+- clarification/approval interruption、完整 SSE cursor 与真实浏览器恢复验收已在 P1
+  transport cutover 完成。

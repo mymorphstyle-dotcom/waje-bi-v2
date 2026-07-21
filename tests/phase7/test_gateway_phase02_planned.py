@@ -1039,7 +1039,8 @@ def test_phase02_plan_result_reaches_gateway_snapshot_and_workbench():
     page = (ROOT / "app/page.tsx").read_text(encoding="utf-8")
 
     assert 'value === "planned"' in helper
-    assert 'terminalStatus === "planned"' in message_route
+    assert "runGeneralAgentTurn" in message_route
+    assert 'terminalStatus === "planned"' not in message_route
     assert 'agentCore.status !== "started"' in clarification_route
     assert "loadCustomerAnalysisSnapshot" in clarification_route
     assert "forceInline" not in clarification_route

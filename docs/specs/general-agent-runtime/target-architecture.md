@@ -3,7 +3,8 @@
 ## 状态
 
 框架决策已接受。P0 框架与 Provider adapter、连续对话状态权威和已有材料解释已完成；
-P1 BI 分析工具提交边界已完成。长任务恢复、可恢复 interruption 和正常入口切换尚未进入。
+P1 BI 分析工具提交、长任务监督、生产恢复 outbox、正常入口切换和 thread transport 已完成；
+刷新、断网、关闭页面、stale cursor 与多标签页真实浏览器验收已通过。下一阶段为 P2。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -753,15 +754,16 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 2. 将 material revision 封装为 `continue_bi_analysis`。
 3. 统一 tool result、retryability、artifact refs 和 limitation refs。
 
-### P1：长任务恢复（监督边界已完成，transport cutover 进行中）
+### P1：长任务恢复（已完成）
 
 1. 已由 ThreadItemLedger 保存模型动作与工具结果，并在长工具边界保存
    SDK-neutral AgentCheckpoint。
-2. 已复用现有 worker lease、heartbeat 和 recovery；已建立 publication completion loader
-   与 `resume_ready_task`，生产终局触发 outbox 待接入。
+2. 已复用现有 worker lease、heartbeat 和 recovery；publication completion loader、
+   `resume_ready_task` 与 `agent_task_resume_outbox` 已接入生产 recovery worker。
 3. 已将澄清和审批实现为可恢复 typed Agent interruption。
-4. SSE 使用 snapshot、state version 和 cursor，待正常入口切换时接入。
-5. 刷新、断网、关闭页面和多标签页真实浏览器测试待 transport cutover 后执行。
+4. 正常消息入口已切换到 AgentTurnRuntime，Gateway 不再为每条消息预建 BI run。
+5. thread SSE 已使用 snapshot、ThreadHead state version、item sequence 和独立 event cursor。
+6. 刷新、断网、关闭页面、stale cursor 和多标签页真实浏览器测试已通过。
 
 ### P2：上下文压缩与多 Agent
 

@@ -8,7 +8,7 @@ Conversation worker 调用 LangGraph 单权威工作流完成。
 
 长工具 checkpoint、SDK run 恢复和 clarification / approval interruption 的监督边界已完成，
 详见 [P1 长工具监督与恢复边界](./p1-durable-tool-supervision.md)。生产 worker 终局自动触发、
-正常入口与 SSE cursor 切换继续进入 P1 后续阶段。
+正常入口与 thread SSE cursor 已在 P1 transport cutover 接入。
 
 ## 当前纵向链路
 
@@ -94,4 +94,4 @@ material 或 limitation ref。
 ## 后续阶段
 
 - 生产 worker 终局回调与恢复 outbox；
-- Conversation 正常入口与 SSE cursor 切换。
+- P1 transport 浏览器验收已完成；长对话与多 Agent 能力进入 P2。

@@ -360,6 +360,7 @@ export async function listCustomerThreadSummaries(
       SELECT
         thread.thread_id,
         thread.created_at,
+        thread.customer_state,
         COALESCE(first_message.text, '新分析') AS title,
         latest_run.status AS run_status,
         latest_run.request AS run_request,
@@ -408,7 +409,8 @@ export async function listCustomerThreadSummaries(
     );
     return rows.map((row) => ({
       title: customerThreadTitle(String(row.title ?? "")),
-      status: customerSummaryStatus(
+      status: customerThreadSummaryStatus(
+        row.customer_state,
         row.run_status,
         isGatewayRecord(row.run_request) ? row.run_request : {},
         Number(row.limitation_count ?? 0),
@@ -447,10 +449,17 @@ export async function loadCustomerAnalysisSnapshot(input: {
     }
   }
   if (conversationStoreMode() === "postgres") {
-    const [messagesResult, publicationHistoryResult, runResult, versionResult] = await Promise.all([
+    const [
+      messagesResult,
+      publicationHistoryResult,
+      runResult,
+      versionResult,
+      terminalResult,
+    ] = await Promise.all([
       pool().query(
         `
-        SELECT message_id, role, text, item_sequence, created_at
+        SELECT message_id, role, text, item_sequence, item_type,
+               operation_key, payload, created_at
         FROM waje_runtime.conversation_messages
         WHERE thread_id = $1
           AND role IN ('user', 'assistant')
@@ -498,6 +507,16 @@ export async function loadCustomerAnalysisSnapshot(input: {
             [thread.id],
           ),
       customerStateVersion(thread.id),
+      pool().query(
+        `
+        SELECT payload
+        FROM waje_runtime.conversation_messages
+        WHERE thread_id = $1 AND item_type = 'task_terminal'
+        ORDER BY item_sequence DESC
+        LIMIT 1
+        `,
+        [thread.id],
+      ),
     ]);
     const row = runResult.rows[0];
     const persistedMessages: CustomerMessage[] = messagesResult.rows.map((message) => ({
@@ -506,6 +525,20 @@ export async function loadCustomerAnalysisSnapshot(input: {
       text: String(message.text),
       createdAt: new Date(message.created_at).toISOString(),
     }));
+    const acceptedAgentOperationIds = messagesResult.rows.flatMap((message) => {
+      const operationKey = String(message.operation_key ?? "");
+      return message.role === "user" && operationKey.startsWith("user:")
+        ? [operationKey.slice("user:".length)]
+        : [];
+    });
+    const latestAssistantPayload = [...messagesResult.rows]
+      .reverse()
+      .find((message) => message.role === "assistant")?.payload;
+    const pendingAction = isGatewayRecord(latestAssistantPayload?.pending_action)
+      ? latestAssistantPayload.pending_action
+      : null;
+    const terminalPayload = terminalResult.rows[0]?.payload;
+    const agentTerminal = agentTerminalFromPayload(terminalPayload);
     const historicalAnswers: CustomerMessage[] = publicationHistoryResult.rows
       .filter((publicationRow) => !row || publicationRow.run_id !== row.run_id)
       .map((publicationRow) => {
@@ -531,9 +564,14 @@ export async function loadCustomerAnalysisSnapshot(input: {
         currentClarification: null,
         interactionResult: null,
         customerPublication: null,
-        acceptedOperationIds: [],
+        acceptedOperationIds: acceptedAgentOperationIds,
+        agentHead: agentHeadFromVersionRow(version),
+        agentTerminal,
+        pendingAction,
         confirmedAt: new Date(version.confirmed_at).toISOString(),
         stateVersion: String(version.state_version),
+        eventCursor: String(version.event_cursor),
+        latestItemSequence: Number(version.latest_item_sequence),
       });
     }
     const runId = String(row.run_id);
@@ -623,12 +661,18 @@ export async function loadCustomerAnalysisSnapshot(input: {
         request.interaction_result,
       ),
       customerPublication: publication?.customerPublication ?? null,
-      acceptedOperationIds: dispatchResult.rows.map((dispatch) =>
-        String(dispatch.request_identity)
-      ),
+      acceptedOperationIds: [
+        ...acceptedAgentOperationIds,
+        ...dispatchResult.rows.map((dispatch) => String(dispatch.request_identity)),
+      ],
       progressPhase: progressResult.rows[0]?.customer_phase as CustomerPhase,
+      agentHead: agentHeadFromVersionRow(version),
+      agentTerminal,
+      pendingAction,
       confirmedAt: new Date(version.confirmed_at).toISOString(),
       stateVersion: String(version.state_version),
+      eventCursor: String(version.event_cursor),
+      latestItemSequence: Number(version.latest_item_sequence),
     });
   }
 
@@ -680,6 +724,8 @@ export async function loadCustomerAnalysisSnapshot(input: {
       : [],
     confirmedAt,
     stateVersion: String(Date.parse(confirmedAt)),
+    eventCursor: String(Date.parse(confirmedAt)),
+    latestItemSequence: messages.length,
   });
 }
 
@@ -688,8 +734,13 @@ async function customerStateVersion(threadId: string) {
     `
     SELECT
       latest.confirmed_at,
+      latest.state_version::text AS state_version,
       floor(extract(epoch FROM latest.confirmed_at) * 1000000)::bigint::text
-        AS state_version
+        AS event_cursor,
+      latest.latest_item_sequence,
+      latest.active_task_id,
+      latest.pending_action_ref,
+      latest.customer_state
     FROM (
       SELECT GREATEST(
         thread.updated_at,
@@ -708,13 +759,58 @@ async function customerStateVersion(threadId: string) {
           FROM waje_runtime.audit_events event
           WHERE event.thread_id = thread.thread_id
         ), thread.updated_at)
-      ) AS confirmed_at
+      ) AS confirmed_at,
+      thread.state_version,
+      thread.latest_item_sequence,
+      thread.active_task_id,
+      thread.pending_action_ref,
+      thread.customer_state
       FROM waje_runtime.investigation_threads thread
       WHERE thread.thread_id = $1
     ) latest
     `,
     [threadId],
   );
+}
+
+function agentHeadFromVersionRow(row: Record<string, unknown>) {
+  const status = String(row.customer_state ?? "idle");
+  if (![
+    "idle",
+    "working",
+    "needs_input",
+    "completed",
+    "completed_with_limits",
+    "failed",
+  ].includes(status)) {
+    throw gatewayError("thread_customer_state_invalid");
+  }
+  return {
+    status: status as CustomerMainStatus,
+    activeTaskRef: typeof row.active_task_id === "string"
+      ? row.active_task_id
+      : null,
+    pendingActionRef: typeof row.pending_action_ref === "string"
+      ? row.pending_action_ref
+      : null,
+  };
+}
+
+function agentTerminalFromPayload(value: unknown): {
+  status: "completed" | "completed_with_limits" | "failed";
+  finalOutput: Record<string, unknown> | null;
+  errorCode: string | null;
+} | null {
+  if (!isGatewayRecord(value)) return null;
+  const status = String(value.status ?? "");
+  if (!["completed", "completed_with_limits", "failed"].includes(status)) {
+    return null;
+  }
+  return {
+    status: status as "completed" | "completed_with_limits" | "failed",
+    finalOutput: isGatewayRecord(value.final_output) ? value.final_output : null,
+    errorCode: typeof value.error_code === "string" ? value.error_code : null,
+  };
 }
 
 function customerThreadTitle(value: string) {
@@ -760,6 +856,26 @@ function customerSummaryStatus(
     "narrative_ready",
   ].includes(status)) return "working";
   throw gatewayError("customer_run_status_unmapped");
+}
+
+function customerThreadSummaryStatus(
+  threadState: unknown,
+  runStatus: unknown,
+  request: Record<string, unknown>,
+  limitationCount: number,
+): CustomerMainStatus {
+  if (runStatus === "waiting_for_clarification") return "needs_input";
+  const status = String(threadState ?? "idle");
+  if ([
+    "working",
+    "needs_input",
+    "completed",
+    "completed_with_limits",
+    "failed",
+  ].includes(status)) {
+    return status as CustomerMainStatus;
+  }
+  return customerSummaryStatus(runStatus, request, limitationCount);
 }
 
 export async function createThread(ownerId: string): Promise<ThreadRecord> {
@@ -1753,18 +1869,33 @@ export function runDispatchRequestIdentity(
   request: Request,
   body: Record<string, unknown>,
 ): string {
+  return requestIdentity(request, body, "run_dispatch");
+}
+
+export function agentTurnRequestIdentity(
+  request: Request,
+  body: Record<string, unknown>,
+): string {
+  return requestIdentity(request, body, "agent_turn");
+}
+
+function requestIdentity(
+  request: Request,
+  body: Record<string, unknown>,
+  namespace: "agent_turn" | "run_dispatch",
+): string {
   const headerIdentity = request.headers.get("idempotency-key")?.trim() ?? "";
   const bodyValue = body.requestIdentity;
   if (bodyValue !== undefined && !isNonEmptyGatewayString(bodyValue)) {
-    throw gatewayError("run_dispatch_request_identity_invalid");
+    throw gatewayError(`${namespace}_request_identity_invalid`);
   }
   const bodyIdentity = typeof bodyValue === "string" ? bodyValue.trim() : "";
   if (headerIdentity && bodyIdentity && headerIdentity !== bodyIdentity) {
-    throw gatewayError("run_dispatch_request_identity_conflict");
+    throw gatewayError(`${namespace}_request_identity_conflict`);
   }
   const identity = headerIdentity || bodyIdentity;
   if (!identity || identity.length > 256) {
-    throw gatewayError("run_dispatch_request_identity_required");
+    throw gatewayError(`${namespace}_request_identity_required`);
   }
   return identity;
 }
@@ -4092,6 +4223,7 @@ const CUSTOMER_INPUT_ERROR_CODES = new Set([
   "thread_owner_input_forbidden",
   "message_request_invalid",
   "message_required",
+  "pending_action_resolution_invalid",
   "clarification_request_invalid",
   "clarification_answer_required",
   "clarification_selected_option_invalid",
@@ -4103,6 +4235,9 @@ const CUSTOMER_INPUT_ERROR_CODES = new Set([
   "run_dispatch_request_identity_required",
   "run_dispatch_request_identity_invalid",
   "run_dispatch_request_identity_conflict",
+  "agent_turn_request_identity_required",
+  "agent_turn_request_identity_invalid",
+  "agent_turn_request_identity_conflict",
 ]);
 
 function errorHttpStatus(code: string) {
@@ -4137,9 +4272,11 @@ function gatewayHttpStatus(code: string) {
     code === "clarification_answer_required"
     || code === "clarification_selected_option_invalid"
     || code.startsWith("run_dispatch_request_identity_")
+    || code.startsWith("agent_turn_request_identity_")
     || code === "run_dispatch_request_invalid"
     || code === "run_dispatch_producer_invalid"
     || code === "message_request_invalid"
+    || code === "pending_action_resolution_invalid"
     || code === "topic_selection_invalid"
     || code === "topic_choice_answer_invalid"
     || code === "topic_choice_answer_message_mismatch"
@@ -4153,10 +4290,19 @@ function gatewayHttpStatus(code: string) {
     code === "agent_core_run_id_mismatch"
     || code === "agent_core_process_failed"
     || code.startsWith("agent_core_output_")
+    || code === "general_agent_process_failed"
+    || code.startsWith("general_agent_output_")
   ) {
     return 502;
   }
-  if (["agent_core_spawn_failed", "agent_core_startup_failed"].includes(code)) {
+  if (
+    [
+      "agent_core_spawn_failed",
+      "agent_core_startup_failed",
+      "general_agent_spawn_failed",
+      "general_agent_startup_failed",
+    ].includes(code)
+  ) {
     return 503;
   }
   return 500;

@@ -235,3 +235,126 @@ def test_completed_answer_round_trips_with_customer_safe_blocks() -> None:
         "evidenceCount": 1,
         "limitationCount": 1,
     }
+
+
+def test_direct_agent_response_uses_thread_terminal_without_bi_run() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              messages: [
+                ...base.messages,
+                { key: "assistant-1", role: "assistant", text: "这是直接回复。", createdAt: base.confirmedAt },
+              ],
+              run: null,
+              agentHead: { status: "completed", activeTaskRef: null, pendingActionRef: null },
+              agentTerminal: {
+                status: "completed",
+                finalOutput: { answerMarkdown: "这是直接回复。", materialRefs: [], limitationRefs: [] },
+                errorCode: null,
+              },
+              eventCursor: "2100",
+              latestItemSequence: 3,
+            });
+            const parsed = parseCustomerAnalysisSnapshot(snapshot);
+            console.log(JSON.stringify({
+              status: parsed.state.status,
+              answer: parsed.state.answer.blocks[0].text,
+              runHandle: parsed.transport.runHandle,
+              eventsUrl: parsed.transport.eventsUrl,
+              eventCursor: parsed.transport.eventCursor,
+              latestItemSequence: parsed.transport.latestItemSequence,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "status": "completed",
+        "answer": "这是直接回复。",
+        "runHandle": None,
+        "eventsUrl": "/api/threads/thread-handle/events",
+        "eventCursor": "2100",
+        "latestItemSequence": 3,
+    }
+
+
+def test_agent_pending_action_projects_only_customer_safe_options() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: null,
+              agentHead: {
+                status: "needs_input",
+                activeTaskRef: "agent-run-1",
+                pendingActionRef: "pending-action:1",
+              },
+              pendingAction: {
+                actionRef: "pending-action:1",
+                actionType: "ask_user",
+                prompt: "请选择比较口径",
+                options: [
+                  { optionId: "recommended", label: "采用推荐口径", description: "继续执行", recommended: true },
+                  { optionId: "custom", label: "调整口径", description: "说明不同要求", recommended: false },
+                ],
+              },
+            });
+            console.log(JSON.stringify({
+              status: snapshot.state.status,
+              actionHandle: snapshot.transport.actionHandle,
+              optionKeys: snapshot.state.input.options.map((item) => item.optionKey),
+              hasPayload: "pendingAction" in snapshot,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "status": "needs_input",
+        "actionHandle": "pending-action:1",
+        "optionKeys": ["recommended", "custom"],
+        "hasPayload": False,
+    }
+
+
+def test_new_agent_turn_is_not_masked_by_previous_completed_bi_run() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-previous-bi",
+                status: "completed",
+                request: {
+                  post_execution_status: "completed",
+                  publication_status: "published",
+                  delivery_status: "published",
+                },
+                createdAt: base.confirmedAt,
+                updatedAt: base.confirmedAt,
+              },
+              customerPublication: publication,
+              agentHead: {
+                status: "working",
+                activeTaskRef: "agent-run-current",
+                pendingActionRef: null,
+              },
+            });
+            console.log(JSON.stringify({
+              status: snapshot.state.status,
+              runHandle: snapshot.transport.runHandle,
+              title: snapshot.state.title,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "status": "working",
+        "runHandle": "agent-run-current",
+        "title": "正在处理当前请求",
+    }
