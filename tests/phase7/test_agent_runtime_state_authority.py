@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -61,6 +62,11 @@ class ThreadLedgerConnection:
         if "FOR UPDATE" in statement:
             return FakeResult([("thread-pg", 4, None, "topic-pg", None, 7, "idle")])
         if "operation_key = ANY" in statement:
+            return FakeResult([])
+        if (
+            "FROM waje_runtime.conversation_messages" in statement
+            and "ORDER BY item_sequence DESC" in statement
+        ):
             return FakeResult([])
         if "INSERT INTO waje_runtime.conversation_messages" in statement:
             return FakeResult(
@@ -309,6 +315,31 @@ def test_postgres_thread_item_ledger_locks_head_and_commits_item_with_cas() -> N
     )
 
 
+def test_postgres_thread_item_ledger_types_nullable_replay_boundaries() -> None:
+    connection = ThreadLedgerConnection()
+    ledger = PostgresThreadItemLedger(connection)
+
+    ledger.list_items(
+        "thread-pg",
+        limit=40,
+        after_sequence=None,
+        through_sequence=None,
+    )
+
+    statement, params = connection.statements[-1]
+    assert "%(after_sequence)s::bigint IS NULL" in statement
+    assert "item_sequence > %(after_sequence)s::bigint" in statement
+    assert "%(through_sequence)s::bigint IS NULL" in statement
+    assert "item_sequence <= %(through_sequence)s::bigint" in statement
+    assert "LIMIT %(limit)s::integer" in statement
+    assert params == {
+        "thread_id": "thread-pg",
+        "after_sequence": None,
+        "through_sequence": None,
+        "limit": 40,
+    }
+
+
 def test_postgres_agent_session_replays_ledger_and_rejects_history_mutation() -> None:
     ledger = InMemoryThreadItemLedger()
     ledger.create_thread("thread-session")
@@ -397,6 +428,9 @@ def test_agent_turn_runtime_persists_direct_response_and_replays_operation() -> 
 
     assert result.status == "completed"
     assert result.thread_head.customer_state == "completed"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "direct_response"
+    assert result.customer_projection()["completionKind"] == "direct_response"
     assert result.assistant_item.customer_visible is True
     assert result.assistant_item.text == "已根据当前上下文完成解释。"
     assert result.terminal_item.item_type == "task_terminal"
@@ -533,11 +567,28 @@ def test_agent_turn_runtime_rejects_unknown_material_ref_with_failed_terminal() 
 
     assert result.status == "failed"
     assert result.error_code == "agent_final_material_ref_unknown"
-    assert result.thread_head.customer_state == "failed"
+    assert result.thread_head.customer_state == "idle"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "failed_turn"
     customer = result.customer_projection()
     assert "agent_final_material_ref_unknown" not in json.dumps(customer)
     assert "provider" not in json.dumps(customer)
     assert ledger.get_item_by_operation_key("thread-runtime", "terminal:operation-1")
+    adapter.final_output = {
+        "answerMarkdown": "已按纠正后的合同回答。",
+        "materialRefs": [],
+        "limitationRefs": [],
+    }
+    corrected = asyncio.run(
+        runtime.run(
+            replace(
+                _request(operation_id="operation-2"),
+                expected_state_version=result.thread_head.state_version,
+            )
+        )
+    )
+    assert corrected.status == "completed"
+    assert corrected.thread_head.customer_state == "completed"
 
 
 def test_agent_turn_runtime_maps_provider_failure_to_server_only_terminal_detail() -> (

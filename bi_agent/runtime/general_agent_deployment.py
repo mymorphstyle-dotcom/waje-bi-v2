@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_context_compactor import (
     ThreadSummaryGenerationInput,
     WajeThreadSummaryGenerator,
@@ -23,6 +24,7 @@ from bi_agent.runtime.agent_tool_discovery import (
     DynamicAgentToolResolver,
     WajeToolSelectionGenerator,
 )
+from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
 from bi_agent.runtime.agents_sdk_trace import InMemoryAgentTraceSink
 from bi_agent.runtime.analysis_artifacts import (
@@ -280,6 +282,7 @@ class GeneralAgentLiveDeploymentProbe:
         ).run()
         summary = await self._summary_smoke()
         selected_tools = await self._tool_discovery_smoke()
+        application_action = await self._application_action_smoke()
         delegated_artifact = await self._controlled_delegation_smoke()
         trace_detail = self._validate_local_trace()
         origin = urlparse(str(self._provider.config.base_url))
@@ -304,6 +307,7 @@ class GeneralAgentLiveDeploymentProbe:
                 detail={
                     "summaryRef": summary.summary_ref,
                     "selectedTools": list(selected_tools),
+                    "applicationAction": application_action,
                     "delegatedArtifactRef": delegated_artifact,
                 },
             ),
@@ -406,6 +410,66 @@ class GeneralAgentLiveDeploymentProbe:
                 "deployment_live_tool_discovery_replay_conflict"
             )
         return names
+
+    async def _application_action_smoke(self) -> dict[str, Any]:
+        ledger = InMemoryThreadItemLedger()
+        ledger.create_thread("deployment-action-probe-thread")
+        tools = (
+            _probe_tool("ask_user", "Ask for material user input."),
+            _probe_tool("request_approval", "Request approval for a controlled action."),
+            _probe_tool(
+                "list_available_capabilities",
+                "List reviewed WAJE business analysis capabilities.",
+            ),
+        )
+        runtime = AgentTurnRuntime(
+            ledger=ledger,
+            context_assembler=AgentContextAssembler(
+                ledger=ledger,
+                artifact_index=InMemoryArtifactIndex(),
+            ),
+            adapter=self._adapter,
+            tool_resolver=DynamicAgentToolResolver(
+                generator=WajeToolSelectionGenerator(self._adapter),
+                mandatory_tool_names=("ask_user", "request_approval"),
+                max_optional_tools=1,
+            ),
+        )
+        result = await runtime.run(
+            AgentTurnRequest(
+                thread_id="deployment-action-probe-thread",
+                run_id="deployment-action-probe-run",
+                operation_id="deployment-action-probe-operation",
+                user_item_id="deployment-action-probe-message",
+                user_message=(
+                    "List the available WAJE analysis capabilities using the capability tool."
+                ),
+                expected_state_version=0,
+                instructions=(
+                    "Call list_available_capabilities once, then return a concise typed "
+                    "answer. Do not claim any BI analysis was completed."
+                ),
+                tools=tools,
+                permission_scope={"probe": "read_only"},
+                agent_name="WAJE Deployment Action Probe",
+                max_turns=4,
+            )
+        )
+        admission = result.terminal_admission
+        if (
+            result.status != "completed"
+            or admission is None
+            or admission.completion_kind != "tool_response"
+            or admission.executed_tool_names != ["list_available_capabilities"]
+        ):
+            raise DeploymentValidationError(
+                "deployment_live_application_action_invalid"
+            )
+        return {
+            "status": result.status,
+            "completionKind": admission.completion_kind,
+            "executedToolNames": admission.executed_tool_names,
+        }
 
     async def _controlled_delegation_smoke(self) -> str:
         registry = InMemoryAnalysisArtifactRegistry()

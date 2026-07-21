@@ -216,6 +216,48 @@ def test_general_agent_requires_authoritative_startup_acknowledgment() -> None:
     assert result["error"] == "general_agent_startup_failed"
 
 
+def test_general_agent_reports_structured_startup_failure() -> None:
+    result = _compiled_gateway_run(
+        textwrap.dedent(
+            """
+            const out = process.env.GATEWAY_OUT;
+            const { runGeneralAgentTurn } = require(out + "/app/api/_generalAgent.js");
+            (async () => {
+              const result = await runGeneralAgentTurn({
+                threadId: "thread-startup-failure",
+                actorId: "local-user",
+                operationId: "request-startup-failure",
+                message: "检查付费金额",
+              });
+              console.log(JSON.stringify(result));
+            })().catch((error) => { console.error(error); process.exit(1); });
+            """
+        ),
+        fake_python=textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import os
+            payload = {
+                "schemaVersion": "general-agent-startup-control.v1",
+                "status": "failed",
+                "errorCode": "runtime_database_url_required",
+                "technicalDetailRef": "startup-detail-1",
+            }
+            os.write(
+                int(os.environ["WAJE_GENERAL_AGENT_STARTUP_ACK_FD"]),
+                (json.dumps(payload) + "\\n").encode("utf-8"),
+            )
+            raise SystemExit(1)
+            """
+        ),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "runtime_database_url_required"
+    assert result["technicalDetailRef"] == "startup-detail-1"
+
+
 def test_general_agent_inline_result_is_sdk_neutral() -> None:
     result = _compiled_gateway_run(
         textwrap.dedent(
@@ -378,9 +420,14 @@ def _general_agent_ack_script() -> str:
         )
         with open(target, "w", encoding="utf-8") as handle:
             json.dump(command, handle, ensure_ascii=False)
+        startup_control = {
+            "schemaVersion": "general-agent-startup-control.v1",
+            "status": "running",
+            "runId": "test-run",
+        }
         os.write(
             int(os.environ["WAJE_GENERAL_AGENT_STARTUP_ACK_FD"]),
-            b"WAJE_GENERAL_AGENT_RUNNING\\n",
+            (json.dumps(startup_control) + "\\n").encode("utf-8"),
         )
         time.sleep(0.05)
         """

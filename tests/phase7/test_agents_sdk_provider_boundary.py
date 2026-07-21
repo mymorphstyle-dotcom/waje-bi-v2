@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict
 import pytest
 
 from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
+from bi_agent.runtime.agent_interaction_tools import agent_interaction_tools
 from bi_agent.runtime.agent_sdk_contracts import (
+    AgentSdkAdapterError,
     WajeAgentRunRequest,
     WajeAgentTool,
 )
@@ -353,8 +355,10 @@ def test_runner_completes_one_function_tool_call() -> None:
         )
     )
     tool_inputs: list[dict[str, Any]] = []
+    requests: list[httpx.Request] = []
 
-    def handler(_: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
         return next(responses)
 
     def increment(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -378,6 +382,8 @@ def test_runner_completes_one_function_tool_call() -> None:
                             handler=increment,
                         ),
                     ),
+                    initial_tool_choice="increment",
+                    required_tool_name="increment",
                 )
             )
         )
@@ -387,6 +393,156 @@ def test_runner_completes_one_function_tool_call() -> None:
     assert tool_inputs == [{"value": 1}]
     assert result.final_output == "2"
     assert result.model_turns == 2
+    assert [(call.tool_name, call.call_id) for call in result.tool_calls] == [
+        ("increment", "call_increment_once")
+    ]
+    first_payload = json.loads(requests[0].content) if requests else {}
+    assert first_payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "increment"},
+    }
+
+
+def test_required_suspending_tool_corrects_contract_error_inside_runner() -> None:
+    invalid_arguments = json.dumps(
+        {
+            "materialDecision": "请选择比较基线。",
+            "options": [
+                {
+                    "optionId": "month",
+                    "label": "对比上月",
+                    "description": "与上一个完整月份比较。",
+                    "recommended": False,
+                },
+                {
+                    "optionId": "quarter",
+                    "label": "对比上季度",
+                    "description": "与上一个完整季度比较。",
+                    "recommended": False,
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    valid_arguments = json.dumps(
+        {
+            "materialDecision": "请选择比较基线。",
+            "options": [
+                {
+                    "optionId": "month",
+                    "label": "对比上月",
+                    "description": "与上一个完整月份比较。",
+                    "recommended": True,
+                },
+                {
+                    "optionId": "quarter",
+                    "label": "对比上季度",
+                    "description": "与上一个完整季度比较。",
+                    "recommended": False,
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    responses = iter(
+        (
+            _chat_response(
+                tool_name="ask_user",
+                arguments=invalid_arguments,
+                call_id="call_clarify_invalid",
+            ),
+            _chat_response(
+                tool_name="ask_user",
+                arguments=valid_arguments,
+                call_id="call_clarify_valid",
+            ),
+        )
+    )
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return next(responses)
+
+    ask_user, _ = agent_interaction_tools(
+        thread_id="thread-tool-correction",
+        operation_id="operation-tool-correction",
+        customer_language="zh-Hans",
+    )
+    provider, adapter, _ = _adapter(handler)
+    try:
+        result = asyncio.run(
+            adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-tool-correction",
+                    agent_name="waje_general_agent",
+                    instructions="必须生成合法的中文澄清选项。",
+                    input_text="需要选择哪个比较基线？",
+                    tools=(ask_user,),
+                    initial_tool_choice="ask_user",
+                    required_tool_name="ask_user",
+                    max_turns=4,
+                )
+            )
+        )
+    finally:
+        asyncio.run(provider.close())
+
+    final_output = json.loads(str(result.final_output))
+    assert final_output["status"] == "needs_input"
+    assert [call.call_id for call in result.tool_calls] == [
+        "call_clarify_invalid",
+        "call_clarify_valid",
+    ]
+    assert requests[0]["tool_choice"] == requests[1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "ask_user"},
+    }
+    correction = next(
+        message
+        for message in requests[1]["messages"]
+        if message.get("tool_call_id") == "call_clarify_invalid"
+    )
+    correction_payload = json.loads(correction["content"])
+    assert correction_payload["retryability"] == "correct_arguments"
+    assert correction_payload["errorCode"] == "pending_action_question_shape_invalid"
+    assert "recommended=true on exactly one option" in correction_payload[
+        "instruction"
+    ]
+
+
+def test_runner_rejects_plain_text_when_a_specific_tool_is_required() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return _chat_response(content="我来启动分析。")
+
+    provider, adapter, _ = _adapter(handler)
+    try:
+        with pytest.raises(
+            AgentSdkAdapterError,
+            match="agent_required_tool_call_missing",
+        ):
+            asyncio.run(
+                adapter.run(
+                    WajeAgentRunRequest(
+                        run_id="run-required-tool-missing",
+                        agent_name="waje_general_agent",
+                        instructions="必须调用工具。",
+                        input_text="执行分析。",
+                        tools=(
+                            WajeAgentTool(
+                                name="increment",
+                                description="Increment one integer.",
+                                input_model=_NumberInput,
+                                handler=lambda arguments: arguments,
+                            ),
+                        ),
+                        initial_tool_choice="increment",
+                        required_tool_name="increment",
+                    )
+                )
+            )
+    finally:
+        asyncio.run(provider.close())
 
 
 def test_runner_completes_multi_round_tool_loop_with_stable_typed_arguments() -> None:
@@ -757,7 +913,9 @@ def test_capability_probe_covers_required_live_contract_and_declared_limits() ->
             max_output_tokens=512,
             thinking="enabled",
         ),
-        capabilities=_capabilities(),
+        capabilities=_capabilities(
+            deterministic_tool_choice_thinking="disabled",
+        ),
         max_attempts=1,
     )
     provider, adapter, _ = _adapter(handler, config=config)
@@ -775,7 +933,24 @@ def test_capability_probe_covers_required_live_contract_and_declared_limits() ->
     assert report.max_output_tokens == 8_192
     assert report.thinking is True
     assert all(request["max_tokens"] == 512 for request in requests)
-    assert all(request["thinking"] == {"type": "enabled"} for request in requests)
+    tool_probe_requests = [
+        request
+        for request in requests
+        if "WAJE_TOOL_PROBE_OK"
+        in "\n".join(
+            str(message.get("content") or "") for message in request["messages"]
+        )
+    ]
+    assert tool_probe_requests
+    assert all(
+        request["thinking"] == {"type": "disabled"}
+        for request in tool_probe_requests
+    )
+    assert all(
+        request["thinking"] == {"type": "enabled"}
+        for request in requests
+        if request not in tool_probe_requests
+    )
     structured_request = next(
         request
         for request in requests
@@ -852,6 +1027,8 @@ def test_deepseek_factory_resolves_explicit_v4_model_settings_for_current_config
     assert config.capabilities.max_output_tokens == 8_192
     assert config.model_settings.max_output_tokens == 8_192
     assert config.model_settings.thinking == "enabled"
+    assert config.model_settings.temperature == 0.0
+    assert config.capabilities.deterministic_tool_choice_thinking == "disabled"
 
     with pytest.raises(
         LLMConfigurationError,

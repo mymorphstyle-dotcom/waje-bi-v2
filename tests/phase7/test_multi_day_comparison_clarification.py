@@ -627,7 +627,8 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         message["content"] for message in clarification.messages
     )
 
-    assert prompt.prompt_version.endswith(".v8")
+    assert prompt.prompt_version.endswith(".v9")
+    assert "quarter-to-quarter" in prompt_text
     assert "comparison_baseline for kind date" in prompt_text
     assert "comparison_window for kind date_range" in prompt_text
     assert (

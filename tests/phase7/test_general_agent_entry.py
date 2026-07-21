@@ -82,6 +82,7 @@ def test_general_agent_entry_runs_one_sdk_neutral_direct_turn() -> None:
             "createdAt": result.assistant_item.created_at,
         },
         "status": "completed",
+        "completionKind": "direct_response",
         "transport": {"stateVersion": "2", "latestItemSequence": 3},
     }
     assert adapter.calls[0].instructions.startswith(GENERAL_AGENT_INSTRUCTIONS.strip())
@@ -202,7 +203,8 @@ def test_cli_acknowledges_only_after_the_turn_is_durably_accepted(
             message="开始处理。",
         )
 
-        def acknowledge() -> None:
+        def acknowledge(acknowledged_command: GeneralAgentTurnCommand) -> None:
+            assert acknowledged_command == command
             assert ledger.get_item_by_operation_key(
                 "thread-entry", "user:request-ack"
             ) is not None

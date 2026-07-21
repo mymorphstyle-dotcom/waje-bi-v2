@@ -728,11 +728,34 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
   actionHandle: string | null;
 } | null {
   const head = source.agentHead;
-  if (!head || head.status === "idle") return null;
+  if (!head) return null;
   const terminal = source.agentTerminal;
   const lastAssistant = [...source.messages]
     .reverse()
     .find((message) => message.role === "assistant");
+  if (
+    (head.status === "idle" || head.status === "failed")
+    && terminal?.status === "failed"
+  ) {
+    return {
+      state: {
+        status: "failed",
+        phase: "understanding",
+        title: "当前请求未完成",
+        description: lastAssistant?.text || "当前请求遇到故障，技术详情已进入服务端审计。",
+        updates: [{
+          key: "understanding",
+          text: "请求未完成，可以继续输入",
+          status: "failed",
+          confirmedAt: source.confirmedAt,
+        }],
+        recovery: "retry",
+      },
+      runHandle: null,
+      actionHandle: null,
+    };
+  }
+  if (head.status === "idle") return null;
   if (
     (head.status === "completed" || head.status === "completed_with_limits")
     && terminal
@@ -764,25 +787,6 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
           evidenceCount: materialRefs.length,
           limitationCount: limitationRefs.length,
         },
-      },
-      runHandle: null,
-      actionHandle: null,
-    };
-  }
-  if (head.status === "failed") {
-    return {
-      state: {
-        status: "failed",
-        phase: "understanding",
-        title: "当前请求未完成",
-        description: lastAssistant?.text || "当前请求遇到故障，技术详情已进入服务端审计。",
-        updates: [{
-          key: "understanding",
-          text: "请求未完成",
-          status: "failed",
-          confirmedAt: source.confirmedAt,
-        }],
-        recovery: "retry",
       },
       runHandle: null,
       actionHandle: null,

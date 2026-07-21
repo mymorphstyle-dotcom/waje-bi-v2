@@ -44,7 +44,8 @@ class GatewayAgentCoreBridgeTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("WAJE_GENERAL_AGENT_RUNNING", helper)
+        self.assertIn("general-agent-startup-control.v1", helper)
+        self.assertIn("technicalDetailRef", helper)
         self.assertIn("general_agent_startup_failed", helper)
         self.assertIn("general_agent_output_malformed_json", helper)
         self.assertIn("general_agent_spawn_failed", store)

@@ -27,6 +27,32 @@ IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v11"
 IN_PLACE_SOURCE_MIGRATION_DIGEST = (
     "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
 )
+IN_PLACE_SOURCE_CONTRACTS = {
+    (
+        "single-authority-workflow.v9",
+        "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1",
+    ): frozenset(
+        {
+            "agent_task_resume_outbox",
+            "agent_thread_summaries",
+            "agent_generated_artifacts",
+        }
+    ),
+    (
+        "single-authority-workflow.v10",
+        "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044",
+    ): frozenset(
+        {
+            "agent_task_resume_outbox",
+            "agent_thread_summaries",
+            "agent_generated_artifacts",
+        }
+    ),
+    (
+        IN_PLACE_SOURCE_MIGRATION_ID,
+        IN_PLACE_SOURCE_MIGRATION_DIGEST,
+    ): frozenset({"agent_thread_summaries", "agent_generated_artifacts"}),
+}
 IN_PLACE_BACKFILL_PREDICATES = {
     "conversation_messages": "item_sequence IS NULL",
     "investigation_threads": "latest_item_sequence = 0",
@@ -706,19 +732,17 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
             "LOCK TABLE waje_runtime.schema_migrations IN EXCLUSIVE MODE"
         )
         source_migrations = _single_authority_migrations(connection)
-        expected_source = [
-            (
-                IN_PLACE_SOURCE_MIGRATION_ID,
-                IN_PLACE_SOURCE_MIGRATION_DIGEST,
-            )
-        ]
-        if source_migrations != expected_source:
+        if len(source_migrations) != 1:
+            raise SchemaCutoverError("in_place_upgrade_source_migration_invalid")
+        source_contract = tuple(source_migrations[0])
+        expected_additive_tables = IN_PLACE_SOURCE_CONTRACTS.get(source_contract)
+        if expected_additive_tables is None:
             raise SchemaCutoverError("in_place_upgrade_source_migration_invalid")
 
         live_tables = _table_names(connection)
         missing = expected_tables - live_tables
         unexpected = live_tables - expected_tables
-        if missing != set(IN_PLACE_ADDITIVE_TABLES) or unexpected:
+        if missing != set(expected_additive_tables) or unexpected:
             detail = json.dumps(
                 {
                     "missing": sorted(missing),
@@ -755,7 +779,7 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
         }
         additive_counts = {
             table: business_counts_after[table]
-            for table in IN_PLACE_ADDITIVE_TABLES
+            for table in expected_additive_tables
         }
         if preserved_counts_after != business_counts_before:
             raise SchemaCutoverError("in_place_upgrade_business_rows_changed")
@@ -770,11 +794,11 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
             RETURNING migration_id
             """,
             (
-                IN_PLACE_SOURCE_MIGRATION_ID,
-                IN_PLACE_SOURCE_MIGRATION_DIGEST,
+                source_contract[0],
+                source_contract[1],
             ),
         ).fetchall()
-        if deleted != [(IN_PLACE_SOURCE_MIGRATION_ID,)]:
+        if deleted != [(source_contract[0],)]:
             raise SchemaCutoverError("in_place_upgrade_source_delete_invalid")
         migrations = _single_authority_migrations(connection)
         if migrations != [
@@ -788,7 +812,7 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
         return {
             "applied": True,
             "business_row_counts": business_counts_after,
-            "source_migration_id": IN_PLACE_SOURCE_MIGRATION_ID,
+            "source_migration_id": source_contract[0],
             "target_migration_digest": SINGLE_AUTHORITY_MIGRATION_DIGEST,
             "target_migration_id": SINGLE_AUTHORITY_MIGRATION_ID,
         }

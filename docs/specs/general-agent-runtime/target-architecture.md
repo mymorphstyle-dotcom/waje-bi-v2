@@ -2,11 +2,12 @@
 
 ## 状态
 
-框架决策已接受。P0 框架与 Provider adapter、连续对话状态权威和已有材料解释已完成；
-P1 BI 分析工具提交、长任务监督、生产恢复 outbox、正常入口切换和 thread transport 已完成；
-P2 版本化摘要、长对话压缩、动态工具发现和受控子 Agent 已完成。刷新、断网、关闭页面、
-stale cursor 与多标签页真实浏览器验收已通过。本文定义的 P0-P2 实施序列已经闭环。
-P3 部署验收门禁已进入仓库；当前环境缺少数据库与大陆模型配置，外部 live gate 待部署环境执行。
+框架决策已接受。2026-07-21 完成结构修复后，真实 DeepSeek 应用链评测 7/7 通过，覆盖直答、
+能力目录、明确 BI 分析、描述性比较澄清、因果基线澄清及恢复、异常敏感性分析和已发布证据
+追问。隔离 PostgreSQL v9→v12 升级、`REPEATABLE READ READ ONLY` 审计和完整部署门禁通过。
+所有验收均显式清除 `OPENAI_API_KEY`，模型出站目标为 `https://api.deepseek.com`，OpenAI
+托管请求与默认 trace exporter 使用计数均为 0。P0 框架与 Provider 边界达到当前交付合同；
+完整 Conversation 切换、Case B 和多 Agent 不属于本轮验收结论。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有

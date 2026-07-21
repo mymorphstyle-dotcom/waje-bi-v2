@@ -353,6 +353,13 @@ def test_postgres_gateway_queues_existing_recoverable_workflow_without_new_histo
         == dispatch["request_payload"]
     )
     assert connection.commits == 1
+    audit_statement = next(
+        statement
+        for statement in connection.statements
+        if "bi_analysis_tool_queued" in statement
+    )
+    for parameter in ("tool_name", "dispatch_ref", "source_task_ref"):
+        assert f"%({parameter})s::text" in audit_statement
     assert not any(
         "INSERT INTO waje_runtime.conversation_messages" in statement
         for statement in connection.statements

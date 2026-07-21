@@ -54,7 +54,7 @@ class PostgresAgentTaskResumeOutbox:
                 SELECT 1
                 FROM waje_runtime.conversation_messages checkpoint
                 WHERE checkpoint.thread_id = run.thread_id
-                  AND checkpoint.operation_key LIKE 'checkpoint:%'
+                  AND checkpoint.operation_key LIKE 'checkpoint:%%'
                   AND checkpoint.payload->'checkpoint'->>'checkpointKind' =
                       'waiting_for_task'
                   AND checkpoint.payload->'checkpoint'->>'awaitedTaskRef' =

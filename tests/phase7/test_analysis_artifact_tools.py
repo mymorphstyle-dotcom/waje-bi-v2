@@ -264,6 +264,13 @@ def test_registry_reads_task_artifacts_with_direct_run_filter() -> None:
         if "publication_customer_payloads" in statement
     )
     assert publication_parameters["task_ref"] == "bi-run-1"
+    publication_statement = next(
+        statement
+        for statement in connection.statements
+        if "publication_customer_payloads" in statement
+    )
+    assert "%(task_ref)s::text IS NULL" in publication_statement
+    assert "run.run_id = %(task_ref)s::text" in publication_statement
 
 
 def test_registry_excludes_score_not_referenced_by_published_material() -> None:
@@ -293,7 +300,13 @@ def test_registry_excludes_score_not_referenced_by_published_material() -> None:
         )
         if "capability_evidence_ledger_entries" in statement
     )
-    assert evidence_parameters["entry_refs"] == (connection.evidence_rows[0][0],)
+    assert evidence_parameters["entry_refs"] == [connection.evidence_rows[0][0]]
+    evidence_statement = next(
+        statement
+        for statement in connection.statements
+        if "capability_evidence_ledger_entries" in statement
+    )
+    assert "ANY(%(entry_refs)s::text[])" in evidence_statement
 
 
 def test_registry_fails_closed_on_evidence_digest_drift() -> None:

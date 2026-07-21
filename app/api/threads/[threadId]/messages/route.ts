@@ -43,7 +43,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       message,
       ...(pendingActionResolution ? { pendingActionResolution } : {}),
     });
-    if (agent.error) throw gatewayError(agent.error);
+    if (agent.error) throw gatewayError(agent.error, agent.technicalDetailRef);
     return NextResponse.json(
       {
         snapshot: await loadCustomerAnalysisSnapshot({ threadId, actorId }),

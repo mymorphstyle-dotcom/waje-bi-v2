@@ -447,11 +447,11 @@ class PostgresBiAnalysisTaskGateway:
                 ) VALUES (
                   'bi_analysis_tool_queued', 'agent-runtime', %(thread_id)s,
                   %(task_ref)s, %(dispatch_ref)s,
-                  jsonb_build_object(
-                    'toolName', %(tool_name)s,
-                    'dispatchId', %(dispatch_ref)s,
-                    'sourceTaskRef', %(source_task_ref)s
-                  )
+                    jsonb_build_object(
+                      'toolName', %(tool_name)s::text,
+                      'dispatchId', %(dispatch_ref)s::text,
+                      'sourceTaskRef', %(source_task_ref)s::text
+                    )
                 )
                 """,
                 params,

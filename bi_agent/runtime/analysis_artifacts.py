@@ -345,7 +345,8 @@ class PostgresAnalysisArtifactRegistry:
         task_ref: str | None = None,
     ) -> tuple[RegisteredAnalysisArtifact, ...]:
         generated = self._load_generated(thread_id) if task_ref is None else ()
-        publication_rows = self.connection.execute(
+        publication_rows = _fetchall_with_rollback(
+            self.connection,
             """
             SELECT customer.customer_payload_ref, customer.publication_ref,
                    customer.content_digest, customer.projection_id,
@@ -365,7 +366,7 @@ class PostgresAnalysisArtifactRegistry:
              AND material.run_attempt_id = customer.run_attempt_id
              AND material.owner_ref = customer.owner_ref
             WHERE run.thread_id = %(thread_id)s
-              AND (%(task_ref)s IS NULL OR run.run_id = %(task_ref)s)
+              AND (%(task_ref)s::text IS NULL OR run.run_id = %(task_ref)s::text)
             ORDER BY customer.created_at DESC, customer.customer_payload_ref DESC
             LIMIT %(limit)s
             """,
@@ -374,10 +375,11 @@ class PostgresAnalysisArtifactRegistry:
                 "task_ref": task_ref,
                 "limit": self._publication_scan_limit,
             },
-        ).fetchall()
+        )
         evidence_entry_refs = _published_evidence_entry_refs(publication_rows)
         evidence_rows = (
-            self.connection.execute(
+            _fetchall_with_rollback(
+                self.connection,
                 """
                 SELECT evidence.entry_ref, evidence.content_digest, evidence.payload,
                        evidence.run_attempt_id, evidence.created_at
@@ -385,11 +387,11 @@ class PostgresAnalysisArtifactRegistry:
                 JOIN waje_runtime.analysis_runs run
                   ON run.run_id = evidence.run_attempt_id
                 WHERE run.thread_id = %(thread_id)s
-                  AND evidence.entry_ref = ANY(%(entry_refs)s)
+                  AND evidence.entry_ref = ANY(%(entry_refs)s::text[])
                 ORDER BY evidence.created_at DESC, evidence.entry_ref DESC
                 """,
-                {"thread_id": thread_id, "entry_refs": evidence_entry_refs},
-            ).fetchall()
+                {"thread_id": thread_id, "entry_refs": list(evidence_entry_refs)},
+            )
             if evidence_entry_refs
             else ()
         )
@@ -399,7 +401,8 @@ class PostgresAnalysisArtifactRegistry:
         self,
         thread_id: str,
     ) -> tuple[RegisteredAnalysisArtifact, ...]:
-        rows = self.connection.execute(
+        rows = _fetchall_with_rollback(
+            self.connection,
             """
             SELECT artifact_ref, artifact_type, artifact_version,
                    content_digest, source_refs, visibility_policy_ref,
@@ -413,8 +416,20 @@ class PostgresAnalysisArtifactRegistry:
                 "thread_id": thread_id,
                 "limit": self._publication_scan_limit,
             },
-        ).fetchall()
+        )
         return tuple(_generated_artifact_from_row(row) for row in rows)
+
+
+def _fetchall_with_rollback(
+    connection: Any,
+    statement: str,
+    params: Mapping[str, Any],
+) -> list[Any]:
+    try:
+        return list(connection.execute(statement, params).fetchall())
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def analysis_artifact_tools(

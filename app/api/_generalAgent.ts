@@ -22,6 +22,15 @@ type GeneralAgentTurnProcessResult = {
   command: "bi_agent.runtime.general_agent_entry";
   result?: unknown;
   error?: string;
+  technicalDetailRef?: string;
+};
+
+type GeneralAgentStartupControl = {
+  schemaVersion: "general-agent-startup-control.v1";
+  status: "running" | "failed";
+  runId?: string;
+  errorCode?: string;
+  technicalDetailRef?: string;
 };
 
 export async function runGeneralAgentTurn(
@@ -70,11 +79,24 @@ function runDetached(args: string[]): Promise<GeneralAgentTurnProcessResult> {
     child.once("error", () => settle(generalAgentFailure("general_agent_spawn_failed")));
     startupPipe?.on("data", (chunk) => {
       acknowledgment += chunk.toString();
-      if (acknowledgment.includes("WAJE_GENERAL_AGENT_RUNNING\n")) {
-        settle({
-          status: "started",
-          command: "bi_agent.runtime.general_agent_entry",
-        });
+      while (acknowledgment.includes("\n")) {
+        const newline = acknowledgment.indexOf("\n");
+        const line = acknowledgment.slice(0, newline).trim();
+        acknowledgment = acknowledgment.slice(newline + 1);
+        const control = parseStartupControl(line);
+        if (!control) continue;
+        if (control.status === "running") {
+          settle({
+            status: "started",
+            command: "bi_agent.runtime.general_agent_entry",
+          });
+          return;
+        }
+        settle(generalAgentFailure(
+          control.errorCode || "general_agent_startup_failed",
+          control.technicalDetailRef,
+        ));
+        return;
       }
     });
     child.once("close", () => {
@@ -119,12 +141,33 @@ function runInline(args: string[]): Promise<GeneralAgentTurnProcessResult> {
   });
 }
 
-function generalAgentFailure(error: string): GeneralAgentTurnProcessResult {
+function generalAgentFailure(
+  error: string,
+  technicalDetailRef?: string,
+): GeneralAgentTurnProcessResult {
   return {
     status: "failed",
     command: "bi_agent.runtime.general_agent_entry",
     error,
+    ...(technicalDetailRef ? { technicalDetailRef } : {}),
   };
+}
+
+function parseStartupControl(line: string): GeneralAgentStartupControl | null {
+  if (!line) return null;
+  try {
+    const value = JSON.parse(line) as Record<string, unknown>;
+    if (
+      value.schemaVersion !== "general-agent-startup-control.v1"
+      || (value.status !== "running" && value.status !== "failed")
+      || (value.errorCode !== undefined && typeof value.errorCode !== "string")
+      || (value.technicalDetailRef !== undefined
+        && typeof value.technicalDetailRef !== "string")
+    ) return null;
+    return value as GeneralAgentStartupControl;
+  } catch {
+    return null;
+  }
 }
 
 function isGeneralAgentStatus(value: unknown): value is GeneralAgentTurnProcessResult["status"] {

@@ -358,3 +358,46 @@ def test_new_agent_turn_is_not_masked_by_previous_completed_bi_run() -> None:
         "runHandle": "agent-run-current",
         "title": "正在处理当前请求",
     }
+
+
+def test_recoverable_agent_failure_is_visible_while_thread_head_accepts_input() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              messages: [
+                ...base.messages,
+                { key: "assistant-failed", role: "assistant", text: "当前请求暂时未能完成，请稍后重试。", createdAt: base.confirmedAt },
+              ],
+              run: null,
+              agentHead: {
+                status: "idle",
+                activeTaskRef: null,
+                pendingActionRef: null,
+              },
+              agentTerminal: {
+                status: "failed",
+                finalOutput: null,
+                errorCode: "provider_temporary_failure",
+              },
+            });
+            const parsed = parseCustomerAnalysisSnapshot(snapshot);
+            console.log(JSON.stringify({
+              status: parsed.state.status,
+              recovery: parsed.state.recovery,
+              description: parsed.state.description,
+              runHandle: parsed.transport.runHandle,
+              hasErrorCode: JSON.stringify(parsed).includes("provider_temporary_failure"),
+            }));
+            """
+        )
+    )
+    assert result == {
+        "status": "failed",
+        "recovery": "retry",
+        "description": "当前请求暂时未能完成，请稍后重试。",
+        "runHandle": None,
+        "hasErrorCode": False,
+    }

@@ -11,6 +11,7 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentRunRequest,
     WajeAgentRunResult,
     WajeAgentStreamEvent,
+    WajeAgentToolCall,
 )
 from bi_agent.runtime.agents_sdk_trace import InMemoryAgentTraceSink
 from bi_agent.runtime.general_agent_deployment import (
@@ -168,7 +169,12 @@ class _FakeLiveAdapter:
                 ]
             }
         elif request.agent_name == "WAJE Dynamic Tool Discovery":
-            output = {"selectedTools": ["list_available_capabilities"]}
+            output = {
+                "selectedTools": ["list_available_capabilities"],
+                "initialAction": "call_tool",
+                "requiredToolName": "list_available_capabilities",
+                "materialDecisionTopics": [],
+            }
         elif request.agent_name == "WAJE Controlled Investigation Agent":
             payload = json.loads(request.input_text)
             output = {
@@ -182,6 +188,33 @@ class _FakeLiveAdapter:
                 ],
                 "limitationRefs": [],
             }
+        elif request.agent_name == "WAJE Deployment Action Probe":
+            assert request.required_tool_name == "list_available_capabilities"
+            tool = next(
+                tool
+                for tool in request.tools
+                if tool.name == request.required_tool_name
+            )
+            result = tool.handler({})
+            if asyncio.iscoroutine(result):
+                result = await result
+            assert request.event_sink is not None
+            await request.event_sink.record_tool_call(
+                tool_name=tool.name,
+                call_id="deployment-action-call",
+                arguments={},
+            )
+            await request.event_sink.record_tool_result(
+                tool_name=tool.name,
+                call_id="deployment-action-call",
+                result=result,
+                succeeded=True,
+            )
+            output = {
+                "answerMarkdown": "已读取可用分析能力。",
+                "materialRefs": [],
+                "limitationRefs": [],
+            }
         else:
             raise AssertionError(request.run_id)
         return WajeAgentRunResult(
@@ -189,6 +222,16 @@ class _FakeLiveAdapter:
             final_output=output,
             usage={"input_tokens": 5, "output_tokens": 3},
             model_turns=1,
+            tool_calls=(
+                (
+                    WajeAgentToolCall(
+                        tool_name="list_available_capabilities",
+                        call_id="deployment-action-call",
+                    ),
+                )
+                if request.agent_name == "WAJE Deployment Action Probe"
+                else ()
+            ),
         )
 
     async def run_streamed(
@@ -205,6 +248,12 @@ class _FakeLiveAdapter:
                 WajeAgentStreamEvent(kind="tool_called", tool_name="probe_echo"),
             )
             output = "WAJE_TOOL_PROBE_OK"
+            tool_calls = (
+                WajeAgentToolCall(
+                    tool_name="probe_echo",
+                    call_id="provider-stream-tool-call",
+                ),
+            )
         elif request.run_id == "provider-probe:stream-text":
             events = (
                 WajeAgentStreamEvent(
@@ -213,6 +262,7 @@ class _FakeLiveAdapter:
                 ),
             )
             output = "WAJE_STREAM_PROBE_OK"
+            tool_calls = ()
         else:
             raise AssertionError(request.run_id)
         return WajeAgentRunResult(
@@ -221,6 +271,7 @@ class _FakeLiveAdapter:
             usage={"input_tokens": 5, "output_tokens": 3},
             model_turns=1,
             stream_events=events,
+            tool_calls=tool_calls,
         )
 
     def _trace(self, run_id: str) -> None:
@@ -306,13 +357,18 @@ def test_live_deployment_probe_covers_provider_p2_and_waje_trace() -> None:
     assert all(item.status == "passed" for item in checks)
     trace = next(item for item in checks if item.name == "waje_trace_boundary")
     assert trace.detail["openaiExporterUsed"] is False
-    assert trace.detail["recordCount"] == 14
-    assert trace.detail["traceCount"] == 7
+    assert trace.detail["recordCount"] == 18
+    assert trace.detail["traceCount"] == 9
     p2 = next(item for item in checks if item.name == "p2_live_runtime")
     assert p2.detail["selectedTools"] == [
         "ask_user",
         "list_available_capabilities",
     ]
+    assert p2.detail["applicationAction"] == {
+        "status": "completed",
+        "completionKind": "tool_response",
+        "executedToolNames": ["list_available_capabilities"],
+    }
 
 
 def test_deployment_report_maps_missing_live_config_without_secret_fallback() -> None:

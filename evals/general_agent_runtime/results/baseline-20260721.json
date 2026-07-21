@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "general-agent-runtime-live-eval.v1",
+  "status": "failed",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "caseCount": 5,
+  "passedCaseCount": 0,
+  "selectedToolCount": 5,
+  "actualToolCallCount": 0,
+  "falseCompletedCount": 3,
+  "failedTurnCount": 2,
+  "errorCodes": [
+    "agent_output_contract_invalid",
+    "agent_final_material_ref_unknown"
+  ],
+  "outboundOrigins": [
+    "https://api.deepseek.com"
+  ],
+  "openAiHostedRequestCount": 0,
+  "conclusion": "blocked_by_live_contract"
+}

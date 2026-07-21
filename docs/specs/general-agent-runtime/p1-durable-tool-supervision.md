@@ -61,7 +61,7 @@ action。
 - thread、agent run、operation、源 tool call 身份；
 - `waiting_for_task`、`waiting_for_user` 或 `waiting_for_approval`；
 - 后台 task ref 或强类型 pending action；
-- context version 和持久化 session sequence。
+- context version、原始 action binding digest 和持久化 session sequence。
 
 checkpoint 作为 customer-invisible ThreadItem 保存。checkpoint ref 和内容摘要都会在读取时
 重算；owner、operation、task 或摘要不一致会明确失败。崩溃发生在 tool result 已写入、
@@ -84,7 +84,8 @@ checkpoint 尚未写入的窗口时，DurableToolBridge 会从原 tool result �
 `resume_ready_task` 按 task ref 找回原 checkpoint，再构造 SDK-neutral
 `AgentTaskResumeRequest`。恢复后的模型输出必须引用至少一个权威 completion material，且
 覆盖全部 limitation refs，随后 Runtime 原子提交 assistant message、task terminal 和终局
-ThreadHead。失败终局无需再次调用模型。
+ThreadHead。terminal admission 继续引用发起长任务的 action binding digest，使动作选择、
+后台任务和最终发布保持同一条可验证链。失败终局无需再次调用模型。
 
 ## 澄清与审批
 

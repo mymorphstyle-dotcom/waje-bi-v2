@@ -592,5 +592,7 @@ def test_compaction_model_failure_becomes_a_typed_agent_terminal() -> None:
 
     assert result.status == "failed"
     assert result.error_code == "agent_output_contract_invalid"
-    assert ledger.get_head("thread-summary").customer_state == "failed"
+    assert ledger.get_head("thread-summary").customer_state == "idle"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "failed_turn"
     assert store.latest("thread-summary") is None

@@ -107,6 +107,8 @@ class WajeAgentRunRequest:
     trace_metadata: Mapping[str, Any] = field(default_factory=dict)
     session: WajeAgentSession | None = None
     event_sink: WajeAgentEventSink | None = None
+    initial_tool_choice: str = "auto"
+    required_tool_name: str | None = None
 
     def __post_init__(self) -> None:
         for value, code in (
@@ -124,6 +126,34 @@ class WajeAgentRunRequest:
             or not issubclass(self.output_type, BaseModel)
         ):
             raise TypeError("agent_output_type_invalid")
+        tool_names = {tool.name for tool in self.tools}
+        if self.initial_tool_choice not in {"auto", "none"} and (
+            not self.initial_tool_choice
+            or not self.initial_tool_choice.replace("_", "").isalnum()
+        ):
+            raise ValueError("agent_initial_tool_choice_invalid")
+        if (
+            self.initial_tool_choice not in {"auto", "none"}
+            and self.initial_tool_choice not in tool_names
+        ):
+            raise ValueError("agent_initial_tool_choice_unknown")
+        if self.required_tool_name is not None:
+            if self.required_tool_name not in tool_names:
+                raise ValueError("agent_required_tool_unknown")
+            if self.initial_tool_choice != self.required_tool_name:
+                raise ValueError("agent_required_tool_choice_mismatch")
+
+
+@dataclass(frozen=True)
+class WajeAgentToolCall:
+    """SDK-neutral evidence that the Runner emitted one function call."""
+
+    tool_name: str
+    call_id: str
+
+    def __post_init__(self) -> None:
+        if not self.tool_name or not self.call_id:
+            raise ValueError("agent_tool_call_identity_invalid")
 
 
 @dataclass(frozen=True)
@@ -144,6 +174,7 @@ class WajeAgentRunResult:
     usage: Mapping[str, int]
     model_turns: int
     stream_events: Sequence[WajeAgentStreamEvent] = ()
+    tool_calls: Sequence[WajeAgentToolCall] = ()
 
 
 class AgentTraceSink(Protocol):

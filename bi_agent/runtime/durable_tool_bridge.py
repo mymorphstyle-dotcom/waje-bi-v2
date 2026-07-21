@@ -11,7 +11,7 @@ from bi_agent.runtime.evidence_authority import canonical_digest, canonical_valu
 from bi_agent.runtime.thread_item_ledger import ThreadItem, ThreadItemLedger
 
 
-AGENT_CHECKPOINT_SCHEMA_VERSION = "agent-checkpoint.v1"
+AGENT_CHECKPOINT_SCHEMA_VERSION = "agent-checkpoint.v2"
 
 
 class PendingActionOption(BaseModel):
@@ -108,7 +108,7 @@ class AgentCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    schema_version: Literal["agent-checkpoint.v1"] = Field(alias="schemaVersion")
+    schema_version: Literal["agent-checkpoint.v2"] = Field(alias="schemaVersion")
     checkpoint_ref: str = Field(alias="checkpointRef", min_length=1)
     thread_id: str = Field(alias="threadId", min_length=1)
     agent_run_id: str = Field(alias="agentRunId", min_length=1)
@@ -126,6 +126,10 @@ class AgentCheckpoint(BaseModel):
         default=None,
     )
     context_version: str = Field(alias="contextVersion", min_length=1)
+    action_binding_digest: str | None = Field(
+        alias="actionBindingDigest",
+        default=None,
+    )
     session_through_sequence: int = Field(
         alias="sessionThroughSequence",
         ge=1,
@@ -142,6 +146,7 @@ class AgentCheckpoint(BaseModel):
         suspension: "DurableToolSuspension",
         context_version: str,
         session_through_sequence: int,
+        action_binding_digest: str | None = None,
     ) -> "AgentCheckpoint":
         identity = {
             "schema_version": AGENT_CHECKPOINT_SCHEMA_VERSION,
@@ -177,6 +182,14 @@ class AgentCheckpoint(BaseModel):
             "contextVersion": _exact_text(
                 context_version,
                 "agent_checkpoint_context_invalid",
+            ),
+            "actionBindingDigest": (
+                _exact_text(
+                    action_binding_digest,
+                    "agent_checkpoint_action_binding_invalid",
+                )
+                if action_binding_digest is not None
+                else None
             ),
             "sessionThroughSequence": session_through_sequence,
         }

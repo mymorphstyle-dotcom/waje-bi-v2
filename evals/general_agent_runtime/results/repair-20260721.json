@@ -1,0 +1,243 @@
+{
+  "caseCount": 7,
+  "cases": [
+    {
+      "caseId": "direct_business_explanation",
+      "failures": [],
+      "followUp": null,
+      "runtimeStatus": "completed",
+      "selection": {
+        "actionContextDigest": "5f9c397bdd9f156673f55848b3ce9252e71c785d319e68c13aff3d4b9699c4e4",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "respond",
+        "inputDigest": "a19fad4743b7fbfc6bc4527479a20aeb1a56e94f0097f6edee3d1eb5242b5f65",
+        "materialDecisionTopics": [],
+        "requiredToolName": null,
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval"
+        ],
+        "selectionDigest": "2b26e0f9f835dc8fa2c48a4089cc753901e2e4dc876594f0fedad5f52903e3f7"
+      },
+      "status": "passed",
+      "taskCount": 0,
+      "threadId": "thread-eval-direct_business_explanation-202607211340528c675e",
+      "toolCalls": []
+    },
+    {
+      "caseId": "capability_catalog",
+      "failures": [],
+      "followUp": null,
+      "runtimeStatus": "completed",
+      "selection": {
+        "actionContextDigest": "0339433d17476b93a226d4b63696e7a8ea969d938df5eb35e2cbde551a69bba3",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "call_tool",
+        "inputDigest": "97176bdf3eb1c5ec99b23405864d5d04e7a3cd16819a6456a34c449d55fd0b00",
+        "materialDecisionTopics": [],
+        "requiredToolName": "list_available_capabilities",
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "list_available_capabilities",
+          "request_approval"
+        ],
+        "selectionDigest": "ba1f1fe8a767601733740f0c377f8ee2bc6c3fb41877e52a2108f2cac14fd89c"
+      },
+      "status": "passed",
+      "taskCount": 0,
+      "threadId": "thread-eval-capability_catalog-202607211340528c675e",
+      "toolCalls": [
+        "list_available_capabilities"
+      ]
+    },
+    {
+      "caseId": "clear_formula_decomposition",
+      "failures": [],
+      "followUp": null,
+      "runtimeStatus": "working",
+      "selection": {
+        "actionContextDigest": "98952c1b73226d7f2a4240784b713a00a1b82b7cf8030b5de41f29e9eff20b3d",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "call_tool",
+        "inputDigest": "2f74b59008edbc4d4dffbb50927b79bdcc90c118f091bd74319af6336a62501b",
+        "materialDecisionTopics": [],
+        "requiredToolName": "run_bi_analysis",
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval",
+          "run_bi_analysis"
+        ],
+        "selectionDigest": "dd5eace0bdcadd4aa5101658cc2d41e2298afdae2953d23ed5d3929cbb809aa6"
+      },
+      "status": "passed",
+      "taskCount": 1,
+      "threadId": "thread-eval-clear_formula_decomposition-202607211340528c675e",
+      "toolCalls": [
+        "run_bi_analysis"
+      ]
+    },
+    {
+      "caseId": "material_comparison_clarification",
+      "failures": [],
+      "followUp": {
+        "failures": [],
+        "selection": {
+          "actionContextDigest": "4a25e2f9e0fc090672b67a344a70112a3ac0a43d89fbdee9b5f6adf8d5f92054",
+          "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+          "initialAction": "call_tool",
+          "inputDigest": "24573472038522a8aa0fe3642eeeb2fd72ed84f4244dcf352b970c3ce4fb0dcb",
+          "materialDecisionTopics": [],
+          "requiredToolName": "run_bi_analysis",
+          "schemaVersion": "agent-turn-action-binding.v1",
+          "selectedTools": [
+            "ask_user",
+            "request_approval",
+            "run_bi_analysis"
+          ],
+          "selectionDigest": "fbca55f3016b9f70569108435b29ed1b1de31f3c722a45f63582d26ffeabdb72"
+        },
+        "status": "working",
+        "toolCalls": [
+          "run_bi_analysis"
+        ]
+      },
+      "runtimeStatus": "needs_input",
+      "selection": {
+        "actionContextDigest": "d5ccf5ed16b558f66308254b4cec5b7f3d490d38107000b3e67cd63c46503fad",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "ask_user",
+        "inputDigest": "bdcc4c678c495cecd2175958f27ae76e8a27d89b292b881ea6adbe43b251128b",
+        "materialDecisionTopics": [
+          "comparison_scope"
+        ],
+        "requiredToolName": "ask_user",
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval"
+        ],
+        "selectionDigest": "154eb0d1ee52f1b0d236f4669edcdb347ca8210f74caaaa6e2b6301dc7476d1b"
+      },
+      "status": "passed",
+      "taskCount": 0,
+      "threadId": "thread-eval-material_comparison_clarification-202607211340528c675e",
+      "toolCalls": [
+        "ask_user",
+        "ask_user"
+      ]
+    },
+    {
+      "caseId": "activity_impact_boundary",
+      "failures": [],
+      "followUp": {
+        "failures": [],
+        "selection": {
+          "actionContextDigest": "373847e678a8878325fe09c25d3e40f57fb00ad31017b16e70045b2ffbdd5f68",
+          "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+          "initialAction": "call_tool",
+          "inputDigest": "39313bf575bdb388ce2c3f836b86d7420b49cc074bf00fd71268b09662bb1731",
+          "materialDecisionTopics": [],
+          "requiredToolName": "run_bi_analysis",
+          "schemaVersion": "agent-turn-action-binding.v1",
+          "selectedTools": [
+            "ask_user",
+            "request_approval",
+            "run_bi_analysis"
+          ],
+          "selectionDigest": "6b7ccf84ba6c00775cc4bd1af5cc2d90cd472a09fed15b788bd5e8e1e6e0c614"
+        },
+        "status": "working",
+        "toolCalls": [
+          "run_bi_analysis"
+        ]
+      },
+      "runtimeStatus": "needs_input",
+      "selection": {
+        "actionContextDigest": "5ea04dc00c773697092ae4734451e4a822a93a5a3d8d7d251683da699d3826ab",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "ask_user",
+        "inputDigest": "db5ee8881dddd3ab02dae217b4262bc7a5df7c134fca19ed552af339d1d7fc6a",
+        "materialDecisionTopics": [
+          "baseline_or_counterfactual"
+        ],
+        "requiredToolName": "ask_user",
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval"
+        ],
+        "selectionDigest": "410ec8a432e899d4487fb8af1fda78966208da2a343ebfa2fbf25f7e54b6ad6e"
+      },
+      "status": "passed",
+      "taskCount": 0,
+      "threadId": "thread-eval-activity_impact_boundary-202607211340528c675e",
+      "toolCalls": [
+        "ask_user",
+        "ask_user"
+      ]
+    },
+    {
+      "caseId": "outlier_supported_growth",
+      "failures": [],
+      "followUp": null,
+      "runtimeStatus": "working",
+      "selection": {
+        "actionContextDigest": "f26c18bc5681930b0c7a8a4a9773494d0c1eef78cb8645169ce3218b09ff098e",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "call_tool",
+        "inputDigest": "e75f3deebb871219f4e0d2b75bfb839bc4324553e1b4a3c9141d5988f6e1e8f7",
+        "materialDecisionTopics": [],
+        "requiredToolName": "run_bi_analysis",
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval",
+          "run_bi_analysis"
+        ],
+        "selectionDigest": "f48a1f07e1133bf9f17639dfab13c2741965b245a3200f6790aed53e1fe66001"
+      },
+      "status": "passed",
+      "taskCount": 1,
+      "threadId": "thread-eval-outlier_supported_growth-202607211340528c675e",
+      "toolCalls": [
+        "run_bi_analysis"
+      ]
+    },
+    {
+      "caseId": "evidence_follow_up",
+      "failures": [],
+      "followUp": null,
+      "runtimeStatus": "completed_with_limits",
+      "selection": {
+        "actionContextDigest": "faba844c24d000b4605291305a8fb3b238ee78b051aacae5302d3ff1724536a7",
+        "catalogDigest": "cbe1a2f1b7cec7a90982808677aff0396f690da2ac68f5f8e14f8c850d746165",
+        "initialAction": "respond",
+        "inputDigest": "643eceb5408a970b66df7e0420fe61b463468945daa1508f60aa4d04a238277f",
+        "materialDecisionTopics": [],
+        "requiredToolName": null,
+        "schemaVersion": "agent-turn-action-binding.v1",
+        "selectedTools": [
+          "ask_user",
+          "request_approval"
+        ],
+        "selectionDigest": "71f4b122d929d0b14c13814fea021898c317c135293e5ef2033e506ff56a8891"
+      },
+      "status": "passed",
+      "taskCount": 1,
+      "threadId": "thread-live-eval-clear-v4",
+      "toolCalls": []
+    }
+  ],
+  "generatedAt": "2026-07-21T13:43:02.252080+00:00",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": "https://api.deepseek.com",
+  "passedCaseCount": 7,
+  "provider": "deepseek",
+  "schemaVersion": "general-agent-runtime-live-eval.v2",
+  "status": "passed"
+}

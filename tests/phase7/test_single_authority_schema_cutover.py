@@ -12,6 +12,7 @@ from tools.runtime.cutover_single_authority_schema import (
     CURRENT_DISPATCH_KINDS,
     IN_PLACE_ADDITIVE_TABLES,
     IN_PLACE_METADATA_BACKFILLS,
+    IN_PLACE_SOURCE_CONTRACTS,
     IN_PLACE_SOURCE_MIGRATION_DIGEST,
     IN_PLACE_SOURCE_MIGRATION_ID,
     OBSOLETE_TABLES,
@@ -62,6 +63,28 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     assert IN_PLACE_SOURCE_MIGRATION_DIGEST == (
         "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
     )
+    assert IN_PLACE_SOURCE_CONTRACTS == {
+        (
+            "single-authority-workflow.v9",
+            "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1",
+        ): {
+            "agent_task_resume_outbox",
+            "agent_thread_summaries",
+            "agent_generated_artifacts",
+        },
+        (
+            "single-authority-workflow.v10",
+            "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044",
+        ): {
+            "agent_task_resume_outbox",
+            "agent_thread_summaries",
+            "agent_generated_artifacts",
+        },
+        (
+            IN_PLACE_SOURCE_MIGRATION_ID,
+            IN_PLACE_SOURCE_MIGRATION_DIGEST,
+        ): {"agent_thread_summaries", "agent_generated_artifacts"},
+    }
     assert IN_PLACE_METADATA_BACKFILLS == {
         "conversation_messages",
         "investigation_threads",

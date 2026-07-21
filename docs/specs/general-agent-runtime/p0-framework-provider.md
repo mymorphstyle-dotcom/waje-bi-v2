@@ -2,8 +2,10 @@
 
 ## 状态与范围
 
-本阶段已经建立可运行、可测试的 Agents SDK adapter boundary。连续对话、Session 和
-应用轮次持久化边界已经进入下一份 P0 合同，见
+本阶段已经建立可运行、可测试的 Agents SDK adapter boundary。2026-07-21 的
+`general-agent-runtime-live-eval.v2` 在真实 DeepSeek、隔离 PostgreSQL 和无
+`OPENAI_API_KEY` 环境中 7/7 通过；必需工具执行、强类型终局、澄清恢复、持久化 checkpoint、
+客户语言和出站安全均进入应用级验收。连续对话、Session 和应用轮次持久化边界见
 [`p0-conversation-state-authority.md`](./p0-conversation-state-authority.md)。
 
 现有 LangGraph 单权威工作流继续由 `run_bi_analysis`、`continue_bi_analysis` 等后续 BI
@@ -111,7 +113,7 @@ sink。生产接线使用 `PostgresAgentTraceSink` 复用现有 `audit_events`�
 `LLMProviderError`，不触发模型或本地答案降级。部署使用 P3 gate 运行 probe，成功后才接受
 Agent turn；普通消息进程不会为每条请求重复执行完整 capability probe。
 
-## 当前验收
+## 当前验收状态
 
 协议级测试通过 `httpx.MockTransport` 驱动真实 `AsyncOpenAI`、
 `OpenAIChatCompletionsModel` 和 Agents SDK Runner，覆盖 direct response、一次 tool call、
@@ -119,8 +121,13 @@ Agent turn；普通消息进程不会为每条请求重复执行完整 capabilit
 error、trace replacement、无 `OPENAI_API_KEY` 和出站 origin 断言。真实 DeepSeek 凭据
 没有进入仓库；部署环境使用同一 `deepseek_from_env()` 路径执行 live probe。
 
-2026-07-21 已在显式清除 `OPENAI_API_KEY` 的本地部署配置上完成真实 DeepSeek
-`deepseek-v4-flash` 验收：全部九项 capability check 通过，thinking 被真实响应观测到，
-28 条 trace 只写入 WAJE sink。另一个真实 Runner run 连续执行两轮 function tool，稳定
-回传 `current=1`、`current=2`，第三个 model turn 返回强制终局文本；该 run 产生 14 条
-WAJE trace 记录。
+2026-07-21 在显式清除 `OPENAI_API_KEY` 的本地部署配置上，真实 DeepSeek
+`deepseek-v4-flash` 的 capability 与应用级门禁通过。最终模型请求只到
+`https://api.deepseek.com` 的 Chat Completions 路径；WAJE 审计记录了 9 个 trace、62 个
+trace/span 事件，OpenAI exporter 未启用。
+
+真实应用链评测 7/7 通过：direct response、能力目录 function tool、BI 长工具提交、
+`comparison_scope` 澄清、`baseline_or_counterfactual` 澄清后恢复、多轮 tool loop、描述性
+异常敏感性分析和已发布证据追问均符合当前合同。澄清工具参数不满足客户语言或推荐选项合同
+时，Runner 在同一应用轮次内要求模型修正；技术错误和原始 Provider payload 只进入 WAJE
+审计。评测报告见 `evals/general_agent_runtime/results/repair-20260721.json`。

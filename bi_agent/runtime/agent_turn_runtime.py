@@ -14,6 +14,7 @@ from bi_agent.runtime.agent_context import (
 )
 from bi_agent.runtime.agent_context_compactor import ThreadContextCompactor
 from bi_agent.runtime.agent_tool_discovery import (
+    AgentTurnActionBinding,
     AgentToolDiscoveryError,
     DynamicAgentToolResolver,
 )
@@ -193,6 +194,7 @@ class AgentTurnRequest:
     relevant_materials: Sequence[Mapping[str, Any]] = ()
     pending_action_resolution: PendingActionResolution | None = None
     max_turns: int = 10
+    action_binding: AgentTurnActionBinding | None = None
 
     def __post_init__(self) -> None:
         for value, code in (
@@ -230,6 +232,7 @@ class AgentTaskResumeRequest:
     agent_name: str = "WAJE General Agent"
     permission_scope: Mapping[str, Any] = field(default_factory=dict)
     max_turns: int = 10
+    action_binding_digest: str | None = None
 
     def __post_init__(self) -> None:
         for value, code in (
@@ -247,6 +250,86 @@ class AgentTaskResumeRequest:
             raise ValueError("agent_resume_max_turns_invalid")
         if any(tool.execution_mode == "suspend_turn" for tool in self.tools):
             raise ValueError("agent_resume_nested_suspension_unsupported")
+        if self.action_binding_digest is not None and (
+            not isinstance(self.action_binding_digest, str)
+            or not self.action_binding_digest
+            or self.action_binding_digest != self.action_binding_digest.strip()
+        ):
+            raise ValueError("agent_resume_action_binding_invalid")
+
+
+class TerminalAdmission(BaseModel):
+    """Runtime-owned proof that one customer-visible terminal is admissible."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    schema_version: str = Field(
+        alias="schemaVersion",
+        default="agent-terminal-admission.v1",
+    )
+    completion_kind: str = Field(alias="completionKind")
+    action_binding_digest: str | None = Field(
+        alias="actionBindingDigest",
+        default=None,
+    )
+    executed_tool_names: list[str] = Field(
+        alias="executedToolNames",
+        default_factory=list,
+    )
+    authority_refs: list[str] = Field(alias="authorityRefs", default_factory=list)
+    durable_task_ref: str | None = Field(alias="durableTaskRef", default=None)
+
+    @field_validator("completion_kind")
+    @classmethod
+    def validate_completion_kind(cls, value: str) -> str:
+        if value not in {
+            "direct_response",
+            "context_response",
+            "tool_response",
+            "analysis_publication",
+            "failed_turn",
+        }:
+            raise ValueError("agent_terminal_completion_kind_invalid")
+        return value
+
+    @field_validator("executed_tool_names", "authority_refs")
+    @classmethod
+    def validate_values(cls, values: list[str]) -> list[str]:
+        if (
+            any(not value or value != value.strip() for value in values)
+            or len(values) != len(set(values))
+        ):
+            raise ValueError("agent_terminal_admission_values_invalid")
+        return values
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "TerminalAdmission":
+        if self.schema_version != "agent-terminal-admission.v1":
+            raise ValueError("agent_terminal_admission_schema_invalid")
+        if self.completion_kind == "failed_turn":
+            if self.executed_tool_names or self.authority_refs or self.durable_task_ref:
+                raise ValueError("agent_failed_terminal_authority_forbidden")
+            return self
+        if self.completion_kind == "direct_response" and (
+            self.executed_tool_names or self.authority_refs or self.durable_task_ref
+        ):
+            raise ValueError("agent_direct_terminal_authority_invalid")
+        if self.completion_kind == "context_response" and (
+            self.executed_tool_names or not self.authority_refs or self.durable_task_ref
+        ):
+            raise ValueError("agent_context_terminal_authority_invalid")
+        if self.completion_kind == "tool_response" and (
+            not self.executed_tool_names or self.durable_task_ref
+        ):
+            raise ValueError("agent_tool_terminal_authority_invalid")
+        if self.completion_kind == "analysis_publication" and (
+            not self.durable_task_ref or not self.authority_refs
+        ):
+            raise ValueError("agent_analysis_terminal_authority_invalid")
+        return self
+
+    def to_contract(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", by_alias=True)
 
 
 @dataclass(frozen=True)
@@ -263,6 +346,7 @@ class AgentTurnResult:
     context_version: str
     model_turns: int
     replayed: bool
+    terminal_admission: TerminalAdmission | None = None
     error_code: str | None = None
 
     def customer_projection(self) -> dict[str, Any]:
@@ -281,6 +365,8 @@ class AgentTurnResult:
         pending_action = self.assistant_item.payload.get("pending_action")
         if isinstance(pending_action, Mapping):
             projection["pendingAction"] = canonical_value(pending_action)
+        if self.terminal_admission is not None:
+            projection["completionKind"] = self.terminal_admission.completion_kind
         return projection
 
 
@@ -296,6 +382,7 @@ class AgentTurnRuntime:
         durable_tool_bridge: DurableToolBridge | None = None,
         context_compactor: ThreadContextCompactor | None = None,
         tool_resolver: DynamicAgentToolResolver | None = None,
+        business_clock: Mapping[str, Any] | None = None,
         session_history_limit: int = 40,
     ) -> None:
         if session_history_limit < 1:
@@ -306,6 +393,10 @@ class AgentTurnRuntime:
         self._durable_tool_bridge = durable_tool_bridge or DurableToolBridge(ledger)
         self._context_compactor = context_compactor
         self._tool_resolver = tool_resolver
+        normalized_clock = canonical_value(business_clock or {})
+        if not isinstance(normalized_clock, dict):
+            raise ValueError("agent_turn_business_clock_invalid")
+        self._business_clock = normalized_clock
         self._session_history_limit = session_history_limit
 
     async def run(self, request: AgentTurnRequest) -> AgentTurnResult:
@@ -415,7 +506,19 @@ class AgentTurnRuntime:
         )
         persisted_user = accepted.items[0]
         try:
-            request = await self._with_resolved_tools(request)
+            discovery_snapshot = await self._assemble_context(
+                request.thread_id,
+                available_tools=_tool_descriptors(request.tools),
+                permission_scope=request.permission_scope,
+                relevant_materials=request.relevant_materials,
+            )
+            request = await self._with_resolved_tools(
+                request,
+                action_context=_action_context(
+                    discovery_snapshot,
+                    business_clock=self._business_clock,
+                ),
+            )
         except Exception as exc:
             return self._commit_failure(
                 request,
@@ -454,7 +557,11 @@ class AgentTurnRuntime:
         run_request = WajeAgentRunRequest(
             run_id=request.run_id,
             agent_name=request.agent_name,
-            instructions=_runtime_instructions(request.instructions, snapshot),
+            instructions=_runtime_instructions(
+                request.instructions,
+                snapshot,
+                action_binding=request.action_binding,
+            ),
             input_text=request.user_message,
             tools=request.tools,
             output_type=AgentFinalOutput,
@@ -467,6 +574,12 @@ class AgentTurnRuntime:
             },
             session=session,
             event_sink=session,
+            initial_tool_choice=_initial_tool_choice(request.action_binding),
+            required_tool_name=(
+                request.action_binding.required_tool_name
+                if request.action_binding is not None
+                else None
+            ),
         )
         try:
             sdk_result = await self._adapter.run(run_request)
@@ -494,6 +607,10 @@ class AgentTurnRuntime:
                     suspension=suspension,
                     model_turns=0,
                 )
+            return self._commit_failure(request, snapshot=snapshot, error=exc)
+        try:
+            _validate_action_execution(request.action_binding, sdk_result)
+        except Exception as exc:
             return self._commit_failure(request, snapshot=snapshot, error=exc)
         suspension = self._durable_tool_bridge.suspension_for_operation(
             thread_id=request.thread_id,
@@ -605,7 +722,11 @@ class AgentTurnRuntime:
         run_request = WajeAgentRunRequest(
             run_id=request.run_id,
             agent_name=request.agent_name,
-            instructions=_runtime_instructions(request.instructions, snapshot),
+            instructions=_runtime_instructions(
+                request.instructions,
+                snapshot,
+                action_binding=None,
+            ),
             input_text=input_text,
             tools=request.tools,
             output_type=AgentFinalOutput,
@@ -674,6 +795,8 @@ class AgentTurnRuntime:
     async def _with_resolved_tools(
         self,
         request: AgentTurnRequest,
+        *,
+        action_context: Mapping[str, Any] | None = None,
     ) -> AgentTurnRequest:
         if self._tool_resolver is None:
             return request
@@ -693,12 +816,18 @@ class AgentTurnRuntime:
                 candidate_tools=request.tools,
                 permission_scope=request.permission_scope,
                 selection_payload=payload,
+                action_context=action_context,
             )
-            return replace(request, tools=resolved.tools)
+            return replace(
+                request,
+                tools=resolved.tools,
+                action_binding=resolved.selection,
+            )
         resolved = await self._tool_resolver.resolve(
             user_message=request.user_message,
             candidate_tools=request.tools,
             permission_scope=request.permission_scope,
+            action_context=action_context,
         )
         digest = canonical_digest(
             {
@@ -723,7 +852,11 @@ class AgentTurnRuntime:
                 )
             ],
         )
-        return replace(request, tools=resolved.tools)
+        return replace(
+            request,
+            tools=resolved.tools,
+            action_binding=resolved.selection,
+        )
 
     def _fallback_snapshot(
         self,
@@ -792,6 +925,7 @@ class AgentTurnRuntime:
                 agent_name=agent_name,
                 permission_scope=dict(permission_scope or {}),
                 max_turns=max_turns,
+                action_binding_digest=checkpoint.action_binding_digest,
             )
         )
 
@@ -810,6 +944,7 @@ class AgentTurnRuntime:
             model_turns=0,
             usage={},
             error_code="agent_deferred_task_failed",
+            terminal_admission=_failed_terminal_admission(request),
         )
         current = self._ledger.get_head(request.thread_id)
         if current.active_task_id != request.completion.task_ref:
@@ -822,7 +957,7 @@ class AgentTurnRuntime:
                 active_task_id=None,
                 active_topic_ref=current.active_topic_ref,
                 pending_action_ref=None,
-                customer_state="failed",
+                customer_state="idle",
             ),
         )
         return AgentTurnResult(
@@ -838,6 +973,7 @@ class AgentTurnRuntime:
             context_version=checkpoint.context_version,
             model_turns=0,
             replayed=False,
+            terminal_admission=_failed_terminal_admission(request),
             error_code="agent_deferred_task_failed",
         )
 
@@ -887,6 +1023,11 @@ class AgentTurnRuntime:
             suspension=suspension,
             context_version=snapshot.context_version,
             session_through_sequence=current.latest_item_sequence,
+            action_binding_digest=(
+                request.action_binding.selection_digest
+                if request.action_binding is not None
+                else None
+            ),
         )
         assistant, checkpoint_item = _suspension_items(
             request,
@@ -931,6 +1072,11 @@ class AgentTurnRuntime:
         sdk_result: WajeAgentRunResult,
     ) -> AgentTurnResult:
         final_contract = final_output.to_contract()
+        terminal_admission = _success_terminal_admission(
+            request,
+            final_output=final_output,
+            sdk_result=sdk_result,
+        )
         status = (
             "completed_with_limits" if final_output.limitation_refs else "completed"
         )
@@ -943,6 +1089,7 @@ class AgentTurnRuntime:
             model_turns=sdk_result.model_turns,
             usage=sdk_result.usage,
             error_code=None,
+            terminal_admission=terminal_admission,
         )
         current = self._ledger.get_head(request.thread_id)
         committed = self._ledger.append_items(
@@ -969,6 +1116,7 @@ class AgentTurnRuntime:
             context_version=snapshot.context_version,
             model_turns=sdk_result.model_turns,
             replayed=False,
+            terminal_admission=terminal_admission,
         )
 
     def _commit_failure(
@@ -993,6 +1141,7 @@ class AgentTurnRuntime:
             model_turns=0,
             usage={},
             error_code=error_code,
+            terminal_admission=_failed_terminal_admission(request),
         )
         current = self._ledger.get_head(request.thread_id)
         committed = self._ledger.append_items(
@@ -1003,7 +1152,7 @@ class AgentTurnRuntime:
                 active_task_id=None,
                 active_topic_ref=current.active_topic_ref,
                 pending_action_ref=None,
-                customer_state="failed",
+                customer_state="idle",
             ),
         )
         return AgentTurnResult(
@@ -1019,6 +1168,7 @@ class AgentTurnRuntime:
             context_version=snapshot.context_version,
             model_turns=0,
             replayed=False,
+            terminal_admission=_failed_terminal_admission(request),
             error_code=error_code,
         )
 
@@ -1040,6 +1190,10 @@ class AgentTurnRuntime:
         if status not in {"completed", "completed_with_limits", "failed"}:
             raise AgentTurnError("agent_turn_replay_terminal_invalid")
         final_output = payload.get("final_output")
+        admission_payload = payload.get("terminal_admission")
+        if not isinstance(admission_payload, Mapping):
+            raise AgentTurnError("agent_turn_replay_admission_missing")
+        terminal_admission = TerminalAdmission.model_validate(admission_payload)
         return AgentTurnResult(
             thread_id=request.thread_id,
             run_id=request.run_id,
@@ -1055,6 +1209,7 @@ class AgentTurnRuntime:
             context_version=str(payload.get("context_version") or ""),
             model_turns=int(payload.get("model_turns") or 0),
             replayed=True,
+            terminal_admission=terminal_admission,
             error_code=(
                 str(payload.get("error_code"))
                 if isinstance(payload.get("error_code"), str)
@@ -1121,6 +1276,7 @@ def _terminal_items(
     model_turns: int,
     usage: Mapping[str, int],
     error_code: str | None,
+    terminal_admission: TerminalAdmission,
 ) -> tuple[NewThreadItem, NewThreadItem]:
     assistant_payload = {
         "sdk_replay": False,
@@ -1144,6 +1300,7 @@ def _terminal_items(
             "model_turns": model_turns,
             "usage": dict(usage),
             "error_code": error_code,
+            "terminal_admission": terminal_admission.to_contract(),
         }
     )
     terminal_digest = canonical_digest(
@@ -1314,7 +1471,12 @@ def _validate_pending_action_resolution(
 def _runtime_instructions(
     base_instructions: str,
     snapshot: AgentContextSnapshot,
+    *,
+    action_binding: AgentTurnActionBinding | None,
 ) -> str:
+    binding_contract = (
+        action_binding.to_contract() if action_binding is not None else None
+    )
     return (
         f"{base_instructions.rstrip()}\n\n"
         "Use the WAJE context snapshot below as context only. Current authority "
@@ -1322,6 +1484,12 @@ def _runtime_instructions(
         "and referenced artifacts. Do not expose internal identifiers unless the "
         "customer supplied them. Return every factual material reference in "
         "materialRefs and every material limitation reference in limitationRefs.\n"
+        "The WAJE action binding is authoritative for this turn. When initialAction "
+        "is ask_user, the question and every option must resolve only the listed "
+        "materialDecisionTopics. Do not reopen a metric, time window, comparison, "
+        "baseline, evidence choice, or claim-strength dimension absent from that "
+        "list. Keep explicitly named business measures fixed.\n"
+        f"WAJE_ACTION_BINDING_JSON={json.dumps(binding_contract, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
         f"WAJE_CONTEXT_JSON={AgentContextAssembler.model_context(snapshot)}"
     )
 
@@ -1346,6 +1514,167 @@ def _validate_completion_closure(
         raise AgentTurnError("agent_task_completion_material_ref_missing")
     if not set(completion.limitation_refs).issubset(output.limitation_refs):
         raise AgentTurnError("agent_task_completion_limitation_ref_missing")
+
+
+def _initial_tool_choice(binding: AgentTurnActionBinding | None) -> str:
+    if binding is None:
+        return "auto"
+    if binding.initial_action == "respond":
+        return "none"
+    if binding.required_tool_name is None:
+        raise AgentTurnError("agent_required_action_tool_missing")
+    return binding.required_tool_name
+
+
+def _validate_action_execution(
+    binding: AgentTurnActionBinding | None,
+    result: WajeAgentRunResult,
+) -> None:
+    if binding is None:
+        return
+    if binding.initial_action == "respond":
+        if result.tool_calls:
+            raise AgentTurnError("agent_forbidden_tool_call")
+        return
+    if not result.tool_calls:
+        raise AgentTurnError("agent_required_tool_call_missing")
+    if result.tool_calls[0].tool_name != binding.required_tool_name:
+        raise AgentTurnError("agent_required_tool_call_mismatch")
+
+
+def _success_terminal_admission(
+    request: AgentTurnRequest | AgentTaskResumeRequest,
+    *,
+    final_output: AgentFinalOutput,
+    sdk_result: WajeAgentRunResult,
+) -> TerminalAdmission:
+    authority_refs = list(
+        dict.fromkeys((*final_output.material_refs, *final_output.limitation_refs))
+    )
+    executed_tool_names = list(
+        dict.fromkeys(call.tool_name for call in sdk_result.tool_calls)
+    )
+    action_binding_digest = (
+        request.action_binding.selection_digest
+        if isinstance(request, AgentTurnRequest) and request.action_binding is not None
+        else (
+            request.action_binding_digest
+            if isinstance(request, AgentTaskResumeRequest)
+            else None
+        )
+    )
+    if isinstance(request, AgentTaskResumeRequest):
+        completion_kind = "analysis_publication"
+        durable_task_ref = request.completion.task_ref
+    elif executed_tool_names:
+        completion_kind = "tool_response"
+        durable_task_ref = None
+    elif authority_refs:
+        completion_kind = "context_response"
+        durable_task_ref = None
+    else:
+        completion_kind = "direct_response"
+        durable_task_ref = None
+    return TerminalAdmission(
+        completionKind=completion_kind,
+        actionBindingDigest=action_binding_digest,
+        executedToolNames=executed_tool_names,
+        authorityRefs=authority_refs,
+        durableTaskRef=durable_task_ref,
+    )
+
+
+def _failed_terminal_admission(
+    request: AgentTurnRequest | AgentTaskResumeRequest,
+) -> TerminalAdmission:
+    action_binding_digest = (
+        request.action_binding.selection_digest
+        if isinstance(request, AgentTurnRequest) and request.action_binding is not None
+        else (
+            request.action_binding_digest
+            if isinstance(request, AgentTaskResumeRequest)
+            else None
+        )
+    )
+    return TerminalAdmission(
+        completionKind="failed_turn",
+        actionBindingDigest=action_binding_digest,
+    )
+
+
+def _action_context(
+    snapshot: AgentContextSnapshot,
+    *,
+    business_clock: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    recent_conversation = [
+        {
+            "role": item.role,
+            "text": item.text,
+            "sequence": item.sequence,
+        }
+        for item in snapshot.recent_items
+        if item.customer_visible and item.role in {"user", "assistant"} and item.text
+    ][-12:]
+    resolved_actions = []
+    current_material_topics: list[str] = []
+    pending_action_topics: dict[str, list[str]] = {}
+    for item in snapshot.recent_items:
+        selection = item.payload.get("tool_selection")
+        if isinstance(selection, Mapping):
+            raw_topics = selection.get("materialDecisionTopics")
+            if isinstance(raw_topics, list) and all(
+                isinstance(topic, str) and topic for topic in raw_topics
+            ):
+                current_material_topics = list(raw_topics)
+        pending = item.payload.get("pending_action")
+        if isinstance(pending, Mapping):
+            action_ref = pending.get("actionRef")
+            if isinstance(action_ref, str) and action_ref:
+                pending_action_topics[action_ref] = list(current_material_topics)
+        resolved = item.payload.get("resolved_pending_action")
+        resolution = item.payload.get("pending_action_resolution")
+        if isinstance(resolved, Mapping) and isinstance(resolution, Mapping):
+            action_ref = resolved.get("actionRef")
+            resolved_topics = (
+                pending_action_topics.get(action_ref, [])
+                if isinstance(action_ref, str)
+                else []
+            )
+            resolved_actions.append(
+                {
+                    "pendingAction": canonical_value(resolved),
+                    "resolution": canonical_value(resolution),
+                    "resolvedMaterialDecisionTopics": resolved_topics,
+                }
+            )
+    active_task = snapshot.active_task
+    return canonical_value(
+        {
+            "businessClock": canonical_value(business_clock or {}),
+            "threadSummary": snapshot.thread_summary,
+            "recentConversation": recent_conversation,
+            "resolvedPendingActions": resolved_actions[-3:],
+            "activeTask": (
+                {
+                    "taskRef": active_task.get("task_ref"),
+                    "status": active_task.get("status"),
+                }
+                if isinstance(active_task, Mapping)
+                else None
+            ),
+            "acceptedDecisions": [
+                {
+                    "decisionRef": item.get("decision_id") or item.get("ref"),
+                    "status": item.get("status"),
+                    "materiality": item.get("materiality"),
+                }
+                for item in snapshot.accepted_decisions
+            ],
+            "pendingActions": list(snapshot.pending_actions),
+            "artifactIndex": [item.to_dict() for item in snapshot.artifact_index],
+        }
+    )
 
 
 def _task_completion_input(completion: AgentTaskCompletion) -> str:

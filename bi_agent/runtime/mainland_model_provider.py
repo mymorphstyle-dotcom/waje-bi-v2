@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import os
 import threading
 from time import monotonic
-from typing import Any, AsyncIterator, Mapping, Optional
+from typing import Any, AsyncIterator, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -49,6 +49,7 @@ class MainlandModelCapabilities:
     thinking: bool
     streaming_tool_call_mode: str = "native"
     structured_output_mode: str = "json_object_with_waje_schema"
+    deterministic_tool_choice_thinking: Literal["inherit", "disabled"] = "inherit"
 
     def __post_init__(self) -> None:
         for value, code in (
@@ -66,6 +67,10 @@ class MainlandModelCapabilities:
             "json_object_with_waje_schema",
         }:
             raise LLMConfigurationError("provider_structured_output_mode_invalid")
+        if self.deterministic_tool_choice_thinking not in {"inherit", "disabled"}:
+            raise LLMConfigurationError(
+                "provider_tool_choice_thinking_mode_invalid"
+            )
 
     def missing_required(self) -> tuple[str, ...]:
         return tuple(
@@ -190,6 +195,7 @@ class MainlandProviderConfig:
             model_settings=MainlandModelSettings(
                 max_output_tokens=max_output_tokens,
                 thinking=thinking,
+                temperature=0.0,
             ),
             capabilities=MainlandModelCapabilities(
                 text_generation=True,
@@ -201,6 +207,7 @@ class MainlandProviderConfig:
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 thinking=True,
+                deterministic_tool_choice_thinking="disabled",
             ),
             timeout_seconds=_parse_timeout_seconds(
                 env.get("WAJE_LLM_TIMEOUT_SECONDS")
@@ -304,11 +311,23 @@ class MainlandModelProvider(ModelProvider):
             raise LLMConfigurationError("unconfigured_mainland_model")
         return self._model
 
-    def sdk_model_settings(self, *, structured_output: bool) -> ModelSettings:
+    def sdk_model_settings(
+        self,
+        *,
+        structured_output: bool,
+        initial_tool_choice: str = "auto",
+    ) -> ModelSettings:
         configured = self.config.model_settings
         extra_body = dict(configured.extra_body)
+        thinking = configured.thinking
+        if (
+            initial_tool_choice != "auto"
+            and self.config.capabilities.deterministic_tool_choice_thinking
+            == "disabled"
+        ):
+            thinking = "disabled"
         if _is_deepseek_endpoint(self.config.base_url):
-            extra_body["thinking"] = {"type": configured.thinking}
+            extra_body["thinking"] = {"type": thinking}
         if structured_output:
             mode = self.config.capabilities.structured_output_mode
             if mode == "json_object_with_waje_schema":

@@ -7,6 +7,7 @@ import json
 from typing import Any, Mapping
 
 import pytest
+from pydantic import BaseModel
 
 from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_interaction_tools import agent_interaction_tools
@@ -14,11 +15,14 @@ from bi_agent.runtime.agent_sdk_contracts import (
     AgentToolResult,
     WajeAgentRunRequest,
     WajeAgentRunResult,
+    WajeAgentTool,
+    WajeAgentToolCall,
 )
 from bi_agent.runtime.agent_task_recovery import (
     AgentTaskRecoveryError,
     AuthoritativeAgentTaskCompletionLoader,
 )
+from bi_agent.runtime.agent_tool_discovery import AgentTurnActionBinding
 from bi_agent.runtime.agent_turn_runtime import (
     AgentTaskCompletion,
     AgentTaskResumeRequest,
@@ -85,6 +89,11 @@ class DurableAdapter:
             final_output=dict(step.final_output),
             usage={"input_tokens": 5, "output_tokens": 3},
             model_turns=2 if step.tool_name is not None else 1,
+            tool_calls=(
+                (WajeAgentToolCall(tool_name=step.tool_name, call_id=step.call_id),)
+                if step.tool_name is not None and step.call_id is not None
+                else ()
+            ),
         )
 
 
@@ -136,6 +145,8 @@ def _turn_request(
     expected_state_version: int = 0,
     user_message: str = "分析付费金额变化。",
     pending_action_resolution: PendingActionResolution | None = None,
+    action_binding: AgentTurnActionBinding | None = None,
+    tools: tuple[WajeAgentTool, ...] = (),
 ) -> AgentTurnRequest:
     return AgentTurnRequest(
         thread_id="thread-durable",
@@ -146,6 +157,34 @@ def _turn_request(
         expected_state_version=expected_state_version,
         instructions="依据 WAJE 权威材料调用工具并回答。",
         pending_action_resolution=pending_action_resolution,
+        action_binding=action_binding,
+        tools=tools,
+    )
+
+
+def _analysis_action_binding() -> AgentTurnActionBinding:
+    return AgentTurnActionBinding.create(
+        catalog_digest="catalog-digest",
+        input_digest="input-digest",
+        action_context_digest="context-digest",
+        selected_tools=("run_bi_analysis",),
+        initial_action="call_tool",
+        required_tool_name="run_bi_analysis",
+        material_decision_topics=(),
+    )
+
+
+class _AnalysisToolInput(BaseModel):
+    business_question: str
+
+
+def _analysis_tool() -> WajeAgentTool:
+    return WajeAgentTool(
+        name="run_bi_analysis",
+        description="提交 BI 分析任务。",
+        input_model=_AnalysisToolInput,
+        handler=lambda _arguments: _queued_tool_result(),
+        execution_mode="suspend_turn",
     )
 
 
@@ -539,7 +578,10 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
         ),
     )
     ledger, runtime = _runtime(adapter)
-    turn = _turn_request()
+    turn = _turn_request(
+        action_binding=_analysis_action_binding(),
+        tools=(_analysis_tool(),),
+    )
     suspended = asyncio.run(runtime.run(turn))
     completion = AgentTaskCompletion(
         taskRef="run-bi-background",
@@ -570,6 +612,12 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
     assert completed.status == "completed"
     assert completed.terminal_item is not None
     assert completed.thread_head.active_task_id is None
+    assert completed.terminal_admission is not None
+    assert completed.terminal_admission.completion_kind == "analysis_publication"
+    assert completed.terminal_admission.durable_task_ref == "run-bi-background"
+    assert completed.terminal_admission.action_binding_digest == (
+        turn.action_binding.selection_digest
+    )
     assert completed.final_output == {
         "answerMarkdown": "分析已经完成，并形成可追溯发布材料。",
         "materialRefs": ["publication:completed"],
@@ -578,6 +626,9 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
     assert adapter.calls[1].input_text.startswith("WAJE_DURABLE_TASK_COMPLETION=")
     assert "publication:completed" in adapter.calls[1].instructions
     assert suspended.checkpoint_item is not None
+    assert suspended.checkpoint_item.payload["checkpoint"][
+        "actionBindingDigest"
+    ] == turn.action_binding.selection_digest
 
     replay = asyncio.run(
         runtime.resume_ready_task(
@@ -700,6 +751,38 @@ def test_checkpoint_rejects_tampered_identity_and_digest() -> None:
     payload["agentRunId"] = "agent-run-tampered"
     with pytest.raises(ValueError, match="agent_checkpoint_ref_invalid"):
         AgentCheckpoint.model_validate(payload)
+
+
+def test_ask_user_rejects_customer_language_drift_before_persistence() -> None:
+    ask_user, _ = agent_interaction_tools(
+        thread_id="thread-language",
+        operation_id="operation-language",
+        customer_language="zh-Hans",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^agent_interaction_customer_language_mismatch$",
+    ):
+        ask_user.handler(
+            {
+                "materialDecision": "Choose a comparison baseline.",
+                "options": [
+                    {
+                        "optionId": "one",
+                        "label": "Previous month",
+                        "description": "Compare with the previous month.",
+                        "recommended": True,
+                    },
+                    {
+                        "optionId": "two",
+                        "label": "Previous quarter",
+                        "description": "Compare with the previous quarter.",
+                        "recommended": False,
+                    },
+                ],
+            }
+        )
 
 
 def test_authoritative_completion_loader_projects_only_task_publication() -> None:

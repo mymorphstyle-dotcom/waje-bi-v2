@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 
 PROMPT_VERSION = "single-authority.conversation.2026-07-18.v1"
-SINGLE_AUTHORITY_PROMPT_VERSION = "single-authority.phase01.2026-07-20.v8"
+SINGLE_AUTHORITY_PROMPT_VERSION = "single-authority.phase01.2026-07-21.v9"
 SINGLE_AUTHORITY_PLAN_PROMPT_VERSION = "single-authority.phase02.2026-07-18.v1"
 CLAIM_COVERAGE_EXPANSION_PROMPT_VERSION = (
     "single-authority.phase03.claim-coverage.2026-07-18.v2"
@@ -208,6 +208,12 @@ def _task_rules(task: str) -> str:
             "Do not rename target, start, or end. comparison_spec must match one "
             "comparison_spec_contract variant exactly. Preserve an explicit user "
             "comparison in fixed_window, calendar_partition, or event_relative_window; "
+            "when the user names one target calendar period and one earlier baseline "
+            "period, bind time_spec to the target period's exact date range and use "
+            "fixed_window for the baseline period's exact date range. This includes "
+            "quarter-to-quarter, month-to-month, and year-to-year comparisons. Use "
+            "calendar_partition only when target and baseline are members inside one "
+            "shared evaluation range rather than separate physical windows. "
             "fixed_window contains only baseline bounds: never add target_start or "
             "target_end because its target bounds come only from time_spec. For a "
             "single explicit prior-day comparison, use fixed_window with the prior day "

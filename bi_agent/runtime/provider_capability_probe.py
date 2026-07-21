@@ -115,10 +115,14 @@ class ProviderCapabilityProbe:
                     ),
                 ),
                 max_turns=4,
+                initial_tool_choice="probe_echo",
+                required_tool_name="probe_echo",
             )
         )
         if tool_calls != [{"marker": "WAJE_TOOL_PROBE_OK"}]:
             raise ProviderCapabilityError(("function_calling",))
+        if [call.tool_name for call in streamed_tool.tool_calls] != ["probe_echo"]:
+            raise ProviderCapabilityError(("specific_tool_choice",))
         _require_marker(
             streamed_tool.final_output,
             "WAJE_TOOL_PROBE_OK",
@@ -153,6 +157,7 @@ class ProviderCapabilityProbe:
         checks = {
             "text_generation": True,
             "function_calling": True,
+            "specific_tool_choice": True,
             "structured_output": True,
             "streaming_text": True,
             "streaming_tool_calls": True,

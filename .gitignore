@@ -12,6 +12,7 @@ coverage/
 .DS_Store
 .env
 .env.*
+.venv/
 *.log
 *.py[cod]
 __pycache__/

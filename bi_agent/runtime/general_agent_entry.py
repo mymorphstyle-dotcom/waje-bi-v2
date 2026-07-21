@@ -4,10 +4,13 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -74,6 +77,9 @@ Use ask_user only when a material ambiguity can change the business conclusion, 
 fixed sensitive-output or data-access boundary, claim strength, or execution cost.
 Use request_approval before an external write, irreversible action, permission increase, or
 material cost. Keep technical provider payloads and hidden reasoning out of customer answers.
+Write customer-facing answers, questions, and option text in the language used by the latest user
+message unless the user explicitly asks for another language. Do not invent business metrics or
+data availability when proposing clarification options.
 """
 
 
@@ -145,6 +151,7 @@ def build_general_agent_runtime(
         artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
         summary_store = PostgresThreadSummaryStore(store.connection)
         provider = MainlandModelProvider.deepseek_from_env(env)
+        registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         adapter = WajeAgentsSdkAdapter(
             provider=provider,
             trace_sink=PostgresAgentTraceSink(store),
@@ -164,7 +171,7 @@ def build_general_agent_runtime(
         )
         tools = (
             capability_catalog_tool(
-                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+                registry
             ),
             *analysis_artifact_tools(
                 registry=artifact_registry,
@@ -186,6 +193,7 @@ def build_general_agent_runtime(
             *agent_interaction_tools(
                 thread_id=command.thread_id,
                 operation_id=command.operation_id,
+                customer_language=_customer_language_contract(command.message),
             ),
         )
         return GeneralAgentRuntimeBindings(
@@ -200,12 +208,22 @@ def build_general_agent_runtime(
                     generator=WajeToolSelectionGenerator(adapter),
                     mandatory_tool_names=("ask_user", "request_approval"),
                 ),
+                business_clock=_business_clock(registry),
             ),
             tools=tools,
         )
     except Exception:
         store.connection.close()
         raise
+
+
+def _business_clock(registry: RuntimeContractRegistry) -> dict[str, str]:
+    timezone_name = registry.business_timezone
+    current = datetime.now(ZoneInfo(timezone_name))
+    return {
+        "currentDate": current.date().isoformat(),
+        "timeZone": timezone_name,
+    }
 
 
 async def run_general_agent_turn(
@@ -339,16 +357,86 @@ def _context_token_budget(provider: MainlandModelProvider) -> int:
     return max(256, int(input_capacity * 0.8))
 
 
-def _emit_startup_ack() -> None:
+_HAN_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_LATIN_TEXT = re.compile(r"[A-Za-z]")
+
+
+def _customer_language_contract(message: str) -> str:
+    if _HAN_TEXT.search(message):
+        return "zh-Hans"
+    if _LATIN_TEXT.search(message):
+        return "en"
+    return "match-input-script"
+
+
+def _emit_startup_control(payload: Mapping[str, Any]) -> None:
     raw_fd = os.getenv("WAJE_GENERAL_AGENT_STARTUP_ACK_FD", "").strip()
     if not raw_fd:
         return
     try:
         fd = int(raw_fd)
-        os.write(fd, b"WAJE_GENERAL_AGENT_RUNNING\n")
+        encoded = (
+            json.dumps(
+                dict(payload),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        os.write(fd, encoded)
         os.close(fd)
     except (OSError, ValueError) as exc:
         raise RuntimeError("general_agent_startup_ack_failed") from exc
+
+
+def _emit_startup_ack(command: GeneralAgentTurnCommand) -> None:
+    _emit_startup_control(
+        {
+            "schemaVersion": "general-agent-startup-control.v1",
+            "status": "running",
+            "runId": command.agent_run_id,
+        }
+    )
+
+
+def _emit_startup_failure(
+    error: Exception,
+    command: GeneralAgentTurnCommand | None,
+) -> None:
+    error_code = _startup_error_code(error)
+    run_id = command.agent_run_id if command is not None else "unbound"
+    technical_detail_ref = "general-agent-startup-" + canonical_digest(
+        {
+            "schema_version": "general-agent-startup-failure.v1",
+            "run_id": run_id,
+            "error_code": error_code,
+            "error_type": type(error).__name__,
+        }
+    )[:24]
+    _emit_startup_control(
+        {
+            "schemaVersion": "general-agent-startup-control.v1",
+            "status": "failed",
+            "errorCode": error_code,
+            "technicalDetailRef": technical_detail_ref,
+        }
+    )
+
+
+def _startup_error_code(error: Exception) -> str:
+    candidate = getattr(error, "code", None)
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    message = str(error).strip()
+    if message and all(
+        character.islower()
+        or character.isdigit()
+        or character in {"_", ":", ",", "-"}
+        for character in message
+    ):
+        return message
+    return "general_agent_startup_failed"
 
 
 def _command_from_json(raw: str) -> GeneralAgentTurnCommand:
@@ -375,7 +463,7 @@ async def _run_cli_turn(
             if turn_task.done():
                 return await turn_task
             await asyncio.sleep(0.01)
-        _emit_startup_ack()
+        _emit_startup_ack(command)
         return await turn_task
     finally:
         if not turn_task.done():
@@ -389,8 +477,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--command-json", required=True)
     args = parser.parse_args(argv)
-    command = _command_from_json(args.command_json)
-    bindings = build_general_agent_runtime(command)
+    command: GeneralAgentTurnCommand | None = None
+    try:
+        command = _command_from_json(args.command_json)
+        bindings = build_general_agent_runtime(command)
+    except Exception as exc:
+        _emit_startup_failure(exc, command)
+        return 1
     result = asyncio.run(_run_cli_turn(command, bindings))
     json.dump(result.customer_projection(), sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

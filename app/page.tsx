@@ -890,6 +890,7 @@ export default function Home() {
       "idle",
       "completed",
       "completed_with_limits",
+      "failed",
     ].includes(customerState.status));
   const pendingMessageVisible = pending?.kind === "message"
     && !snapshot?.transport.acceptedOperationIds.includes(pending.operationId);
@@ -1120,7 +1121,9 @@ export default function Home() {
               placeholder={customerState?.status === "completed"
                 || customerState?.status === "completed_with_limits"
                 ? "继续追问这项分析"
-                : "输入业务问题"}
+                : customerState?.status === "failed"
+                  ? "调整问题或继续输入"
+                  : "输入业务问题"}
               ref={composerRef}
               value={draft}
             />

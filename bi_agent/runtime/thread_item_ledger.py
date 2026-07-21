@@ -365,7 +365,8 @@ class PostgresThreadItemLedger:
 
     @_serialized_postgres_ledger_call
     def get_head(self, thread_id: str) -> ThreadHead:
-        row = self.connection.execute(
+        row = _fetchone_with_rollback(
+            self.connection,
             """
             SELECT thread_id, state_version, active_task_id, active_topic_ref,
                    pending_action_ref, latest_item_sequence, customer_state
@@ -373,7 +374,7 @@ class PostgresThreadItemLedger:
             WHERE thread_id = %(thread_id)s
             """,
             {"thread_id": thread_id},
-        ).fetchone()
+        )
         if row is None:
             raise ThreadLedgerError("thread_head_missing")
         return _head_from_row(row)
@@ -384,14 +385,15 @@ class PostgresThreadItemLedger:
         thread_id: str,
         operation_key: str,
     ) -> ThreadItem | None:
-        row = self.connection.execute(
+        row = _fetchone_with_rollback(
+            self.connection,
             f"""
             {_THREAD_ITEM_SELECT}
             WHERE thread_id = %(thread_id)s
               AND operation_key = %(operation_key)s
             """,
             {"thread_id": thread_id, "operation_key": operation_key},
-        ).fetchone()
+        )
         return _thread_item_from_row(row) if row is not None else None
 
     @_serialized_postgres_ledger_call
@@ -406,21 +408,22 @@ class PostgresThreadItemLedger:
         _validate_limit(limit)
         _validate_sequence_boundary(after_sequence)
         _validate_sequence_boundary(through_sequence)
-        rows = self.connection.execute(
+        rows = _fetchall_with_rollback(
+            self.connection,
             f"""
             SELECT * FROM (
               {_THREAD_ITEM_SELECT}
               WHERE thread_id = %(thread_id)s
                 AND (
-                  %(after_sequence)s IS NULL
-                  OR item_sequence > %(after_sequence)s
+                  %(after_sequence)s::bigint IS NULL
+                  OR item_sequence > %(after_sequence)s::bigint
                 )
                 AND (
-                  %(through_sequence)s IS NULL
-                  OR item_sequence <= %(through_sequence)s
+                  %(through_sequence)s::bigint IS NULL
+                  OR item_sequence <= %(through_sequence)s::bigint
                 )
               ORDER BY item_sequence DESC
-              LIMIT %(limit)s
+              LIMIT %(limit)s::integer
             ) recent
             ORDER BY item_sequence
             """,
@@ -430,7 +433,7 @@ class PostgresThreadItemLedger:
                 "through_sequence": through_sequence,
                 "limit": limit,
             },
-        ).fetchall()
+        )
         return tuple(_thread_item_from_row(row) for row in rows)
 
     @_serialized_postgres_ledger_call
@@ -571,6 +574,30 @@ SELECT message_id, thread_id, item_sequence, item_type, role, text,
        operation_key, item_digest, customer_visible, payload, turn_id, created_at
 FROM waje_runtime.conversation_messages
 """.strip()
+
+
+def _fetchone_with_rollback(
+    connection: Any,
+    statement: str,
+    params: Mapping[str, Any],
+) -> Any:
+    try:
+        return connection.execute(statement, params).fetchone()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _fetchall_with_rollback(
+    connection: Any,
+    statement: str,
+    params: Mapping[str, Any],
+) -> list[Any]:
+    try:
+        return list(connection.execute(statement, params).fetchall())
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def _validated_new_items(items: Sequence[NewThreadItem]) -> tuple[NewThreadItem, ...]:

@@ -300,17 +300,22 @@ type MemoryStore = {
 export class GatewayRuntimeError extends Error {
   readonly code: string;
   readonly httpStatus: number;
+  readonly technicalDetailRef?: string;
 
-  constructor(code: string, httpStatus: number) {
+  constructor(code: string, httpStatus: number, technicalDetailRef?: string) {
     super(code);
     this.name = "GatewayRuntimeError";
     this.code = code;
     this.httpStatus = httpStatus;
+    this.technicalDetailRef = technicalDetailRef;
   }
 }
 
-export function gatewayError(code: string): GatewayRuntimeError {
-  return new GatewayRuntimeError(code, gatewayHttpStatus(code));
+export function gatewayError(
+  code: string,
+  technicalDetailRef?: string,
+): GatewayRuntimeError {
+  return new GatewayRuntimeError(code, gatewayHttpStatus(code), technicalDetailRef);
 }
 
 const globalStore = globalThis as typeof globalThis & {
@@ -4132,7 +4137,10 @@ export async function customerJsonError(
     : error instanceof Error
       ? error.message
       : "unknown_error";
-  const technicalDetailRef = `customer-error-${crypto.randomUUID()}`;
+  const technicalDetailRef = error instanceof GatewayRuntimeError
+    && error.technicalDetailRef
+    ? error.technicalDetailRef
+    : `customer-error-${crypto.randomUUID()}`;
   const projected = customerErrorProjection(internalCode);
   const { httpStatus, ...publicError } = projected;
   console.error(`[${technicalDetailRef}] ${internalCode}`, error);

@@ -128,6 +128,7 @@ def test_resume_outbox_is_discovered_from_terminal_bi_authority_and_checkpoint()
     assert "run.status IN ('completed', 'failed')" in module
     assert "checkpointKind" in module
     assert "awaitedTaskRef" in module
+    assert "LIKE 'checkpoint:%%'" in module
     assert "FOR UPDATE SKIP LOCKED" in module
     assert "lease_expires_at <= now()" in module
     assert "lease_epoch = lease_epoch + 1" in module
