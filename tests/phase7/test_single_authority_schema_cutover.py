@@ -10,6 +10,7 @@ import pytest
 from tools.runtime import cutover_single_authority_schema as cutover_module
 from tools.runtime.cutover_single_authority_schema import (
     CURRENT_DISPATCH_KINDS,
+    IN_PLACE_ADDITIVE_TABLES,
     IN_PLACE_METADATA_BACKFILLS,
     IN_PLACE_SOURCE_MIGRATION_DIGEST,
     IN_PLACE_SOURCE_MIGRATION_ID,
@@ -64,6 +65,10 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     assert IN_PLACE_METADATA_BACKFILLS == {
         "conversation_messages",
         "investigation_threads",
+    }
+    assert IN_PLACE_ADDITIVE_TABLES == {
+        "agent_thread_summaries",
+        "agent_generated_artifacts",
     }
     assert len(SINGLE_AUTHORITY_MIGRATION_DIGEST) == 64
     assert len(tables) == 73
@@ -389,7 +394,14 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
     monkeypatch.setattr(
         cutover_module,
         "_declared_schema_tables",
-        lambda _schema: frozenset({"run_dispatches", "schema_migrations"}),
+        lambda _schema: frozenset(
+            {
+                "run_dispatches",
+                "schema_migrations",
+                "agent_thread_summaries",
+                "agent_generated_artifacts",
+            }
+        ),
     )
     monkeypatch.setattr(
         cutover_module,
@@ -399,14 +411,31 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
     monkeypatch.setattr(
         cutover_module,
         "_table_names",
-        lambda _connection: {"run_dispatches", "schema_migrations"},
+        lambda _connection: (
+            {
+                "run_dispatches",
+                "schema_migrations",
+                "agent_thread_summaries",
+                "agent_generated_artifacts",
+            }
+            if connection.target_present
+            else {"run_dispatches", "schema_migrations"}
+        ),
     )
     monkeypatch.setattr(
         cutover_module,
         "_table_counts",
-        lambda _connection, _tables: {
-            "run_dispatches": 19,
-            "schema_migrations": 2 if connection.target_present else 1,
+        lambda _connection, tables: {
+            table: (
+                19
+                if table == "run_dispatches"
+                else 2
+                if table == "schema_migrations" and connection.target_present
+                else 1
+                if table == "schema_migrations"
+                else 0
+            )
+            for table in tables
         },
     )
     monkeypatch.setattr(
@@ -443,7 +472,11 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
 
     assert result["source_migration_id"] == IN_PLACE_SOURCE_MIGRATION_ID
     assert result["target_migration_id"] == SINGLE_AUTHORITY_MIGRATION_ID
-    assert result["business_row_counts"] == {"run_dispatches": 19}
+    assert result["business_row_counts"] == {
+        "agent_generated_artifacts": 0,
+        "agent_thread_summaries": 0,
+        "run_dispatches": 19,
+    }
     assert connection.committed is True
     assert connection.rolled_back is False
     assert connection.source_present is False

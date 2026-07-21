@@ -17,6 +17,7 @@
 - [General Agent Runtime P1 durable tool supervision](./specs/general-agent-runtime/p1-durable-tool-supervision.md)
 - [General Agent Runtime P1 transport cutover](./specs/general-agent-runtime/p1-transport-cutover.md)
 - [General Agent Runtime P2 context and controlled delegation](./specs/general-agent-runtime/p2-context-and-delegation.md)
+- [General Agent Runtime P3 deployment acceptance](./specs/general-agent-runtime/p3-deployment-acceptance.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)
@@ -56,8 +57,9 @@ pre-creating a BI run. Production recovery scans terminal BI tasks into an
 idempotent Agent resume outbox, and thread SSE carries an independent event
 cursor alongside ThreadHead state version and item sequence. Refresh,
 disconnect, close-page, stale-cursor, pending-action, and multi-tab browser
-acceptance are covered by the current Playwright suite. P1 transport is closed;
-context compaction and controlled multi-Agent work remain in P2.
+acceptance are covered by the current Playwright suite. P1 transport and P2 context/delegation
+are closed. P3 provides one deployment gate for schema v12, the live mainland Provider path,
+P2 runtime smoke, outbound restrictions, and WAJE-only trace evidence.
 
 The launch gate is fully automated except for one fresh post-freeze Case B run
 through the real service chain. Manual truth review, manual insight scoring, and

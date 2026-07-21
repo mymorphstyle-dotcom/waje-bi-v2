@@ -40,6 +40,9 @@ IN_PLACE_BACKFILL_PREDICATES = {
 IN_PLACE_METADATA_BACKFILLS = frozenset(
     {"conversation_messages", "investigation_threads"}
 )
+IN_PLACE_ADDITIVE_TABLES = frozenset(
+    {"agent_thread_summaries", "agent_generated_artifacts"}
+)
 OBSOLETE_TABLES = (
     "analysis_runtime_publications",
     "analysis_assets",
@@ -713,11 +716,14 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
             raise SchemaCutoverError("in_place_upgrade_source_migration_invalid")
 
         live_tables = _table_names(connection)
-        if live_tables != expected_tables:
-            missing = sorted(expected_tables - live_tables)
-            unexpected = sorted(live_tables - expected_tables)
+        missing = expected_tables - live_tables
+        unexpected = live_tables - expected_tables
+        if missing != set(IN_PLACE_ADDITIVE_TABLES) or unexpected:
             detail = json.dumps(
-                {"missing": missing, "unexpected": unexpected},
+                {
+                    "missing": sorted(missing),
+                    "unexpected": sorted(unexpected),
+                },
                 ensure_ascii=True,
                 sort_keys=True,
             )
@@ -743,8 +749,18 @@ def apply_in_place_upgrade(connection: Any) -> dict[str, Any]:
             for table, count in after_counts.items()
             if table != "schema_migrations"
         }
-        if business_counts_after != business_counts_before:
+        preserved_counts_after = {
+            table: business_counts_after[table]
+            for table in business_counts_before
+        }
+        additive_counts = {
+            table: business_counts_after[table]
+            for table in IN_PLACE_ADDITIVE_TABLES
+        }
+        if preserved_counts_after != business_counts_before:
             raise SchemaCutoverError("in_place_upgrade_business_rows_changed")
+        if any(additive_counts.values()):
+            raise SchemaCutoverError("in_place_upgrade_additive_tables_not_empty")
         _validate_current_runtime_schema(connection)
 
         deleted = connection.execute(
@@ -989,7 +1005,10 @@ def main() -> int:
     action.add_argument(
         "--in-place-upgrade",
         action="store_true",
-        help="Promote a structurally current v8 runtime to the v9 ledger without rebuilding data.",
+        help=(
+            f"Promote {IN_PLACE_SOURCE_MIGRATION_ID} to "
+            f"{SINGLE_AUTHORITY_MIGRATION_ID} without rebuilding business data."
+        ),
     )
     parser.add_argument(
         "--development-reset",

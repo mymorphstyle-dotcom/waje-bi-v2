@@ -108,8 +108,8 @@ sink。生产接线使用 `PostgresAgentTraceSink` 复用现有 `audit_events`�
 
 任一必需 capability 缺失或 live probe 不通过都会抛出
 `ProviderCapabilityError`。HTTP 认证、权限、限流、请求、timeout 和不可用错误映射为
-`LLMProviderError`，不触发模型或本地答案降级。未来 worker 启动时必须先运行 probe，
-成功后才接受 Agent turn。
+`LLMProviderError`，不触发模型或本地答案降级。部署使用 P3 gate 运行 probe，成功后才接受
+Agent turn；普通消息进程不会为每条请求重复执行完整 capability probe。
 
 ## 当前验收
 

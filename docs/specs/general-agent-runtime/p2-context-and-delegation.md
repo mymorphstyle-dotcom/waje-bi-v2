@@ -62,3 +62,6 @@ thread、task、checkpoint、artifact、publication 和 trace identity，不建�
 - 子调查并发执行，结果只进入 artifact registry；
 - Gateway 和客户 DOM 不依赖 Agents SDK 类型；
 - Provider、timeout、retry、熔断与 WAJE-only trace 边界保持 P0 合同。
+
+部署环境的统一复验命令与外部待办见
+[P3 部署验收合同](./p3-deployment-acceptance.md)。

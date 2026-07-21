@@ -110,6 +110,7 @@ class ReleaseManifestTest(unittest.TestCase):
                 "bi_agent/runtime/agents_sdk_trace.py",
                 "bi_agent/runtime/mainland_model_provider.py",
                 "bi_agent/runtime/provider_capability_probe.py",
+                "bi_agent/runtime/general_agent_deployment.py",
                 "bi_agent/runtime/thread_context_summary.py",
                 "bi_agent/runtime/agent_context_compactor.py",
                 "bi_agent/runtime/agent_tool_discovery.py",
@@ -146,6 +147,10 @@ class ReleaseManifestTest(unittest.TestCase):
         )
         self.assertIn(
             "tools/runtime/cutover_single_authority_schema.py",
+            paths_by_component["publication_and_delivery"],
+        )
+        self.assertIn(
+            "tools/runtime/validate_general_agent_deployment.py",
             paths_by_component["publication_and_delivery"],
         )
         self.assertIn(

@@ -6,6 +6,7 @@
 P1 BI 分析工具提交、长任务监督、生产恢复 outbox、正常入口切换和 thread transport 已完成；
 P2 版本化摘要、长对话压缩、动态工具发现和受控子 Agent 已完成。刷新、断网、关闭页面、
 stale cursor 与多标签页真实浏览器验收已通过。本文定义的 P0-P2 实施序列已经闭环。
+P3 部署验收门禁已进入仓库；当前环境缺少数据库与大陆模型配置，外部 live gate 待部署环境执行。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -777,6 +778,22 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 4. `delegate_independent_investigations` 最多并行执行三个只读调查，只接收显式
    customer-safe artifacts。子结果通过引用闭包验证后保存为结构化 artifact，不能修改
    ThreadHead、客户对话或 BI 权威。
+
+### P3：部署与真实环境验收（仓库门禁已完成）
+
+1. 修正 v11→v12 in-place upgrade：只允许新增 `agent_thread_summaries` 和
+   `agent_generated_artifacts`，保留全部既有业务表行数，新表必须为空。
+2. repository gate 校验 SDK 依赖锁、schema migration digest 和 release manifest。
+3. PostgreSQL gate 在 `REPEATABLE READ READ ONLY` 事务中校验 v12 migration、必需表、
+   append-only trigger 和 `tool_selection` item 合同。
+4. live Provider gate 清除 `OPENAI_API_KEY` 后运行九项 capability probe，并真实执行 P2
+   summary、动态工具选择、选择重放和受控子任务 artifact 闭包。
+5. live trace 只接受 `waje-agent-trace.v1`，验证 trace 起止事件且拒绝
+   `api.openai.com` 出站痕迹。
+6. 输出 `general-agent-deployment.v1` typed JSON report；任一 gate 失败时退出码非零。
+
+仓库门禁已通过。数据库 cutover、数据库只读审计和 live Provider gate 需要部署环境变量，
+不会在缺少目标环境时伪造通过状态。
 
 ## 验收场景
 
