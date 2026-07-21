@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import inspect
 import json
 from typing import Any, Mapping, Sequence
 
-from agents import Agent, FunctionTool, RunConfig, Runner
+from agents import Agent, FunctionTool, RunConfig, Runner, StopAtTools
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
 from pydantic import BaseModel, ValidationError
 
@@ -122,10 +123,17 @@ class WajeAgentsSdkAdapter:
         tools = [
             _to_sdk_tool(tool, event_sink=request.event_sink) for tool in request.tools
         ]
+        suspending_tool_names = [
+            tool.name
+            for tool in request.tools
+            if tool.execution_mode == "suspend_turn"
+        ]
         model_name = self._provider.config.model
         settings = self._provider.sdk_model_settings(
             structured_output=request.output_type is not None,
         )
+        if suspending_tool_names:
+            settings = replace(settings, parallel_tool_calls=False)
         instructions = request.instructions
         if request.output_type is not None:
             schema_json = json.dumps(
@@ -146,6 +154,11 @@ class WajeAgentsSdkAdapter:
             model_settings=settings,
             tools=tools,
             output_type=request.output_type,
+            tool_use_behavior=(
+                StopAtTools(stop_at_tool_names=suspending_tool_names)
+                if suspending_tool_names
+                else "run_llm_again"
+            ),
         )
         metadata = {
             **dict(request.trace_metadata),

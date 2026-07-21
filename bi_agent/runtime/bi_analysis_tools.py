@@ -528,6 +528,7 @@ def bi_analysis_tools(
             ),
             input_model=RunBiAnalysisInput,
             handler=run_analysis,
+            execution_mode="suspend_turn",
         ),
         WajeAgentTool(
             name="continue_bi_analysis",
@@ -537,6 +538,7 @@ def bi_analysis_tools(
             ),
             input_model=ContinueBiAnalysisInput,
             handler=continue_analysis,
+            execution_mode="suspend_turn",
         ),
     )
 

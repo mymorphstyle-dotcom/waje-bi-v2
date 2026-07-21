@@ -187,8 +187,13 @@ class AgentContextAssembler:
             "decision_refs": [
                 item.get("decision_id") or item.get("ref") for item in decisions
             ],
-            "tool_names": [item.get("name") for item in normalized_tools],
+            "tool_digests": [
+                canonical_digest(item) for item in normalized_tools
+            ],
             "permission_scope": normalized_permission,
+            "relevant_material_digests": [
+                canonical_digest(item) for item in normalized_materials
+            ],
         }
         return AgentContextSnapshot(
             thread_id=thread_id,

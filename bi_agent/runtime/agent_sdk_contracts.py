@@ -77,6 +77,7 @@ class WajeAgentTool:
     description: str
     input_model: type[BaseModel]
     handler: ToolHandler
+    execution_mode: Literal["continue", "suspend_turn"] = "continue"
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.replace("_", "").isalnum():
@@ -88,6 +89,8 @@ class WajeAgentTool:
             BaseModel,
         ):
             raise TypeError("agent_tool_input_model_invalid")
+        if self.execution_mode not in {"continue", "suspend_turn"}:
+            raise ValueError("agent_tool_execution_mode_invalid")
 
 
 @dataclass(frozen=True)

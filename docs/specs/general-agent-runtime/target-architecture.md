@@ -753,13 +753,15 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 2. 将 material revision 封装为 `continue_bi_analysis`。
 3. 统一 tool result、retryability、artifact refs 和 limitation refs。
 
-### P1：长任务恢复
+### P1：长任务恢复（监督边界已完成，transport cutover 进行中）
 
-1. 每个模型动作和工具结果保存 checkpoint。
-2. 建立 worker lease、heartbeat、recovery 和 outbox。
-3. 将澄清和审批改为可恢复 Agent interruption。
-4. SSE 使用 snapshot、state version 和 cursor。
-5. 完成刷新、断网、关闭页面和多标签页测试。
+1. 已由 ThreadItemLedger 保存模型动作与工具结果，并在长工具边界保存
+   SDK-neutral AgentCheckpoint。
+2. 已复用现有 worker lease、heartbeat 和 recovery；已建立 publication completion loader
+   与 `resume_ready_task`，生产终局触发 outbox 待接入。
+3. 已将澄清和审批实现为可恢复 typed Agent interruption。
+4. SSE 使用 snapshot、state version 和 cursor，待正常入口切换时接入。
+5. 刷新、断网、关闭页面和多标签页真实浏览器测试待 transport cutover 后执行。
 
 ### P2：上下文压缩与多 Agent
 

@@ -202,6 +202,35 @@ def test_registry_indexes_publication_claim_evidence_limitation_and_score() -> N
     assert all("INSERT" not in statement.upper() for statement in connection.statements)
 
 
+def test_registry_reads_task_artifacts_with_direct_run_filter() -> None:
+    connection = ArtifactConnection()
+    registry = PostgresAnalysisArtifactRegistry(connection)
+
+    artifacts = registry.list_task_artifacts(
+        "thread-1",
+        "bi-run-1",
+        limit=20,
+    )
+
+    assert {item.descriptor.artifact_type for item in artifacts} == {
+        "bi_publication",
+        "bi_claim",
+        "bi_evidence",
+        "bi_limitation",
+        "score_explanation",
+    }
+    publication_parameters = next(
+        parameters
+        for statement, parameters in zip(
+            connection.statements,
+            connection.parameters,
+            strict=True,
+        )
+        if "publication_customer_payloads" in statement
+    )
+    assert publication_parameters["task_ref"] == "bi-run-1"
+
+
 def test_registry_excludes_score_not_referenced_by_published_material() -> None:
     connection = ArtifactConnection()
     connection.evidence_rows.append(

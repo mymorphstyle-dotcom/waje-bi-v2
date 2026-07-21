@@ -8,7 +8,9 @@ import httpx
 from pydantic import ValidationError
 import pytest
 
+from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_sdk_contracts import WajeAgentRunRequest
+from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
 from bi_agent.runtime.agents_sdk_trace import InMemoryAgentTraceSink
 from bi_agent.runtime.bi_analysis_tools import (
@@ -24,6 +26,7 @@ from bi_agent.runtime.mainland_model_provider import (
     MainlandModelSettings,
     MainlandProviderConfig,
 )
+from bi_agent.runtime.thread_item_ledger import InMemoryThreadItemLedger
 from tools.runtime.recover_run_dispatches import _validated_agent_core_command
 
 
@@ -485,24 +488,19 @@ def test_sdk_runner_calls_bi_tool_through_mainland_chat_completions_without_open
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    responses = iter(
-        (
-            _chat_response(
-                tool_name="run_bi_analysis",
-                arguments=json.dumps(
-                    {"businessQuestion": "分析付费金额变化。"},
-                    ensure_ascii=False,
-                ),
-                call_id="call-run-bi",
-            ),
-            _chat_response(content="任务已进入持久化队列。"),
-        )
+    response = _chat_response(
+        tool_name="run_bi_analysis",
+        arguments=json.dumps(
+            {"businessQuestion": "分析付费金额变化。"},
+            ensure_ascii=False,
+        ),
+        call_id="call-run-bi",
     )
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return next(responses)
+        return response
 
     provider = MainlandModelProvider(
         MainlandProviderConfig(
@@ -546,29 +544,92 @@ def test_sdk_runner_calls_bi_tool_through_mainland_chat_completions_without_open
     finally:
         asyncio.run(provider.close())
 
-    assert result.final_output == "任务已进入持久化队列。"
-    assert result.model_turns == 2
+    assert json.loads(str(result.final_output))["output"]["taskRef"] == "run-bi-start"
+    assert result.model_turns == 1
     assert gateway.starts[0]["business_question"] == "分析付费金额变化。"
-    assert [request.url.path for request in requests] == [
-        "/v1/chat/completions",
-        "/v1/chat/completions",
-    ]
+    assert [request.url.path for request in requests] == ["/v1/chat/completions"]
     assert {request.url.host for request in requests} == {"model.provider.example.cn"}
-    second_payload = json.loads(requests[1].content)
-    tool_outputs = [
-        message["content"]
-        for message in second_payload["messages"]
-        if message["role"] == "tool"
-    ]
-    assert len(tool_outputs) == 1
-    assert json.loads(tool_outputs[0])["output"] == {
-        "operation": "run_bi_analysis",
-        "taskRef": "run-bi-start",
-        "taskState": "queued",
-        "sourceTaskRef": None,
-        "replayed": False,
-    }
+    assert json.loads(requests[0].content)["parallel_tool_calls"] is False
     assert all(request.url.host != "api.openai.com" for request in requests)
+
+
+def test_agent_turn_runtime_suspends_real_sdk_bi_tool_on_mainland_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _chat_response(
+            tool_name="run_bi_analysis",
+            arguments='{"businessQuestion":"分析付费金额变化。"}',
+            call_id="call-runtime-run-bi",
+        )
+
+    provider = MainlandModelProvider(
+        MainlandProviderConfig(
+            provider="test-mainland",
+            base_url="https://model.provider.example.cn/v1",
+            api_key="mainland-key",
+            model="mainland-model",
+            model_settings=MainlandModelSettings(512, "disabled"),
+            capabilities=_capabilities(),
+            max_attempts=1,
+        ),
+        http_transport=httpx.MockTransport(handler),
+    )
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-runtime-bi")
+    gateway = RecordingGateway()
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=InMemoryArtifactIndex(),
+        ),
+        adapter=WajeAgentsSdkAdapter(
+            provider=provider,
+            trace_sink=InMemoryAgentTraceSink(),
+        ),
+    )
+    request = AgentTurnRequest(
+        thread_id="thread-runtime-bi",
+        run_id="agent-run-runtime-bi",
+        operation_id="operation-runtime-bi",
+        user_item_id="message-runtime-bi",
+        user_message="分析付费金额变化。",
+        expected_state_version=0,
+        instructions="需要新分析时调用持久化 BI 工具。",
+        tools=bi_analysis_tools(
+            gateway=gateway,
+            thread_id="thread-runtime-bi",
+            source_message_id="message-runtime-bi",
+            operation_id="operation-runtime-bi",
+        ),
+        max_turns=4,
+    )
+    try:
+        result = asyncio.run(runtime.run(request))
+        replay = asyncio.run(runtime.run(request))
+    finally:
+        asyncio.run(provider.close())
+
+    assert result.status == "working"
+    assert result.terminal_item is None
+    assert result.checkpoint_item is not None
+    assert result.thread_head.active_task_id == "run-bi-start"
+    assert result.assistant_item.item_type == "progress"
+    assert replay.replayed is True
+    assert len(requests) == 1
+    assert requests[0].url.path == "/v1/chat/completions"
+    assert requests[0].url.host == "model.provider.example.cn"
+    assert requests[0].url.host != "api.openai.com"
+    assert json.loads(requests[0].content)["parallel_tool_calls"] is False
+    assert "run-bi-start" not in json.dumps(
+        result.customer_projection(),
+        ensure_ascii=False,
+    )
 
 
 def test_sdk_audit_marks_typed_failed_tool_result_as_failed() -> None:

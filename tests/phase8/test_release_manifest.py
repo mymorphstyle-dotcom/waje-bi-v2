@@ -112,6 +112,9 @@ class ReleaseManifestTest(unittest.TestCase):
                 "bi_agent/runtime/provider_capability_probe.py",
                 "bi_agent/runtime/analysis_artifacts.py",
                 "bi_agent/runtime/bi_analysis_tools.py",
+                "bi_agent/runtime/agent_interaction_tools.py",
+                "bi_agent/runtime/durable_tool_bridge.py",
+                "bi_agent/runtime/agent_task_recovery.py",
             }
             <= paths_by_component["conversation_and_plan_authority"]
         )

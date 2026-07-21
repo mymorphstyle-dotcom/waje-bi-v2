@@ -192,6 +192,14 @@ class AnalysisArtifactRegistry(Protocol):
         claim_ref: str,
     ) -> RegisteredAnalysisArtifact | None: ...
 
+    def list_task_artifacts(
+        self,
+        thread_id: str,
+        task_ref: str,
+        *,
+        limit: int,
+    ) -> tuple[RegisteredAnalysisArtifact, ...]: ...
+
 
 class InMemoryAnalysisArtifactRegistry:
     def __init__(self) -> None:
@@ -236,6 +244,42 @@ class InMemoryAnalysisArtifactRegistry:
         if item is None or item.descriptor.artifact_type != "bi_claim":
             return None
         return item
+
+    def list_task_artifacts(
+        self,
+        thread_id: str,
+        task_ref: str,
+        *,
+        limit: int,
+    ) -> tuple[RegisteredAnalysisArtifact, ...]:
+        _validate_limit(limit)
+        if not task_ref.strip():
+            raise ValueError("artifact_task_ref_missing")
+        values = tuple(self._by_thread.get(thread_id, {}).values())
+        reachable_refs = {
+            item.descriptor.artifact_ref
+            for item in values
+            if task_ref in item.descriptor.source_refs
+        }
+        selected_refs: set[str] = set()
+        while True:
+            newly_selected = {
+                item.descriptor.artifact_ref
+                for item in values
+                if item.descriptor.artifact_ref in reachable_refs
+                and item.descriptor.artifact_ref not in selected_refs
+            }
+            if not newly_selected:
+                break
+            selected_refs.update(newly_selected)
+            for item in values:
+                if item.descriptor.artifact_ref in newly_selected:
+                    reachable_refs.update(item.descriptor.source_refs)
+        return tuple(
+            deepcopy(item)
+            for item in values
+            if item.descriptor.artifact_ref in selected_refs
+        )[:limit]
 
 
 class PostgresAnalysisArtifactRegistry:
@@ -282,9 +326,23 @@ class PostgresAnalysisArtifactRegistry:
             return None
         return item
 
+    def list_task_artifacts(
+        self,
+        thread_id: str,
+        task_ref: str,
+        *,
+        limit: int,
+    ) -> tuple[RegisteredAnalysisArtifact, ...]:
+        _validate_limit(limit)
+        if not task_ref.strip():
+            raise ValueError("artifact_task_ref_missing")
+        return self._load_registered(thread_id, task_ref=task_ref)[:limit]
+
     def _load_registered(
         self,
         thread_id: str,
+        *,
+        task_ref: str | None = None,
     ) -> tuple[RegisteredAnalysisArtifact, ...]:
         publication_rows = self.connection.execute(
             """
@@ -306,10 +364,15 @@ class PostgresAnalysisArtifactRegistry:
              AND material.run_attempt_id = customer.run_attempt_id
              AND material.owner_ref = customer.owner_ref
             WHERE run.thread_id = %(thread_id)s
+              AND (%(task_ref)s IS NULL OR run.run_id = %(task_ref)s)
             ORDER BY customer.created_at DESC, customer.customer_payload_ref DESC
             LIMIT %(limit)s
             """,
-            {"thread_id": thread_id, "limit": self._publication_scan_limit},
+            {
+                "thread_id": thread_id,
+                "task_ref": task_ref,
+                "limit": self._publication_scan_limit,
+            },
         ).fetchall()
         evidence_entry_refs = _published_evidence_entry_refs(publication_rows)
         evidence_rows = (

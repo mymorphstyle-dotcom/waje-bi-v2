@@ -6,8 +6,9 @@
 已经实现。两个工具只负责接受强类型参数并提交持久化 BI 任务；完整分析仍由现有
 Conversation worker 调用 LangGraph 单权威工作流完成。
 
-长工具 checkpoint、SDK run 恢复、clarification / approval interruption 和正常入口切换
-继续进入 P1 后续阶段。
+长工具 checkpoint、SDK run 恢复和 clarification / approval interruption 的监督边界已完成，
+详见 [P1 长工具监督与恢复边界](./p1-durable-tool-supervision.md)。生产 worker 终局自动触发、
+正常入口与 SSE cursor 切换继续进入 P1 后续阶段。
 
 ## 当前纵向链路
 
@@ -16,6 +17,7 @@ OpenAI Agents SDK Runner
   -> WAJE WajeAgentTool
   -> PostgresBiAnalysisTaskGateway
   -> analysis_runs + run_dispatches
+  -> DurableToolBridge + AgentCheckpoint
   -> recover_run_dispatches worker
   -> ConversationAgentCore
   -> IntentRevision + PlanRevision
@@ -23,8 +25,8 @@ OpenAI Agents SDK Runner
   -> evidence + claim + publication + delivery
 ```
 
-Runner 在当前应用轮次中只收到统一 `AgentToolResult`。十分钟级任务的执行状态、恢复
-身份和最终 publication 继续由 PostgreSQL 持有。
+Runner 在长工具返回统一 `AgentToolResult` 后立即停止当前进程内循环。十分钟级任务的
+执行状态、恢复身份和最终 publication 继续由 PostgreSQL 持有。
 
 ## 工具合同
 
@@ -86,13 +88,10 @@ material 或 limitation ref。
 - 同一 operation 幂等重放，变更 payload 明确失败；
 - 工具提交不写第二条 conversation message，也不提前写 BI 权威表；
 - 无 `OPENAI_API_KEY` 时，Agents SDK Runner 通过显式大陆 Provider 的
-  `/v1/chat/completions` 完成 function tool loop；
+  `/v1/chat/completions` 选择长工具，并在一次模型请求后交还 WAJE Runtime；
 - 测试断言所有模型请求 host 均不为 `api.openai.com`。
 
 ## 后续阶段
 
-- DurableToolBridge checkpoint 与后台 task 状态回填；
-- worker lease / heartbeat 与 SDK run 恢复衔接；
-- clarification / approval interruption；
-- `get_task_status` 和任务最终 artifact 回注；
+- 生产 worker 终局回调与恢复 outbox；
 - Conversation 正常入口与 SSE cursor 切换。

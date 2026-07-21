@@ -14,6 +14,7 @@
 - [General Agent Runtime P0 conversation and state authority](./specs/general-agent-runtime/p0-conversation-state-authority.md)
 - [General Agent Runtime P0 existing material explanation](./specs/general-agent-runtime/p0-existing-material-explanation.md)
 - [General Agent Runtime P1 BI analysis tool boundary](./specs/general-agent-runtime/p1-bi-analysis-tools.md)
+- [General Agent Runtime P1 durable tool supervision](./specs/general-agent-runtime/p1-durable-tool-supervision.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)
@@ -34,7 +35,8 @@ to explain superseded implementation history. Live acceptance remains governed
 by the implementation roadmap and real-conversation protocol.
 
 The General Agent Runtime framework/provider, continuous state authority,
-existing-material explanation, and BI analysis tool submission boundaries are
+existing-material explanation, BI analysis tool submission, and durable tool
+supervision boundaries are
 implemented behind Python WAJE contracts. The adapter runs the OpenAI Agents
 SDK with an explicit mainland model provider over Chat Completions, replaces
 the default trace exporter with a WAJE sink, and rejects SDK model defaults and
@@ -42,11 +44,14 @@ OpenAI endpoints. The runtime uses one persisted `ThreadItemLedger`, reads only
 publication-reachable customer-safe analysis artifacts, and can explain
 published claims and scores without starting a new BI analysis. New analysis
 and material revision tools submit the existing recoverable
-`analysis_runs + run_dispatches` workflow; IntentRevision, PlanRevision,
+`analysis_runs + run_dispatches` workflow. Long tools stop the in-process SDK
+loop after submission, persist an SDK-neutral checkpoint in the same thread ledger,
+preserve the background task in ThreadHead, and recover completed customer-safe
+publications through a typed completion loader. IntentRevision, PlanRevision,
 LangGraph, evidence, claim, publication, and delivery remain the only BI
-authority chain. Durable long-tool recovery and the Conversation entry cutover
-remain later work, so the target architecture does not yet supersede the
-current customer entry.
+authority chain. Production worker-to-resume delivery, the Conversation entry
+cutover, SSE cursor, and browser recovery acceptance remain later work, so the
+target architecture does not yet supersede the current customer entry.
 
 The launch gate is fully automated except for one fresh post-freeze Case B run
 through the real service chain. Manual truth review, manual insight scoring, and
