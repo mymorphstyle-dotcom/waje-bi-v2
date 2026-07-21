@@ -22,6 +22,13 @@ _MIN_DIMENSION_DIFFERENTIATION = 0.01
 _MIN_EXCESS_CHANGE_RATIO = 0.05
 _NEAR_CONSTANT_DOMINANT_SHARE = 0.98
 _NEAR_CONSTANT_MAX_SHARE_SHIFT = 0.01
+_DIAGNOSTIC_PRIORITY_FORMULA_ID = "dimension-diagnostic-priority"
+_DIAGNOSTIC_PRIORITY_FORMULA_VERSION = "2"
+_DIAGNOSTIC_PRIORITY_BASE_WEIGHTS = {
+    "excess_change_ratio": 0.45,
+    "dimension_differentiation_score": 0.35,
+    "primary_factor_alignment_score": 0.20,
+}
 
 
 def candidate_dimension_screen(
@@ -130,6 +137,7 @@ def candidate_dimension_screen(
                         "diagnostic_priority_components": profile[
                             "diagnostic_priority_components"
                         ],
+                        "score_explanation": profile["score_explanation"],
                         "hierarchy_id": profile["hierarchy_id"],
                         "hierarchy_level": profile["hierarchy_level"],
                         "parent_dimension": profile["parent_dimension"],
@@ -283,6 +291,15 @@ def candidate_dimension_screen(
         "ranking_position_measure": "priority_rank",
         "priority_rank_order": "ascending",
         "ranking_formula": ("excess_change_differentiation_primary_factor_alignment"),
+        "score_explanation_contract": {
+            "formula_id": _DIAGNOSTIC_PRIORITY_FORMULA_ID,
+            "formula_version": _DIAGNOSTIC_PRIORITY_FORMULA_VERSION,
+            "formula": "sum(normalized_value * effective_weight)",
+            "base_weights": _DIAGNOSTIC_PRIORITY_BASE_WEIGHTS,
+            "missing_component_policy": "renormalize_measured_component_weights",
+            "subject_type": "dimension",
+            "comparison_scope": "cross_dimension_diagnostic_priority",
+        },
         "cross_dimension_overlap": "overlapping_marginal_views",
         "cross_dimension_additivity": "forbidden",
         "cross_dimension_contribution_ranking": "forbidden",
@@ -333,6 +350,9 @@ def candidate_dimension_screen(
             "diagnostic_priority_score": priorities_by_dimension[
                 str(readout["dimension"])
             ]["diagnostic_priority_score"],
+            "score_explanation": priorities_by_dimension[str(readout["dimension"])][
+                "score_explanation"
+            ],
             "evidence_state": "verified",
             "limitation_refs": profiles_by_dimension[str(readout["dimension"])][
                 "limitations"
@@ -670,22 +690,28 @@ def _dimension_profile(
         and dominant_target_share >= _NEAR_CONSTANT_DOMINANT_SHARE
         and dimension_differentiation_score <= _NEAR_CONSTANT_MAX_SHARE_SHIFT
     )
-    alignment_score = alignment_coverage if global_primary_factor else 1.0
-    diagnostic_priority_score = (
-        0.45 * excess_change_ratio
-        + 0.35 * dimension_differentiation_score
-        + 0.20 * alignment_score
+    leading_excess = max(
+        excess_ranked,
+        key=lambda item: abs(float(item["excess_delta"])),
+        default=None,
     )
+    alignment_score = alignment_coverage if global_primary_factor else None
+    score_explanation = _diagnostic_priority_explanation(
+        dimension=dimension,
+        representative_member=(
+            str(leading_excess["value"]) if leading_excess else None
+        ),
+        excess_change_ratio=excess_change_ratio,
+        dimension_differentiation_score=dimension_differentiation_score,
+        primary_factor_alignment_score=alignment_score,
+        primary_factor_ref=global_primary_factor or None,
+    )
+    diagnostic_priority_score = float(score_explanation["finalScore"])
     business_readout_eligible = (
         candidate_eligible
         and not near_constant_dimension
         and dimension_differentiation_score >= _MIN_DIMENSION_DIFFERENTIATION
         and excess_change_ratio >= _MIN_EXCESS_CHANGE_RATIO
-    )
-    leading_excess = max(
-        excess_ranked,
-        key=lambda item: abs(float(item["excess_delta"])),
-        default=None,
     )
     displayed_delta = sum(item["delta"] for item in (*top_lifts, *top_drags))
     limitations = []
@@ -712,6 +738,7 @@ def _dimension_profile(
         limitations.append(f"low_dimension_information_value:{dimension}")
     if global_primary_factor and candidate_eligible and not all_primary_factor_segments:
         limitations.append(f"primary_factor_not_localized:{dimension}")
+    score_explanation["limitationRefs"] = list(limitations)
     profile_status = (
         "unavailable"
         if not complete or not rows
@@ -791,6 +818,7 @@ def _dimension_profile(
             "dimension_differentiation_score": (dimension_differentiation_score),
             "primary_factor_alignment_score": alignment_score,
         },
+        "score_explanation": score_explanation,
         "hierarchy_id": str(dimension_metadata.get("hierarchy_id") or ""),
         "hierarchy_level": str(dimension_metadata.get("hierarchy_level") or ""),
         "parent_dimension": str(dimension_metadata.get("parent_dimension") or ""),
@@ -805,6 +833,78 @@ def _dimension_profile(
         "suppressed_segment_count": len(contributions) - len(ranked),
         "non_localizable_member_count": len(ranked) - len(localizable_ranked),
         "limitations": tuple(limitations),
+    }
+
+
+def _diagnostic_priority_explanation(
+    *,
+    dimension: str,
+    representative_member: str | None,
+    excess_change_ratio: float,
+    dimension_differentiation_score: float,
+    primary_factor_alignment_score: float | None,
+    primary_factor_ref: str | None,
+) -> dict[str, Any]:
+    values = {
+        "excess_change_ratio": excess_change_ratio,
+        "dimension_differentiation_score": dimension_differentiation_score,
+        "primary_factor_alignment_score": primary_factor_alignment_score,
+    }
+    measured_weight = sum(
+        _DIAGNOSTIC_PRIORITY_BASE_WEIGHTS[component_id]
+        for component_id, value in values.items()
+        if value is not None
+    )
+    components = []
+    for component_id, base_weight in _DIAGNOSTIC_PRIORITY_BASE_WEIGHTS.items():
+        value = values[component_id]
+        measured = value is not None
+        effective_weight = base_weight / measured_weight if measured else None
+        components.append(
+            {
+                "componentId": component_id,
+                "status": "measured" if measured else "not_applicable",
+                "rawValue": value,
+                "normalizedValue": value,
+                "weight": effective_weight,
+                "contribution": (
+                    value * effective_weight
+                    if value is not None and effective_weight is not None
+                    else None
+                ),
+                "normalization": (
+                    "bounded_ratio_0_to_1"
+                    if component_id != "dimension_differentiation_score"
+                    else "half_l1_share_distance_0_to_1"
+                ),
+                "materialRefs": (
+                    [primary_factor_ref]
+                    if component_id == "primary_factor_alignment_score"
+                    and primary_factor_ref is not None
+                    else []
+                ),
+            }
+        )
+    final_score = sum(
+        float(component["contribution"])
+        for component in components
+        if component["contribution"] is not None
+    )
+    return {
+        "formulaId": _DIAGNOSTIC_PRIORITY_FORMULA_ID,
+        "formulaVersion": _DIAGNOSTIC_PRIORITY_FORMULA_VERSION,
+        "subject": {
+            "type": "dimension",
+            "dimensionRef": dimension,
+            "memberRef": None,
+            "claimRef": None,
+            "representativeMemberRef": representative_member,
+        },
+        "components": components,
+        "finalScore": final_score,
+        "rankingScope": "cross_dimension_diagnostic_priority",
+        "comparisonAllowed": True,
+        "limitationRefs": [],
     }
 
 

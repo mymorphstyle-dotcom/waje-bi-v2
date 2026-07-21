@@ -12,6 +12,7 @@
 - [General Agent Runtime target architecture](./specs/general-agent-runtime/target-architecture.md)
 - [General Agent Runtime P0 framework and provider](./specs/general-agent-runtime/p0-framework-provider.md)
 - [General Agent Runtime P0 conversation and state authority](./specs/general-agent-runtime/p0-conversation-state-authority.md)
+- [General Agent Runtime P0 existing material explanation](./specs/general-agent-runtime/p0-existing-material-explanation.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)
@@ -31,14 +32,17 @@ and performs the mixed-origin revision merge. Retired references are kept only
 to explain superseded implementation history. Live acceptance remains governed
 by the implementation roadmap and real-conversation protocol.
 
-The General Agent Runtime framework/provider P0 is implemented behind a Python
-adapter boundary. The adapter runs the OpenAI Agents SDK with an explicit
-mainland-model provider over Chat Completions, replaces the default trace
-exporter with a WAJE sink, and rejects SDK model defaults and OpenAI endpoints.
-The existing LangGraph single-authority workflow remains unchanged. Continuous
-thread state, `PostgresAgentSession`, `AgentTurnRuntime`, and the Conversation
-entry cutover remain later P0 work, so the target architecture does not yet
-supersede the accepted BI workflow or current customer entry.
+The General Agent Runtime framework/provider, continuous state authority, and
+existing-material explanation P0 stages are implemented behind Python WAJE
+contracts. The adapter runs the OpenAI Agents SDK with an explicit mainland
+model provider over Chat Completions, replaces the default trace exporter with
+a WAJE sink, and rejects SDK model defaults and OpenAI endpoints. The runtime
+uses one persisted `ThreadItemLedger`, reads only publication-reachable
+customer-safe analysis artifacts, and can explain published claims and scores
+without starting a new BI analysis. The existing LangGraph single-authority
+workflow remains unchanged. BI tool wrapping, durable long-tool recovery, and
+the Conversation entry cutover remain later work, so the target architecture
+does not yet supersede the current customer entry.
 
 The launch gate is fully automated except for one fresh post-freeze Case B run
 through the real service chain. Manual truth review, manual insight scoring, and

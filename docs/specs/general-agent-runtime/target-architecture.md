@@ -2,8 +2,8 @@
 
 ## 状态
 
-框架决策已接受。P0 框架与 Provider adapter 已完成；连续对话状态权威和入口切换尚未
-开始。
+框架决策已接受。P0 框架与 Provider adapter、连续对话状态权威和已有材料解释已完成；
+BI 分析工具化、长任务恢复和正常入口切换尚未进入。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -722,7 +722,7 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 
 ## 实施顺序
 
-### P0：框架与 Provider 落地
+### P0：框架与 Provider 落地（已完成）
 
 1. 锁定 `openai-agents` 版本，建立 SDK adapter boundary。
 2. 实现 `MainlandModelProvider`，首个真实适配器连接当前 DeepSeek endpoint。
@@ -731,7 +731,7 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 5. 完成文本、function calling、结构化输出、流式 tool call 和错误映射 capability probe。
 6. 在无 `OPENAI_API_KEY` 环境通过 SDK Runner 真实调用验收。
 
-### P0：连续对话与状态权威
+### P0：连续对话与状态权威（已完成）
 
 1. 建立 `ThreadItemLedger` 和原子 `ThreadHead`。
 2. 从持久化 conversation messages 恢复 recent items。
@@ -740,7 +740,7 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 5. 删除 conversation entry 双轨路由和空 prior-material 合同。
 6. 实现普通 assistant response 的幂等持久化与 SSE 投影。
 
-### P0：已有材料解释
+### P0：已有材料解释（已完成）
 
 1. 将 publication、claim、evidence 和限制注册为可检索 artifact。
 2. 实现 `inspect_analysis_artifact` 和 `explain_claim`。

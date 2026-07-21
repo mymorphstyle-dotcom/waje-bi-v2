@@ -809,11 +809,13 @@ def _event_window_metric_comparison_adapter(
         comparison.target,
         comparison.primary_baseline,
     )
+    comparison_payload = comparison.to_payload()
     typed_payload = {
         "evidence_contract": _EVENT_WINDOW_EVIDENCE_CONTRACT,
         "event_ref": event_ref,
         "temporal_authority_ref": temporal_authority_ref,
-        "metric_comparison": comparison.to_payload(),
+        "metric_comparison": comparison_payload,
+        "interpretation_contract": comparison_payload["interpretation_contract"],
         "causal_interpretation_allowed": False,
     }
     envelope = make_evidence_envelope(

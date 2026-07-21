@@ -2,40 +2,16 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Protocol, Sequence
 
+from bi_agent.runtime.analysis_artifacts import (
+    ArtifactDescriptor,
+    PostgresAnalysisArtifactRegistry,
+)
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
 from bi_agent.runtime.thread_item_ledger import ThreadHead, ThreadItem, ThreadItemLedger
-
-
-@dataclass(frozen=True)
-class ArtifactDescriptor:
-    artifact_ref: str
-    artifact_type: str
-    version: str
-    digest: str
-    source_refs: tuple[str, ...]
-    visibility_policy_ref: str
-    customer_summary: str
-    created_at: str
-
-    def __post_init__(self) -> None:
-        for value, code in (
-            (self.artifact_ref, "artifact_ref_missing"),
-            (self.artifact_type, "artifact_type_missing"),
-            (self.version, "artifact_version_missing"),
-            (self.digest, "artifact_digest_missing"),
-            (self.visibility_policy_ref, "artifact_visibility_policy_missing"),
-        ):
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(code)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["source_refs"] = list(self.source_refs)
-        return data
 
 
 class ArtifactIndex(Protocol):
@@ -256,35 +232,7 @@ class InMemoryArtifactIndex:
         return tuple(deepcopy(self._by_thread.get(thread_id, ())[-limit:]))
 
 
-class PostgresArtifactIndex:
-    """Indexes only persisted customer-safe publication projections."""
-
-    def __init__(self, connection: Any) -> None:
-        self.connection = connection
-
-    def list_artifacts(
-        self,
-        thread_id: str,
-        *,
-        limit: int,
-    ) -> tuple[ArtifactDescriptor, ...]:
-        rows = self.connection.execute(
-            """
-            SELECT customer.customer_payload_ref, customer.publication_ref,
-                   customer.publication_digest, customer.projection_id,
-                   customer.field_visibility_policy_ref,
-                   customer.customer_payload, customer.run_attempt_id,
-                   customer.created_at
-            FROM waje_runtime.publication_customer_payloads customer
-            JOIN waje_runtime.analysis_runs run
-              ON run.run_id = customer.run_attempt_id
-            WHERE run.thread_id = %(thread_id)s
-            ORDER BY customer.created_at DESC, customer.customer_payload_ref DESC
-            LIMIT %(limit)s
-            """,
-            {"thread_id": thread_id, "limit": limit},
-        ).fetchall()
-        return tuple(_artifact_from_row(row) for row in reversed(rows))
+PostgresArtifactIndex = PostgresAnalysisArtifactRegistry
 
 
 class PostgresContextAuthorityReader:
@@ -382,33 +330,6 @@ class PostgresContextAuthorityReader:
             }
             for row in rows
         )
-
-
-def _artifact_from_row(row: Any) -> ArtifactDescriptor:
-    customer_payload = _json_value(_field(row, "customer_payload", 5))
-    summary = ""
-    if isinstance(customer_payload, Mapping):
-        blocks = customer_payload.get("blocks")
-        if isinstance(blocks, list):
-            summary = "\n\n".join(
-                str(block.get("text"))
-                for block in blocks
-                if isinstance(block, Mapping) and isinstance(block.get("text"), str)
-            )
-    return ArtifactDescriptor(
-        artifact_ref=str(_field(row, "customer_payload_ref", 0)),
-        artifact_type="bi_publication",
-        version=str(_field(row, "publication_ref", 1)),
-        digest=str(_field(row, "publication_digest", 2)),
-        source_refs=(
-            str(_field(row, "run_attempt_id", 6)),
-            str(_field(row, "publication_ref", 1)),
-            str(_field(row, "projection_id", 3)),
-        ),
-        visibility_policy_ref=str(_field(row, "field_visibility_policy_ref", 4)),
-        customer_summary=summary,
-        created_at=_isoformat(_field(row, "created_at", 7)),
-    )
 
 
 def _mapping(value: Mapping[str, Any]) -> dict[str, Any]:

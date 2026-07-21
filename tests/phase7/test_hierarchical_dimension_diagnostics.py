@@ -240,6 +240,19 @@ def test_constant_parent_is_coverage_only_and_informative_descendants_form_reado
         ),
         "causal_interpretation": "forbidden",
         "representative_member_selection": ("separate_from_dimension_priority_ranking"),
+        "score_explanation_contract": {
+            "formula_id": "dimension-diagnostic-priority",
+            "formula_version": "2",
+            "formula": "sum(normalized_value * effective_weight)",
+            "base_weights": {
+                "excess_change_ratio": 0.45,
+                "dimension_differentiation_score": 0.35,
+                "primary_factor_alignment_score": 0.2,
+            },
+            "missing_component_policy": "renormalize_measured_component_weights",
+            "subject_type": "dimension",
+            "comparison_scope": "cross_dimension_diagnostic_priority",
+        },
     }
     priorities = {item["dimension"]: item for item in payload["diagnostic_priorities"]}
     for finding in payload["dimension_findings"]:

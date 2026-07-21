@@ -1,5 +1,5 @@
 {
-  "manifest_version": "single-authority.final.release.2026-07-21-v20",
+  "manifest_version": "single-authority.final.release.2026-07-21-v21",
   "components": [
     {
       "component": "contracts",
@@ -21,8 +21,8 @@
     },
     {
       "component": "conversation_and_plan_authority",
-      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/agent_turn_runtime.py"],
-      "active_ref": "sha256:167ea1fc7f31b127a169601574ef61b516c765710d255f8acb97be31dc39f71e",
+      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/analysis_artifacts.py", "bi_agent/runtime/agent_turn_runtime.py"],
+      "active_ref": "sha256:a7604fb89e94d24f9e1df92d41ec5d12a2daecbcde26acffbbc36b528ced7acb",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["single_authority_phase01_tests", "single_authority_phase02_tests", "single_authority_postgres_tests", "typed_conversation_tests", "gateway_phase02_planned_tests", "full_acceptance_eval"],
@@ -31,7 +31,7 @@
     {
       "component": "capability_execution_authority",
       "paths": ["contracts/capabilities", "bi_agent/capabilities", "bi_agent/runtime/capability_authority.py", "bi_agent/runtime/capability_execution.py", "bi_agent/runtime/capability_scheduler.py", "bi_agent/runtime/capability_task_adapter.py", "bi_agent/runtime/authoritative_task_inputs.py", "bi_agent/runtime/authoritative_execution_result.py", "bi_agent/runtime/formula_graph.py", "bi_agent/runtime/evidence_taxonomy.py", "bi_agent/runtime/evidence_authority.py", "bi_agent/runtime/analysis_runtime.py", "bi_agent/runtime/authoritative_query_chain.py", "bi_agent/runtime/clickhouse_query_compiler.py", "bi_agent/runtime/clickhouse_runtime.py", "bi_agent/runtime/query_audit.py", "bi_agent/runtime/query_completeness.py", "bi_agent/runtime/query_executor.py", "bi_agent/runtime/sql_safety.py", "bi_agent/runtime/window_metric_evidence.py", "bi_agent/runtime/runtime_persistence.py", "bi_agent/runtime/coverage_audit.py", "bi_agent/runtime/current_data_coverage.py", "bi_agent/runtime/degradation_policy.py", "bi_agent/runtime/exploration_budget_policy.py"],
-      "active_ref": "sha256:b1bbd95d726752d296104aef1b80621c5602f88a9ebd9a07432af2b2a8a6987a",
+      "active_ref": "sha256:e800d0ca14e58a74da235bbfaa9001ec1877f7465feebec3fc2e5d90b37cc600",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["phase4_capability_tests", "single_authority_phase03_tests", "capability_scheduler_postgres_tests", "affected_eval_slice", "full_acceptance_eval"],

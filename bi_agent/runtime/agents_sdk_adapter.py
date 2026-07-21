@@ -201,7 +201,7 @@ def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool
                 tool_name=tool.name,
                 call_id=call_id,
                 result=(
-                    value.model_dump(mode="json")
+                    value.model_dump(mode="json", by_alias=True)
                     if isinstance(value, BaseModel)
                     else dict(value)
                     if isinstance(value, Mapping)
@@ -210,9 +210,9 @@ def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool
                 succeeded=True,
             )
         if isinstance(value, BaseModel):
-            return value.model_dump(mode="json")
+            return _sdk_tool_output(value.model_dump(mode="json", by_alias=True))
         if isinstance(value, Mapping):
-            return dict(value)
+            return _sdk_tool_output(dict(value))
         return value
 
     return FunctionTool(
@@ -226,6 +226,18 @@ def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool
     )
 
 
+def _sdk_tool_output(value: Mapping[str, Any]) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise AgentSdkAdapterError("agent_tool_result_not_json_serializable") from exc
+
+
 def _project_result(
     request: WajeAgentRunRequest,
     result: Any,
@@ -234,7 +246,10 @@ def _project_result(
 ) -> WajeAgentRunResult:
     final_output = result.final_output
     if isinstance(final_output, BaseModel):
-        projected_output: str | Mapping[str, Any] = final_output.model_dump(mode="json")
+        projected_output: str | Mapping[str, Any] = final_output.model_dump(
+            mode="json",
+            by_alias=True,
+        )
     elif isinstance(final_output, Mapping):
         projected_output = dict(final_output)
     elif isinstance(final_output, str):

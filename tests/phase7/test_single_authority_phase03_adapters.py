@@ -888,6 +888,9 @@ def test_event_window_comparison_uses_business_metric_and_non_causal_identity() 
         "metric_comparison": output.output_payload["typed_payload"][
             "metric_comparison"
         ],
+        "interpretation_contract": output.output_payload["typed_payload"][
+            "metric_comparison"
+        ]["interpretation_contract"],
         "causal_interpretation_allowed": False,
     }
     assert output.evidence[0].evidence_kind == "observed"
@@ -896,6 +899,18 @@ def test_event_window_comparison_uses_business_metric_and_non_causal_identity() 
         fact.get("evidence_contract") == "event-window-metric-comparison.v1"
         for fact in output.evidence[0].observation_facts
     )
+    assert output.output_payload["typed_payload"]["interpretation_contract"] == {
+        "contract_id": "window-metric-comparison-interpretation.v1",
+        "analysis_role": "observed_window_comparison",
+        "comparison_subject": "same_metric_across_resolved_windows",
+        "target_value_definition": "aggregate_metric_over_target_window",
+        "baseline_value_definition": ("aggregate_metric_over_primary_baseline_window"),
+        "absolute_change_formula": "target_value - baseline_value",
+        "relative_change_formula": "absolute_change / baseline_value",
+        "zero_baseline_policy": "relative_change_unavailable",
+        "completeness_authority": ("required_complete_days_and_observation_keys"),
+        "causal_interpretation": "forbidden",
+    }
 
 
 def test_event_window_comparison_rejects_temporal_identity_drift() -> None:

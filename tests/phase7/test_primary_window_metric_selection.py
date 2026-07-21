@@ -78,6 +78,16 @@ def test_explicit_primary_baseline_is_independent_of_signed_query_order():
         )["absolute_change"]
         == 20
     )
+    payload = comparison.to_payload()
+    assert payload["interpretation_contract"]["contract_id"] == (
+        "window-metric-comparison-interpretation.v1"
+    )
+    assert payload["interpretation_contract"]["absolute_change_formula"] == (
+        "target_value - baseline_value"
+    )
+    assert payload["interpretation_contract"]["zero_baseline_policy"] == (
+        "relative_change_unavailable"
+    )
 
 
 def _window(

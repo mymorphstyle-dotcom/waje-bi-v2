@@ -19,6 +19,20 @@ class WindowMetricEvidenceError(ValueError):
         self.code = code
 
 
+WINDOW_METRIC_INTERPRETATION_CONTRACT = {
+    "contract_id": "window-metric-comparison-interpretation.v1",
+    "analysis_role": "observed_window_comparison",
+    "comparison_subject": "same_metric_across_resolved_windows",
+    "target_value_definition": "aggregate_metric_over_target_window",
+    "baseline_value_definition": "aggregate_metric_over_primary_baseline_window",
+    "absolute_change_formula": "target_value - baseline_value",
+    "relative_change_formula": "absolute_change / baseline_value",
+    "zero_baseline_policy": "relative_change_unavailable",
+    "completeness_authority": "required_complete_days_and_observation_keys",
+    "causal_interpretation": "forbidden",
+}
+
+
 @dataclass(frozen=True)
 class WindowMetricObservation:
     observation_key: str
@@ -85,6 +99,7 @@ class WindowMetricComparison:
             ),
             "target_value": self.target.value,
             "baseline_value": self.primary_baseline.value,
+            "interpretation_contract": dict(WINDOW_METRIC_INTERPRETATION_CONTRACT),
             **primary_changes,
         }
 
