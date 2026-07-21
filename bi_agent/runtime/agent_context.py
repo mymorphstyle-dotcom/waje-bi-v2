@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +12,10 @@ from bi_agent.runtime.analysis_artifacts import (
     PostgresAnalysisArtifactRegistry,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+from bi_agent.runtime.thread_context_summary import (
+    ThreadSummaryStore,
+    VersionedThreadSummary,
+)
 from bi_agent.runtime.thread_item_ledger import ThreadHead, ThreadItem, ThreadItemLedger
 
 
@@ -24,12 +29,6 @@ class ArtifactIndex(Protocol):
 
 
 class ContextAuthorityReader(Protocol):
-    def thread_summary(
-        self,
-        thread_id: str,
-        active_topic_ref: str | None,
-    ) -> Mapping[str, Any] | None: ...
-
     def active_task(
         self,
         thread_id: str,
@@ -43,13 +42,6 @@ class ContextAuthorityReader(Protocol):
 
 
 class EmptyContextAuthorityReader:
-    def thread_summary(
-        self,
-        thread_id: str,
-        active_topic_ref: str | None,
-    ) -> Mapping[str, Any] | None:
-        return None
-
     def active_task(
         self,
         thread_id: str,
@@ -62,6 +54,37 @@ class EmptyContextAuthorityReader:
         active_task_id: str | None,
     ) -> tuple[Mapping[str, Any], ...]:
         return ()
+
+
+class AgentContextError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class AgentContextCompactionRequired(AgentContextError):
+    def __init__(
+        self,
+        *,
+        thread_id: str,
+        compact_from_sequence: int,
+        compact_through_sequence: int,
+        latest_item_sequence: int,
+        reason: str = "item_limit",
+    ) -> None:
+        super().__init__("agent_context_compaction_required")
+        self.thread_id = thread_id
+        self.compact_from_sequence = compact_from_sequence
+        self.compact_through_sequence = compact_through_sequence
+        self.latest_item_sequence = latest_item_sequence
+        self.reason = reason
+
+
+class AgentContextBudgetExceeded(AgentContextError):
+    def __init__(self, *, estimated_tokens: int, budget_tokens: int) -> None:
+        super().__init__("agent_context_token_budget_exceeded")
+        self.estimated_tokens = estimated_tokens
+        self.budget_tokens = budget_tokens
 
 
 @dataclass(frozen=True)
@@ -121,6 +144,13 @@ class AgentContextSnapshot:
                 refs.add(ref)
         return frozenset(refs)
 
+    @property
+    def compacted_through_sequence(self) -> int:
+        if self.thread_summary is None:
+            return 0
+        value = self.thread_summary.get("coversThroughSequence")
+        return int(value) if isinstance(value, int) else 0
+
 
 class AgentContextAssembler:
     def __init__(
@@ -129,16 +159,34 @@ class AgentContextAssembler:
         ledger: ThreadItemLedger,
         artifact_index: ArtifactIndex,
         authority_reader: ContextAuthorityReader | None = None,
+        summary_store: ThreadSummaryStore | None = None,
         recent_item_limit: int = 40,
+        compaction_retention: int = 12,
         artifact_limit: int = 50,
+        context_token_budget: int | None = None,
     ) -> None:
-        if recent_item_limit < 1 or artifact_limit < 1:
+        if (
+            recent_item_limit < 2
+            or compaction_retention < 1
+            or compaction_retention >= recent_item_limit
+            or artifact_limit < 1
+            or (
+                context_token_budget is not None
+                and (
+                    isinstance(context_token_budget, bool)
+                    or context_token_budget < 256
+                )
+            )
+        ):
             raise ValueError("agent_context_limit_invalid")
         self._ledger = ledger
         self._artifact_index = artifact_index
         self._authority_reader = authority_reader or EmptyContextAuthorityReader()
+        self._summary_store = summary_store
         self._recent_item_limit = recent_item_limit
+        self._compaction_retention = compaction_retention
         self._artifact_limit = artifact_limit
+        self._context_token_budget = context_token_budget
 
     def assemble(
         self,
@@ -149,17 +197,29 @@ class AgentContextAssembler:
         relevant_materials: Sequence[Mapping[str, Any]] = (),
     ) -> AgentContextSnapshot:
         head = self._ledger.get_head(thread_id)
+        summary = self._latest_summary(thread_id, head)
+        compacted_through = (
+            summary.covers_through_sequence if summary is not None else 0
+        )
+        uncompacted_count = head.latest_item_sequence - compacted_through
+        if uncompacted_count > self._recent_item_limit:
+            raise AgentContextCompactionRequired(
+                thread_id=thread_id,
+                compact_from_sequence=compacted_through + 1,
+                compact_through_sequence=(
+                    head.latest_item_sequence - self._compaction_retention
+                ),
+                latest_item_sequence=head.latest_item_sequence,
+                reason="item_limit",
+            )
         recent_items = self._ledger.list_items(
             thread_id,
             limit=self._recent_item_limit,
+            after_sequence=compacted_through,
         )
         artifacts = self._artifact_index.list_artifacts(
             thread_id,
             limit=self._artifact_limit,
-        )
-        summary = self._authority_reader.thread_summary(
-            thread_id,
-            head.active_topic_ref,
         )
         active_task = self._authority_reader.active_task(
             thread_id,
@@ -182,6 +242,7 @@ class AgentContextAssembler:
         version_payload = {
             "thread_id": thread_id,
             "head": head.to_dict(),
+            "summary_digest": summary.summary_digest if summary is not None else None,
             "recent_item_digests": [item.item_digest for item in recent_items],
             "artifact_digests": [item.digest for item in artifacts],
             "decision_refs": [
@@ -195,9 +256,11 @@ class AgentContextAssembler:
                 canonical_digest(item) for item in normalized_materials
             ],
         }
-        return AgentContextSnapshot(
+        snapshot = AgentContextSnapshot(
             thread_id=thread_id,
-            thread_summary=_optional_mapping(summary),
+            thread_summary=(
+                summary.to_contract() if summary is not None else None
+            ),
             recent_items=recent_items,
             active_task=_optional_mapping(active_task),
             accepted_decisions=tuple(_mapping(item) for item in decisions),
@@ -209,16 +272,68 @@ class AgentContextAssembler:
             context_version=canonical_digest(version_payload),
             thread_head=head,
         )
+        if self._context_token_budget is not None:
+            estimated_tokens = self.estimated_input_tokens(snapshot)
+            if estimated_tokens > self._context_token_budget:
+                if uncompacted_count > self._compaction_retention:
+                    raise AgentContextCompactionRequired(
+                        thread_id=thread_id,
+                        compact_from_sequence=compacted_through + 1,
+                        compact_through_sequence=(
+                            head.latest_item_sequence - self._compaction_retention
+                        ),
+                        latest_item_sequence=head.latest_item_sequence,
+                        reason="token_budget",
+                    )
+                raise AgentContextBudgetExceeded(
+                    estimated_tokens=estimated_tokens,
+                    budget_tokens=self._context_token_budget,
+                )
+        return snapshot
+
+    def _latest_summary(
+        self,
+        thread_id: str,
+        head: ThreadHead,
+    ) -> VersionedThreadSummary | None:
+        if self._summary_store is None:
+            return None
+        summary = self._summary_store.latest(thread_id)
+        if summary is None:
+            return None
+        if summary.thread_id != thread_id:
+            raise AgentContextError("agent_context_summary_thread_mismatch")
+        if summary.covers_through_sequence > head.latest_item_sequence:
+            raise AgentContextError("agent_context_summary_ahead_of_thread")
+        return summary
 
     @staticmethod
     def model_context(snapshot: AgentContextSnapshot) -> str:
         payload = snapshot.to_dict(include_server_payload=False)
+        payload["recent_items"] = {
+            "delivery": "postgres_agent_session",
+            "count": len(snapshot.recent_items),
+            "from_sequence": (
+                snapshot.recent_items[0].sequence if snapshot.recent_items else None
+            ),
+            "through_sequence": (
+                snapshot.recent_items[-1].sequence if snapshot.recent_items else None
+            ),
+        }
         return json.dumps(
             payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         )
+
+    @classmethod
+    def estimated_input_tokens(cls, snapshot: AgentContextSnapshot) -> int:
+        context_bytes = len(cls.model_context(snapshot).encode("utf-8"))
+        replay_bytes = sum(
+            len(item.text.encode("utf-8")) + 32 for item in snapshot.recent_items
+        )
+        return max(1, math.ceil((context_bytes + replay_bytes) / 2))
 
 
 class InMemoryArtifactIndex:
@@ -243,34 +358,6 @@ PostgresArtifactIndex = PostgresAnalysisArtifactRegistry
 class PostgresContextAuthorityReader:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
-
-    def thread_summary(
-        self,
-        thread_id: str,
-        active_topic_ref: str | None,
-    ) -> Mapping[str, Any] | None:
-        if active_topic_ref is None:
-            return None
-        row = self.connection.execute(
-            """
-            SELECT topic_id, title, summary, status, assumptions,
-                   open_questions, updated_at
-            FROM waje_runtime.conversation_topics
-            WHERE thread_id = %(thread_id)s AND topic_id = %(topic_id)s
-            """,
-            {"thread_id": thread_id, "topic_id": active_topic_ref},
-        ).fetchone()
-        if row is None:
-            return None
-        return {
-            "topic_ref": str(_field(row, "topic_id", 0)),
-            "title": str(_field(row, "title", 1)),
-            "summary": str(_field(row, "summary", 2)),
-            "status": str(_field(row, "status", 3)),
-            "assumptions": _json_value(_field(row, "assumptions", 4)),
-            "open_questions": _json_value(_field(row, "open_questions", 5)),
-            "updated_at": _isoformat(_field(row, "updated_at", 6)),
-        }
 
     def active_task(
         self,

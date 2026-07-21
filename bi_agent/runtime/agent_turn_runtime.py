@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from bi_agent.runtime.agent_context import AgentContextAssembler, AgentContextSnapshot
+from bi_agent.runtime.agent_context import (
+    AgentContextAssembler,
+    AgentContextCompactionRequired,
+    AgentContextError,
+    AgentContextSnapshot,
+)
+from bi_agent.runtime.agent_context_compactor import ThreadContextCompactor
+from bi_agent.runtime.agent_tool_discovery import (
+    AgentToolDiscoveryError,
+    DynamicAgentToolResolver,
+)
 from bi_agent.runtime.agent_sdk_contracts import (
     AgentSdkAdapterError,
     WajeAgentRunRequest,
@@ -33,6 +43,7 @@ from bi_agent.runtime.thread_item_ledger import (
     ThreadItemLedger,
     ThreadLedgerError,
 )
+from bi_agent.runtime.thread_context_summary import ThreadSummaryError
 
 
 class AgentFinalOutput(BaseModel):
@@ -283,6 +294,8 @@ class AgentTurnRuntime:
         context_assembler: AgentContextAssembler,
         adapter: AgentLoopAdapter,
         durable_tool_bridge: DurableToolBridge | None = None,
+        context_compactor: ThreadContextCompactor | None = None,
+        tool_resolver: DynamicAgentToolResolver | None = None,
         session_history_limit: int = 40,
     ) -> None:
         if session_history_limit < 1:
@@ -291,6 +304,8 @@ class AgentTurnRuntime:
         self._context_assembler = context_assembler
         self._adapter = adapter
         self._durable_tool_bridge = durable_tool_bridge or DurableToolBridge(ledger)
+        self._context_compactor = context_compactor
+        self._tool_resolver = tool_resolver
         self._session_history_limit = session_history_limit
 
     async def run(self, request: AgentTurnRequest) -> AgentTurnResult:
@@ -306,17 +321,31 @@ class AgentTurnRuntime:
         )
         if replayed_checkpoint is not None:
             return self._replayed_suspension(request, *replayed_checkpoint)
+        existing_user = self._ledger.get_item_by_operation_key(
+            request.thread_id,
+            _user_operation_key(request.operation_id),
+        )
         recovered_suspension = self._durable_tool_bridge.suspension_for_operation(
             thread_id=request.thread_id,
             operation_id=request.operation_id,
         )
         if recovered_suspension is not None:
-            recovered_snapshot = self._context_assembler.assemble(
-                request.thread_id,
-                available_tools=_tool_descriptors(request.tools),
-                permission_scope=request.permission_scope,
-                relevant_materials=request.relevant_materials,
-            )
+            try:
+                request = await self._with_resolved_tools(request)
+            except Exception:
+                pass
+            try:
+                recovered_snapshot = await self._assemble_context(
+                    request.thread_id,
+                    available_tools=_tool_descriptors(request.tools),
+                    permission_scope=request.permission_scope,
+                    relevant_materials=request.relevant_materials,
+                )
+            except Exception:
+                recovered_snapshot = self._fallback_snapshot(
+                    request.thread_id,
+                    permission_scope=request.permission_scope,
+                )
             return self._commit_suspension(
                 request,
                 snapshot=recovered_snapshot,
@@ -325,10 +354,6 @@ class AgentTurnRuntime:
             )
 
         starting_head = self._ledger.get_head(request.thread_id)
-        existing_user = self._ledger.get_item_by_operation_key(
-            request.thread_id,
-            _user_operation_key(request.operation_id),
-        )
         pending_action = (
             _replayed_pending_action(existing_user, request)
             if existing_user is not None
@@ -389,12 +414,33 @@ class AgentTurnRuntime:
             ),
         )
         persisted_user = accepted.items[0]
-        snapshot = self._context_assembler.assemble(
-            request.thread_id,
-            available_tools=_tool_descriptors(request.tools),
-            permission_scope=request.permission_scope,
-            relevant_materials=request.relevant_materials,
-        )
+        try:
+            request = await self._with_resolved_tools(request)
+        except Exception as exc:
+            return self._commit_failure(
+                request,
+                snapshot=self._fallback_snapshot(
+                    request.thread_id,
+                    permission_scope=request.permission_scope,
+                ),
+                error=exc,
+            )
+        try:
+            snapshot = await self._assemble_context(
+                request.thread_id,
+                available_tools=_tool_descriptors(request.tools),
+                permission_scope=request.permission_scope,
+                relevant_materials=request.relevant_materials,
+            )
+        except Exception as exc:
+            return self._commit_failure(
+                request,
+                snapshot=self._fallback_snapshot(
+                    request.thread_id,
+                    permission_scope=request.permission_scope,
+                ),
+                error=exc,
+            )
         session = PostgresAgentSession(
             ledger=self._ledger,
             thread_id=request.thread_id,
@@ -402,6 +448,7 @@ class AgentTurnRuntime:
             input_item_id=persisted_user.item_id,
             input_text=request.user_message,
             replay_through_sequence=persisted_user.sequence - 1,
+            replay_after_sequence=snapshot.compacted_through_sequence,
             history_limit=self._session_history_limit,
         )
         run_request = WajeAgentRunRequest(
@@ -429,12 +476,18 @@ class AgentTurnRuntime:
                 operation_id=request.operation_id,
             )
             if suspension is not None:
-                refreshed = self._context_assembler.assemble(
-                    request.thread_id,
-                    available_tools=_tool_descriptors(request.tools),
-                    permission_scope=request.permission_scope,
-                    relevant_materials=request.relevant_materials,
-                )
+                try:
+                    refreshed = await self._assemble_context(
+                        request.thread_id,
+                        available_tools=_tool_descriptors(request.tools),
+                        permission_scope=request.permission_scope,
+                        relevant_materials=request.relevant_materials,
+                    )
+                except Exception:
+                    refreshed = self._fallback_snapshot(
+                        request.thread_id,
+                        permission_scope=request.permission_scope,
+                    )
                 return self._commit_suspension(
                     request,
                     snapshot=refreshed,
@@ -442,23 +495,38 @@ class AgentTurnRuntime:
                     model_turns=0,
                 )
             return self._commit_failure(request, snapshot=snapshot, error=exc)
-        refreshed = self._context_assembler.assemble(
-            request.thread_id,
-            available_tools=_tool_descriptors(request.tools),
-            permission_scope=request.permission_scope,
-            relevant_materials=request.relevant_materials,
-        )
         suspension = self._durable_tool_bridge.suspension_for_operation(
             thread_id=request.thread_id,
             operation_id=request.operation_id,
         )
         if suspension is not None:
+            try:
+                refreshed = await self._assemble_context(
+                    request.thread_id,
+                    available_tools=_tool_descriptors(request.tools),
+                    permission_scope=request.permission_scope,
+                    relevant_materials=request.relevant_materials,
+                )
+            except Exception:
+                refreshed = self._fallback_snapshot(
+                    request.thread_id,
+                    permission_scope=request.permission_scope,
+                )
             return self._commit_suspension(
                 request,
                 snapshot=refreshed,
                 suspension=suspension,
                 model_turns=sdk_result.model_turns,
             )
+        try:
+            refreshed = await self._assemble_context(
+                request.thread_id,
+                available_tools=_tool_descriptors(request.tools),
+                permission_scope=request.permission_scope,
+                relevant_materials=request.relevant_materials,
+            )
+        except Exception as exc:
+            return self._commit_failure(request, snapshot=snapshot, error=exc)
         try:
             final_output = AgentFinalOutput.model_validate(sdk_result.final_output)
             _validate_source_closure(final_output, refreshed)
@@ -507,12 +575,22 @@ class AgentTurnRuntime:
             )
 
         completion_materials = request.completion.context_materials()
-        snapshot = self._context_assembler.assemble(
-            request.thread_id,
-            available_tools=_tool_descriptors(request.tools),
-            permission_scope=request.permission_scope,
-            relevant_materials=completion_materials,
-        )
+        try:
+            snapshot = await self._assemble_context(
+                request.thread_id,
+                available_tools=_tool_descriptors(request.tools),
+                permission_scope=request.permission_scope,
+                relevant_materials=completion_materials,
+            )
+        except Exception as exc:
+            return self._commit_failure(
+                request,
+                snapshot=self._fallback_snapshot(
+                    request.thread_id,
+                    permission_scope=request.permission_scope,
+                ),
+                error=exc,
+            )
         input_text = _task_completion_input(request.completion)
         session = PostgresAgentSession(
             ledger=self._ledger,
@@ -521,6 +599,7 @@ class AgentTurnRuntime:
             input_item_id=checkpoint_item.item_id,
             input_text=input_text,
             replay_through_sequence=current.latest_item_sequence,
+            replay_after_sequence=snapshot.compacted_through_sequence,
             history_limit=self._session_history_limit,
         )
         run_request = WajeAgentRunRequest(
@@ -545,7 +624,7 @@ class AgentTurnRuntime:
         try:
             sdk_result = await self._adapter.run(run_request)
             final_output = AgentFinalOutput.model_validate(sdk_result.final_output)
-            refreshed = self._context_assembler.assemble(
+            refreshed = await self._assemble_context(
                 request.thread_id,
                 available_tools=_tool_descriptors(request.tools),
                 permission_scope=request.permission_scope,
@@ -560,6 +639,121 @@ class AgentTurnRuntime:
             snapshot=refreshed,
             final_output=final_output,
             sdk_result=sdk_result,
+        )
+
+    async def _assemble_context(
+        self,
+        thread_id: str,
+        *,
+        available_tools: Sequence[Mapping[str, Any]] = (),
+        permission_scope: Mapping[str, Any] | None = None,
+        relevant_materials: Sequence[Mapping[str, Any]] = (),
+    ) -> AgentContextSnapshot:
+        try:
+            return self._context_assembler.assemble(
+                thread_id,
+                available_tools=available_tools,
+                permission_scope=permission_scope,
+                relevant_materials=relevant_materials,
+            )
+        except AgentContextCompactionRequired as required:
+            if self._context_compactor is None:
+                raise
+            await self._context_compactor.compact(
+                thread_id=required.thread_id,
+                compact_from_sequence=required.compact_from_sequence,
+                compact_through_sequence=required.compact_through_sequence,
+            )
+            return self._context_assembler.assemble(
+                thread_id,
+                available_tools=available_tools,
+                permission_scope=permission_scope,
+                relevant_materials=relevant_materials,
+            )
+
+    async def _with_resolved_tools(
+        self,
+        request: AgentTurnRequest,
+    ) -> AgentTurnRequest:
+        if self._tool_resolver is None:
+            return request
+        operation_key = f"tool-selection:{request.operation_id}"
+        persisted = self._ledger.get_item_by_operation_key(
+            request.thread_id,
+            operation_key,
+        )
+        if persisted is not None:
+            payload = persisted.payload.get("tool_selection")
+            if not isinstance(payload, Mapping):
+                raise AgentToolDiscoveryError(
+                    "agent_tool_selection_payload_missing"
+                )
+            resolved = self._tool_resolver.replay(
+                user_message=request.user_message,
+                candidate_tools=request.tools,
+                permission_scope=request.permission_scope,
+                selection_payload=payload,
+            )
+            return replace(request, tools=resolved.tools)
+        resolved = await self._tool_resolver.resolve(
+            user_message=request.user_message,
+            candidate_tools=request.tools,
+            permission_scope=request.permission_scope,
+        )
+        digest = canonical_digest(
+            {
+                "operation_id": request.operation_id,
+                "tool_selection": resolved.selection.to_contract(),
+            }
+        )
+        self._ledger.append_items(
+            request.thread_id,
+            [
+                NewThreadItem(
+                    item_id=f"tool-selection-{digest[:24]}",
+                    item_type="tool_selection",
+                    role="system",
+                    text="",
+                    operation_key=operation_key,
+                    customer_visible=False,
+                    payload={
+                        "sdk_replay": False,
+                        "tool_selection": resolved.selection.to_contract(),
+                    },
+                )
+            ],
+        )
+        return replace(request, tools=resolved.tools)
+
+    def _fallback_snapshot(
+        self,
+        thread_id: str,
+        *,
+        permission_scope: Mapping[str, Any] | None,
+    ) -> AgentContextSnapshot:
+        head = self._ledger.get_head(thread_id)
+        normalized_permission = canonical_value(permission_scope or {})
+        if not isinstance(normalized_permission, dict):
+            normalized_permission = {}
+        return AgentContextSnapshot(
+            thread_id=thread_id,
+            thread_summary=None,
+            recent_items=(),
+            active_task=None,
+            accepted_decisions=(),
+            pending_actions=(),
+            artifact_index=(),
+            relevant_materials=(),
+            available_tools=(),
+            permission_scope=normalized_permission,
+            context_version=canonical_digest(
+                {
+                    "schema_version": "agent-context-failure.v1",
+                    "thread_id": thread_id,
+                    "head": head.to_dict(),
+                }
+            ),
+            thread_head=head,
         )
 
     async def resume_ready_task(
@@ -1208,6 +1402,12 @@ def _typed_error(error: Exception) -> tuple[str, str]:
     if isinstance(error, (AgentSdkAdapterError, AgentTurnError)):
         return error.code, error.retryability
     if isinstance(error, DurableToolBridgeError):
+        return error.code, "not_retryable"
+    if isinstance(error, AgentContextError):
+        return error.code, "not_retryable"
+    if isinstance(error, AgentToolDiscoveryError):
+        return error.code, "not_retryable"
+    if isinstance(error, ThreadSummaryError):
         return error.code, "not_retryable"
     if isinstance(error, ThreadLedgerError):
         return error.code, "retryable"

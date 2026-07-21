@@ -16,6 +16,10 @@ from bi_agent.runtime.agent_context import (
     AgentContextAssembler,
     PostgresContextAuthorityReader,
 )
+from bi_agent.runtime.agent_context_compactor import (
+    ThreadContextCompactor,
+    WajeThreadSummaryGenerator,
+)
 from bi_agent.runtime.agent_interaction_tools import agent_interaction_tools
 from bi_agent.runtime.agent_sdk_contracts import WajeAgentTool
 from bi_agent.runtime.agent_turn_runtime import (
@@ -25,6 +29,10 @@ from bi_agent.runtime.agent_turn_runtime import (
 )
 from bi_agent.runtime.agent_task_recovery import (
     AuthoritativeAgentTaskCompletionLoader,
+)
+from bi_agent.runtime.agent_tool_discovery import (
+    DynamicAgentToolResolver,
+    WajeToolSelectionGenerator,
 )
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
 from bi_agent.runtime.agents_sdk_trace import PostgresAgentTraceSink
@@ -36,9 +44,19 @@ from bi_agent.runtime.bi_analysis_tools import (
     PostgresBiAnalysisTaskGateway,
     bi_analysis_tools,
 )
+from bi_agent.runtime.capability_catalog_tool import capability_catalog_tool
+from bi_agent.runtime.controlled_subagent_tools import (
+    PostgresGeneratedArtifactWriter,
+    controlled_subagent_tool,
+)
 from bi_agent.runtime.durable_tool_bridge import PendingActionResolution
 from bi_agent.runtime.evidence_authority import canonical_digest
 from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
+from bi_agent.runtime.thread_context_summary import PostgresThreadSummaryStore
 
 
 GENERAL_AGENT_INSTRUCTIONS = """\
@@ -46,6 +64,9 @@ You are the WAJE General Agent for one durable customer conversation.
 Use only the customer-safe context and tools supplied for this turn.
 Answer directly when the request can be handled from conversation context or general reasoning.
 Inspect persisted analysis artifacts before explaining an existing result or claim.
+Use list_available_capabilities when the user asks what WAJE can analyze or query.
+Delegate only mutually independent, read-only investigations over persisted customer-safe
+artifacts. The main Agent retains final synthesis and all customer-facing authority.
 Start run_bi_analysis only when the request requires new business-data evidence, and use
 continue_bi_analysis only for a material revision of a published analysis task.
 Do not invent data, artifact references, evidence, query results, or completed tool work.
@@ -122,20 +143,39 @@ def build_general_agent_runtime(
         _require_thread_owner(store, command)
         ledger = store.thread_item_ledger
         artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
-        context_assembler = AgentContextAssembler(
-            ledger=ledger,
-            artifact_index=artifact_registry,
-            authority_reader=PostgresContextAuthorityReader(store.connection),
-        )
+        summary_store = PostgresThreadSummaryStore(store.connection)
         provider = MainlandModelProvider.deepseek_from_env(env)
         adapter = WajeAgentsSdkAdapter(
             provider=provider,
             trace_sink=PostgresAgentTraceSink(store),
         )
+        context_assembler = AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=artifact_registry,
+            authority_reader=PostgresContextAuthorityReader(store.connection),
+            summary_store=summary_store,
+            context_token_budget=_context_token_budget(provider),
+        )
+        context_compactor = ThreadContextCompactor(
+            ledger=ledger,
+            summary_store=summary_store,
+            artifact_index=artifact_registry,
+            generator=WajeThreadSummaryGenerator(adapter),
+        )
         tools = (
+            capability_catalog_tool(
+                RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+            ),
             *analysis_artifact_tools(
                 registry=artifact_registry,
                 thread_id=command.thread_id,
+            ),
+            controlled_subagent_tool(
+                adapter=adapter,
+                registry=artifact_registry,
+                writer=PostgresGeneratedArtifactWriter(store.connection),
+                thread_id=command.thread_id,
+                operation_id=command.operation_id,
             ),
             *bi_analysis_tools(
                 gateway=PostgresBiAnalysisTaskGateway(store.connection),
@@ -155,6 +195,11 @@ def build_general_agent_runtime(
                 ledger=ledger,
                 context_assembler=context_assembler,
                 adapter=adapter,
+                context_compactor=context_compactor,
+                tool_resolver=DynamicAgentToolResolver(
+                    generator=WajeToolSelectionGenerator(adapter),
+                    mandatory_tool_names=("ask_user", "request_approval"),
+                ),
             ),
             tools=tools,
         )
@@ -219,17 +264,27 @@ async def resume_general_agent_task(
         store.set_actor_id(actor_id)
         ledger = store.thread_item_ledger
         artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
+        summary_store = PostgresThreadSummaryStore(store.connection)
         provider = MainlandModelProvider.deepseek_from_env(env)
+        adapter = WajeAgentsSdkAdapter(
+            provider=provider,
+            trace_sink=PostgresAgentTraceSink(store),
+        )
         runtime = AgentTurnRuntime(
             ledger=ledger,
             context_assembler=AgentContextAssembler(
                 ledger=ledger,
                 artifact_index=artifact_registry,
                 authority_reader=PostgresContextAuthorityReader(store.connection),
+                summary_store=summary_store,
+                context_token_budget=_context_token_budget(provider),
             ),
-            adapter=WajeAgentsSdkAdapter(
-                provider=provider,
-                trace_sink=PostgresAgentTraceSink(store),
+            adapter=adapter,
+            context_compactor=ThreadContextCompactor(
+                ledger=ledger,
+                summary_store=summary_store,
+                artifact_index=artifact_registry,
+                generator=WajeThreadSummaryGenerator(adapter),
             ),
         )
         return await runtime.resume_ready_task(
@@ -272,6 +327,16 @@ def _require_thread_owner(
     owner_id = str(row.get("owner_id") if isinstance(row, Mapping) else row[0])
     if owner_id != command.actor_id:
         raise RuntimeError("thread_owner_mismatch")
+
+
+def _context_token_budget(provider: MainlandModelProvider) -> int:
+    input_capacity = (
+        provider.config.capabilities.context_window_tokens
+        - provider.config.model_settings.max_output_tokens
+    )
+    if input_capacity < 512:
+        raise RuntimeError("mainland_provider_context_budget_invalid")
+    return max(256, int(input_capacity * 0.8))
 
 
 def _emit_startup_ack() -> None:

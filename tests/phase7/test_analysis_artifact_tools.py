@@ -47,10 +47,13 @@ class ArtifactConnection:
         self.statements: list[str] = []
         self.parameters: list[Mapping[str, Any]] = []
         self.publication_rows, self.evidence_rows = _artifact_rows()
+        self.generated_rows: list[Any] = []
 
     def execute(self, statement: str, _params: Mapping[str, Any]) -> Rows:
         self.statements.append(statement)
         self.parameters.append(dict(_params))
+        if "agent_generated_artifacts" in statement:
+            return Rows(self.generated_rows)
         if "publication_customer_payloads" in statement:
             return Rows(self.publication_rows)
         if "capability_evidence_ledger_entries" in statement:
@@ -200,6 +203,38 @@ def test_registry_indexes_publication_claim_evidence_limitation_and_score() -> N
     assert limitation is not None
     assert limitation.detail["boundaryFacets"][0]["facet_kind"] == "scope"
     assert all("INSERT" not in statement.upper() for statement in connection.statements)
+
+
+def test_registry_indexes_customer_safe_generated_artifacts() -> None:
+    connection = ArtifactConnection()
+    created_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
+    connection.generated_rows.append(
+        (
+            "subagent-artifact:sha256:abc",
+            "controlled_subagent_result",
+            "controlled-subagent-result.v1",
+            "a" * 64,
+            ["publication-1"],
+            "visibility:customer-safe",
+            "独立复核完成。",
+            {
+                "schemaVersion": "controlled-subagent-result.v1",
+                "findings": [
+                    {"text": "只覆盖给定材料。", "sourceRefs": ["publication-1"]}
+                ],
+            },
+            created_at,
+        )
+    )
+    registry = PostgresAnalysisArtifactRegistry(connection)
+
+    item = registry.inspect("thread-1", "subagent-artifact:sha256:abc")
+
+    assert item is not None
+    assert item.descriptor.artifact_type == "controlled_subagent_result"
+    assert item.descriptor.source_refs == ("publication-1",)
+    assert item.descriptor.created_at == created_at.isoformat()
+    assert item.detail["findings"][0]["sourceRefs"] == ["publication-1"]
 
 
 def test_registry_reads_task_artifacts_with_direct_run_filter() -> None:

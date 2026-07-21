@@ -32,6 +32,7 @@ class PostgresAgentSession:
         input_item_id: str,
         input_text: str,
         replay_through_sequence: int,
+        replay_after_sequence: int = 0,
         history_limit: int = 40,
     ) -> None:
         if not all(
@@ -39,7 +40,11 @@ class PostgresAgentSession:
             for value in (thread_id, operation_id, input_item_id, input_text)
         ):
             raise ValueError("agent_session_identity_invalid")
-        if replay_through_sequence < 0:
+        if (
+            replay_through_sequence < 0
+            or replay_after_sequence < 0
+            or replay_after_sequence > replay_through_sequence
+        ):
             raise ValueError("agent_session_replay_sequence_invalid")
         if isinstance(history_limit, bool) or history_limit < 1:
             raise ValueError("agent_session_history_limit_invalid")
@@ -49,6 +54,7 @@ class PostgresAgentSession:
         self._input_item_id = input_item_id
         self._input_text = input_text
         self._replay_through_sequence = replay_through_sequence
+        self._replay_after_sequence = replay_after_sequence
         self._history_limit = history_limit
 
     async def get_items(self, limit: int | None = None) -> list[dict[str, Any]]:
@@ -59,6 +65,7 @@ class PostgresAgentSession:
             self._ledger.list_items,
             self.session_id,
             limit=resolved_limit,
+            after_sequence=self._replay_after_sequence,
             through_sequence=self._replay_through_sequence,
         )
         replay_items: list[dict[str, Any]] = []

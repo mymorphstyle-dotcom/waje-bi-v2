@@ -64,4 +64,5 @@ POST 返回 202 后，首次 snapshot 和 SSE 因而不会被上一轮 terminal 
 - 刷新、断网、关闭页面、typed pending action、stale cursor 与多标签页操作身份均通过
   Playwright 真实浏览器测试。
 
-P1 transport 已关闭。长对话压缩、动态工具发现与受控多 Agent 进入 P2。
+P1 transport 已关闭。后续 P2 长对话压缩、动态工具发现与受控子 Agent 已在
+[P2 上下文与委派合同](./p2-context-and-delegation.md)完成。

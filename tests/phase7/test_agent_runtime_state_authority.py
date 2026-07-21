@@ -592,7 +592,9 @@ def test_context_assembler_restores_recent_items_and_customer_safe_artifact_inde
 
     assert result.status == "completed"
     assert "artifact:publication-1" in adapter.calls[0].instructions
-    assert "继续解释这个结果" in adapter.calls[0].instructions
+    assert adapter.calls[0].input_text == "继续解释这个结果。"
+    assert '"delivery":"postgres_agent_session"' in adapter.calls[0].instructions
+    assert "继续解释这个结果" not in adapter.calls[0].instructions
     assert result.context_version
     assert ledger.get_head("thread-runtime").latest_item_sequence >= 4
 

@@ -52,14 +52,14 @@ def _audit(**overrides: object) -> dict[str, object]:
 def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     schema, tables = _schema_contract()
 
-    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v11"
+    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v12"
     assert SOURCE_MIGRATION_ID == "single-authority-workflow.v7"
     assert SOURCE_MIGRATION_DIGEST == (
         "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
     )
-    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v10"
+    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v11"
     assert IN_PLACE_SOURCE_MIGRATION_DIGEST == (
-        "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044"
+        "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
     )
     assert IN_PLACE_METADATA_BACKFILLS == {
         "conversation_messages",

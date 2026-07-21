@@ -140,6 +140,7 @@ ALTER TABLE waje_runtime.conversation_messages
       'progress',
       'tool_call',
       'tool_result',
+      'tool_selection',
       'clarification',
       'approval_request',
       'approval_decision',
@@ -163,6 +164,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_operation_key
 
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_thread_recent
   ON waje_runtime.conversation_messages(thread_id, item_sequence DESC);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.agent_thread_summaries (
+  summary_ref text PRIMARY KEY,
+  thread_id text NOT NULL
+    REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  summary_version integer NOT NULL CHECK (summary_version >= 1),
+  covers_from_sequence bigint NOT NULL CHECK (covers_from_sequence = 1),
+  covers_through_sequence bigint NOT NULL
+    CHECK (covers_through_sequence >= covers_from_sequence),
+  previous_summary_ref text
+    REFERENCES waje_runtime.agent_thread_summaries(summary_ref),
+  source_digest text NOT NULL,
+  content_digest text NOT NULL,
+  summary_digest text NOT NULL,
+  summary_payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(thread_id, summary_version),
+  UNIQUE(thread_id, covers_through_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_thread_summaries_latest
+  ON waje_runtime.agent_thread_summaries(thread_id, summary_version DESC);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.agent_generated_artifacts (
+  artifact_ref text NOT NULL,
+  thread_id text NOT NULL
+    REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE,
+  operation_id text NOT NULL,
+  artifact_type text NOT NULL
+    CHECK (artifact_type = 'controlled_subagent_result'),
+  artifact_version text NOT NULL,
+  content_digest text NOT NULL,
+  source_refs jsonb NOT NULL CHECK (jsonb_typeof(source_refs) = 'array'),
+  visibility_policy_ref text NOT NULL,
+  customer_summary text NOT NULL,
+  detail jsonb NOT NULL CHECK (jsonb_typeof(detail) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(thread_id, artifact_ref),
+  UNIQUE(thread_id, operation_id, content_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_generated_artifacts_thread_recent
+  ON waje_runtime.agent_generated_artifacts(thread_id, created_at DESC, artifact_ref);
 
 CREATE OR REPLACE FUNCTION waje_runtime.allocate_thread_item_sequence()
 RETURNS trigger
@@ -2885,6 +2929,8 @@ DECLARE authority_table text;
 BEGIN
   FOREACH authority_table IN ARRAY ARRAY[
     'conversation_turns',
+    'agent_thread_summaries',
+    'agent_generated_artifacts',
     'claim_authority_namespaces',
     'claim_keys',
     'claim_support_edges',
@@ -2961,7 +3007,7 @@ CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
 
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v11',
-  '33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3'
+  'single-authority-workflow.v12',
+  '0679a34a1de1b7662cc5508b2454d4c2197b630042e6539b27841452c53d12dd'
 )
 ON CONFLICT (migration_id) DO NOTHING;

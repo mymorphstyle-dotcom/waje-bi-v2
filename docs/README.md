@@ -16,6 +16,7 @@
 - [General Agent Runtime P1 BI analysis tool boundary](./specs/general-agent-runtime/p1-bi-analysis-tools.md)
 - [General Agent Runtime P1 durable tool supervision](./specs/general-agent-runtime/p1-durable-tool-supervision.md)
 - [General Agent Runtime P1 transport cutover](./specs/general-agent-runtime/p1-transport-cutover.md)
+- [General Agent Runtime P2 context and controlled delegation](./specs/general-agent-runtime/p2-context-and-delegation.md)
 - [Accepted single-authority workflow](./adr/2026-07-17-single-authority-agent-workflow.md)
 - [Retired Phase 4 workflow reference](./phase-4-agent-workflow-reference.md)
 - [Architecture decision index](./adr/README.md)

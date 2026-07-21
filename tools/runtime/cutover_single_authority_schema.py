@@ -15,17 +15,17 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "tools/runtime/conversation-runtime.sql"
 SINGLE_AUTHORITY_MARKER = "-- Current single-authority workflow slice."
-SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v11"
+SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v12"
 SINGLE_AUTHORITY_MIGRATION_DIGEST = (
-    "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
+    "0679a34a1de1b7662cc5508b2454d4c2197b630042e6539b27841452c53d12dd"
 )
 SOURCE_MIGRATION_ID = "single-authority-workflow.v7"
 SOURCE_MIGRATION_DIGEST = (
     "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
 )
-IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v10"
+IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v11"
 IN_PLACE_SOURCE_MIGRATION_DIGEST = (
-    "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044"
+    "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
 )
 IN_PLACE_BACKFILL_PREDICATES = {
     "conversation_messages": "item_sequence IS NULL",

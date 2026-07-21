@@ -19,6 +19,7 @@ THREAD_ITEM_TYPES = frozenset(
         "progress",
         "tool_call",
         "tool_result",
+        "tool_selection",
         "clarification",
         "approval_request",
         "approval_decision",
@@ -203,6 +204,7 @@ class ThreadItemLedger(Protocol):
         thread_id: str,
         *,
         limit: int | None = None,
+        after_sequence: int | None = None,
         through_sequence: int | None = None,
     ) -> tuple[ThreadItem, ...]: ...
 
@@ -276,14 +278,18 @@ class InMemoryThreadItemLedger:
         thread_id: str,
         *,
         limit: int | None = None,
+        after_sequence: int | None = None,
         through_sequence: int | None = None,
     ) -> tuple[ThreadItem, ...]:
         _validate_limit(limit)
+        _validate_sequence_boundary(after_sequence)
+        _validate_sequence_boundary(through_sequence)
         with self._lock:
             values = [
                 item
                 for item in self._items.get(thread_id, ())
-                if through_sequence is None or item.sequence <= through_sequence
+                if (after_sequence is None or item.sequence > after_sequence)
+                and (through_sequence is None or item.sequence <= through_sequence)
             ]
             if limit is not None:
                 values = values[-limit:]
@@ -394,14 +400,21 @@ class PostgresThreadItemLedger:
         thread_id: str,
         *,
         limit: int | None = None,
+        after_sequence: int | None = None,
         through_sequence: int | None = None,
     ) -> tuple[ThreadItem, ...]:
         _validate_limit(limit)
+        _validate_sequence_boundary(after_sequence)
+        _validate_sequence_boundary(through_sequence)
         rows = self.connection.execute(
             f"""
             SELECT * FROM (
               {_THREAD_ITEM_SELECT}
               WHERE thread_id = %(thread_id)s
+                AND (
+                  %(after_sequence)s IS NULL
+                  OR item_sequence > %(after_sequence)s
+                )
                 AND (
                   %(through_sequence)s IS NULL
                   OR item_sequence <= %(through_sequence)s
@@ -413,6 +426,7 @@ class PostgresThreadItemLedger:
             """,
             {
                 "thread_id": thread_id,
+                "after_sequence": after_sequence,
                 "through_sequence": through_sequence,
                 "limit": limit,
             },
@@ -597,6 +611,13 @@ def _validate_limit(limit: int | None) -> None:
         isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
     ):
         raise ValueError("thread_item_limit_invalid")
+
+
+def _validate_sequence_boundary(value: int | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+    ):
+        raise ValueError("thread_item_sequence_boundary_invalid")
 
 
 def _head_from_row(row: Any) -> ThreadHead:

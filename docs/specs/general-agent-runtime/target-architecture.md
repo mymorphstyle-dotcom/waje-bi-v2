@@ -4,7 +4,8 @@
 
 框架决策已接受。P0 框架与 Provider adapter、连续对话状态权威和已有材料解释已完成；
 P1 BI 分析工具提交、长任务监督、生产恢复 outbox、正常入口切换和 thread transport 已完成；
-刷新、断网、关闭页面、stale cursor 与多标签页真实浏览器验收已通过。下一阶段为 P2。
+P2 版本化摘要、长对话压缩、动态工具发现和受控子 Agent 已完成。刷新、断网、关闭页面、
+stale cursor 与多标签页真实浏览器验收已通过。本文定义的 P0-P2 实施序列已经闭环。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -765,12 +766,17 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 5. thread SSE 已使用 snapshot、ThreadHead state version、item sequence 和独立 event cursor。
 6. 刷新、断网、关闭页面、stale cursor 和多标签页真实浏览器测试已通过。
 
-### P2：上下文压缩与多 Agent
+### P2：上下文压缩与多 Agent（已完成）
 
-1. 版本化 thread summary 与 artifact retrieval。
-2. 长对话 compaction 和 source closure 验证。
-3. 动态工具发现。
-4. 对独立可并行任务开放受控子 Agent。
+1. append-only `VersionedThreadSummary` 保存覆盖区间、源 item digest、前序摘要和
+   artifact authority refs；摘要只压缩上下文。
+2. `AgentContextAssembler` 在 item 数量或 Provider 输入预算超限前显式触发 compaction，
+   `PostgresAgentSession` 只回放摘要覆盖区间之后的原始 ledger items。
+3. typed 大陆模型 selector 从候选工具目录选择最小工具集，选择结果以 digest 和
+   `tool_selection` item 持久化；恢复严格回放原选择。
+4. `delegate_independent_investigations` 最多并行执行三个只读调查，只接收显式
+   customer-safe artifacts。子结果通过引用闭包验证后保存为结构化 artifact，不能修改
+   ThreadHead、客户对话或 BI 权威。
 
 ## 验收场景
 

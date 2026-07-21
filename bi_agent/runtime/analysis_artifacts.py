@@ -344,6 +344,7 @@ class PostgresAnalysisArtifactRegistry:
         *,
         task_ref: str | None = None,
     ) -> tuple[RegisteredAnalysisArtifact, ...]:
+        generated = self._load_generated(thread_id) if task_ref is None else ()
         publication_rows = self.connection.execute(
             """
             SELECT customer.customer_payload_ref, customer.publication_ref,
@@ -392,7 +393,28 @@ class PostgresAnalysisArtifactRegistry:
             if evidence_entry_refs
             else ()
         )
-        return _registered_artifacts(publication_rows, evidence_rows)
+        return (*generated, *_registered_artifacts(publication_rows, evidence_rows))
+
+    def _load_generated(
+        self,
+        thread_id: str,
+    ) -> tuple[RegisteredAnalysisArtifact, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT artifact_ref, artifact_type, artifact_version,
+                   content_digest, source_refs, visibility_policy_ref,
+                   customer_summary, detail, created_at
+            FROM waje_runtime.agent_generated_artifacts
+            WHERE thread_id = %(thread_id)s
+            ORDER BY created_at DESC, artifact_ref
+            LIMIT %(limit)s
+            """,
+            {
+                "thread_id": thread_id,
+                "limit": self._publication_scan_limit,
+            },
+        ).fetchall()
+        return tuple(_generated_artifact_from_row(row) for row in rows)
 
 
 def analysis_artifact_tools(
@@ -543,6 +565,26 @@ def _registered_artifacts(
         for item in _publication_artifacts(row, score_by_entry=score_by_entry):
             registered_by_ref.setdefault(item.descriptor.artifact_ref, item)
     return tuple(registered_by_ref.values())
+
+
+def _generated_artifact_from_row(row: Any) -> RegisteredAnalysisArtifact:
+    source_refs = _json_value(_field(row, "source_refs", 4))
+    detail = _json_value(_field(row, "detail", 7))
+    if not isinstance(source_refs, list) or not isinstance(detail, Mapping):
+        raise ValueError("generated_artifact_payload_invalid")
+    return RegisteredAnalysisArtifact(
+        descriptor=ArtifactDescriptor(
+            artifact_ref=str(_field(row, "artifact_ref", 0)),
+            artifact_type=str(_field(row, "artifact_type", 1)),
+            version=str(_field(row, "artifact_version", 2)),
+            digest=str(_field(row, "content_digest", 3)),
+            source_refs=tuple(str(item) for item in source_refs),
+            visibility_policy_ref=str(_field(row, "visibility_policy_ref", 5)),
+            customer_summary=str(_field(row, "customer_summary", 6)),
+            created_at=_isoformat(_field(row, "created_at", 8)),
+        ),
+        detail=dict(detail),
+    )
 
 
 def _published_evidence_entry_refs(publication_rows: Sequence[Any]) -> tuple[str, ...]:
