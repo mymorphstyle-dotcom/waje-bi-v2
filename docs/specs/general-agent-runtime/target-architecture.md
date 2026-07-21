@@ -3,7 +3,7 @@
 ## 状态
 
 框架决策已接受。P0 框架与 Provider adapter、连续对话状态权威和已有材料解释已完成；
-BI 分析工具化、长任务恢复和正常入口切换尚未进入。
+P1 BI 分析工具提交边界已完成。长任务恢复、可恢复 interruption 和正常入口切换尚未进入。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -747,19 +747,19 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
 3. 为评分、公式分解和窗口比较保存客户安全解释合同。
 4. 确保已有材料足够时不创建新的 BI run。
 
-### P1：BI 分析工具化
+### P1：BI 分析工具化（提交边界已完成）
 
 1. 将当前完整分析入口封装为 `run_bi_analysis`。
 2. 将 material revision 封装为 `continue_bi_analysis`。
 3. 统一 tool result、retryability、artifact refs 和 limitation refs。
-4. 将澄清和审批改为可恢复 Agent interruption。
 
 ### P1：长任务恢复
 
 1. 每个模型动作和工具结果保存 checkpoint。
 2. 建立 worker lease、heartbeat、recovery 和 outbox。
-3. SSE 使用 snapshot、state version 和 cursor。
-4. 完成刷新、断网、关闭页面和多标签页测试。
+3. 将澄清和审批改为可恢复 Agent interruption。
+4. SSE 使用 snapshot、state version 和 cursor。
+5. 完成刷新、断网、关闭页面和多标签页测试。
 
 ### P2：上下文压缩与多 Agent
 

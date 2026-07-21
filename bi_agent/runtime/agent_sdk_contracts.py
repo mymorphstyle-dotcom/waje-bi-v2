@@ -1,15 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence, Union
+from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, Sequence, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 ToolHandler = Callable[
     [Mapping[str, Any]],
     Union[Any, Awaitable[Any]],
 ]
+
+
+class AgentToolResult(BaseModel):
+    """SDK-neutral result contract shared by every WAJE function tool."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    status: Literal["succeeded", "limited", "failed", "needs_input"]
+    output: dict[str, Any] | None
+    artifact_refs: list[str] = Field(alias="artifactRefs", default_factory=list)
+    material_refs: list[str] = Field(alias="materialRefs", default_factory=list)
+    limitation_refs: list[str] = Field(alias="limitationRefs", default_factory=list)
+    retryability: Literal["never", "same_input", "replan_required"]
+    customer_summary: str = Field(alias="customerSummary", min_length=1)
+    technical_detail_ref: str | None = Field(
+        alias="technicalDetailRef",
+        default=None,
+    )
 
 
 class WajeAgentSession(Protocol):

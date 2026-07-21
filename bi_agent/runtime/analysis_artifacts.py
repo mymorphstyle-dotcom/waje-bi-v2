@@ -8,7 +8,7 @@ from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from bi_agent.runtime.agent_sdk_contracts import WajeAgentTool
+from bi_agent.runtime.agent_sdk_contracts import AgentToolResult, WajeAgentTool
 from bi_agent.runtime.capability_authority import EvidenceLedgerEntry
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
 
@@ -164,19 +164,6 @@ class ExplainClaimInput(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     claim_ref: str = Field(alias="claimRef", min_length=1)
-
-
-class AgentToolResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    status: Literal["succeeded", "limited", "failed", "needs_input"]
-    output: dict[str, Any] | None
-    artifact_refs: list[str] = Field(alias="artifactRefs", default_factory=list)
-    material_refs: list[str] = Field(alias="materialRefs", default_factory=list)
-    limitation_refs: list[str] = Field(alias="limitationRefs", default_factory=list)
-    retryability: Literal["never", "same_input", "replan_required"]
-    customer_summary: str = Field(alias="customerSummary", min_length=1)
-    technical_detail_ref: str | None = Field(alias="technicalDetailRef", default=None)
 
 
 @dataclass(frozen=True)

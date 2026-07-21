@@ -1,5 +1,5 @@
 {
-  "manifest_version": "single-authority.final.release.2026-07-21-v21",
+  "manifest_version": "single-authority.final.release.2026-07-21-v22",
   "components": [
     {
       "component": "contracts",
@@ -21,8 +21,8 @@
     },
     {
       "component": "conversation_and_plan_authority",
-      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/analysis_artifacts.py", "bi_agent/runtime/agent_turn_runtime.py"],
-      "active_ref": "sha256:a7604fb89e94d24f9e1df92d41ec5d12a2daecbcde26acffbbc36b528ced7acb",
+      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/analysis_artifacts.py", "bi_agent/runtime/bi_analysis_tools.py", "bi_agent/runtime/agent_turn_runtime.py"],
+      "active_ref": "sha256:b8868e096fb238234dc8d321a5f42067056ee1734ef57e0a82803fe6109ba3e4",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["single_authority_phase01_tests", "single_authority_phase02_tests", "single_authority_postgres_tests", "typed_conversation_tests", "gateway_phase02_planned_tests", "full_acceptance_eval"],

@@ -10,6 +10,7 @@ from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
 from pydantic import BaseModel, ValidationError
 
 from bi_agent.runtime.agent_sdk_contracts import (
+    AgentToolResult,
     AgentSessionError,
     AgentSdkAdapterError,
     AgentTraceSink,
@@ -207,7 +208,9 @@ def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool
                     if isinstance(value, Mapping)
                     else value
                 ),
-                succeeded=True,
+                succeeded=not (
+                    isinstance(value, AgentToolResult) and value.status == "failed"
+                ),
             )
         if isinstance(value, BaseModel):
             return _sdk_tool_output(value.model_dump(mode="json", by_alias=True))

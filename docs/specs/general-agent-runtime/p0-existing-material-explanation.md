@@ -106,9 +106,9 @@ ledger 仍保存结构化 tool payload。
 
 ## 本阶段之后
 
-以下工作进入后续阶段：
+BI 分析工具提交边界已经由
+[P1 BI 分析工具提交边界](./p1-bi-analysis-tools.md) 完成。以下工作进入后续阶段：
 
-- 将完整 BI 分析封装为 `run_bi_analysis` / `continue_bi_analysis`；
 - durable long-tool checkpoint、lease、heartbeat 和 worker recovery；
 - clarification / approval interruption；
 - Conversation 正常入口和 SSE cursor 的完整切换；

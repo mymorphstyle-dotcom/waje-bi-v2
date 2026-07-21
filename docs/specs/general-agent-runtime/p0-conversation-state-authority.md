@@ -80,9 +80,9 @@ item cursor 成为统一增量源。
 ## 本阶段之后
 
 已有材料解释已由
-[P0 已有材料解释](./p0-existing-material-explanation.md) 完成。以下工作尚未进入：
+[P0 已有材料解释](./p0-existing-material-explanation.md) 完成，BI 分析工具提交边界已由
+[P1 BI 分析工具提交边界](./p1-bi-analysis-tools.md) 完成。以下工作尚未进入：
 
 - 将所有现有 Conversation 请求全面切到 `AgentTurnRuntime`；
-- 把完整 BI 分析封装为 `run_bi_analysis` / `continue_bi_analysis`；
 - durable long-tool checkpoint、lease 后恢复 SDK run state；
 - clarification/approval interruption 和完整 SSE cursor cutover。
