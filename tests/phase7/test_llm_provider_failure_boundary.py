@@ -50,9 +50,10 @@ def _exit_without_result_worker(*_: Any) -> dict[str, Any]:
 class _FailureClient(OpenAICompatibleLLMClient):
     def __init__(self, factory: Callable[[], BaseException]) -> None:
         super().__init__(
-            provider="openai_compatible",
+            provider="test-mainland",
             model="provider-boundary-test",
             api_key="test-key",
+            base_url="https://model.provider.example.cn/v1",
             max_attempts=3,
         )
         self.factory = factory
@@ -66,9 +67,10 @@ class _FailureClient(OpenAICompatibleLLMClient):
 class _OutputClient(OpenAICompatibleLLMClient):
     def __init__(self) -> None:
         super().__init__(
-            provider="openai_compatible",
+            provider="test-mainland",
             model="provider-boundary-test",
             api_key="test-key",
+            base_url="https://model.provider.example.cn/v1",
             max_attempts=3,
         )
 
@@ -252,7 +254,7 @@ def test_provider_failure_audit_exposes_safe_diagnostics_without_raw_error() -> 
     ]
     serialized = json.dumps(captured.value.audit)
     assert captured.value.audit["task"] == "provider_boundary_test"
-    assert captured.value.audit["provider"] == "openai_compatible"
+    assert captured.value.audit["provider"] == "test-mainland"
     assert captured.value.audit["model"] == "provider-boundary-test"
     assert captured.value.audit["prompt_version"] == "test.v1"
     assert captured.value.audit["status"] == "failed"
@@ -370,3 +372,32 @@ def test_closed_runtime_controls_reject_unknown_values(
     with pytest.raises(LLMConfigurationError, match=f"^{expected_error}$"):
         client.invoke_json(**kwargs)
     assert client.calls == 0
+
+
+def test_shared_langgraph_client_requires_explicit_mainland_endpoint_and_key() -> None:
+    base = {
+        "WAJE_LLM_PROVIDER": "deepseek",
+        "WAJE_LLM_MODEL": "deepseek-v4-flash",
+        "WAJE_LLM_BASE_URL": "https://api.deepseek.com/v1",
+    }
+    with pytest.raises(LLMConfigurationError, match="^missing_llm_api_key$"):
+        OpenAICompatibleLLMClient.from_env(
+            {**base, "OPENAI_API_KEY": "must-not-be-used"}
+        )
+    with pytest.raises(LLMConfigurationError, match="^missing_llm_base_url$"):
+        OpenAICompatibleLLMClient.from_env(
+            {
+                "WAJE_LLM_PROVIDER": "deepseek",
+                "WAJE_LLM_MODEL": "deepseek-v4-flash",
+                "DEEPSEEK_API_KEY": "deepseek-key",
+            }
+        )
+    with pytest.raises(LLMConfigurationError, match="^openai_endpoint_forbidden$"):
+        OpenAICompatibleLLMClient.from_env(
+            {
+                "WAJE_LLM_PROVIDER": "deepseek",
+                "WAJE_LLM_MODEL": "deepseek-v4-flash",
+                "WAJE_LLM_BASE_URL": "https://api.openai.com/v1",
+                "DEEPSEEK_API_KEY": "deepseek-key",
+            }
+        )

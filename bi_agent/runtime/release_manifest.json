@@ -1,5 +1,5 @@
 {
-  "manifest_version": "single-authority.final.release.2026-07-21-v18",
+  "manifest_version": "single-authority.final.release.2026-07-21-v19",
   "components": [
     {
       "component": "contracts",
@@ -21,8 +21,8 @@
     },
     {
       "component": "conversation_and_plan_authority",
-      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py"],
-      "active_ref": "sha256:f9458f9fb9b7b599e472968d1fe3704e50bbdabfcfde2c2495d870fe8ac0b2c9",
+      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py"],
+      "active_ref": "sha256:2dc3da8725caeeccb22bf70ffaaec4d6b43aa2f79ca7fa09cc1fb9427846e35b",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["single_authority_phase01_tests", "single_authority_phase02_tests", "single_authority_postgres_tests", "typed_conversation_tests", "gateway_phase02_planned_tests", "full_acceptance_eval"],
@@ -58,7 +58,7 @@
     {
       "component": "gateway",
       "paths": ["app"],
-      "active_ref": "sha256:29778bba6dcde59bf1c44aeb332f5ca55d7deb6aed67e71a9a5ed287cd2f590d",
+      "active_ref": "sha256:712ea33d8524678fe6e05d607bbe8465269de011a4288e946e184fe43c5fbabc",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "gateway_owner",
       "required_checks": ["gateway_typescript_check", "gateway_contract_tests", "gateway_customer_projection_tests", "gateway_crash_recovery_tests", "full_acceptance_eval"],

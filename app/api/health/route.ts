@@ -44,18 +44,16 @@ function gatewayHealth(): HealthCheck {
 
 function llmHealth(): HealthCheck {
   const missing = [];
+  if (!process.env.WAJE_LLM_PROVIDER) missing.push("WAJE_LLM_PROVIDER");
+  if (!process.env.WAJE_LLM_BASE_URL) missing.push("WAJE_LLM_BASE_URL");
   if (!process.env.WAJE_LLM_MODEL) missing.push("WAJE_LLM_MODEL");
-  if (
-    !process.env.WAJE_LLM_API_KEY &&
-    !process.env.OPENAI_API_KEY &&
-    !process.env.DEEPSEEK_API_KEY
-  ) {
-    missing.push("WAJE_LLM_API_KEY|OPENAI_API_KEY|DEEPSEEK_API_KEY");
+  if (!process.env.WAJE_LLM_API_KEY && !process.env.DEEPSEEK_API_KEY) {
+    missing.push("WAJE_LLM_API_KEY|DEEPSEEK_API_KEY");
   }
   if (missing.length) {
     return { name: "llm_access", status: "failed", detail: `missing_env:${missing.join(",")}` };
   }
-  return { name: "llm_access", status: "ok", detail: "model_and_key_configured" };
+  return { name: "llm_access", status: "ok", detail: "mainland_provider_configured" };
 }
 
 async function postgresHealth(): Promise<HealthCheck> {

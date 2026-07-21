@@ -14,7 +14,7 @@ from tests.support.scripted_llm import ScriptedLLMClient
 class _CapturingTierClient(OpenAICompatibleLLMClient):
     def __init__(self):
         super().__init__(
-            provider="openai_compatible",
+            provider="test-mainland",
             model="deepseek-v4-flash",
             critical_model="deepseek-v4-pro",
             api_key="test-key",
@@ -47,10 +47,11 @@ def test_shared_client_uses_critical_model_for_critical_tier():
 def test_shared_client_reads_critical_model_from_environment():
     client = OpenAICompatibleLLMClient.from_env(
         {
-            "WAJE_LLM_PROVIDER": "openai_compatible",
+            "WAJE_LLM_PROVIDER": "deepseek",
             "WAJE_LLM_MODEL": "deepseek-v4-flash",
             "WAJE_LLM_CRITICAL_MODEL": "deepseek-v4-pro",
             "WAJE_LLM_API_KEY": "test-key",
+            "WAJE_LLM_BASE_URL": "https://api.deepseek.com/v1",
         }
     )
 
@@ -65,7 +66,7 @@ def test_shared_client_advertises_explicit_thinking_mode_support():
 class _CapturingProfileClient(OpenAICompatibleLLMClient):
     def __init__(self, *, response_content: str = "{}"):
         super().__init__(
-            provider="openai_compatible",
+            provider="deepseek",
             model="deepseek-v4-flash",
             critical_model="deepseek-v4-pro",
             api_key="test-key",
@@ -224,14 +225,14 @@ def test_deepseek_endpoint_sends_thinking_and_keeps_only_reasoning_presence():
     assert "hidden provider reasoning" not in json.dumps(result)
 
 
-def test_non_deepseek_endpoint_does_not_receive_deepseek_thinking_field():
+def test_other_mainland_endpoint_does_not_receive_deepseek_thinking_field():
     create_calls: list[dict] = []
 
     class FakeCompletions:
         def create(self, **request):
             create_calls.append(dict(request))
             return SimpleNamespace(
-                id="response-openai-1",
+                id="response-mainland-1",
                 choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
                 usage=None,
             )
@@ -244,9 +245,9 @@ def test_non_deepseek_endpoint_does_not_receive_deepseek_thinking_field():
         result = llm_client_module._request_openai_json_once(
             {
                 "api_key": "test-key",
-                "base_url": "https://api.openai.com/v1",
+                "base_url": "https://model.provider.example.cn/v1",
                 "timeout_seconds": None,
-                "model": "gpt-test",
+                "model": "mainland-test",
                 "thinking": "disabled",
             },
             ({"role": "user", "content": "{}"},),

@@ -105,6 +105,11 @@ class ReleaseManifestTest(unittest.TestCase):
                 "bi_agent/runtime/context_manifest.py",
                 "bi_agent/runtime/authoritative_plan_result.py",
                 "bi_agent/runtime/durable_call_journal.py",
+                "bi_agent/runtime/agent_sdk_contracts.py",
+                "bi_agent/runtime/agents_sdk_adapter.py",
+                "bi_agent/runtime/agents_sdk_trace.py",
+                "bi_agent/runtime/mainland_model_provider.py",
+                "bi_agent/runtime/provider_capability_probe.py",
             }
             <= paths_by_component["conversation_and_plan_authority"]
         )

@@ -128,10 +128,16 @@ class OpenAICompatibleLLMClient:
         model: str,
         critical_model: str = "",
         api_key: str,
-        base_url: str = "",
+        base_url: str,
         timeout_seconds: float | None = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ):
+        _validate_mainland_provider_identity(provider)
+        _validate_mainland_base_url(base_url)
+        if not model.strip():
+            raise LLMConfigurationError("missing_llm_model")
+        if not api_key.strip():
+            raise LLMConfigurationError("missing_llm_api_key")
         self.provider = provider
         self.model = model
         self.critical_model = critical_model or model
@@ -151,7 +157,7 @@ class OpenAICompatibleLLMClient:
         ) = None
         self._client = OpenAI(
             api_key=api_key,
-            base_url=base_url or None,
+            base_url=base_url,
             timeout=timeout_seconds,
             max_retries=0,
         )
@@ -162,20 +168,19 @@ class OpenAICompatibleLLMClient:
         environ: Optional[Mapping[str, str]] = None,
     ) -> "OpenAICompatibleLLMClient":
         env = os.environ if environ is None else environ
-        provider = env.get("WAJE_LLM_PROVIDER", "openai").strip()
+        provider = env.get("WAJE_LLM_PROVIDER", "").strip()
         model = env.get("WAJE_LLM_MODEL", "").strip()
         critical_model = env.get("WAJE_LLM_CRITICAL_MODEL", "").strip()
         api_key = (
             env.get("WAJE_LLM_API_KEY")
-            or env.get("OPENAI_API_KEY")
             or env.get("DEEPSEEK_API_KEY")
             or ""
         ).strip()
         base_url = env.get("WAJE_LLM_BASE_URL", "").strip()
         timeout_seconds = _parse_timeout_seconds(env.get("WAJE_LLM_TIMEOUT_SECONDS"))
 
-        if provider not in {"openai", "openai_compatible"}:
-            raise LLMConfigurationError("unsupported_llm_provider")
+        _validate_mainland_provider_identity(provider)
+        _validate_mainland_base_url(base_url)
         if not model:
             raise LLMConfigurationError("missing_llm_model")
         if not api_key:
@@ -618,7 +623,7 @@ def _request_openai_json_once(
 ) -> dict[str, Any]:
     client = OpenAI(
         api_key=config["api_key"],
-        base_url=config.get("base_url") or None,
+        base_url=_validated_config_base_url(config),
         timeout=config["timeout_seconds"],
         max_retries=0,
     )
@@ -747,6 +752,33 @@ def _is_deepseek_endpoint(base_url: str) -> bool:
     parsed = urlparse(base_url)
     hostname = (parsed.hostname or "").lower().rstrip(".")
     return hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
+
+
+def _validate_mainland_provider_identity(provider: str) -> None:
+    normalized = provider.strip().lower()
+    if not normalized:
+        raise LLMConfigurationError("missing_llm_provider")
+    if normalized in {"openai", "openai_default", "sdk_default"}:
+        raise LLMConfigurationError("openai_model_provider_forbidden")
+
+
+def _validate_mainland_base_url(base_url: str) -> None:
+    if not base_url.strip():
+        raise LLMConfigurationError("missing_llm_base_url")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise LLMConfigurationError("invalid_llm_base_url")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise LLMConfigurationError("invalid_llm_base_url")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if hostname == "openai.com" or hostname.endswith(".openai.com"):
+        raise LLMConfigurationError("openai_endpoint_forbidden")
+
+
+def _validated_config_base_url(config: Mapping[str, Any]) -> str:
+    base_url = str(config.get("base_url") or "")
+    _validate_mainland_base_url(base_url)
+    return base_url
 
 
 @contextmanager

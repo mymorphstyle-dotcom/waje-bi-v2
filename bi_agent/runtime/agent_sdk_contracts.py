@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence, Union
+
+from pydantic import BaseModel
+
+
+ToolHandler = Callable[
+    [Mapping[str, Any]],
+    Union[Any, Awaitable[Any]],
+]
+
+
+@dataclass(frozen=True)
+class WajeAgentTool:
+    """WAJE-owned function tool contract exposed to the SDK adapter."""
+
+    name: str
+    description: str
+    input_model: type[BaseModel]
+    handler: ToolHandler
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.replace("_", "").isalnum():
+            raise ValueError("agent_tool_name_invalid")
+        if not self.description.strip():
+            raise ValueError("agent_tool_description_missing")
+        if not isinstance(self.input_model, type) or not issubclass(
+            self.input_model,
+            BaseModel,
+        ):
+            raise TypeError("agent_tool_input_model_invalid")
+
+
+@dataclass(frozen=True)
+class WajeAgentRunRequest:
+    """SDK-neutral input for one in-process model/tool loop."""
+
+    run_id: str
+    agent_name: str
+    instructions: str
+    input_text: str
+    tools: Sequence[WajeAgentTool] = ()
+    output_type: type[BaseModel] | None = None
+    max_turns: int = 10
+    trace_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for value, code in (
+            (self.run_id, "agent_run_id_missing"),
+            (self.agent_name, "agent_name_missing"),
+            (self.instructions, "agent_instructions_missing"),
+            (self.input_text, "agent_input_missing"),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(code)
+        if isinstance(self.max_turns, bool) or self.max_turns < 1:
+            raise ValueError("agent_max_turns_invalid")
+        if self.output_type is not None and (
+            not isinstance(self.output_type, type)
+            or not issubclass(self.output_type, BaseModel)
+        ):
+            raise TypeError("agent_output_type_invalid")
+
+
+@dataclass(frozen=True)
+class WajeAgentStreamEvent:
+    """Customer-independent stream event projected out of SDK events."""
+
+    kind: str
+    delta: str = ""
+    tool_name: str = ""
+
+
+@dataclass(frozen=True)
+class WajeAgentRunResult:
+    """SDK-neutral terminal result retained by WAJE runtime code."""
+
+    run_id: str
+    final_output: str | Mapping[str, Any]
+    usage: Mapping[str, int]
+    model_turns: int
+    stream_events: Sequence[WajeAgentStreamEvent] = ()
+
+
+class AgentTraceSink(Protocol):
+    """Server-side Workbench trace sink; never used by customer projection code."""
+
+    def write_trace_record(self, record: Mapping[str, Any]) -> None: ...
+
+
+class AgentSdkAdapterError(RuntimeError):
+    def __init__(self, code: str, *, retryability: str = "not_retryable") -> None:
+        if retryability not in {"retryable", "not_retryable"}:
+            raise ValueError("agent_sdk_error_retryability_invalid")
+        super().__init__(code)
+        self.code = code
+        self.retryability = retryability

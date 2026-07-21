@@ -26,8 +26,12 @@ class HealthChecksTest(unittest.TestCase):
                 self.assertIn(check, route)
 
         self.assertIn("SELECT 1", route)
+        self.assertIn("WAJE_LLM_PROVIDER", route)
+        self.assertIn("WAJE_LLM_BASE_URL", route)
         self.assertIn("WAJE_LLM_MODEL", route)
         self.assertIn("WAJE_LLM_API_KEY", route)
+        self.assertIn("DEEPSEEK_API_KEY", route)
+        self.assertNotIn("OPENAI_API_KEY", route)
         self.assertIn("ClickHouseRuntime.from_env", route)
         self.assertIn("build_single_authority_graph", route)
         self.assertNotIn("build_pattern_graph", route)
