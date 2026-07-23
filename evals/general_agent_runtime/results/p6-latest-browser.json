@@ -1,0 +1,43 @@
+{
+  "adapterCounts": {
+    "playwright": 1
+  },
+  "caseCount": 1,
+  "cases": [
+    {
+      "adapter": "playwright",
+      "caseId": "p6_answer_readability_browser",
+      "category": "experience",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "playwright",
+          "artifactRefs": [
+            "output/playwright/p6-standard/p6_answer_readability_browser/answer-readability-desktop.png",
+            "output/playwright/p6-standard/p6_answer_readability_browser/answer-readability-mobile.png"
+          ],
+          "caseId": "p6_answer_readability_browser",
+          "durationSeconds": 4.103,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "\nRunning 1 test using 1 worker\n\n\n(node:44034) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n\n[1/1] tests/frontend/customer-conversation.spec.ts:778:5 › 结构化回答具有清晰的段落层级且输入区不遮挡滚动区域\n  1 passed (3.4s)\n"
+        }
+      ],
+      "riskTier": "high"
+    }
+  ],
+  "generatedAt": "2026-07-23T02:42:09.523390+00:00",
+  "mode": "execution",
+  "model": "",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": null,
+  "passedCaseCount": 1,
+  "profile": "smoke",
+  "provider": "",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

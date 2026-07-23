@@ -159,6 +159,9 @@ _RECOMMENDATION_OUTPUT_CONTRACT = (
     '{"recommendation_proposals":[]} when no useful grounded recommendation '
     "exists. "
 )
+_OPTIONAL_RECOMMENDATION_POLICY_REJECTIONS = frozenset(
+    {"recommendation_commitment_claim_ceiling_exceeded"}
+)
 _RECOMMENDATION_VERIFICATION_OUTPUT_CONTRACT = (
     "Return one JSON object whose only top-level key is decision. decision contains "
     "exactly subject_ref, disposition, veto_basis, reason_code, limitation_refs, and "
@@ -1417,9 +1420,9 @@ def _recommendation_output_validator(
         output["recommendation_proposals"],
         "recommendation_output_items_invalid",
     )
-    proposals = tuple(
-        _recommendation_proposal_from_output_item(item, settlement=settlement)
-        for item in items
+    proposals, _policy_rejections = _recommendation_proposals_from_items(
+        items,
+        settlement=settlement,
     )
     if len({item.recommendation_proposal_ref for item in proposals}) != len(proposals):
         raise SemanticAuthorityWorkflowError(
@@ -1509,30 +1512,77 @@ def _recommendation_proposal_from_output_item(
         raise SemanticAuthorityWorkflowError(str(exc)) from exc
 
 
-def _recommendation_proposals_from_output(
-    output: Mapping[str, Any],
+def _recommendation_proposals_from_items(
+    items: Sequence[Mapping[str, Any]],
     *,
     settlement: ClaimSettlement,
-    authority_namespace: ClaimAuthorityNamespace,
-) -> tuple[RecommendationProposal, ...]:
-    _recommendation_output_validator(output, settlement=settlement)
-    proposals = tuple(
-        sorted(
-            (
+) -> tuple[tuple[RecommendationProposal, ...], tuple[Mapping[str, Any], ...]]:
+    proposals: list[RecommendationProposal] = []
+    policy_rejections: list[Mapping[str, Any]] = []
+    for index, item in enumerate(items):
+        try:
+            proposals.append(
                 _recommendation_proposal_from_output_item(
                     item,
                     settlement=settlement,
                 )
-                for item in output["recommendation_proposals"]
-            ),
-            key=lambda item: item.recommendation_proposal_ref,
-        )
+            )
+        except SemanticAuthorityWorkflowError as exc:
+            reason_code = str(exc).strip()
+            if reason_code not in _OPTIONAL_RECOMMENDATION_POLICY_REJECTIONS:
+                raise
+            policy_rejections.append(
+                MappingProxyType(
+                    {
+                        "proposal_index": index,
+                        "reason_code": reason_code,
+                        "disposition": "rejected",
+                    }
+                )
+            )
+    normalized = tuple(
+        sorted(proposals, key=lambda item: item.recommendation_proposal_ref)
+    )
+    return normalized, tuple(policy_rejections)
+
+
+def _recommendation_proposals_from_output(
+    output: Mapping[str, Any],
+    *,
+    settlement: ClaimSettlement,
+) -> tuple[tuple[RecommendationProposal, ...], tuple[Mapping[str, Any], ...]]:
+    _recommendation_output_validator(output, settlement=settlement)
+    proposals, policy_rejections = _recommendation_proposals_from_items(
+        _mapping_sequence(
+            output["recommendation_proposals"],
+            "recommendation_output_items_invalid",
+        ),
+        settlement=settlement,
     )
     if len({item.recommendation_proposal_ref for item in proposals}) != len(proposals):
         raise SemanticAuthorityWorkflowError(
             "recommendation_output_proposal_duplicated"
         )
-    return proposals
+    return proposals, policy_rejections
+
+
+def _provider_audit_with_policy_rejections(
+    audit: RestrictedProviderAudit,
+    *,
+    provider_responses: Sequence[RestrictedProviderResponse],
+    policy_rejections: Sequence[Mapping[str, Any]],
+) -> RestrictedProviderAudit:
+    if not policy_rejections:
+        return audit
+    payload = dict(canonical_value(audit.payload))
+    payload["policy_rejections"] = canonical_value(policy_rejections)
+    return RestrictedProviderAudit.create(
+        purpose=audit.purpose,
+        input_ref=audit.input_ref,
+        input_digest=audit.input_digest,
+        payload=payload,
+        provider_responses=provider_responses,
+    )
 
 
 def _recommendation_public_text_violation(
@@ -2812,11 +2862,18 @@ def run_semantic_authority_workflow(
             ),
         )
         provider_responses.extend(recommendation_invocation.responses)
-        provider_audits.append(recommendation_invocation.audit)
-        recommendation_proposals = _recommendation_proposals_from_output(
-            recommendation_invocation.output,
-            settlement=settlement,
-            authority_namespace=namespace,
+        recommendation_proposals, recommendation_policy_rejections = (
+            _recommendation_proposals_from_output(
+                recommendation_invocation.output,
+                settlement=settlement,
+            )
+        )
+        provider_audits.append(
+            _provider_audit_with_policy_rejections(
+                recommendation_invocation.audit,
+                provider_responses=recommendation_invocation.responses,
+                policy_rejections=recommendation_policy_rejections,
+            )
         )
 
         known_risks = settlement.claim_graph.limitation_refs

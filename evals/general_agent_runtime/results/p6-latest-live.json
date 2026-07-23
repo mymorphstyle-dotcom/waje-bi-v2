@@ -1,0 +1,170 @@
+{
+  "adapterCounts": {
+    "agent_live": 1
+  },
+  "caseCount": 1,
+  "cases": [
+    {
+      "adapter": "agent_live",
+      "caseId": "p6_payment_final_outcome_live",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "agent_live",
+          "advisoryReview": {
+            "decisionCase": true,
+            "dimensions": [
+              "conclusion_directness",
+              "analysis_completeness",
+              "mechanisms_offsets_alternatives",
+              "operational_meaning",
+              "evidence_boundaries",
+              "readability",
+              "actionability"
+            ],
+            "mode": "human_advisory",
+            "observations": [
+              {
+                "characterCount": 1230,
+                "hasAnswer": true,
+                "paragraphCount": 6,
+                "turnId": "initial"
+              },
+              {
+                "characterCount": 633,
+                "hasAnswer": true,
+                "paragraphCount": 6,
+                "turnId": "method_follow_up"
+              },
+              {
+                "characterCount": 551,
+                "hasAnswer": true,
+                "paragraphCount": 4,
+                "turnId": "evidence_challenge"
+              }
+            ],
+            "reviewNote": "评价回答是否完整呈现付费金额与支付终态的联系，按支付方式和渠道给出规模化判断，并严格区分最终状态、过程失败和因果故障。",
+            "status": "pending_human_review"
+          },
+          "caseId": "p6_payment_final_outcome_live",
+          "failures": [],
+          "hardStatus": "passed",
+          "threadId": "thread-eval-p6_payment_final_outcome_live-20260723022107a41c83-r1",
+          "turns": [
+            {
+              "completionKind": "analysis_publication",
+              "customerMessage": "在分析期（2026年4月1日-6月2日）内，付费金额为187.7亿，相比基线期（2026年1月1日-3月4日）的158.2亿，绝对增长29.5亿，相对增长约18.6%。该增长在时间上具有高度一致性（方向一致性比率1.0，实质性命中比率1.0），表明非随机波动。数据质量良好，覆盖所有计划数据集，无缺失。\n\n付费金额增长由公式成分分解如下：\n- 付费频次：贡献87.8%，是增长的主要驱动力。\n- 付费人数：贡献14.2%，正向推动增长。\n- 单笔付费金额：贡献-2.0%，轻微抵消部分增长。\n总增长29.5亿与公式分解总和一致。\n\n跨维度诊断优先级排名（基于结构化偏差和维度分化度）显示，以下维度在分析期内份额变化最为突出。排名仅用于诊断优先级，不同维度间不可加总：\n1. 设备型号 SM-A075F - 诊断优先级得分0.467，正向超额偏差+0.98亿\n2. 地区 拉各斯州 - 得分0.427，正向超额偏差+16.45亿\n3. 城市 拉哥斯 - 得分0.331，正向超额偏差+13.10亿\n4. 渠道 WajeSpecial - 得分0.208，负向超额偏差-6.20亿\n5. 操作系统 Others - 得分0.106，正向超额偏差+4.94亿\n6. 充值档位 >100000 - 得分0.101，负向超额偏差-2.35亿\n7. 网络类型 WIFI - 得分0.093，负向超额偏差-4.53亿\n8. 设备品牌 INFINIX - 得分0.086，负向超额偏差-1.36亿\n9. 支付方式 OPAY - 得分0.053，正向超额偏差+2.09亿\n以上得分反映各维度相对于其基线份额的结构性偏差程度，得分越高表明该维度内某个细分群体的变化越突出。\n\n滚动窗口分析验证了变化的稳定性：在可比的8个滚动周期中，所有周期均显示正向增长，中位数提升47.1%，无周期低于实质性下限。这进一步支持了增长的系统性而非偶发性。\n\n本分析受到以下数据可用性限制：\n- 新增用户注册首充漏斗分解因数据对齐问题未纳入，无法评估拉新转化对增长的贡献。\n- 市场健康指标（活跃用户、新增用户、投放成本等）未能获取，限制了外部市场趋势的对照分析。\n- 付费后站内行为（如下注、游戏参与）数据不可用，付费后价值评估不完整。\n- 付费后行为在不同充值档位中的分层数据无法获取。\n以上限制不影响已观察到的整体付费金额变化方向，但可能降低对部分驱动因素归因的全面性。此外，跨维度诊断排名仅供定位优先维度，各维度间因视角重叠不可相加。\n\n建议调查付费频次提升的核心原因，重点关注以下群体：设备型号SM-A075F、地区拉各斯州、城市拉哥斯、渠道WajeSpecial及支付方式OPAY。这些群体在基线之上展现出超额贡献，可能是增长复制的关键。同时，需评估渠道WajeSpecial的负向超额偏差是否与竞争或运营变化有关。通过深入分析这些维度的用户行为和运营环境，可以识别可规模化推广的举措。",
+              "durationSeconds": 1044.978,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 22,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 1,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "77b18a4b143ed4d46ee4299f3d34d0c3e3da1544e47a55eb393089a41173bd2c",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "07c7385a10297eae6801d0f54d1d6979c81e2ba1c6bea4d3a188463c2857abdb",
+                "materialDecisionTopics": [],
+                "requiredToolName": "run_bi_analysis",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval",
+                  "run_bi_analysis"
+                ],
+                "selectionDigest": "6e31d85326d2e74ed4566a7d6a9aa49471c69f4d6a8db3cfc8fb980bdec0b9e3"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "run_bi_analysis"
+              ],
+              "turnId": "initial"
+            },
+            {
+              "completionKind": "tool_response",
+              "customerMessage": "根据已发布的材料，现有分析聚焦于**付费金额**（分析期2026年4月1日-6月2日：187.7亿；基线期2026年1月1日-3月4日：158.2亿；绝对增长29.5亿，相对增长约18.6%），并未直接提供支付终态订单、成功订单、截至快照未支付订单、支付成功率等明细数据。\n\n材料中的跨维度诊断排名涉及**支付方式OPAY**（诊断优先级得分0.053，正向超额偏差+2.09亿）和**渠道WajeSpecial**（得分0.208，负向超额偏差-6.20亿），但这是基于付费金额份额的结构性偏差，并非支付成功率指标。\n\n关于失败原因、失败环节、重试或耗时结论，材料明确列出了以下数据不可用：\n- 失败原因不可用\n- 失败环节不可用\n- 处理耗时不可用\n- 重试链不可用\n\n因此，**现有数据无法支持失败原因、失败环节、重试或耗时方面的任何结论**。\n\n在已发布的维度诊断中，**支付方式OPAY**是唯一进入诊断排名前9的支付方式（正向超额偏差+2.09亿），表明其在分析期内的付费金额份额相比基线有显著正向变化。但请注意，这反映的是**付费金额贡献的变化**，而非支付成功率。若要评估支付成功率变化，需要重新运行针对支付终态的分析任务。\n\n**总结**：基于现有材料，无法回答支付成功率、终态订单结构、失败原因等具体问题。最值得关注的支付方式是**OPAY**（正向超额偏差+2.09亿），但仅限于付费金额贡献维度。如需支付成功率分析，建议启动新的BI分析任务。",
+              "durationSeconds": 31.29,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 80,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 0,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "12378898ea382a41827da7a99bcb11d882cf876a8e211c3f0cd0c00663733110",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "43012dbe2b59b3c7dc861bf6b5d5c6b9eb9bd0c4cd01a604fc978bc3aa211e5a",
+                "materialDecisionTopics": [],
+                "requiredToolName": "inspect_analysis_artifact",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "inspect_analysis_artifact",
+                  "request_approval"
+                ],
+                "selectionDigest": "0f57fb0d9da31d446f8f484f58c5073e3bdc29fb0b9d08d73266307566fb4a46"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "inspect_analysis_artifact"
+              ],
+              "turnId": "method_follow_up"
+            },
+            {
+              "completionKind": "context_response",
+              "customerMessage": "**不能。** 现有材料仅覆盖**付费金额**的总体变化及其成分分解（付费频次、付费人数、单笔付费金额），以及基于付费金额份额的跨维度诊断排名。材料中明确标注了以下支付过程数据不可用：\n- 支付失败原因不可用\n- 支付失败环节不可用\n- 支付处理耗时不可用\n- 支付重试链不可用\n\n因此，**已观察到的终态变化**仅限于：\n- 付费金额从基线期158.2亿增长至分析期187.7亿，绝对增长29.5亿，相对增长约18.6%。\n- 增长主要由付费频次（贡献87.8%）驱动，付费人数（贡献14.2%）正向推动，单笔付费金额（贡献-2.0%）轻微抵消。\n- 跨维度诊断显示渠道WajeSpecial存在负向超额偏差（-6.20亿），支付方式OPAY存在正向超额偏差（+2.09亿）。\n\n**仍缺少的过程证据**包括：\n- 支付终态订单（成功、失败、未支付）的明细数量与金额。\n- 支付成功率及其变化。\n- 失败原因分布、失败环节分布、重试行为、处理耗时等过程指标。\n\n由于缺乏上述过程证据，**无法判断支付失败是否变多、某个支付环节是否出现故障**。现有数据仅能说明付费金额整体增长，但无法区分增长是否伴随支付成功率下降、失败率上升等负面过程变化。建议启动针对支付终态和支付过程的新分析任务以获取所需证据。",
+              "durationSeconds": 13.335,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 21,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 0,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "73030295f5adbc7efc9a32e0fa15402d2008d3865b0ec61af5c654a1aa6316cb",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "respond",
+                "inputDigest": "2c254e486047a15a52dc4d92213d61f4cfa8cd9cb4fcf6ee782c8cbeb7a3cbc9",
+                "materialDecisionTopics": [],
+                "requiredToolName": null,
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval"
+                ],
+                "selectionDigest": "fad185dbbc591b39f8b7ae62ee4b696223188e14f4660eb5600e67c0f7814869"
+              },
+              "taskCount": 1,
+              "toolCalls": [],
+              "turnId": "evidence_challenge"
+            }
+          ]
+        }
+      ],
+      "riskTier": "high"
+    }
+  ],
+  "generatedAt": "2026-07-23T02:39:17.360772+00:00",
+  "mode": "execution",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": "https://api.deepseek.com",
+  "passedCaseCount": 1,
+  "profile": "smoke",
+  "provider": "deepseek",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

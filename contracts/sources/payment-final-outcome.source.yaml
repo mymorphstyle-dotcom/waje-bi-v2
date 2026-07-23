@@ -1,0 +1,104 @@
+contract_version: "0.1"
+source_id: payment_final_outcome_20240101_20260704
+business_name: 支付订单最终结果聚合数据源合同
+review_status: accepted_current_snapshot_2026-07-23
+data_contract_state: contract_backed
+business_evidence_state: quantifiable
+
+source_lineage:
+  source_contract_ref: contracts/sources/paid-order-detail.source.yaml@0.4
+  source_archive: /Users/luka/Downloads/dapan_pay_data.zip
+  source_archive_sha256: d27df6f2a79029e360d82da74c30413c2c842c820e0bfbc85e5afcf129787ae6
+  raw_table: paid_order_detail_raw_20240101_20260704
+  canonical_success_table: paid_order_success_clean_20240101_20260704_v2
+  canonical_success_key_table: paid_order_success_latest_key_20240101_20260704_v2
+  derivation: one_final_outcome_per_unique_order_then_aggregate
+
+status_authority:
+  source_status_field: 支付状态
+  source_status_mapping:
+    pay_success: successful
+    order_success: not_paid_as_of_snapshot
+  allowed_final_outcomes: [successful, not_paid_as_of_snapshot]
+  unknown_status_policy: fail_closed
+  duplicate_success_rule: keep_latest_payment_completed_time
+  overlap_rule: pay_success_wins_for_same_order_id
+  snapshot_semantics: not_paid_as_of_snapshot_means_no_pay_success_observed_in_frozen_source
+  wording_limit: directional
+  interpretation_boundary: order_success_does_not_identify_failure_reason_or_failure_stage
+
+time_authority:
+  business_timezone: Africa/Lagos
+  cohort_basis: payment_started_at
+  successful_order_date:
+    primary: payment_started_ms converted from UTC instant to Africa/Lagos date
+    fallback: canonical success payment completion business date
+    fallback_reason: 4463 canonical success rows have no valid payment_started_ms
+  not_paid_order_date: 支付发起时间 converted from UTC instant to Africa/Lagos date
+  unknown_or_invalid_date_policy: fail_closed
+
+storage_boundary:
+  analytical_store: ClickHouse
+  product_state_store: PostgreSQL dataset snapshot and release authority
+  analytical_database: waje_bi
+  table_prefix: payment_final_outcome_daily__
+  table_engine: MergeTree
+  clean_schema:
+    - {name: snapshot_id, type: String}
+    - {name: load_revision, type: String}
+    - {name: business_date_lagos, type: Date}
+    - {name: final_outcome, type: "LowCardinality(String)"}
+    - {name: payment_method, type: "LowCardinality(String)"}
+    - {name: channel, type: "Nullable(String)"}
+    - {name: terminal_orders, type: UInt64}
+    - {name: successful_paid_amount_ngn, type: "Decimal(20, 4)"}
+
+grain: [snapshot_id, load_revision, business_date_lagos, final_outcome, payment_method, channel]
+unique_key: [snapshot_id, load_revision, business_date_lagos, final_outcome, payment_method, channel]
+
+quality_contract:
+  required_source_statuses: [order_success, pay_success]
+  source_order_id: non_blank
+  source_status_date: valid_epoch_milliseconds
+  final_order_uniqueness: exact_one_outcome_per_order_before_aggregation
+  successful_order_reconciliation: exact_with_paid_order_success
+  successful_amount_reconciliation: exact_with_paid_order_success
+  unknown_statuses: zero
+
+accepted_snapshot_profile:
+  source_rows: 75984922
+  source_unique_orders: 75984873
+  successful_orders: 41234677
+  not_paid_as_of_snapshot_orders: 34750196
+  overlap_orders_resolved_to_success: 48
+  duplicate_success_rows_removed: 1
+  successful_start_date_fallback_orders: 4463
+  published_aggregate_rows: 83431
+  successful_paid_amount_ngn: "88881490051.0000"
+  date_range: ["2024-01-01", "2026-07-04"]
+
+coverage:
+  source_date_range: {start: "2024-01-01", end: "2026-07-04"}
+  current_stage_coverage:
+    status: accepted_complete_through
+    complete_through: "2026-06-02"
+    later_window_policy: window_data_unavailable_for_cross_source_full_factor_acceptance
+  supported_analyses:
+    - final_payment_outcome_distribution
+    - final_payment_success_share
+    - period_over_period_final_outcome_change
+    - payment_method_final_outcome_slice
+    - channel_final_outcome_slice
+
+evidence_boundary:
+  evidence_type: observed_comparison
+  maximum_claim_strength: directional
+  customer_projection: aggregate_only
+  restricted_fields: [order_id, user_id, raw_status_payload]
+  unsupported_analyses:
+    - failure_reason
+    - failure_stage
+    - retry_chain
+    - payment_processing_latency
+    - provider_or_channel_incident_attribution
+  publication_rule: unsupported_analyses_must_be_disclosed_as_local_evidence_boundaries

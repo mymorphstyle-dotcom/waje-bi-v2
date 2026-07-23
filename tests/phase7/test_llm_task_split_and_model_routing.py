@@ -4,10 +4,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from bi_agent.conversation import agent_core
 from bi_agent.runtime import langgraph_workflow as workflow
 from bi_agent.runtime import llm_client as llm_client_module
 from bi_agent.runtime.durable_call_journal import InMemoryDurableCallJournal
 from bi_agent.runtime.llm_client import LLMOutputError, OpenAICompatibleLLMClient
+from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
 from tests.support.scripted_llm import ScriptedLLMClient
 
 
@@ -45,7 +47,7 @@ def test_shared_client_uses_critical_model_for_critical_tier():
 
 
 def test_shared_client_reads_critical_model_from_environment():
-    client = OpenAICompatibleLLMClient.from_env(
+    client = MainlandModelProvider.structured_client_from_env(
         {
             "WAJE_LLM_PROVIDER": "deepseek",
             "WAJE_LLM_MODEL": "deepseek-v4-flash",
@@ -57,6 +59,59 @@ def test_shared_client_reads_critical_model_from_environment():
 
     assert client.model == "deepseek-v4-flash"
     assert client.critical_model == "deepseek-v4-pro"
+
+
+def test_base_structured_client_uses_its_provider_request_boundary():
+    client = OpenAICompatibleLLMClient(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        max_attempts=1,
+    )
+    provider_result = {
+        "response_id": "response-base-client-1",
+        "content": "{}",
+        "usage": {},
+        "finish_reason": "stop",
+        "reasoning_content_present": False,
+    }
+
+    with patch.object(
+        llm_client_module,
+        "_request_openai_json_in_subprocess",
+        return_value=provider_result,
+    ) as request:
+        result = client.invoke_json(
+            task="base_client_boundary",
+            prompt_version="test.v1",
+            messages=({"role": "user", "content": "{}"},),
+            required_keys=(),
+        )
+
+    assert result.output == {}
+    assert result.audit["finish_reason"] == "stop"
+    request.assert_called_once()
+    request_config = request.call_args.args[0]
+    assert request_config["base_url"] == "https://api.deepseek.com"
+    assert request_config["model"] == "deepseek-v4-flash"
+
+
+def test_conversation_core_resolves_structured_client_through_mainland_provider():
+    structured_client = object()
+
+    with patch.object(
+        MainlandModelProvider,
+        "structured_client_from_env",
+        return_value=structured_client,
+    ) as factory:
+        connection = object()
+        resolved = agent_core._conversation_llm_from_env(
+            circuit_connection=connection,
+        )
+
+    assert resolved is structured_client
+    factory.assert_called_once_with(circuit_connection=connection)
 
 
 def test_shared_client_advertises_explicit_thinking_mode_support():
@@ -113,6 +168,9 @@ def test_shared_client_forwards_explicit_thinking_and_audits_actual_profile():
     assert result.audit["model_tier"] == "critical"
     assert result.audit["thinking"] == "disabled"
     assert result.audit["reasoning_content_present"] is True
+    assert result.audit["finish_reason"] == ""
+    assert result.audit["input_bytes"] > 0
+    assert result.audit["output_bytes"] == 2
     assert "reasoning_content" not in result.audit
 
 
@@ -194,6 +252,7 @@ def test_deepseek_endpoint_sends_thinking_and_keeps_only_reasoning_presence():
                 id="response-deepseek-1",
                 choices=[
                     SimpleNamespace(
+                        finish_reason="stop",
                         message=SimpleNamespace(
                             content="{}",
                             reasoning_content="hidden provider reasoning",
@@ -221,6 +280,7 @@ def test_deepseek_endpoint_sends_thinking_and_keeps_only_reasoning_presence():
 
     assert create_calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
     assert result["reasoning_content_present"] is True
+    assert result["finish_reason"] == "stop"
     assert "reasoning_content" not in result
     assert "hidden provider reasoning" not in json.dumps(result)
 

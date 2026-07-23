@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from bi_agent.runtime.agent_task_resume_outbox import (
     AgentTaskResumeEnvelope,
@@ -34,15 +35,39 @@ class FakeOutbox:
         )
         self.completed: list[str] = []
         self.failed: list[tuple[str, str]] = []
+        self.heartbeats: list[str] = []
 
     def enqueue_ready(self, *, limit: int = 100):
         assert limit == 5
         return ("agent-task-resume:run-1", "agent-task-resume:run-2")
 
-    def claim_ready(self, *, limit: int = 100, lease_owner_id: str):
+    def sweep_exhausted(self, *, limit: int = 100, max_attempts: int = 5):
+        assert limit == 5
+        assert max_attempts == 5
+        return ()
+
+    def claim_ready(
+        self,
+        *,
+        limit: int = 100,
+        lease_owner_id: str,
+        max_attempts: int = 5,
+        lease_seconds: int = 900,
+    ):
         assert limit == 5
         assert lease_owner_id == "worker-1"
+        assert max_attempts == 5
+        assert lease_seconds > 0
         return self.envelopes
+
+    def heartbeat(
+        self,
+        envelope: AgentTaskResumeEnvelope,
+        *,
+        lease_seconds: int,
+    ) -> None:
+        assert lease_seconds > 0
+        self.heartbeats.append(envelope.task_ref)
 
     def complete(self, envelope: AgentTaskResumeEnvelope) -> None:
         self.completed.append(envelope.task_ref)
@@ -52,8 +77,10 @@ class FakeOutbox:
         envelope: AgentTaskResumeEnvelope,
         *,
         error_code: str,
-    ) -> None:
+        max_attempts: int = 5,
+    ) -> str:
         self.failed.append((envelope.task_ref, error_code))
+        return "exhausted" if envelope.attempt_count >= max_attempts else "failed"
 
 
 def test_resume_outbox_completes_and_retries_with_stable_task_identity() -> None:
@@ -80,6 +107,7 @@ def test_resume_outbox_completes_and_retries_with_stable_task_identity() -> None
     assert outbox.completed == ["run-1"]
     assert outbox.failed == [("run-2", "RuntimeError")]
     assert result["superseded"] == []
+    assert result["exhausted"] == []
 
 
 def test_resume_outbox_fencing_prevents_a_stale_worker_from_overwriting() -> None:
@@ -96,7 +124,8 @@ def test_resume_outbox_fencing_prevents_a_stale_worker_from_overwriting() -> Non
             envelope: AgentTaskResumeEnvelope,
             *,
             error_code: str,
-        ) -> None:
+            max_attempts: int = 5,
+        ) -> str:
             raise AssertionError("stale worker must not update the reclaimed row")
 
     outbox = LeaseLostOutbox()
@@ -110,6 +139,51 @@ def test_resume_outbox_fencing_prevents_a_stale_worker_from_overwriting() -> Non
     assert result["completed"] == []
     assert result["failed"] == []
     assert result["superseded"] == ["run-1"]
+
+
+def test_resume_outbox_heartbeats_while_runner_is_active() -> None:
+    outbox = FakeOutbox()
+    outbox.envelopes = outbox.envelopes[:1]
+
+    result = process_agent_task_resume_outbox(
+        outbox=outbox,  # type: ignore[arg-type]
+        resume_runner=lambda _thread_id, _task_ref: (
+            time.sleep(0.04) or {"status": "completed"}
+        ),
+        limit=5,
+        worker_id="worker-1",
+        lease_seconds=1,
+        heartbeat_interval_seconds=0.01,
+    )
+
+    assert result["completed"] == [{"task_ref": "run-1", "status": "completed"}]
+    assert outbox.heartbeats
+
+
+def test_resume_outbox_records_exhausted_terminal_state() -> None:
+    outbox = FakeOutbox()
+    outbox.envelopes = (
+        AgentTaskResumeEnvelope(
+            resume_ref="agent-task-resume:run-5",
+            thread_id="thread-5",
+            task_ref="run-5",
+            attempt_count=5,
+            lease_owner_id="worker-1",
+            lease_epoch=5,
+        ),
+    )
+
+    result = process_agent_task_resume_outbox(
+        outbox=outbox,  # type: ignore[arg-type]
+        resume_runner=lambda _thread_id, _task_ref: (_ for _ in ()).throw(
+            RuntimeError("still unavailable")
+        ),
+        limit=5,
+        worker_id="worker-1",
+    )
+
+    assert result["exhausted"] == ["agent-task-resume:run-5"]
+    assert outbox.failed == [("run-5", "RuntimeError")]
 
 
 def test_resume_outbox_is_discovered_from_terminal_bi_authority_and_checkpoint() -> None:
@@ -132,6 +206,10 @@ def test_resume_outbox_is_discovered_from_terminal_bi_authority_and_checkpoint()
     assert "FOR UPDATE SKIP LOCKED" in module
     assert "lease_expires_at <= now()" in module
     assert "lease_epoch = lease_epoch + 1" in module
+    assert "def heartbeat(" in module
+    assert "outbox_state = 'exhausted'" in module
+    assert "exhausted_at" in schema
+    assert "'exhausted'" in schema
     assert "lease_owner_id" in schema
     assert "lease_expires_at" in schema
     assert "process_agent_task_resume_outbox" in worker

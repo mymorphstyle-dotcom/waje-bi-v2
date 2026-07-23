@@ -5,7 +5,11 @@ import asyncio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
+from bi_agent.runtime.agent_context import (
+    AgentContextAssembler,
+    ArtifactDescriptor,
+    InMemoryArtifactIndex,
+)
 from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentRunRequest,
     WajeAgentRunResult,
@@ -25,6 +29,7 @@ from bi_agent.runtime.agent_turn_runtime import (
     _action_context,
 )
 from bi_agent.runtime.capability_catalog_tool import capability_catalog_tool
+from bi_agent.runtime.llm_client import LLMProviderError
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -32,6 +37,7 @@ from bi_agent.runtime.runtime_contract_registry import (
 from bi_agent.runtime.thread_item_ledger import (
     InMemoryThreadItemLedger,
     NewThreadItem,
+    ThreadHeadTarget,
 )
 
 
@@ -97,6 +103,16 @@ class SelectionGenerator:
         )
 
 
+class FailingSelectionGenerator:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def select(self, **_kwargs: object) -> DynamicToolSelectionOutput:
+        self.calls += 1
+        raise self.error
+
+
 def _candidates() -> tuple[WajeAgentTool, ...]:
     return (
         _tool("inspect_analysis_artifact"),
@@ -141,7 +157,7 @@ def test_dynamic_resolver_adds_mandatory_tools_and_replays_exact_selection() -> 
     ]
 
 
-def test_model_selected_required_optional_tool_is_canonicalized_into_selection() -> None:
+def test_model_required_optional_tool_must_be_present_in_typed_selection() -> None:
     class Adapter:
         async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
             return WajeAgentRunResult(
@@ -156,24 +172,76 @@ def test_model_selected_required_optional_tool_is_canonicalized_into_selection()
                 model_turns=1,
             )
 
-    output = asyncio.run(
-        WajeToolSelectionGenerator(Adapter()).select(
-            user_message="解释材料",
-            tool_catalog=[
-                {
-                    "name": "inspect_analysis_artifact",
-                    "description": "Inspect one artifact.",
-                }
-            ],
+    with pytest.raises(ValueError, match="agent_required_action_tool_missing"):
+        asyncio.run(
+            WajeToolSelectionGenerator(Adapter()).select(
+                user_message="解释材料",
+                tool_catalog=[
+                    {
+                        "name": "inspect_analysis_artifact",
+                        "description": "Inspect one artifact.",
+                    }
+                ],
+                permission_scope={"analysis_access": "single"},
+            )
+        )
+
+
+def test_tool_selection_schema_requires_explicit_required_tool_name() -> None:
+    schema = DynamicToolSelectionOutput.model_json_schema(by_alias=True)
+
+    assert "requiredToolName" in schema["required"]
+    with pytest.raises(ValueError, match="requiredToolName"):
+        DynamicToolSelectionOutput.model_validate(
+            {
+                "selectedTools": [],
+                "initialAction": "respond",
+                "materialDecisionTopics": [],
+            }
+        )
+
+
+def test_tool_selection_trace_routing_stays_out_of_model_input() -> None:
+    class Adapter:
+        request: WajeAgentRunRequest | None = None
+
+        async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
+            self.request = request
+            return WajeAgentRunResult(
+                run_id=request.run_id,
+                final_output={
+                    "selectedTools": [],
+                    "initialAction": "respond",
+                    "requiredToolName": None,
+                    "materialDecisionTopics": [],
+                },
+                usage={},
+                model_turns=1,
+            )
+
+    adapter = Adapter()
+    asyncio.run(
+        WajeToolSelectionGenerator(
+            adapter,
+            trace_metadata={
+                "waje_thread_id": "thread-private-routing",
+                "waje_parent_run_id": "run-parent",
+            },
+        ).select(
+            user_message="直接解释。",
+            tool_catalog=[],
             permission_scope={"analysis_access": "single"},
         )
     )
 
-    assert output.selected_tools == ["inspect_analysis_artifact"]
-    assert output.required_tool_name == "inspect_analysis_artifact"
+    assert adapter.request is not None
+    assert adapter.request.trace_metadata["waje_thread_id"] == (
+        "thread-private-routing"
+    )
+    assert "thread-private-routing" not in adapter.request.input_text
 
 
-def test_material_decision_topics_bind_the_fixed_clarification_tool() -> None:
+def test_material_decision_topics_require_an_exact_clarification_binding() -> None:
     class Adapter:
         async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
             return WajeAgentRunResult(
@@ -191,23 +259,17 @@ def test_material_decision_topics_bind_the_fixed_clarification_tool() -> None:
                 model_turns=1,
             )
 
-    output = asyncio.run(
-        WajeToolSelectionGenerator(Adapter()).select(
-            user_message="评估活动影响。",
-            tool_catalog=[{"name": "run_bi_analysis", "description": "Run BI."}],
-            permission_scope={"analysis_access": "single"},
+    with pytest.raises(ValueError, match="agent_required_action_tool_missing"):
+        asyncio.run(
+            WajeToolSelectionGenerator(Adapter()).select(
+                user_message="评估活动影响。",
+                tool_catalog=[{"name": "run_bi_analysis", "description": "Run BI."}],
+                permission_scope={"analysis_access": "single"},
+            )
         )
-    )
-
-    assert output.initial_action == "ask_user"
-    assert output.required_tool_name == "ask_user"
-    assert output.material_decision_topics == [
-        "time_window",
-        "baseline_or_counterfactual",
-    ]
 
 
-def test_causal_baseline_canonicalizes_overlapping_comparison_topic() -> None:
+def test_causal_baseline_overlap_is_rejected_instead_of_locally_rewritten() -> None:
     class Adapter:
         async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
             return WajeAgentRunResult(
@@ -215,7 +277,7 @@ def test_causal_baseline_canonicalizes_overlapping_comparison_topic() -> None:
                 final_output={
                     "selectedTools": [],
                     "initialAction": "ask_user",
-                    "requiredToolName": "ask_user",
+                    "requiredToolName": None,
                     "materialDecisionTopics": [
                         "baseline_or_counterfactual",
                         "comparison_scope",
@@ -225,15 +287,40 @@ def test_causal_baseline_canonicalizes_overlapping_comparison_topic() -> None:
                 model_turns=1,
             )
 
-    output = asyncio.run(
-        WajeToolSelectionGenerator(Adapter()).select(
-            user_message="评估一次活动对指标的影响。",
-            tool_catalog=[{"name": "run_bi_analysis", "description": "Run BI."}],
+    with pytest.raises(ValueError, match="agent_tool_selection_causal_topic_overlap"):
+        asyncio.run(
+            WajeToolSelectionGenerator(Adapter()).select(
+                user_message="评估一次活动对指标的影响。",
+                tool_catalog=[{"name": "run_bi_analysis", "description": "Run BI."}],
+                permission_scope={"analysis_access": "single"},
+            )
+        )
+
+
+def test_fixed_clarification_action_binds_the_mandatory_tool_locally() -> None:
+    class Generator:
+        async def select(self, **_kwargs: object) -> DynamicToolSelectionOutput:
+            return DynamicToolSelectionOutput(
+                selectedTools=[],
+                initialAction="ask_user",
+                requiredToolName=None,
+                materialDecisionTopics=["comparison_scope"],
+            )
+
+    resolver = DynamicAgentToolResolver(
+        generator=Generator(),
+        mandatory_tool_names=["ask_user", "request_approval"],
+    )
+    resolved = asyncio.run(
+        resolver.resolve(
+            user_message="需要比较哪个渠道集合？",
+            candidate_tools=_candidates(),
             permission_scope={"analysis_access": "single"},
         )
     )
 
-    assert output.material_decision_topics == ["baseline_or_counterfactual"]
+    assert resolved.selection.initial_action == "ask_user"
+    assert resolved.selection.required_tool_name == "ask_user"
 
 
 def test_dynamic_resolver_rejects_unknown_or_tampered_selection() -> None:
@@ -329,6 +416,311 @@ class PassiveAdapter:
         )
 
 
+def _seed_published_analysis(
+    ledger: InMemoryThreadItemLedger,
+    artifacts: InMemoryArtifactIndex,
+    *,
+    thread_id: str,
+    customer_summary: str = "已发布完整分析。\n\n支付终态和证据边界均已说明。",
+) -> int:
+    artifacts.add(
+        thread_id,
+        ArtifactDescriptor(
+            artifact_ref="publication:customer-safe",
+            artifact_type="bi_publication",
+            version="publication:v1",
+            digest="digest-publication",
+            source_refs=("claim:one", "limitation:one"),
+            visibility_policy_ref="visibility:customer-safe",
+            customer_summary=customer_summary,
+            created_at="2026-07-23T00:00:00+00:00",
+            task_ref="task-published",
+        ),
+    )
+    committed = ledger.append_items(
+        thread_id,
+        [
+            NewThreadItem(
+                item_id="assistant-published",
+                item_type="assistant_message",
+                role="assistant",
+                text="已发布完整分析。\n\n支付终态和证据边界均已说明。",
+                operation_key="assistant:published",
+                customer_visible=True,
+                payload={
+                    "final_output": {
+                        "answerMarkdown": (
+                            "已发布完整分析。\n\n支付终态和证据边界均已说明。"
+                        ),
+                        "materialRefs": ["publication:customer-safe", "claim:one"],
+                        "limitationRefs": ["limitation:one"],
+                    }
+                },
+            ),
+            NewThreadItem(
+                item_id="terminal-published",
+                item_type="task_terminal",
+                role="system",
+                text="",
+                operation_key="terminal:published",
+                customer_visible=False,
+                payload={
+                    "status": "completed_with_limits",
+                    "final_output": {
+                        "answerMarkdown": (
+                            "已发布完整分析。\n\n支付终态和证据边界均已说明。"
+                        ),
+                        "materialRefs": ["publication:customer-safe", "claim:one"],
+                        "limitationRefs": ["limitation:one"],
+                    },
+                    "terminal_admission": {
+                        "completionKind": "analysis_publication",
+                        "authorityRefs": [
+                            "publication:customer-safe",
+                            "claim:one",
+                            "limitation:one",
+                        ],
+                    },
+                },
+            ),
+        ],
+        head_target=ThreadHeadTarget(
+            active_task_id=None,
+            active_topic_ref="topic-published",
+            pending_action_ref=None,
+            customer_state="completed_with_limits",
+        ),
+    )
+    return committed.head.state_version
+
+
+def test_selection_provider_failure_preserves_latest_published_analysis() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-selection-recovery")
+    artifacts = InMemoryArtifactIndex()
+    expected_state_version = _seed_published_analysis(
+        ledger,
+        artifacts,
+        thread_id="thread-selection-recovery",
+    )
+    selector = FailingSelectionGenerator(
+        LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+    )
+    adapter = PassiveAdapter()
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=artifacts,
+        ),
+        adapter=adapter,
+        tool_resolver=DynamicAgentToolResolver(
+            generator=selector,
+            mandatory_tool_names=["ask_user", "request_approval"],
+        ),
+    )
+    request = AgentTurnRequest(
+        thread_id="thread-selection-recovery",
+        run_id="run-selection-recovery",
+        operation_id="operation-selection-recovery",
+        user_item_id="message-selection-recovery",
+        user_message="请继续解释已发布分析。",
+        expected_state_version=expected_state_version,
+        instructions="使用动态工具回答。",
+        tools=_candidates(),
+        permission_scope={"analysis_access": "single"},
+    )
+
+    result = asyncio.run(runtime.run(request))
+    replay = asyncio.run(runtime.run(request))
+
+    assert result.status == "completed_with_limits"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "context_response"
+    assert result.terminal_admission.action_binding_digest is None
+    assert result.terminal_admission.executed_tool_names == []
+    assert result.terminal_admission.authority_refs == [
+        "publication:customer-safe",
+        "claim:one",
+        "limitation:one",
+    ]
+    assert result.error_code == "provider_unavailable"
+    assert "本轮追加解释暂时未能完成" in result.assistant_item.text
+    assert "已发布完整分析" in result.assistant_item.text
+    assert "provider_unavailable" not in result.assistant_item.text
+    assert result.final_output == {
+        "answerMarkdown": result.assistant_item.text,
+        "materialRefs": ["publication:customer-safe", "claim:one"],
+        "limitationRefs": ["limitation:one"],
+    }
+    assert result.terminal_item is not None
+    assert result.terminal_item.payload["error_code"] == "provider_unavailable"
+    assert result.customer_projection().get("errorCode") is None
+    assert ledger.get_item_by_operation_key(
+        "thread-selection-recovery",
+        "tool-selection:operation-selection-recovery",
+    ) is None
+    assert adapter.calls == []
+    assert replay.replayed is True
+    assert selector.calls == 1
+
+
+def test_selection_provider_failure_without_publication_remains_failed() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-selection-no-publication")
+    selector = FailingSelectionGenerator(
+        LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+    )
+    adapter = PassiveAdapter()
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=InMemoryArtifactIndex(),
+        ),
+        adapter=adapter,
+        tool_resolver=DynamicAgentToolResolver(
+            generator=selector,
+            mandatory_tool_names=["ask_user", "request_approval"],
+        ),
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            AgentTurnRequest(
+                thread_id="thread-selection-no-publication",
+                run_id="run-selection-no-publication",
+                operation_id="operation-selection-no-publication",
+                user_item_id="message-selection-no-publication",
+                user_message="请继续解释已发布分析。",
+                expected_state_version=0,
+                instructions="使用动态工具回答。",
+                tools=_candidates(),
+                permission_scope={"analysis_access": "single"},
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "failed_turn"
+    assert result.error_code == "provider_unavailable"
+    assert "已发布完整分析" not in result.assistant_item.text
+    assert adapter.calls == []
+
+
+def test_selection_contract_error_cannot_use_published_context_recovery() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-selection-contract-error")
+    artifacts = InMemoryArtifactIndex()
+    expected_state_version = _seed_published_analysis(
+        ledger,
+        artifacts,
+        thread_id="thread-selection-contract-error",
+    )
+    adapter = PassiveAdapter()
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=artifacts,
+        ),
+        adapter=adapter,
+        tool_resolver=DynamicAgentToolResolver(
+            generator=FailingSelectionGenerator(
+                AgentToolDiscoveryError("agent_tool_selection_unknown")
+            ),
+            mandatory_tool_names=["ask_user", "request_approval"],
+        ),
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            AgentTurnRequest(
+                thread_id="thread-selection-contract-error",
+                run_id="run-selection-contract-error",
+                operation_id="operation-selection-contract-error",
+                user_item_id="message-selection-contract-error",
+                user_message="请继续解释已发布分析。",
+                expected_state_version=expected_state_version,
+                instructions="使用动态工具回答。",
+                tools=_candidates(),
+                permission_scope={"analysis_access": "single"},
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "agent_tool_selection_unknown"
+    assert "已发布完整分析" not in result.assistant_item.text
+    assert adapter.calls == []
+
+
+def test_unsafe_publication_summary_cannot_enter_selection_failure_recovery() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-selection-unsafe-publication")
+    artifacts = InMemoryArtifactIndex()
+    artifacts.add(
+        "thread-selection-unsafe-publication",
+        ArtifactDescriptor(
+            artifact_ref="publication:unsafe",
+            artifact_type="bi_publication",
+            version="publication:v1",
+            digest="digest-publication-unsafe",
+            source_refs=("claim:one",),
+            visibility_policy_ref="visibility:customer-safe",
+            customer_summary=f"公开结论 sha256:{'a' * 64}",
+            created_at="2026-07-23T00:00:00+00:00",
+            task_ref="task-unsafe",
+        ),
+    )
+    adapter = PassiveAdapter()
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=artifacts,
+        ),
+        adapter=adapter,
+        tool_resolver=DynamicAgentToolResolver(
+            generator=FailingSelectionGenerator(
+                LLMProviderError(
+                    kind="provider_unavailable",
+                    retryability="retryable",
+                )
+            ),
+            mandatory_tool_names=["ask_user", "request_approval"],
+        ),
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            AgentTurnRequest(
+                thread_id="thread-selection-unsafe-publication",
+                run_id="run-selection-unsafe-publication",
+                operation_id="operation-selection-unsafe-publication",
+                user_item_id="message-selection-unsafe-publication",
+                user_message="请继续解释已发布分析。",
+                expected_state_version=0,
+                instructions="使用动态工具回答。",
+                tools=_candidates(),
+                permission_scope={"analysis_access": "single"},
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert "sha256:" not in result.assistant_item.text
+    assert result.error_code == "provider_unavailable"
+    assert adapter.calls == []
+
+
 def test_agent_turn_persists_tool_selection_in_the_thread_ledger() -> None:
     ledger = InMemoryThreadItemLedger()
     ledger.create_thread("thread-tools")
@@ -418,7 +810,7 @@ def test_runner_receives_authoritative_clarification_topics() -> None:
             generator=SelectionGenerator(
                 [],
                 initial_action="ask_user",
-                required_tool_name="ask_user",
+                required_tool_name=None,
                 material_decision_topics=["comparison_scope"],
             ),
             mandatory_tool_names=["ask_user", "request_approval"],
@@ -444,6 +836,9 @@ def test_runner_receives_authoritative_clarification_topics() -> None:
     instructions = adapter.calls[0].instructions
     assert '"materialDecisionTopics":["comparison_scope"]' in instructions
     assert "must resolve only the listed materialDecisionTopics" in instructions
+    assert "answerMarkdown must contain customer-readable business prose only" in instructions
+    assert "copy numeric literals from the customerSummary exactly" in instructions
+    assert "contains calculationContext" in instructions
 
 
 def test_required_action_cannot_complete_without_the_bound_tool_call() -> None:
@@ -548,6 +943,18 @@ def test_descriptive_outlier_method_is_owned_by_capability_contract() -> None:
     assert "Do not ask the customer to choose an evidence type" in instructions
 
 
+def test_single_publication_explanation_is_separate_from_delegated_investigation() -> (
+    None
+):
+    instructions = " ".join(TOOL_DISCOVERY_INSTRUCTIONS.split())
+    assert "inspect_analysis_artifact or explain_claim directly" in instructions
+    assert "Do not delegate that work" in instructions
+    assert "Prior assistant prose is not material authority" in instructions
+    assert "even when the same statement or number is already visible" in instructions
+    assert "genuinely requires separate, independently scoped investigation" in instructions
+    assert "not a higher-quality replacement" in instructions
+
+
 def test_named_reference_population_does_not_reopen_baseline() -> None:
     instructions = " ".join(TOOL_DISCOVERY_INSTRUCTIONS.split())
     assert "reference population as a bound baseline" in instructions
@@ -571,6 +978,44 @@ def test_business_clock_drives_low_risk_calendar_inference() -> None:
     assert "conversationContext.businessClock" in instructions
     assert "most-recent completed occurrence" in instructions
     assert "downstream decision and plan authority must persist that inference" in instructions
+
+
+def test_published_analysis_task_is_a_typed_revision_target() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-published-task")
+    artifacts = InMemoryArtifactIndex()
+    artifacts.add(
+        "thread-published-task",
+        ArtifactDescriptor(
+            artifact_ref="publication:customer-safe",
+            artifact_type="bi_publication",
+            version="publication:v1",
+            digest="digest-publication",
+            source_refs=("run-published",),
+            visibility_policy_ref="visibility:customer-safe",
+            customer_summary="已发布的季度付费金额分析。",
+            created_at="2026-07-22T00:00:00+00:00",
+            task_ref="run-published",
+        ),
+    )
+    snapshot = AgentContextAssembler(
+        ledger=ledger,
+        artifact_index=artifacts,
+    ).assemble("thread-published-task")
+
+    context = _action_context(snapshot)
+
+    assert context["publishedAnalysisTasks"] == [
+        {
+            "taskRef": "run-published",
+            "publicationRef": "publication:customer-safe",
+            "createdAt": "2026-07-22T00:00:00+00:00",
+        }
+    ]
+    instructions = " ".join(TOOL_DISCOVERY_INSTRUCTIONS.split())
+    assert "publishedAnalysisTasks is the typed list" in instructions
+    assert "choose continue_bi_analysis" in instructions
+    assert "independent new investigation" in instructions
 
 
 def test_resolved_clarification_topics_are_authoritative_action_context() -> None:
@@ -615,9 +1060,25 @@ def test_resolved_clarification_topics_are_authoritative_action_context() -> Non
                 payload={
                     "resolved_pending_action": {
                         "actionRef": "pending-action:resolved-topic",
+                        "materialDecisionTopics": ["comparison_scope"],
+                        "options": [
+                            {
+                                "optionId": "all-other-channels",
+                                "label": "对比所有其他渠道",
+                                "description": "使用其他渠道整体作为参照。",
+                                "recommended": True,
+                            },
+                            {
+                                "optionId": "each-channel",
+                                "label": "逐渠道对比",
+                                "description": "逐一比较其他渠道。",
+                                "recommended": False,
+                            },
+                        ],
                     },
                     "pending_action_resolution": {
                         "decision": "answered",
+                        "selectedOptionId": "all-other-channels",
                         "answerText": "对比所有其他渠道",
                     },
                 },
@@ -634,6 +1095,60 @@ def test_resolved_clarification_topics_are_authoritative_action_context() -> Non
     assert context["resolvedPendingActions"][-1][
         "resolvedMaterialDecisionTopics"
     ] == ["comparison_scope"]
+    assert context["resolvedPendingActions"][-1]["resolvedBusinessDecision"] == {
+        "mode": "selected_option",
+        "option": {
+            "optionId": "all-other-channels",
+            "label": "对比所有其他渠道",
+            "description": "使用其他渠道整体作为参照。",
+            "recommended": True,
+        },
+    }
     instructions = " ".join(TOOL_DISCOVERY_INSTRUCTIONS.split())
     assert "resolvedPendingActions as accepted authority" in instructions
     assert "do not ask a second confirmation question" in instructions
+
+
+def test_action_context_keeps_accepted_decision_business_content() -> None:
+    class AuthorityReader:
+        def active_task(self, thread_id: str, active_task_id: str | None):
+            return None
+
+        def accepted_decisions(self, active_task_id: str | None):
+            return (
+                {
+                    "decision_id": "decision:comparison",
+                    "slot_id": "comparison_scope",
+                    "option_id": "all_other_channels",
+                    "source": "user",
+                    "status": "accepted",
+                    "materiality": "material",
+                    "payload": {
+                        "businessChoice": "对比全部其他渠道整体",
+                        "comparisonOperator": "aggregate",
+                    },
+                },
+            )
+
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-accepted-decision")
+    snapshot = AgentContextAssembler(
+        ledger=ledger,
+        artifact_index=InMemoryArtifactIndex(),
+        authority_reader=AuthorityReader(),
+    ).assemble("thread-accepted-decision")
+
+    context = _action_context(snapshot)
+
+    assert context["acceptedDecisions"] == [{
+        "decisionRef": "decision:comparison",
+        "slotId": "comparison_scope",
+        "optionId": "all_other_channels",
+        "source": "user",
+        "status": "accepted",
+        "materiality": "material",
+        "decisionPayload": {
+            "businessChoice": "对比全部其他渠道整体",
+            "comparisonOperator": "aggregate",
+        },
+    }]

@@ -201,7 +201,7 @@ def test_metric_coverage_profile_preserves_dataset_and_window_trust_boundaries()
             _coverage_record(result_ref="result:paid", dataset_id="paid_order_success"),
             _coverage_record(
                 result_ref="result:attempt",
-                dataset_id="payment_attempt",
+                dataset_id="payment_final_outcome",
                 completeness_status="partial",
                 analysis_readiness="degraded",
                 observed_days=1,
@@ -218,9 +218,9 @@ def test_metric_coverage_profile_preserves_dataset_and_window_trust_boundaries()
     }
     assert profiles["paid_order_success"]["coverage_state"] == "covered"
     assert profiles["paid_order_success"]["metric_non_null_ratio"] == 1.0
-    assert profiles["payment_attempt"]["coverage_state"] == "limited"
-    assert profiles["payment_attempt"]["metric_non_null_ratio"] == 0.0
-    assert "coverage_limited:payment_attempt" in result.limitations
+    assert profiles["payment_final_outcome"]["coverage_state"] == "limited"
+    assert profiles["payment_final_outcome"]["metric_non_null_ratio"] == 0.0
+    assert "coverage_limited:payment_final_outcome" in result.limitations
 
 
 def test_metric_coverage_profile_uses_typed_insufficient_and_rejects_bad_links() -> (

@@ -1,0 +1,85 @@
+contract_version: "0.1"
+capability_id: payment_outcome_compare
+business_name: Payment final-outcome comparison
+review_status: accepted_current_snapshot_2026-07-23
+
+responsibilities:
+  - Compare terminal orders, successful orders, not-paid-as-of-snapshot orders, and payment success rate across accepted windows.
+  - Produce payment-method and channel aggregate slices from the reviewed payment-final-outcome release.
+  - Publish one scale-selected representative summary per declared dimension so required answers can compare the same member across windows without dumping the full profile.
+  - Preserve the distinction between observed final outcome and unavailable payment-process evidence.
+
+parameters:
+  required:
+    - scope
+    - target_window
+    - baseline_window
+    - payment_final_outcome_release
+    - contract_versions
+  optional:
+    - payment_method
+    - channel
+    - minimum_order_scale
+
+non_uses:
+  - Does not relabel not-paid-as-of-snapshot orders as a known payment failure.
+  - Does not infer failure reason, failure stage, retry sequence, processing latency, or provider incident.
+  - Does not expose order IDs, user IDs, or raw status rows in the customer projection.
+
+evidence_outputs:
+  typed_payload: payment_final_outcome_comparison
+  envelope_fields:
+    - evidence_type
+    - strength
+    - wording_limit
+    - scope
+    - result_refs
+    - limitations
+  payload_fields:
+    - window_totals
+    - dimension_summaries
+    - interpretation_contract
+    - terminal_orders
+    - successful_orders
+    - not_paid_as_of_snapshot_orders
+    - payment_success_rate
+    - payment_method_profiles
+    - channel_profiles
+    - outcome_semantics
+
+limitations:
+  - Final status supports directional comparison and aggregate prioritization only.
+  - Failure-process claims require an event-level payment-process source contract.
+  - Sparse payment-method or channel cells must retain their observed order scale.
+
+degradation_rules:
+  - when: payment_final_outcome_release_missing
+    output: report a source-unavailable contract gap and omit final-outcome claims.
+  - when: window_data_incomplete
+    output: report the incomplete window and withhold the affected comparison.
+  - when: payment_process_claim_requested
+    output: disclose the missing payment-process event contract.
+
+lint_rules:
+  - rule_id: terminal_order_identity_required
+    severity: block
+    check: Successful and not-paid-as-of-snapshot orders must reconcile to unique terminal orders.
+  - rule_id: successful_order_reconciliation_required
+    severity: block
+    check: Successful orders and amount must reconcile exactly with paid_order_success.
+  - rule_id: payment_process_boundary_required
+    severity: block
+    check: Final-outcome evidence cannot support failure-process or incident claims.
+
+verifier_hooks:
+  - final_outcome_counts_must_reconcile
+  - success_rate_must_match_successful_over_terminal_orders
+  - final_outcome_claim_must_disclose_payment_process_boundary
+
+typical_question_families:
+  - paid_amount_change_explanation
+  - revenue_health_review
+  - segment_or_factor_attribution
+  - anomaly_or_black_swan_review
+  - custom_baseline_comparison
+  - data_quality_or_evidence_review

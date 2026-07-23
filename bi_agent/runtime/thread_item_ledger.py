@@ -191,6 +191,18 @@ class LedgerAppendResult:
 
 
 class ThreadItemLedger(Protocol):
+    def try_acquire_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> bool: ...
+
+    def release_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> None: ...
+
     def get_head(self, thread_id: str) -> ThreadHead: ...
 
     def get_item_by_operation_key(
@@ -232,6 +244,30 @@ class InMemoryThreadItemLedger:
         self._lock = RLock()
         self._heads: dict[str, ThreadHead] = {}
         self._items: dict[str, list[ThreadItem]] = {}
+        self._operation_leases: set[tuple[str, str]] = set()
+
+    def try_acquire_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> bool:
+        key = _validated_operation_lease_key(thread_id, operation_id)
+        with self._lock:
+            if key in self._operation_leases:
+                return False
+            self._operation_leases.add(key)
+            return True
+
+    def release_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> None:
+        key = _validated_operation_lease_key(thread_id, operation_id)
+        with self._lock:
+            if key not in self._operation_leases:
+                raise ThreadLedgerError("thread_operation_lease_not_owned")
+            self._operation_leases.remove(key)
 
     def create_thread(
         self,
@@ -362,6 +398,52 @@ class PostgresThreadItemLedger:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
         self._lock = RLock()
+
+    @_serialized_postgres_ledger_call
+    def try_acquire_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> bool:
+        lease_key = _operation_lease_identity(thread_id, operation_id)
+        try:
+            row = self.connection.execute(
+                """
+                SELECT pg_try_advisory_lock(
+                  hashtextextended(%(lease_key)s::text, 0)
+                ) AS acquired
+                """,
+                {"lease_key": lease_key},
+            ).fetchone()
+            acquired = bool(_field(row, "acquired", 0)) if row is not None else False
+            self.connection.commit()
+            return acquired
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    @_serialized_postgres_ledger_call
+    def release_operation_lease(
+        self,
+        thread_id: str,
+        operation_id: str,
+    ) -> None:
+        lease_key = _operation_lease_identity(thread_id, operation_id)
+        try:
+            row = self.connection.execute(
+                """
+                SELECT pg_advisory_unlock(
+                  hashtextextended(%(lease_key)s::text, 0)
+                ) AS released
+                """,
+                {"lease_key": lease_key},
+            ).fetchone()
+            if row is None or not bool(_field(row, "released", 0)):
+                raise ThreadLedgerError("thread_operation_lease_not_owned")
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     @_serialized_postgres_ledger_call
     def get_head(self, thread_id: str) -> ThreadHead:
@@ -645,6 +727,26 @@ def _validate_sequence_boundary(value: int | None) -> None:
         isinstance(value, bool) or not isinstance(value, int) or value < 0
     ):
         raise ValueError("thread_item_sequence_boundary_invalid")
+
+
+def _validated_operation_lease_key(
+    thread_id: str,
+    operation_id: str,
+) -> tuple[str, str]:
+    for value in (thread_id, operation_id):
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError("thread_operation_lease_identity_invalid")
+    return thread_id, operation_id
+
+
+def _operation_lease_identity(thread_id: str, operation_id: str) -> str:
+    thread_id, operation_id = _validated_operation_lease_key(
+        thread_id,
+        operation_id,
+    )
+    return "agent-turn-operation:sha256:" + canonical_digest(
+        {"thread_id": thread_id, "operation_id": operation_id}
+    )
 
 
 def _head_from_row(row: Any) -> ThreadHead:

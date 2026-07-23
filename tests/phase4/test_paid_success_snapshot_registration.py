@@ -61,6 +61,16 @@ class FakeClickHouseClient:
             "null_critical_fields": 0,
             "invalid_amount_rows": 0,
             "duplicate_key_rows": 0,
+            "source_first_payment_rows": 100,
+            "source_first_payment_users": 99,
+            "canonical_first_payment_rows": 99,
+            "canonical_first_payment_users": 99,
+            "canonical_first_payment_duplicate_rows": 0,
+            "canonical_first_payment_missing_timestamp_rows": 0,
+            "noncanonical_first_payment_timestamp_rows": 0,
+            "valid_first_payment_lag_rows": 97,
+            "missing_registered_at_first_payment_rows": 1,
+            "negative_first_payment_lag_rows": 1,
             "content_hash_a": 123456789,
             "content_hash_b": 987654321,
             **(aggregate or {}),
@@ -176,6 +186,29 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
             client.queries[2],
         )
 
+    def test_aggregate_fingerprint_preserves_datetime64_timezone(self):
+        typed_schema = (
+            *SCHEMA,
+            ("registered_at", "Nullable(DateTime64(3, 'Africa/Lagos'))"),
+        )
+        contract = self._source_contract()
+        contract["storage_boundary"]["clean_schema"] = [
+            {"name": name, "type": data_type} for name, data_type in typed_schema
+        ]
+        client = FakeClickHouseClient(schema=typed_schema)
+
+        inspect_existing_paid_success(
+            client,
+            archive_path=self.archive,
+            physical_table=PHYSICAL_TABLE,
+            source_contract=contract,
+        )
+
+        self.assertIn(
+            "ifNull(`registered_at`, toDateTime64(0, 3, 'Africa/Lagos'))",
+            client.queries[2],
+        )
+
     def test_schema_mismatch_fails_before_fact_aggregate_query(self):
         client = FakeClickHouseClient(schema=SCHEMA[:-1])
 
@@ -213,6 +246,9 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
             "row_count": {"aggregate": {"row_count": 41_234_676}},
             "date_range": {"aggregate": {"max_business_date": "2026-07-03"}},
             "duplicate_key": {"aggregate": {"duplicate_key_rows": 1}},
+            "data_quality": {
+                "aggregate": {"canonical_first_payment_duplicate_rows": 1}
+            },
         }
         for failure_type, mutation in mutations.items():
             with self.subTest(failure_type=failure_type):
@@ -244,7 +280,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         self.assertEqual(payload["dataset_id"], "paid_order_success")
         self.assertEqual(
             payload["contract_ref"],
-            "contracts/sources/paid-order-detail.source.yaml@0.3",
+            "contracts/sources/paid-order-detail.source.yaml@0.4",
         )
         self.assertEqual(payload["row_count"], 41_234_677)
         self.assertEqual(payload["reconciliation_ref"], "")
@@ -254,7 +290,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         )
         self.assertEqual(len(payload["rows_content_hash"]), 64)
 
-    def test_registration_publishes_one_atomic_release_without_payment_attempt(self):
+    def test_registration_keeps_final_outcome_in_its_own_atomic_release(self):
         store = _LockRecordingStore()
         result = register_existing_paid_success_snapshot(
             store,
@@ -269,7 +305,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
         self.assertEqual(store.publish_calls, 1)
         self.assertEqual(len(store.dataset_snapshots), 1)
         self.assertNotIn(
-            "payment_attempt",
+            "payment_final_outcome",
             tuple(item["dataset_id"] for item in store.dataset_snapshots.values()),
         )
         self.assertEqual(
@@ -350,8 +386,8 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                     payload,
                     {
                         **payload,
-                        "dataset_id": "payment_attempt",
-                        "snapshot_ref": "attempt",
+                        "dataset_id": "payment_final_outcome",
+                        "snapshot_ref": "payment-final",
                     },
                 )
             )
@@ -461,7 +497,7 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
 
     def _source_contract(self):
         return {
-            "contract_version": "0.3",
+            "contract_version": "0.4",
             "source_file": {
                 "sha256": self.archive_sha256,
                 "date_range": {"start": "2024-01-01", "end": "2026-07-04"},
@@ -479,6 +515,18 @@ class PaidSuccessSnapshotRegistrationTest(unittest.TestCase):
                 "dedup_key": "订单id",
                 "duplicate_success_rule": "keep latest 支付完成时间",
                 "cleaned_profile": {"paid_records": 41_234_677},
+            },
+            "first_payment_authority": {
+                "source_first_payment_rows": 100,
+                "canonical_first_payment_rows": 99,
+                "canonical_first_payment_users": 99,
+            },
+            "timestamp_authority": {
+                "registered_to_first_paid_lag": {
+                    "canonical_rows_valid": 97,
+                    "canonical_rows_missing_registered_at": 1,
+                    "canonical_rows_negative_source_anomaly": 1,
+                }
             },
         }
 

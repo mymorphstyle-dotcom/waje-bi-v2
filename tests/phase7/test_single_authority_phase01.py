@@ -27,6 +27,7 @@ def intent_revision(
     *,
     original_user_text: str = "2026年6月1日付费金额为什么上涨？",
     supersedes_intent_revision_id: str | None = None,
+    requested_factor_refs: tuple[str, ...] = (),
 ) -> IntentRevision:
     metric_text = "付费金额"
     metric_start = original_user_text.index(metric_text)
@@ -45,6 +46,7 @@ def intent_revision(
             "slot_id": "comparison_baseline",
         },
         direction_premise="user_hypothesis_positive",
+        requested_factor_refs=requested_factor_refs,
         requested_analysis_axes=("formula_tree", "dimension_screen", "time_context"),
         desired_decisions=(
             {"decision_kind": "explain_change", "target_ref": "paid_amount"},
@@ -77,8 +79,8 @@ def intent_revision(
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v1",
-        prompt_version="single-authority-intent.v1",
+        schema_version="intent-revision.v2",
+        prompt_version="single-authority-intent.v2",
         model_version="deepseek-v4-flash",
         known_goal_ids=GOAL_IDS,
         known_metric_ids=METRIC_IDS,
@@ -112,6 +114,33 @@ class IntentRevisionContractTest(unittest.TestCase):
 
         self.assertNotEqual(first.content_digest, second.content_digest)
         self.assertEqual(first.material_binding_digest, second.material_binding_digest)
+
+    def test_requested_factor_refs_are_typed_material_intent(self):
+        general = intent_revision()
+        focused = intent_revision(requested_factor_refs=("payer_count",))
+
+        self.assertEqual(focused.requested_factor_refs, ("payer_count",))
+        self.assertNotEqual(
+            general.material_binding_digest,
+            focused.material_binding_digest,
+        )
+
+        payload = focused.to_dict()
+        payload.pop("intent_revision_id")
+        payload.pop("content_digest")
+        payload["requested_factor_refs"] = ["unknown_factor"]
+        with self.assertRaisesRegex(
+            SingleAuthorityContractError,
+            "intent_revision_factor_ref_unknown",
+        ):
+            IntentRevision.create(**payload, known_metric_ids=METRIC_IDS)
+
+        payload["requested_factor_refs"] = ["paid_amount"]
+        with self.assertRaisesRegex(
+            SingleAuthorityContractError,
+            "intent_revision_factor_target_overlap_invalid",
+        ):
+            IntentRevision.create(**payload, known_metric_ids=METRIC_IDS)
 
     def test_source_span_must_belong_to_original_user_text(self):
         revision = intent_revision()
@@ -168,6 +197,7 @@ class IntentRevisionContractTest(unittest.TestCase):
             "comparison_spec": {"kind": "none"},
             "direction_premise": "user_hypothesis_positive",
             "requested_analysis_axes": ["formula_tree"],
+            "requested_factor_refs": [],
             "desired_decisions": [],
             "ambiguity_slots": [],
             "source_spans": [],
@@ -180,8 +210,8 @@ class IntentRevisionContractTest(unittest.TestCase):
                 provider_output,
                 run_attempt_id="run-attempt-1",
                 original_user_text="2026年6月1日付费金额为什么上涨？",
-                schema_version="intent-revision.v1",
-                prompt_version="single-authority-intent.v1",
+                schema_version="intent-revision.v2",
+                prompt_version="single-authority-intent.v2",
                 model_version="deepseek-v4-flash",
                 known_goal_ids=GOAL_IDS,
                 known_metric_ids=METRIC_IDS,
@@ -200,6 +230,7 @@ class IntentRevisionContractTest(unittest.TestCase):
             "comparison_spec": {"kind": "none"},
             "direction_premise": "user_hypothesis_positive",
             "requested_analysis_axes": ["formula_tree"],
+            "requested_factor_refs": [],
             "desired_decisions": [],
             "ambiguity_slots": [],
             "source_spans": [],
@@ -213,8 +244,8 @@ class IntentRevisionContractTest(unittest.TestCase):
                 provider_output,
                 run_attempt_id="run-attempt-1",
                 original_user_text="分析用户 u-00042 的付费金额",
-                schema_version="intent-revision.v1",
-                prompt_version="single-authority-intent.v1",
+                schema_version="intent-revision.v2",
+                prompt_version="single-authority-intent.v2",
                 model_version="deepseek-v4-flash",
                 known_goal_ids=GOAL_IDS,
                 known_metric_ids=METRIC_IDS,

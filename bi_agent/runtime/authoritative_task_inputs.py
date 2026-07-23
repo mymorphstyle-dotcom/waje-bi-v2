@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+import json
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 from bi_agent.runtime.analysis_contract_compiler import (
@@ -123,6 +125,7 @@ class MaterializedAuthoritativeTaskInputs:
     task_inputs: TaskRuntimeInputs
     settlement_authority: CapabilitySettlementAuthority
     accepted_query_attempt_refs: tuple[str, ...]
+    performance_observations: tuple[Mapping[str, Any], ...] = ()
 
     def resolve_task_input(
         self,
@@ -145,6 +148,7 @@ class AuthoritativeTaskInputMaterializer:
         decision_ledger: DecisionLedger,
         authority_context: AuthorityContext,
     ) -> MaterializedAuthoritativeTaskInputs:
+        performance_observations: list[dict[str, Any]] = []
         plan, intent, context = _validate_authority_bundle(
             plan_revision=plan_revision,
             intent_revision=intent_revision,
@@ -189,6 +193,7 @@ class AuthoritativeTaskInputMaterializer:
             intent=intent,
             registry=registry,
         )
+        started = perf_counter()
         outcome = compile_analysis_contract(
             run_id=plan.plan_revision_id,
             proposal=compile_material,
@@ -198,6 +203,14 @@ class AuthoritativeTaskInputMaterializer:
             temporal_authority=plan.temporal_authority,
             as_of=_parse_actual_as_of(context.actual_as_of),
             release_resolver=release_resolver,
+        )
+        performance_observations.append(
+            _performance_observation(
+                stage="contract_compile",
+                operation="compile_analysis_contract",
+                started=started,
+                input_value=compile_material,
+            )
         )
         _validate_compile_outcome(
             outcome=outcome,
@@ -216,17 +229,33 @@ class AuthoritativeTaskInputMaterializer:
             contract_snapshots = {
                 ref: snapshots[ref] for ref in contract.dataset_snapshot_refs
             }
+            query_input = {
+                "query_contract": contract.to_dict(),
+                "dataset_snapshots": tuple(
+                    item.to_dict() for item in contract_snapshots.values()
+                ),
+            }
+            started = perf_counter()
             validate_clickhouse_query_contract(
                 contract,
                 contract_snapshots,
                 registry=registry,
                 release_resolver=release_resolver,
             )
+            performance_observations.append(
+                _performance_observation(
+                    stage="query_contract_validation",
+                    operation=contract.query_contract_id,
+                    started=started,
+                    input_value=query_input,
+                )
+            )
             owner_task = _query_owner_task(
                 plan=plan,
                 outcome=outcome,
                 contract=contract,
             )
+            started = perf_counter()
             result, accepted_attempt_ref = _execute_journaled_query(
                 plan=plan,
                 task=owner_task,
@@ -236,6 +265,15 @@ class AuthoritativeTaskInputMaterializer:
                 release_resolver=release_resolver,
                 attempt_journal=self.attempt_journal,
             )
+            performance_observations.append(
+                _performance_observation(
+                    stage="query_execution",
+                    operation=contract.query_contract_id,
+                    started=started,
+                    input_value=query_input,
+                )
+            )
+            started = perf_counter()
             report = validate_query_result(
                 contract,
                 result,
@@ -243,16 +281,38 @@ class AuthoritativeTaskInputMaterializer:
                 evidence_writer=evidence_writer,
                 release_resolver=release_resolver,
             )
+            performance_observations.append(
+                _performance_observation(
+                    stage="query_result_validation",
+                    operation=contract.query_contract_id,
+                    started=started,
+                    input_value=result.to_dict(),
+                )
+            )
             query_results.append(result)
             completeness_reports.append(report)
             accepted_query_attempt_refs.append(accepted_attempt_ref)
         if query_results:
+            started = perf_counter()
             completeness_reports = list(
                 validate_query_set(
                     tuple(outcome.query_contracts),
                     tuple(query_results),
                     tuple(completeness_reports),
                     evidence_writer=evidence_writer,
+                )
+            )
+            performance_observations.append(
+                _performance_observation(
+                    stage="query_set_validation",
+                    operation="validate_query_set",
+                    started=started,
+                    input_value={
+                        "query_contract_refs": tuple(
+                            item.query_contract_id for item in outcome.query_contracts
+                        ),
+                        "result_refs": tuple(item.result_ref for item in query_results),
+                    },
                 )
             )
 
@@ -273,6 +333,7 @@ class AuthoritativeTaskInputMaterializer:
         bound_by_capability: dict[str, BoundCapabilityInput] = {}
         for capability_id in capability_ids:
             execution_plan = execution_plan_by_capability[capability_id]
+            started = perf_counter()
             bound_by_capability[capability_id] = bind_capability_inputs(
                 execution_plan,
                 results=result_by_query,
@@ -282,6 +343,25 @@ class AuthoritativeTaskInputMaterializer:
                 evidence_writer=evidence_writer,
                 runtime_registry=registry,
                 release_resolver=release_resolver,
+            )
+            performance_observations.append(
+                _performance_observation(
+                    stage="capability_input_binding",
+                    operation=capability_id,
+                    started=started,
+                    input_value={
+                        "query_contract_refs": tuple(
+                            ref
+                            for slot in (
+                                *execution_plan.required_input_slots,
+                                *execution_plan.optional_input_slots,
+                            )
+                            for ref in slot.query_contract_refs
+                        ),
+                        "result_refs": tuple(result_by_query),
+                        "report_refs": tuple(report_by_query),
+                    },
+                )
             )
 
         scoped_inputs = []
@@ -501,6 +581,7 @@ class AuthoritativeTaskInputMaterializer:
             task_inputs=task_inputs,
             settlement_authority=settlement_authority,
             accepted_query_attempt_refs=tuple(sorted(set(accepted_query_attempt_refs))),
+            performance_observations=tuple(performance_observations),
         )
 
 
@@ -522,6 +603,28 @@ def materialize_authoritative_task_inputs(
         decision_ledger=decision_ledger,
         authority_context=authority_context,
     )
+
+
+def _performance_observation(
+    *,
+    stage: str,
+    operation: str,
+    started: float,
+    input_value: Any,
+) -> dict[str, Any]:
+    encoded = json.dumps(
+        canonical_value(input_value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return {
+        "stage": stage,
+        "operation": operation,
+        "duration_ms": round((perf_counter() - started) * 1000, 6),
+        "input_bytes": len(encoded),
+    }
 
 
 def _execute_journaled_query(
@@ -1541,6 +1644,14 @@ def _task_payload(
             binding=binding,
             capability_id=capability_id,
         )
+    if payload_kind == "funnel_decomposition":
+        return _funnel_decomposition_payload(
+            bound=bound,
+            execution_plan=execution_plan,
+            contracts=contracts,
+            binding=binding,
+            capability_id=capability_id,
+        )
     if payload_kind == "candidate_dimension_screen":
         rows_by_dimension = _rows_by_dimension(bound, execution_plan, query_by_ref)
         group_key = _binding_string(fields, "group_key", capability_id)
@@ -1579,6 +1690,56 @@ def _task_payload(
             "order_key": order_key,
             "user_key": user_key,
             **dict(parameters),
+        }
+    if payload_kind == "payment_outcome_comparison":
+        rows_by_dimension = _rows_by_dimension(
+            bound,
+            execution_plan,
+            query_by_ref,
+        )
+        group_key = _binding_string(fields, "group_key", capability_id)
+        window_id_key = _binding_string(fields, "window_id_key", capability_id)
+        target_group = _binding_string(fields, "target_group", capability_id)
+        baseline_group = _binding_string(fields, "baseline_group", capability_id)
+        terminal_orders_key = _binding_string(
+            fields, "terminal_orders_key", capability_id
+        )
+        successful_orders_key = _binding_string(
+            fields, "successful_orders_key", capability_id
+        )
+        not_paid_orders_key = _binding_string(
+            fields, "not_paid_orders_key", capability_id
+        )
+        success_rate_key = _binding_string(
+            fields, "success_rate_key", capability_id
+        )
+        for contract in contracts:
+            _require_query_fields(
+                contract,
+                (
+                    group_key,
+                    window_id_key,
+                    terminal_orders_key,
+                    successful_orders_key,
+                    not_paid_orders_key,
+                    success_rate_key,
+                ),
+                capability_id,
+            )
+        return {
+            "rows_by_dimension": rows_by_dimension,
+            "group_key": group_key,
+            "window_id_key": window_id_key,
+            "target_group": target_group,
+            "baseline_group": baseline_group,
+            "terminal_orders_key": terminal_orders_key,
+            "successful_orders_key": successful_orders_key,
+            "not_paid_orders_key": not_paid_orders_key,
+            "success_rate_key": success_rate_key,
+            "dimension_labels": {
+                item: str(registry.dimension(item).get("business_name") or item)
+                for item in rows_by_dimension
+            },
         }
     if payload_kind == "dimension_distribution":
         rows_by_dimension = _rows_by_dimension(bound, execution_plan, query_by_ref)
@@ -2736,6 +2897,20 @@ def _formula_payload(
         "baseline_metrics": baseline_metrics,
         "target_metrics": target_metrics,
         "factor_metric_ids": factor_ids,
+        "factor_groupings": tuple(
+            {
+                "grouping_id": grouping.grouping_id,
+                "method": grouping.method,
+                "groups": tuple(
+                    {
+                        "factor_id": group.factor_id,
+                        "member_metric_ids": group.member_metric_ids,
+                    }
+                    for group in grouping.groups
+                ),
+            }
+            for grouping in path.contribution_groupings
+        ),
         "observed_baseline": _window_metric_value(
             rows,
             baseline_windows[0],
@@ -2750,6 +2925,145 @@ def _formula_payload(
         ),
         "absolute_tolerance": path.absolute_tolerance,
         "relative_tolerance": path.relative_tolerance,
+    }
+
+
+def _funnel_decomposition_payload(
+    *,
+    bound: BoundCapabilityInput,
+    execution_plan: CapabilityExecutionPlan,
+    contracts: Sequence[QueryContract],
+    binding: Mapping[str, Any],
+    capability_id: str,
+) -> Mapping[str, Any]:
+    contract = _single_query_family(
+        contracts, _binding_query_family(binding, "primary", capability_id)
+    )
+    fields = _binding_mapping(binding, "fields", capability_id)
+    parameters = _binding_mapping(binding, "parameters", capability_id)
+    _require_exact_binding_keys(
+        fields,
+        ("window_id_key", "window_role_key", "stages"),
+        capability_id=capability_id,
+        field="fields",
+    )
+    _require_exact_binding_keys(
+        parameters,
+        (
+            "source_grain",
+            "lifetime_first_payment_supported",
+            "rate_reconciliation_tolerance",
+        ),
+        capability_id=capability_id,
+        field="parameters",
+    )
+    raw_stages = fields.get("stages")
+    if (
+        isinstance(raw_stages, (str, bytes))
+        or not isinstance(raw_stages, Sequence)
+        or not raw_stages
+        or any(
+            not isinstance(item, Mapping)
+            or set(item)
+            != {
+                "stage_id",
+                "numerator_metric",
+                "denominator_metric",
+                "rate_metric",
+            }
+            for item in raw_stages
+        )
+    ):
+        raise AuthoritativeTaskInputContractError(
+            f"authoritative_task_input_binding_invalid:{capability_id}:stages"
+        )
+    tolerance = parameters.get("rate_reconciliation_tolerance")
+    if (
+        isinstance(tolerance, bool)
+        or not isinstance(tolerance, (int, float))
+        or not 0 <= float(tolerance) <= 1
+        or type(parameters.get("source_grain")) is not str
+        or not parameters["source_grain"]
+        or type(parameters.get("lifetime_first_payment_supported")) is not bool
+    ):
+        raise AuthoritativeTaskInputContractError(
+            f"authoritative_task_input_binding_invalid:{capability_id}:parameters"
+        )
+    rows = _rows_for_contract(bound, execution_plan, contract)
+    target_windows = tuple(
+        item for item in contract.resolved_windows if item.role == "target"
+    )
+    baseline_id = _baseline_window_id((contract,))
+    baseline_windows = tuple(
+        item for item in contract.resolved_windows if item.window_id == baseline_id
+    )
+    if len(target_windows) != 1 or len(baseline_windows) != 1:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_funnel_window_cardinality_invalid"
+        )
+    aggregate_result = (
+        contract.result_shape.result_semantics == "complete_window_aggregate"
+    )
+    stages = []
+    for raw_stage in raw_stages:
+        stage = {str(key): str(value) for key, value in raw_stage.items()}
+        for metric_id in (
+            stage["numerator_metric"],
+            stage["denominator_metric"],
+            stage["rate_metric"],
+        ):
+            _require_query_metric(contract, metric_id, capability_id)
+        values: dict[str, Any] = {}
+        for prefix, window in (
+            ("target", target_windows[0]),
+            ("baseline", baseline_windows[0]),
+        ):
+            numerator = _window_metric_value(
+                rows,
+                window,
+                stage["numerator_metric"],
+                aggregate_result=aggregate_result,
+            )
+            denominator = _window_metric_value(
+                rows,
+                window,
+                stage["denominator_metric"],
+                aggregate_result=aggregate_result,
+            )
+            reported_rate = _window_metric_value(
+                rows,
+                window,
+                stage["rate_metric"],
+                aggregate_result=aggregate_result,
+            )
+            recomputed_rate = None if denominator == 0 else numerator / denominator
+            reconciled = (
+                recomputed_rate is None
+                and reported_rate is None
+                or recomputed_rate is not None
+                and reported_rate is not None
+                and abs(float(recomputed_rate) - float(reported_rate))
+                <= float(tolerance)
+            )
+            values.update(
+                {
+                    f"{prefix}_numerator": numerator,
+                    f"{prefix}_denominator": denominator,
+                    f"{prefix}_rate": reported_rate,
+                    f"{prefix}_recomputed_rate": recomputed_rate,
+                    f"{prefix}_reconciled": reconciled,
+                }
+            )
+        stages.append({**stage, **values})
+    return {
+        "contract_id": "new-user-funnel-decomposition.v1",
+        "source_grain": parameters["source_grain"],
+        "lifetime_first_payment_supported": parameters[
+            "lifetime_first_payment_supported"
+        ],
+        "target_window_ref": target_windows[0].window_id,
+        "baseline_window_ref": baseline_windows[0].window_id,
+        "stages": tuple(stages),
     }
 
 

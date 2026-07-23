@@ -44,11 +44,14 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
     assert registry.analysis_axis_ids == (
         "change_validation",
         "formula_tree",
+        "payment_outcome_health",
+        "acquisition_funnel",
         "dimension_localization",
         "time_context",
         "cross_source_context",
         "market_context",
-        "business_context",
+        "external_context_screen",
+        "internal_operation_context",
         "data_quality",
         "evidence_synthesis",
         "anomaly_validation",
@@ -59,11 +62,12 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
         "再从公式、聚合维度和时间背景定位主要驱动，"
         "并明确证据边界。"
     )
-    assert plan["schema_version"] == "analysis_goal_plan.v2"
+    assert plan["schema_version"] == "analysis_goal_plan.v3"
     assert plan["required_outcomes"] == [
         "direction_and_magnitude",
         "ranked_drivers",
         "quantified_contributions",
+        "candidate_explanations",
         "evidence_boundaries",
     ]
     assert plan["outcome_claim_types"] == {
@@ -76,17 +80,25 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
             "formula_component_contribution",
             "segment_contribution_or_mix_shift",
         ],
+        "candidate_explanations": [
+            "cross_source_statistical_association",
+            "candidate_mechanism",
+        ],
         "evidence_boundaries": ["contract_coverage_and_trust_boundary"],
     }
     assert [(axis["axis_id"], axis["role"]) for axis in plan["analysis_axes"]] == [
         ("change_validation", "required"),
         ("formula_tree", "required"),
+        ("payment_outcome_health", "required"),
+        ("acquisition_funnel", "auxiliary"),
         ("dimension_localization", "auxiliary"),
         ("time_context", "auxiliary"),
         ("cross_source_context", "auxiliary"),
         ("market_context", "auxiliary"),
-        ("business_context", "conditional"),
+        ("external_context_screen", "auxiliary"),
+        ("internal_operation_context", "auxiliary"),
         ("data_quality", "disclosure"),
+        ("metric_coverage", "auxiliary"),
     ]
     by_id = {axis["axis_id"]: axis for axis in plan["analysis_axes"]}
     assert by_id["change_validation"]["capability_refs"] == ["compare_periods"]
@@ -95,6 +107,7 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
     )
     assert by_id["dimension_localization"]["dimension_refs"] == [
         "channel",
+        "amount_bucket",
         "payment_method",
         "country",
         "region",
@@ -113,8 +126,13 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
     assert by_id["cross_source_context"]["capability_refs"] == [
         "cross_source_association",
         "cross_source_panel_association",
+        "post_payment_behavior_compare",
+        "post_payment_tier_behavior",
     ]
-    assert by_id["cross_source_context"]["dimension_refs"] == ["channel"]
+    assert by_id["cross_source_context"]["dimension_refs"] == [
+        "channel",
+        "amount_bucket",
+    ]
     all_capabilities = {
         capability
         for axis in plan["analysis_axes"]
@@ -136,6 +154,8 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
         "weekday_calendar_compare",
         "cross_source_association",
         "cross_source_panel_association",
+        "post_payment_behavior_compare",
+        "post_payment_tier_behavior",
         "market_health_compare",
         "market_channel_context",
         "source_reconciliation",
@@ -167,13 +187,13 @@ def test_claim_strength_uses_global_policy_with_active_scope_validation() -> Non
         registry.claim_required_publication_strength(
             "external_shock_candidate_or_anomaly",
             goal_ids=("explain_change",),
-            axis_ids=("business_context",),
+            axis_ids=("external_context_screen",),
         )
     assert (
         registry.claim_required_publication_strength(
             "candidate_mechanism",
             goal_ids=("explain_change",),
-            axis_ids=("business_context",),
+            axis_ids=("external_context_screen",),
         )
         == "candidate_mechanism"
     )
@@ -334,12 +354,18 @@ def test_registry_requires_full_goal_family_coverage_and_allows_multiple_goals()
     payload = _payload()
     missing = deepcopy(payload)
     del missing["goal_obligations"]["pattern_explanation"]
+    for domain in missing["factor_domains"].values():
+        if "pattern_explanation" in domain["goal_refs"]:
+            domain["goal_refs"].remove("pattern_explanation")
     with pytest.raises(ValueError, match="runtime_analysis_goal_family_coverage"):
         RuntimeContractRegistry(missing)
 
     multiple = deepcopy(payload)
     multiple["goal_obligations"]["explain_change_diagnostic"] = deepcopy(
         multiple["goal_obligations"]["explain_change"]
+    )
+    multiple["factor_domains"]["data_quality_and_evidence"]["goal_refs"].append(
+        "explain_change_diagnostic"
     )
     registry = RuntimeContractRegistry(multiple)
     assert (
@@ -403,6 +429,9 @@ def test_public_capabilities_are_the_current_axis_projection() -> None:
     missing_axis_capability["analysis_axis_catalog"]["dimension_localization"][
         "capability_refs"
     ].remove("high_value_user_contribution")
+    missing_axis_capability["factor_domains"]["amount_tier_and_user_value"][
+        "capability_refs"
+    ].remove("high_value_user_contribution")
     registry = RuntimeContractRegistry(missing_axis_capability)
 
     assert "high_value_user_contribution" in registry.capability_ids
@@ -461,18 +490,19 @@ def test_explicit_focus_upgrades_matching_axes_without_narrowing_universe() -> N
     by_id = {axis["axis_id"]: axis for axis in plan["analysis_axes"]}
     assert by_id["formula_tree"]["role"] == "required"
     assert by_id["dimension_localization"]["role"] == "required"
-    assert by_id["business_context"]["role"] == "required"
-    assert by_id["formula_tree"]["explicit_focus_refs"]["component_ids"] == [
+    assert by_id["external_context_screen"]["role"] == "required"
+    assert by_id["payment_outcome_health"]["explicit_focus_refs"]["component_ids"] == [
         "payment_success_rate"
     ]
     assert by_id["dimension_localization"]["explicit_focus_refs"]["dimension_ids"] == [
         "region"
     ]
-    assert by_id["business_context"]["explicit_focus_refs"]["context_source_ids"] == [
-        "external_event"
-    ]
+    assert by_id["external_context_screen"]["explicit_focus_refs"][
+        "context_source_ids"
+    ] == ["external_event"]
     assert by_id["dimension_localization"]["dimension_refs"] == [
         "channel",
+        "amount_bucket",
         "payment_method",
         "country",
         "region",
@@ -540,6 +570,12 @@ def test_registry_rejects_unbound_goal_axes_and_outcome_claim_types() -> None:
     missing_axis["analysis_axis_catalog"]["unbound_change_validation"][
         "reconciliation_group"
     ] = "paid_amount_unbound_change_validation"
+    missing_axis["capability_inputs"]["unbound_compare_periods"] = deepcopy(
+        missing_axis["capability_inputs"]["compare_periods"]
+    )
+    missing_axis["analysis_axis_catalog"]["unbound_change_validation"][
+        "capability_refs"
+    ] = ["unbound_compare_periods"]
     with pytest.raises(ValueError, match="runtime_analysis_goal_axis_coverage"):
         RuntimeContractRegistry(missing_axis)
 

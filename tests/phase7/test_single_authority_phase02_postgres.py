@@ -98,6 +98,7 @@ def _intent_revision(run_id: str) -> IntentRevision:
             "aggregation": "sum_of_complete_days",
         },
         direction_premise="user_hypothesis_positive",
+        requested_factor_refs=(),
         requested_analysis_axes=(
             "change_validation",
             "formula_tree",
@@ -123,7 +124,7 @@ def _intent_revision(run_id: str) -> IntentRevision:
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v1",
+        schema_version="intent-revision.v2",
         prompt_version="single-authority.phase02.postgres-test.v1",
         model_version="deterministic-contract-record",
         known_goal_ids={"explain_change"},
@@ -189,8 +190,8 @@ def _authority_context(
                 "limitation_ref": None,
             },
             {
-                "dataset_id": "payment_attempt",
-                "availability": "missing_contract",
+                "dataset_id": "payment_final_outcome",
+                "availability": "unavailable",
                 "release_ref": None,
                 "snapshot_refs": (),
                 "limitation_ref": "limitation:payment-attempt-contract",
@@ -366,7 +367,7 @@ def _proposal_admission(
                 "item_kind": "hypothesis",
                 "status": "admitted",
                 "reason_code": "bounded_as_assumption",
-                "contract_refs": ["intent-revision.v1#assumption_boundary"],
+                "contract_refs": ["intent-revision.v2#assumption_boundary"],
                 "normalized_execution_ref": f"hypothesis:{hypothesis_item_id}",
             },
             *priority_entries,
@@ -456,8 +457,8 @@ def _plan_revision(
             "limitation_ref": None,
         },
         {
-            "input_ref": "dataset:payment_attempt",
-            "availability": "missing_contract",
+            "input_ref": "dataset:payment_final_outcome",
+            "availability": "unavailable",
             "limitation_ref": "limitation:payment-attempt-contract",
         },
     )

@@ -182,6 +182,14 @@ export type TraceRun = {
   generatedAt?: number;
   summaryCards: TraceCard[];
   businessThreads?: TraceCard[];
+  technicalTrace?: {
+    runtime: "general_agent";
+    provider?: string;
+    model?: string;
+    transport?: string;
+    records: Record<string, unknown>[];
+  };
+  factorCoverage?: Record<string, unknown>;
   traceClaims: TraceClaim[];
   traceEvidence: TraceEvidence[];
   messages?: TraceMessage[];

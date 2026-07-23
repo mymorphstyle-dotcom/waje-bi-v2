@@ -1,0 +1,95 @@
+{
+  "adapterCounts": {
+    "agent_live": 1
+  },
+  "caseCount": 1,
+  "cases": [
+    {
+      "adapter": "agent_live",
+      "caseId": "p4_amount_tier_live",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "agent_live",
+          "advisoryReview": {
+            "decisionCase": true,
+            "dimensions": [
+              "conclusion_directness",
+              "analysis_completeness",
+              "mechanisms_offsets_alternatives",
+              "operational_meaning",
+              "evidence_boundaries",
+              "readability",
+              "actionability"
+            ],
+            "mode": "human_advisory",
+            "observations": [
+              {
+                "characterCount": 2672,
+                "hasAnswer": true,
+                "paragraphCount": 13,
+                "turnId": "initial"
+              }
+            ],
+            "reviewNote": "评价档位结构是否完成金额对账，区分人数、频次、客单价与 mix 偏移，并避免跨维度贡献相加。",
+            "status": "pending_human_review"
+          },
+          "caseId": "p4_amount_tier_live",
+          "failures": [],
+          "hardStatus": "passed",
+          "threadId": "thread-eval-p4_amount_tier_live-202607222149386437b9-r1",
+          "turns": [
+            {
+              "completionKind": "analysis_publication",
+              "customerMessage": "在分析期内（2026年4月1日至2026年6月30日），付费金额从 23,655,068,320（236.55亿）显著增长至 27,516,946,988（275.17亿），绝对增加 3,861,878,668（38.62亿）。这一增长主要由付费频次和付费人数的上升驱动，其中付费频次贡献了 2,952,830,902（29.53亿），付费人数贡献了 1,337,577,432（13.38亿），而单笔付费金额的下降部分抵消了增长，贡献为 -428,529,666（-4.29亿）。全量数据覆盖良好，但部分外部市场与事件上下文不可用，影响深度归因。\n\n付费金额的上升并非偶然波动：在可比的 8 个滚动窗口中，方向一致性达到了 100%，且所有窗口的增幅都超出了预设的阈值（中位数上升幅度约 71.5%）。由于未能检测到符合合同阈值的突变点，该变化被定性为方向性显著但非结构性跃升，更多表现为持续增强的趋势。\n\n根据公式分解，付费金额 = 付费人数 × 付费频次 × 单笔付费金额。各因子的具体贡献如下（按绝对值排序）：\n- 付费频次：从 15.998 次增长至 17.959 次，贡献 +2,952,830,902（+29.53 亿），占整体变动的 +76.5%\n- 付费人数：从 683,195 人增至 719,906 人，贡献 +1,337,577,432（+13.38 亿），占比 +34.6%\n- 单笔付费金额：从 2,164.27 降至 2,128.31，贡献 -428,529,666（-4.29 亿），占比 -11.1%\n\n进一步分组分解显示，单付费用户金额（付费频次 × 单笔付费金额）贡献了 +2,524,732,722（+25.25 亿），与付费人数贡献 +1,337,145,946（+13.37 亿）共同构成总增长。在单付费用户金额内部，频次的大幅提升（+29.53 亿）被单笔金额的微降（-4.29 亿）部分抵消。可见，付费频次的提高是核心驱动力，用户规模增长为辅，而客单价下行形成轻微拖累。\n\n各维度的诊断优先级排名及其在分析窗口内的付费金额变化情况如下表所示。排名基于超额变动比（excess change ratio）与维度内差异化得分（dimension differentiation score）加权合成，反映了变化在不同维度上的集中程度。因此，地区、设备型号和城市等维度排名靠前，意味着这些切面上的付费增长极不均衡，特定群组贡献了远超基线份额的增量。\n\n| 排名 | 维度 | 代表值 | 优先级得分 | 维度内变动 (delta) | 超额变动 (excess) |\n|------|------|--------|------------|-------------------|-------------------|\n| 1 | 地区 | 拉各斯州 | 0.55 | +4,043,847,788 | +2,815,763,435 |\n| 2 | 设备型号 | TECNO KI5k | 0.46 | -87,426,224 | -139,261,358 |\n| 3 | 城市 | 拉哥斯 | 0.42 | +3,619,481,398 | +2,271,816,013 |\n| 4 | 渠道 | WajeSpecial | 0.21 | +1,695,410,472 | -882,467,907 |\n| 5 | 充值档位 | >100000 | 0.12 | -214,462,900 | -452,803,731 |\n| 6 | 操作系统 | Others | 0.10 | +1,156,122,321 | +643,581,049 |\n| 7 | 网络类型 | WIFI | 0.10 | +1,227,084,693 | -727,007,772 |\n| 8 | 支付方式 | OPAY | 0.07 | +2,930,003,727 | +397,353,273 |\n| 9 | 设备品牌 | INFINIX | 0.07 | +387,977,660 | -145,659,395 |\n\n可以看出，地区与城市维度呈现显著正向集中，拉各斯州和拉哥斯市的付费增长远超按基线份额预期的水平；而设备型号维度（如 TECNO KI5k）则出现明显收缩。这些模式为后续细化归因提供了候选方向。\n\n跨数据源关联分析（付费数据与玩法数据）发现，付费金额与玩家下注金额等指标存在上升关联（最佳相关系数 0.809，所有 42 个测试假设均获支持，其中 28 个在稳健性检验中稳定）。这提示玩法活跃度可能与付费趋势存在某种联动，但该结果源于观察性面板数据，无法确立因果关系。此外，模型收敛性与数据覆盖方面的不足（详见证据边界）进一步限制了其用途，仅能作为候选定位参考，不能直接用于贡献计算。\n\n本次比较分析中，市场健康度同期对比与新增用户注册首充漏斗拆解两项能力未能启用。因此，无法考察活跃用户数、新增用户数、投放成本、利润等市场层面指标的同期变动，也无法拆解新用户从注册到首次付费的转化路径。这些缺口并不会否定已观测到的付费增长，但使分析在外部市场参照与新用户动因方面存在盲区。\n\n覆盖范围与信任边界分析中，渠道市场上下文（market_channel_context）能力处于不可用状态，导致无法结合渠道维度提供投放成本、活跃用户等市场健康指标。因此，渠道层面的归因缺少外部健康验证，但整体数据覆盖（1 个数据集全覆盖，23,858,847 条源记录）依然为分析提供了可靠基础。\n\n针对内部运营事件与外部环境事件的分析能力均处于不可用状态，未能从事件库中检测到可能与付费变化同步的产品上线、运营活动、节假日或外部冲击。因此，无法将观察到的增长趋势归结于特定事件，事件诱因的解释仍需后续专项调查。\n\n跨源关联分析存在多重方法与数据局限：\n- 未估计聚类稳健标准误，系数仅反映对齐面板的观察特征；\n- 完整配对覆盖率低于设定阈值；\n- 无法排除残余混杂；\n- 玩法数据集授权为仅限背景上下文，禁止直接归因；\n- 跨源映射权威性与覆盖率均未达到阈值；\n- 面板与样本量未满足最低要求；\n- 无法得出指名面板结论；\n- 移除时间与面板效应后残余方差耗尽；\n- 双向固定效应模型未收敛；\n- 关联纯属观察性，不能建立因果关系。\n\n综上，该跨源关联结果仅可用作背景参考与候选定位，不得作为业务贡献的量化依据。",
+              "durationSeconds": 934.801,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 36,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 1,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "04935737a75ddfacd819418f7081ac8fea8ebe74dee2d1606cc4fb16a76b29de",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "392d5986c5dff96c490abd49ebe656d7fbd485a74e0324ebb941c6d2b2130ba9",
+                "materialDecisionTopics": [],
+                "requiredToolName": "run_bi_analysis",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval",
+                  "run_bi_analysis"
+                ],
+                "selectionDigest": "ace704a22c94039012302a67b5f63d8dea2d1f7078e6928f78ab7dbf929cb564"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "run_bi_analysis"
+              ],
+              "turnId": "initial"
+            }
+          ]
+        }
+      ],
+      "riskTier": "high"
+    }
+  ],
+  "generatedAt": "2026-07-22T22:05:13.400071+00:00",
+  "mode": "execution",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": "https://api.deepseek.com",
+  "passedCaseCount": 1,
+  "profile": "smoke",
+  "provider": "deepseek",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

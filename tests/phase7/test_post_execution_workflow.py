@@ -59,6 +59,18 @@ from tests.phase7.test_authority_seal_persistence import (
 )
 
 
+def _provider_material_facts(
+    material: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    columns = material.get("fact_columns")
+    if columns is None:
+        return tuple(dict(item) for item in material["facts"])
+    return tuple(
+        dict(zip(columns, row, strict=True))
+        for row in material["facts"]
+    )
+
+
 class _NarrativeLLM:
     supports_output_validator = True
 
@@ -75,7 +87,9 @@ class _NarrativeLLM:
                 item["material_handle"]: item
                 for item in projection["evidence_materials"]
             }
-            fact = material_by_handle[claim["material_handles"][0]]["facts"][0]
+            fact = _provider_material_facts(
+                material_by_handle[claim["material_handles"][0]]
+            )[0]
             recommendations = projection["recommendations"]
             output = {
                 "blocks": [
@@ -272,7 +286,7 @@ def _accepted_fixture() -> _AcceptedFixture:
         output_digest=canonical_digest(compose_output),
         execution_attempt=1,
         provider_ref="waje-narrative-authority",
-        model_ref="single-authority-phase05.v13",
+        model_ref="single-authority-phase05.v21",
         status="succeeded",
         acceptance_state="accepted",
         next_transition="deliver_publication",
@@ -308,6 +322,20 @@ def test_narrative_context_carries_customer_metric_labels_to_the_writer() -> Non
         'customer_term_labels={"paid_amount":"付费金额","paid_users":"付费用户数"}'
         in context.business_context
     )
+    writer_context = context.to_writer_payload()
+    assert "user_question" not in writer_context
+    assert writer_context["accepted_intent_context"]["comparison_spec"] == (
+        source.intent.comparison_spec
+    )
+    assert writer_context["accepted_intent_context"]["requested_analysis_axes"] == list(
+        source.intent.requested_analysis_axes
+    )
+    assert writer_context["accepted_intent_context"]["requested_factor_refs"] == list(
+        source.intent.requested_factor_refs
+    )
+    assert writer_context["accepted_plan_context"]["user_required_obligations"]
+    assert writer_context["accepted_plan_context"]["analysis_axes"]
+    assert writer_context["accepted_plan_context"]["capability_route"]
 
 
 def test_internal_post_execution_result_does_not_replay_semantic_authority(
@@ -1216,6 +1244,12 @@ def test_narrative_input_budget_failure_is_persisted_without_provider_call(
         answer_goal="Explain the verified movement.",
         locale="en-US",
         business_context=("界" * (NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT + 1),),
+        accepted_intent_context=(
+            fixture.narrative.answer_context.accepted_intent_context
+        ),
+        accepted_plan_context=(
+            fixture.narrative.answer_context.accepted_plan_context
+        ),
     )
     monkeypatch.setattr(
         workflow,

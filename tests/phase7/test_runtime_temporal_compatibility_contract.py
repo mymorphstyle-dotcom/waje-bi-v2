@@ -25,6 +25,7 @@ SOURCE_BINDING_CONTRACTS = (
     "contracts/sources/gameplay.source.yaml",
     "contracts/sources/internal-operation-events.source.yaml",
     "contracts/sources/market-dashboard.source.yaml",
+    "contracts/sources/payment-order-bet-link.source.yaml",
 )
 
 
@@ -49,6 +50,36 @@ SAFE_TEMPORAL_COMPATIBILITY = {
         ],
         "window_roles": ["reference"],
         "consumption_semantics": ["daily_series", "capability_context"],
+        "calendar_partition_fields": [],
+    },
+    "post_payment_behavior_compare": {
+        "modes": [
+            "single_day_window_pair",
+            "aggregate_window_pair",
+            "event_relative",
+        ],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["source_window_aggregate"],
+        "calendar_partition_fields": [],
+    },
+    "post_payment_tier_behavior": {
+        "modes": [
+            "single_day_window_pair",
+            "aggregate_window_pair",
+            "event_relative",
+        ],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["source_window_aggregate"],
+        "calendar_partition_fields": [],
+    },
+    "payment_outcome_compare": {
+        "modes": [
+            "single_day_window_pair",
+            "aggregate_window_pair",
+            "event_relative",
+        ],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["source_window_aggregate"],
         "calendar_partition_fields": [],
     },
     "market_health_compare": {
@@ -129,13 +160,41 @@ SAFE_TEMPORAL_COMPATIBILITY = {
         "consumption_semantics": ["evaluation_window"],
         "calendar_partition_fields": [],
     },
+    "internal_operation_event_evidence": {
+        "modes": [
+            "target_only",
+            "single_day_window_pair",
+            "aggregate_window_pair",
+            "calendar_partition",
+            "event_relative",
+        ],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["evaluation_window"],
+        "calendar_partition_fields": [],
+    },
     "event_window_compare": {
         "modes": ["event_relative"],
         "window_roles": ["target", "baseline"],
         "consumption_semantics": ["complete_day_sum_or_mean"],
         "calendar_partition_fields": [],
     },
+    "internal_operation_event_window_compare": {
+        "modes": ["event_relative"],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["complete_day_sum_or_mean"],
+        "calendar_partition_fields": [],
+    },
     "formula_decompose": {
+        "modes": [
+            "single_day_window_pair",
+            "aggregate_window_pair",
+            "event_relative",
+        ],
+        "window_roles": ["target", "baseline"],
+        "consumption_semantics": ["source_window_aggregate"],
+        "calendar_partition_fields": [],
+    },
+    "funnel_decompose": {
         "modes": [
             "single_day_window_pair",
             "aggregate_window_pair",
@@ -241,7 +300,7 @@ def test_canonical_temporal_compatibility_only_opens_audited_capabilities() -> N
         if "temporal_compatibility" in registry.capability_inputs(capability_id)
     }
 
-    assert registry.contract_version == "15"
+    assert registry.contract_version == "20"
     assert actual == SAFE_TEMPORAL_COMPATIBILITY
 
 
@@ -399,7 +458,7 @@ def test_source_window_aggregate_requires_complete_window_query_shape() -> None:
         ValueError,
         match=(
             "runtime_capability_temporal_aggregate_shape_invalid:"
-            "formula_decompose:component_driver_scan"
+            "post_payment_behavior_compare:component_driver_scan"
         ),
     ):
         RuntimeContractRegistry(payload)

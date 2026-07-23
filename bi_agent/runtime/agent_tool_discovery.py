@@ -12,6 +12,7 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentTool,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+from bi_agent.runtime.durable_tool_bridge import MaterialDecisionTopic
 
 
 TOOL_SELECTION_SCHEMA_VERSION = "agent-turn-action-binding.v1"
@@ -23,6 +24,21 @@ Use only tool names from the supplied catalog. Select no optional tool when the 
 answered directly from ordinary conversation context. Select artifact tools for persisted-result
 explanation, BI analysis tools only when new business-data evidence or a material revision is
 needed, and the capability catalog tool when the user asks what analysis is available. Use
+inspect_analysis_artifact or explain_claim directly for a single follow-up about an existing
+publication's calculation, evidence trace, meaning, or limitation. Do not delegate that work.
+Prior assistant prose is not material authority for those questions. Call the artifact or claim
+tool even when the same statement or number is already visible in conversation context, so the
+turn carries the persisted authority and material references.
+conversationContext.publishedAnalysisTasks is the typed list of published BI tasks available as
+revision sources. When the latest message materially changes the metric, time window, baseline,
+scope, filters, analysis axes, goal, or desired decisions of one supplied published task while
+continuing that investigation, choose continue_bi_analysis and copy its taskRef as sourceTaskRef.
+Choose run_bi_analysis for an independent new investigation that does not revise a supplied
+published task. Never guess a revision source identifier from prose or opaque artifact refs.
+delegate_independent_investigations is reserved for work that genuinely requires separate,
+independently scoped investigation artifacts, such as competing hypotheses or independent report
+sections. It is not a higher-quality replacement for direct artifact inspection or claim
+explanation.
 ask_user when material ambiguity can change the business conclusion, baseline, time semantics,
 evidence use, claim strength, fixed sensitive output, data access, or material execution cost.
 Before choosing a data-producing tool, assess whether the requested metric, comparison scope,
@@ -70,25 +86,14 @@ baseline_or_counterfactual. The fact that a counterfactual involves a comparison
 comparison_scope unresolved. Do not add comparison_scope to the same causal action binding. If
 the scope of channels, regions, products, or customer segments is independently unresolved, bind
 that decision after the causal reference has been resolved.
-requiredToolName must name the exact first tool for every action except respond. Do not infer
+Always include requiredToolName. Set it to null for respond, ask_user, and request_approval; the
+typed runtime binds those two fixed actions to their mandatory tools. For call_tool it must name
+the exact first optional tool. Do not infer
 permissions or invent tools. Always populate materialDecisionTopics with every unresolved
 material dimension from the allowed enum; leave it empty only when those dimensions are bound.
 Any non-empty materialDecisionTopics means the first action is ask_user. Return only the typed
 action binding output.
 """
-
-MaterialDecisionTopic = Literal[
-    "metric",
-    "comparison_scope",
-    "time_window",
-    "baseline_or_counterfactual",
-    "evidence_use",
-    "claim_strength",
-    "sensitive_output",
-    "data_access",
-    "execution_cost",
-]
-
 
 class AgentToolDiscoveryError(RuntimeError):
     def __init__(self, code: str) -> None:
@@ -103,7 +108,7 @@ class DynamicToolSelectionOutput(BaseModel):
     initial_action: Literal[
         "respond", "call_tool", "ask_user", "request_approval"
     ] = Field(alias="initialAction")
-    required_tool_name: str | None = Field(alias="requiredToolName", default=None)
+    required_tool_name: str | None = Field(alias="requiredToolName")
     material_decision_topics: list[MaterialDecisionTopic] = Field(
         alias="materialDecisionTopics"
     )
@@ -119,22 +124,39 @@ class DynamicToolSelectionOutput(BaseModel):
 
     @model_validator(mode="after")
     def validate_action(self) -> "DynamicToolSelectionOutput":
+        if {
+            "baseline_or_counterfactual",
+            "comparison_scope",
+        }.issubset(self.material_decision_topics):
+            raise ValueError("agent_tool_selection_causal_topic_overlap")
         if self.initial_action == "respond":
-            if self.required_tool_name is not None or self.selected_tools:
+            if (
+                self.required_tool_name is not None
+                or self.selected_tools
+                or self.material_decision_topics
+            ):
                 raise ValueError("agent_direct_action_tools_forbidden")
             return self
-        if self.initial_action == "ask_user" and self.required_tool_name not in {
-            None,
-            "ask_user",
-        }:
-            raise ValueError("agent_clarification_tool_invalid")
-        if (
-            self.initial_action == "request_approval"
-            and self.required_tool_name not in {None, "request_approval"}
-        ):
-            raise ValueError("agent_approval_tool_invalid")
+        if self.initial_action == "ask_user":
+            if (
+                self.required_tool_name is not None
+                or not self.material_decision_topics
+            ):
+                raise ValueError("agent_clarification_tool_invalid")
+            return self
+        if self.initial_action == "request_approval":
+            if (
+                self.required_tool_name is not None
+                or self.material_decision_topics
+            ):
+                raise ValueError("agent_approval_tool_invalid")
+            return self
         if self.initial_action == "call_tool":
-            if not self.required_tool_name:
+            if (
+                not self.required_tool_name
+                or self.required_tool_name not in self.selected_tools
+                or self.material_decision_topics
+            ):
                 raise ValueError("agent_required_action_tool_missing")
             if self.required_tool_name in {"ask_user", "request_approval"}:
                 raise ValueError("agent_call_tool_action_invalid")
@@ -155,7 +177,7 @@ class AgentTurnActionBinding(BaseModel):
     initial_action: Literal[
         "respond", "call_tool", "ask_user", "request_approval"
     ] = Field(alias="initialAction")
-    required_tool_name: str | None = Field(alias="requiredToolName", default=None)
+    required_tool_name: str | None = Field(alias="requiredToolName")
     material_decision_topics: list[MaterialDecisionTopic] = Field(
         alias="materialDecisionTopics"
     )
@@ -261,8 +283,14 @@ class ToolSelectionGenerator(Protocol):
 
 
 class WajeToolSelectionGenerator:
-    def __init__(self, adapter: ToolSelectionAdapter) -> None:
+    def __init__(
+        self,
+        adapter: ToolSelectionAdapter,
+        *,
+        trace_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
         self._adapter = adapter
+        self._trace_metadata = canonical_value(trace_metadata or {})
 
     async def select(
         self,
@@ -293,52 +321,13 @@ class WajeToolSelectionGenerator:
                 output_type=DynamicToolSelectionOutput,
                 max_turns=1,
                 trace_metadata={
+                    **self._trace_metadata,
                     "waje_tool_catalog_digest": canonical_digest(tool_catalog),
                     "waje_tool_selection_input_digest": input_digest,
                 },
             )
         )
         output = DynamicToolSelectionOutput.model_validate(result.final_output)
-        if (
-            "baseline_or_counterfactual" in output.material_decision_topics
-            and "comparison_scope" in output.material_decision_topics
-        ):
-            output = output.model_copy(
-                update={
-                    "material_decision_topics": [
-                        topic
-                        for topic in output.material_decision_topics
-                        if topic != "comparison_scope"
-                    ]
-                }
-            )
-        if output.material_decision_topics:
-            output = output.model_copy(
-                update={
-                    "initial_action": "ask_user",
-                    "required_tool_name": "ask_user",
-                }
-            )
-        elif output.initial_action == "ask_user":
-            output = output.model_copy(update={"required_tool_name": "ask_user"})
-        elif output.initial_action == "request_approval":
-            output = output.model_copy(
-                update={"required_tool_name": "request_approval"}
-            )
-        optional_names = {str(item.get("name") or "") for item in tool_catalog}
-        if (
-            output.initial_action == "call_tool"
-            and output.required_tool_name in optional_names
-            and output.required_tool_name not in output.selected_tools
-        ):
-            output = output.model_copy(
-                update={
-                    "selected_tools": [
-                        *output.selected_tools,
-                        output.required_tool_name,
-                    ]
-                }
-            )
         return output
 
 
@@ -396,7 +385,14 @@ class DynamicAgentToolResolver:
         if len(optional_names) > self._max_optional_tools:
             raise AgentToolDiscoveryError("agent_tool_selection_limit_exceeded")
         selected_names = optional_names | self._mandatory_tool_names
-        if output.required_tool_name not in selected_names and output.required_tool_name is not None:
+        required_tool_name = (
+            "ask_user"
+            if output.initial_action == "ask_user"
+            else "request_approval"
+            if output.initial_action == "request_approval"
+            else output.required_tool_name
+        )
+        if required_tool_name not in selected_names and required_tool_name is not None:
             raise AgentToolDiscoveryError("agent_action_required_tool_unselected")
         catalog_digest = canonical_digest(catalog)
         input_digest = _input_digest(user_message, permission_scope)
@@ -406,7 +402,7 @@ class DynamicAgentToolResolver:
             action_context_digest=canonical_digest(action_context or {}),
             selected_tools=selected_names,
             initial_action=output.initial_action,
-            required_tool_name=output.required_tool_name,
+            required_tool_name=required_tool_name,
             material_decision_topics=output.material_decision_topics,
         )
         return ResolvedAgentTools(

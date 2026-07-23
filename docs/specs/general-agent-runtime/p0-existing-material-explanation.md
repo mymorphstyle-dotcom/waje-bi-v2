@@ -75,9 +75,10 @@ ledger 仍保存结构化 tool payload。
 
 ### 公式分解
 
-现有 `formula-accounting-decomposition-interpretation.v1` 继续保存公式路径、合同 ref、
-基线/目标值、各组成项的 signed contribution、contribution share、残差、容差和调和状态。
-其贡献语义是会计分解，因果解释保持禁止。
+`formula-accounting-decomposition-interpretation.v2` 保存公式路径、合同 ref、基线/目标值、
+各组成项的 signed contribution、contribution share、残差、容差和调和状态，并显式携带
+合同声明的 factor grouping、业务因子与叶子指标成员关系。同一 grouping 内可以比较，
+父子层级禁止混排和相加；其贡献语义是会计分解，因果解释保持禁止。
 
 ### 窗口比较
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 import hashlib
 import json
 import math
@@ -11,6 +12,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from bi_agent.runtime.analysis_contracts import DIMENSION_PRESENCE_POLICIES
+from bi_agent.runtime.analysis_performance import AnalysisPerformancePolicy
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.exploration_budget_policy import ExplorationBudgetPolicy
 from bi_agent.runtime.temporal_comparison import ROLLING_WINDOW_PARAMETER_FIELDS
@@ -30,6 +32,7 @@ _MAPPING_SECTIONS = (
     "capability_inputs",
     "analysis_axis_catalog",
     "goal_obligations",
+    "factor_domains",
 )
 _OPTIONAL_MAPPING_SECTIONS = ("query_shapes",)
 _SEQUENCE_SECTIONS = ("launch_question_families",)
@@ -38,6 +41,7 @@ _REQUIRED_SECTIONS = (
     "artifact",
     "business_timezone",
     "public_scope_types",
+    "analysis_performance_policy",
     "exploration_budget_policy",
     "restricted_output_policy",
     "claim_strength_taxonomy",
@@ -108,6 +112,7 @@ _ANALYSIS_AXIS_SELECTION_POLICIES = frozenset(
         "periodic_context_when_available",
         "association_context_when_available",
         "user_or_evidence_triggered",
+        "always_screen_when_available",
         "always",
     }
 )
@@ -118,7 +123,7 @@ _ANALYSIS_AXIS_POLICY_BY_KIND = {
     "time_context": "periodic_context_when_available",
     "cross_source_context": "association_context_when_available",
     "market_context": "association_context_when_available",
-    "business_context": "user_or_evidence_triggered",
+    "business_context": "always_screen_when_available",
     "data_quality": "always",
     "anomaly_detection": "user_or_evidence_triggered",
 }
@@ -172,6 +177,21 @@ _ANALYSIS_GOAL_COMPLETION_FIELDS = frozenset(
     }
 )
 _ANALYSIS_GOAL_ROLES = frozenset({"primary", "supporting"})
+_FACTOR_DOMAIN_FIELDS = frozenset(
+    {
+        "business_name",
+        "semantics",
+        "target_metric_refs",
+        "goal_refs",
+        "axis_refs",
+        "capability_refs",
+        "dataset_refs",
+        "dimension_refs",
+        "reconciliation_group",
+        "role",
+        "source_refs",
+    }
+)
 _ANALYSIS_EXPLICIT_FOCUS_FIELDS = frozenset(
     {"component_ids", "dimension_ids", "context_source_ids"}
 )
@@ -261,6 +281,7 @@ class RuntimeContractRegistry:
             ):
                 raise ValueError(f"runtime_contract_sequence_invalid:{section}")
         _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
+        AnalysisPerformancePolicy.from_contract(payload["analysis_performance_policy"])
         ExplorationBudgetPolicy.from_contract(payload["exploration_budget_policy"])
         _validate_public_scope_types(payload["public_scope_types"])
         _validate_metric_display_policies(payload["metric_display_policies"])
@@ -268,11 +289,13 @@ class RuntimeContractRegistry:
             payload["metric_business_labels"],
             tuple(str(item) for item in payload["metrics"]),
         )
+        _validate_dimension_transformations(payload["dimensions"])
         _validate_query_shapes(
             payload.get("query_shapes") or {},
             payload["capability_inputs"],
         )
         _validate_dataset_intent_roles(payload["datasets"])
+        _validate_dataset_current_stage_coverage(payload["datasets"])
         _validate_restricted_output_policy(
             payload["restricted_output_policy"],
             payload["datasets"],
@@ -284,6 +307,7 @@ class RuntimeContractRegistry:
             ],
         )
         _validate_analysis_axis_catalog(payload)
+        _validate_factor_domains(payload)
         maximum_ranks = payload["claim_strength_taxonomy"]["maximum_strength_ranks"]
         for capability_id, contract in payload["capability_inputs"].items():
             _validate_context_window_policy(capability_id, contract)
@@ -395,6 +419,12 @@ class RuntimeContractRegistry:
         return str(self._payload["contract_version"])
 
     @property
+    def analysis_performance_policy(self) -> AnalysisPerformancePolicy:
+        return AnalysisPerformancePolicy.from_contract(
+            self._payload["analysis_performance_policy"]
+        )
+
+    @property
     def source_payload_digest(self) -> str:
         if not self._source_payload_digest:
             raise ValueError("runtime_contract_registry_digest_unavailable")
@@ -463,6 +493,68 @@ class RuntimeContractRegistry:
 
     def analysis_goal_obligation(self, goal_id: str) -> dict[str, Any]:
         return self._entry("goal_obligations", goal_id, "analysis_goal")
+
+    @property
+    def factor_domain_ids(self) -> tuple[str, ...]:
+        return tuple(str(item) for item in self._payload["factor_domains"])
+
+    def factor_domain(self, factor_domain_id: str) -> dict[str, Any]:
+        return self._entry("factor_domains", factor_domain_id, "factor_domain")
+
+    def factor_domain_ids_for_goals(
+        self,
+        goal_ids: Sequence[str],
+        *,
+        target_metric: str,
+    ) -> tuple[str, ...]:
+        if isinstance(goal_ids, (str, bytes)) or not isinstance(goal_ids, Sequence):
+            raise ValueError("runtime_factor_domain_goal_refs_invalid")
+        normalized_goals = tuple(dict.fromkeys(str(item) for item in goal_ids))
+        if not normalized_goals or any(
+            item not in set(self.analysis_goal_ids) for item in normalized_goals
+        ):
+            raise ValueError("runtime_factor_domain_goal_refs_invalid")
+        if target_metric not in set(self.metric_ids):
+            raise ValueError("runtime_factor_domain_target_metric_invalid")
+        return tuple(
+            factor_domain_id
+            for factor_domain_id in self.factor_domain_ids
+            for contract in (self.factor_domain(factor_domain_id),)
+            if target_metric in set(contract["target_metric_refs"])
+            and set(normalized_goals).intersection(contract["goal_refs"])
+        )
+
+    def factor_domain_ids_for_axis(self, axis_id: str) -> tuple[str, ...]:
+        if axis_id not in set(self.analysis_axis_ids):
+            raise KeyError(f"unknown_analysis_axis:{axis_id}")
+        return tuple(
+            factor_domain_id
+            for factor_domain_id in self.factor_domain_ids
+            if axis_id in set(self.factor_domain(factor_domain_id)["axis_refs"])
+        )
+
+    def compile_goal_factor_coverage(
+        self,
+        *,
+        goal_bindings: Any,
+        target_metric: str,
+    ) -> list[dict[str, Any]]:
+        normalized_goals = _validated_goal_bindings(
+            goal_bindings,
+            known_goal_ids=set(self.analysis_goal_ids),
+        )
+        goal_ids = tuple(item["goal_id"] for item in normalized_goals)
+        factor_domain_ids = self.factor_domain_ids_for_goals(
+            goal_ids,
+            target_metric=target_metric,
+        )
+        return [
+            {
+                "factor_domain_id": factor_domain_id,
+                **self.factor_domain(factor_domain_id),
+            }
+            for factor_domain_id in factor_domain_ids
+        ]
 
     def analysis_goal_question_family_ref(self, goal_id: str) -> str:
         return str(self.analysis_goal_obligation(goal_id)["question_family_ref"])
@@ -669,8 +761,47 @@ class RuntimeContractRegistry:
             raise ValueError(
                 "analysis_goal_explicit_focus_unbound:" + ",".join(unbound)
             )
+        goal_ids = tuple(item["goal_id"] for item in normalized_goals)
+        factor_domain_refs = self.factor_domain_ids_for_goals(
+            goal_ids,
+            target_metric=target_metric,
+        )
+        factor_axis_ids = {
+            axis_id
+            for factor_domain_id in factor_domain_refs
+            for axis_id in self.factor_domain(factor_domain_id)["axis_refs"]
+        }
+        for axis_id in self.analysis_axis_ids:
+            if axis_id not in factor_axis_ids or axis_id in axis_records:
+                continue
+            axis = self.analysis_axis(axis_id)
+            axis_records[axis_id] = {
+                "axis_id": axis_id,
+                "business_name": axis["business_name"],
+                "semantics": axis["semantics"],
+                "axis_kind": axis["axis_kind"],
+                "role": "auxiliary",
+                "metric_refs": list(axis["metric_refs"]),
+                "dimension_refs": list(axis["dimension_refs"]),
+                "context_source_refs": list(axis["context_source_refs"]),
+                "capability_refs": list(axis["capability_refs"]),
+                "reconciliation_group": axis["reconciliation_group"],
+                "selection_policy": axis["selection_policy"],
+                "source_refs": list(axis["source_refs"]),
+                "explicit_focus_refs": {
+                    "component_ids": [],
+                    "dimension_ids": [],
+                    "context_source_ids": [],
+                },
+                "goal_refs": list(goal_ids),
+            }
+        ordered_axis_records = [
+            axis_records[axis_id]
+            for axis_id in self.analysis_axis_ids
+            if axis_id in axis_records
+        ]
         return {
-            "schema_version": "analysis_goal_plan.v2",
+            "schema_version": "analysis_goal_plan.v3",
             "goal_bindings": normalized_goals,
             "question_family_refs": list(dict.fromkeys(question_family_refs)),
             "target_metric": target_metric,
@@ -680,7 +811,8 @@ class RuntimeContractRegistry:
                 goal_claim_publication_requirements
             ),
             "goal_completion_policies": goal_completion_policies,
-            "analysis_axes": list(axis_records.values()),
+            "analysis_axes": ordered_axis_records,
+            "factor_domain_refs": list(factor_domain_refs),
             "explicit_focus": normalized_focus,
         }
 
@@ -1205,6 +1337,42 @@ def _validate_dataset_intent_roles(datasets: Mapping[str, Any]) -> None:
             raise ValueError(f"runtime_dataset_intent_roles_invalid:{dataset_id}")
 
 
+def _validate_dataset_current_stage_coverage(datasets: Mapping[str, Any]) -> None:
+    required_fields = {
+        "status",
+        "complete_through",
+        "later_window_policy",
+        "source_contract_ref",
+    }
+    for dataset_id, contract in datasets.items():
+        coverage = contract.get("current_stage_coverage")
+        if coverage is None:
+            continue
+        if not isinstance(coverage, Mapping) or set(coverage) != required_fields:
+            raise ValueError(
+                f"runtime_dataset_stage_coverage_invalid:{dataset_id}:shape"
+            )
+        if coverage.get("status") != "accepted_complete_through":
+            raise ValueError(
+                f"runtime_dataset_stage_coverage_invalid:{dataset_id}:status"
+            )
+        try:
+            date.fromisoformat(str(coverage.get("complete_through") or ""))
+        except ValueError as exc:
+            raise ValueError(
+                f"runtime_dataset_stage_coverage_invalid:{dataset_id}:complete_through"
+            ) from exc
+        if coverage.get("later_window_policy") != "window_data_unavailable":
+            raise ValueError(
+                f"runtime_dataset_stage_coverage_invalid:{dataset_id}:later_window_policy"
+            )
+        source_ref = coverage.get("source_contract_ref")
+        if not isinstance(source_ref, str) or not source_ref.strip():
+            raise ValueError(
+                f"runtime_dataset_stage_coverage_invalid:{dataset_id}:source_contract_ref"
+            )
+
+
 def _validate_context_window_policy(
     capability_id: str,
     contract: Mapping[str, Any],
@@ -1617,6 +1785,154 @@ def _validate_temporal_values(
         raise ValueError(f"runtime_capability_temporal_{field}_invalid:{capability_id}")
 
 
+def _validate_factor_domains(payload: Mapping[str, Any]) -> None:
+    domains = payload["factor_domains"]
+    if not domains:
+        raise ValueError("runtime_factor_domains_empty")
+    reference_sets = {
+        "target_metric_refs": set(payload["metrics"]),
+        "goal_refs": set(payload["goal_obligations"]),
+        "axis_refs": set(payload["analysis_axis_catalog"]),
+        "capability_refs": set(payload["capability_inputs"]),
+        "dataset_refs": set(payload["datasets"]),
+        "dimension_refs": set(payload["dimensions"]),
+    }
+    covered_goals: set[str] = set()
+    for factor_domain_id, contract in domains.items():
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", str(factor_domain_id)):
+            raise ValueError(f"runtime_factor_domain_id_invalid:{factor_domain_id}")
+        if not isinstance(contract, Mapping) or set(contract) != _FACTOR_DOMAIN_FIELDS:
+            raise ValueError(
+                f"runtime_factor_domain_shape_invalid:{factor_domain_id}"
+            )
+        for field in ("business_name", "semantics", "reconciliation_group"):
+            if type(contract[field]) is not str or not contract[field].strip():
+                raise ValueError(
+                    f"runtime_factor_domain_text_invalid:{factor_domain_id}:{field}"
+                )
+        if contract["role"] not in _ANALYSIS_AXIS_ROLES:
+            raise ValueError(f"runtime_factor_domain_role_invalid:{factor_domain_id}")
+        normalized: dict[str, tuple[str, ...]] = {}
+        for field, allowed in reference_sets.items():
+            values = _analysis_string_sequence(
+                contract[field],
+                field=field,
+                item_id=str(factor_domain_id),
+                required=field
+                in {
+                    "target_metric_refs",
+                    "goal_refs",
+                    "axis_refs",
+                    "capability_refs",
+                },
+            )
+            normalized[field] = values
+            unknown = set(values) - allowed
+            if unknown:
+                raise ValueError(
+                    "runtime_factor_domain_reference_unknown:"
+                    f"{factor_domain_id}:{field}:{','.join(sorted(unknown))}"
+                )
+        source_refs = _analysis_string_sequence(
+            contract["source_refs"],
+            field="source_refs",
+            item_id=str(factor_domain_id),
+            required=True,
+        )
+        del source_refs
+        axis_capabilities = {
+            str(capability_id)
+            for axis_id in normalized["axis_refs"]
+            for capability_id in payload["analysis_axis_catalog"][axis_id][
+                "capability_refs"
+            ]
+        }
+        if not set(normalized["capability_refs"]) <= axis_capabilities:
+            raise ValueError(
+                f"runtime_factor_domain_capability_axis_mismatch:{factor_domain_id}"
+            )
+        axis_dimensions = {
+            str(dimension_id)
+            for axis_id in normalized["axis_refs"]
+            for dimension_id in payload["analysis_axis_catalog"][axis_id][
+                "dimension_refs"
+            ]
+        }
+        if not set(normalized["dimension_refs"]) <= axis_dimensions:
+            raise ValueError(
+                f"runtime_factor_domain_dimension_axis_mismatch:{factor_domain_id}"
+            )
+        covered_goals.update(normalized["goal_refs"])
+    if covered_goals != set(payload["goal_obligations"]):
+        raise ValueError("runtime_factor_domain_goal_coverage_invalid")
+
+
+def _validate_dimension_transformations(dimensions: Mapping[str, Any]) -> None:
+    for dimension_id, contract in dimensions.items():
+        transformation = contract.get("transformation")
+        if transformation is None:
+            continue
+        if not isinstance(transformation, Mapping) or set(transformation) != {
+            "kind",
+            "null_or_negative_label",
+            "buckets",
+            "overflow_label",
+        }:
+            raise ValueError(
+                f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+        if transformation.get("kind") != "numeric_bucket":
+            raise ValueError(
+                f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+        raw_buckets = transformation.get("buckets")
+        if (
+            not isinstance(raw_buckets, list)
+            or not raw_buckets
+            or any(
+                not isinstance(item, Mapping)
+                or set(item) != {"label", "max_inclusive"}
+                for item in raw_buckets
+            )
+        ):
+            raise ValueError(
+                f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+        labels: list[str] = []
+        upper_bounds: list[float] = []
+        for item in raw_buckets:
+            label = item.get("label")
+            upper = item.get("max_inclusive")
+            if (
+                type(label) is not str
+                or not label
+                or label != label.strip()
+                or isinstance(upper, bool)
+                or not isinstance(upper, (int, float))
+                or not math.isfinite(float(upper))
+                or float(upper) < 0
+            ):
+                raise ValueError(
+                    f"runtime_dimension_transformation_invalid:{dimension_id}"
+                )
+            labels.append(label)
+            upper_bounds.append(float(upper))
+        boundary_labels = (
+            transformation.get("null_or_negative_label"),
+            transformation.get("overflow_label"),
+        )
+        if (
+            any(type(item) is not str or not item.strip() for item in boundary_labels)
+            or len(labels) != len(set(labels))
+            or upper_bounds != sorted(set(upper_bounds))
+            or not contract.get("source_field")
+            or contract.get("output_policy") != "aggregate_only"
+        ):
+            raise ValueError(
+                f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+
+
 def _validate_analysis_axis_catalog(payload: Mapping[str, Any]) -> None:
     catalog = payload["analysis_axis_catalog"]
     metrics = payload["metrics"]
@@ -1632,6 +1948,7 @@ def _validate_analysis_axis_catalog(payload: Mapping[str, Any]) -> None:
     if not catalog:
         raise ValueError("runtime_analysis_axis_catalog_empty")
     reconciliation_groups: set[str] = set()
+    capability_axis_owners: dict[str, str] = {}
     for axis_id, contract in catalog.items():
         if not re.fullmatch(r"[a-z][a-z0-9_]*", str(axis_id)):
             raise ValueError(f"runtime_analysis_axis_id_invalid:{axis_id}")
@@ -1710,6 +2027,14 @@ def _validate_analysis_axis_catalog(payload: Mapping[str, Any]) -> None:
             values=capability_refs,
             allowed=registered_capabilities,
         )
+        for capability_id in capability_refs:
+            prior_axis_id = capability_axis_owners.get(capability_id)
+            if prior_axis_id is not None:
+                raise ValueError(
+                    "runtime_analysis_capability_axis_duplicated:"
+                    f"{capability_id}:{prior_axis_id}:{axis_id}"
+                )
+            capability_axis_owners[capability_id] = str(axis_id)
         if set(target_metric_refs).intersection(metric_refs):
             raise ValueError(f"runtime_analysis_axis_target_member_overlap:{axis_id}")
         expected_member_kinds = {

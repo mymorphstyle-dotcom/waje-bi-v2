@@ -16,6 +16,7 @@ from bi_agent.runtime.contract_gaps import (
 from bi_agent.runtime.contracts import load_contract
 from bi_agent.runtime.dataset_catalog import (
     canonical_dataset_release_members,
+    canonical_dataset_requires_release,
     DatasetCatalog,
     DatasetSnapshot,
     build_dataset_release_authority_record,
@@ -111,6 +112,10 @@ def snapshot(dataset_id, table, watermark):
             "order_id",
             "channel",
             "payment_method",
+            "final_outcome",
+            "terminal_orders",
+            "successful_paid_amount_ngn",
+            "active_users",
             "region",
             "device_brand",
             "gameplay",
@@ -212,40 +217,42 @@ def canonical_release_catalog(*snapshots):
 
 
 def compile_analysis_contract(**kwargs):
-    """Compile against canonical release-signed paid fixtures."""
+    """Compile against canonical release-signed dataset fixtures."""
     catalog = kwargs["catalog"]
     snapshots = catalog.snapshots()
-    unsigned_paid = tuple(
+    unsigned_release_datasets = tuple(
         item
         for item in snapshots
-        if item.dataset_id == "paid_order_success" and not item.release_ref
+        if canonical_dataset_requires_release(item.dataset_id)
+        and not item.release_ref
     )
-    if not unsigned_paid:
+    if not unsigned_release_datasets:
         return _compile_analysis_contract(**kwargs)
     released = []
     release_records = {}
-    for paid_snapshot in unsigned_paid:
-        _, paid_resolver, signed = canonical_release_catalog(paid_snapshot)
+    for unsigned_snapshot in unsigned_release_datasets:
+        _, dataset_resolver, signed = canonical_release_catalog(unsigned_snapshot)
         released.extend(signed)
-        release_records[paid_resolver.record.release_ref] = paid_resolver.record
+        release_records[dataset_resolver.record.release_ref] = dataset_resolver.record
 
-    class PaidReleaseResolver:
+    class TestReleaseResolver:
         def resolve_dataset_release(self, release_ref):
             return release_records[release_ref]
 
-    paid_resolver = PaidReleaseResolver()
+    release_resolver = TestReleaseResolver()
+    signed_dataset_ids = {item.dataset_id for item in unsigned_release_datasets}
     other_snapshots = tuple(
-        item for item in snapshots if item.dataset_id != "paid_order_success"
+        item for item in snapshots if item.dataset_id not in signed_dataset_ids
     )
     signed_catalog = DatasetCatalog(
         (*tuple(released), *other_snapshots),
-        release_resolver=paid_resolver,
+        release_resolver=release_resolver,
     )
     return _compile_analysis_contract(
         **{
             **kwargs,
             "catalog": signed_catalog,
-            "release_resolver": paid_resolver,
+            "release_resolver": release_resolver,
         }
     )
 
@@ -331,7 +338,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "scope": {"type": "full_sample"},
                 "grain": "window_id",
                 "capability_roles": _required_roles("metric_timeseries"),
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users"],
             },
             accepted_capabilities=("metric_timeseries",),
             catalog=DatasetCatalog(
@@ -861,14 +868,14 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             (
                 ("paid_amount",),
                 {
-                    "market_health_compare": ("paid_amount",),
+                    "market_health_compare": (),
                     "source_reconciliation": ("paid_amount", "paid_amount"),
                 },
             ),
             (
                 ("paid_amount", "active_users"),
                 {
-                    "market_health_compare": ("active_users", "paid_amount"),
+                    "market_health_compare": ("active_users",),
                     "source_reconciliation": ("paid_amount", "paid_amount"),
                 },
             ),
@@ -927,8 +934,15 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                         ),
                         unsupported,
                     )
-                else:
-                    self.assertFalse(unsupported)
+                if "paid_amount" in target_metrics:
+                    self.assertTrue(
+                        any(
+                            gap.affected_capabilities == ("market_health_compare",)
+                            and "paid_amount" in gap.gap_id
+                            for gap in unsupported
+                        ),
+                        unsupported,
+                    )
 
     def test_market_health_capability_selects_unique_dashboard_sources_without_override(
         self,
@@ -970,7 +984,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     "new_users",
                     "aggregate_marketing_cost",
                     "profit",
-                    "paid_amount",
                 ],
                 "claim_intents": ["comparative_change"],
             },
@@ -996,7 +1009,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "new_users",
                 "aggregate_marketing_cost",
                 "profit",
-                "paid_amount",
             },
         )
         self.assertEqual(len(outcome.query_contracts), 1)
@@ -1737,7 +1749,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "grain": "window_id",
                 "capability_roles": _required_roles("market_health_compare"),
                 "question_families": ["revenue_health_review"],
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users"],
                 "dataset_requirements": [
                     "market_dashboard",
                     "market_dashboard_channel",
@@ -1768,7 +1780,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             (queries[0].query_contract_id,),
         )
         self.assertNotIn(
-            "metric:paid_amount:source_ambiguous:market_dashboard,market_dashboard_channel",
+            "metric:active_users:source_ambiguous:market_dashboard,market_dashboard_channel",
             {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
         )
 
@@ -1798,7 +1810,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     "market_health_compare",
                     "event_evidence",
                 ),
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users"],
                 "dataset_requirements": [
                     "market_dashboard",
                     "market_dashboard_channel",
@@ -1821,7 +1833,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             gap
             for gap in outcome.analysis_contract.contract_gaps
             if gap.gap_id
-            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
+            == "dataset:market_dashboard:source_unbound"
         )
         self.assertEqual(
             market_gap.affected_capabilities,
@@ -1858,7 +1870,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     _capability_reviews_dataset(
-                        capability_id, "payment_attempt", registry
+                        capability_id, "payment_final_outcome", registry
                     )
                 )
                 self.assertFalse(
@@ -1954,7 +1966,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     "market_health_compare",
                     "data_quality_profile",
                 ),
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users", "paid_amount"],
                 "dataset_requirements": [
                     "market_dashboard",
                     "market_dashboard_channel",
@@ -1987,6 +1999,13 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             queries_by_ref[market_ref[0]].dataset_snapshot_refs,
             (released_by_dataset["market_dashboard"].snapshot_ref,),
         )
+        self.assertEqual(
+            tuple(
+                item.metric_id
+                for item in queries_by_ref[market_ref[0]].metric_bindings
+            ),
+            ("active_users",),
+        )
         quality_refs = tuple(
             ref
             for slot in plans["data_quality_profile"].required_input_slots
@@ -1994,14 +2013,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
         self.assertEqual(quality_refs, ())
         gaps = outcome.analysis_contract.contract_gaps
-        market_gap = next(
-            gap
-            for gap in gaps
-            if gap.gap_id
-            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
-        )
-        self.assertEqual(market_gap.affected_capabilities, ("market_health_compare",))
-        self.assertEqual(market_gap.affected_claim_types, ("comparative_change",))
         quality_gap = next(
             gap
             for gap in gaps
@@ -2033,7 +2044,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "scope": {"type": "full_sample"},
                 "grain": "window_id",
                 "capability_roles": _required_roles("market_health_compare"),
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users"],
                 "dataset_requirements": [
                     "market_dashboard",
                     "market_dashboard_channel",
@@ -2049,17 +2060,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         )
 
         self.assertTrue(outcome.query_contracts)
-        gap = next(
-            gap
-            for gap in outcome.analysis_contract.contract_gaps
-            if gap.gap_id
-            == "metric:paid_amount:requested_source_unreviewed:market_dashboard_channel"
-        )
-        self.assertEqual(gap.affected_capabilities, ("market_health_compare",))
-        self.assertEqual(gap.dataset_id, "market_dashboard_channel")
         self.assertEqual(
-            gap.diagnostic_context["reviewed_dataset_ids"],
-            ["market_dashboard"],
+            outcome.query_contracts[0].dataset_snapshot_refs,
+            (next(item for item in catalog.snapshots() if item.dataset_id == "market_dashboard").snapshot_ref,),
         )
 
     def test_disjoint_strong_capabilities_bind_their_own_reviewed_sources(self):
@@ -2079,7 +2082,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                     "market_health_compare",
                     "market_channel_context",
                 ),
-                "target_metrics": ["paid_amount"],
+                "target_metrics": ["active_users", "paid_amount"],
                 "dataset_requirements": [
                     "market_dashboard",
                     "market_dashboard_channel",
@@ -2738,13 +2741,16 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "grain": "window_id",
                 "capability_roles": _required_roles(
                     "compare_periods",
-                    "event_evidence",
+                    "internal_operation_event_evidence",
                 ),
                 "target_metrics": ["paid_amount"],
                 "requested_context_sources": ["internal_operation_event"],
                 "claim_intents": ["candidate_mechanism"],
             },
-            accepted_capabilities=("compare_periods", "event_evidence"),
+            accepted_capabilities=(
+                "compare_periods",
+                "internal_operation_event_evidence",
+            ),
             catalog=DatasetCatalog(
                 (snapshot("paid_order_success", "paid", "2026-07-04"),)
             ),
@@ -2758,7 +2764,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             for gap in outcome.analysis_contract.contract_gaps
             if gap.gap_id == "dataset:internal_operation_event:source_unbound"
         )
-        self.assertEqual(gap.affected_capabilities, ("event_evidence",))
+        self.assertEqual(
+            gap.affected_capabilities,
+            ("internal_operation_event_evidence",),
+        )
 
     def test_event_context_query_is_not_owned_outside_reviewed_allowlist(self):
         registry = RuntimeContractRegistry.from_path(
@@ -3969,7 +3978,11 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         catalog = DatasetCatalog(
             (
                 snapshot("paid_order_success", "paid_success", "2026-07-04"),
-                snapshot("payment_attempt", "payment_raw", "2026-07-04"),
+                snapshot(
+                    "payment_final_outcome",
+                    "payment_final_outcome_daily__schema",
+                    "2026-07-04",
+                ),
             )
         )
         outcome = compile_analysis_contract(
@@ -4009,7 +4022,6 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         intents = {contract.query_intent for contract in outcome.query_contracts}
         self.assertIn("daily_metric_baselines", intents)
         self.assertIn("component_driver_scan", intents)
-        self.assertNotIn("payment_success_scan", intents)
         self.assertFalse(outcome.analysis_contract.contract_gaps)
 
     def test_scope_requires_a_catalog_id_without_business_alias_inference(self):

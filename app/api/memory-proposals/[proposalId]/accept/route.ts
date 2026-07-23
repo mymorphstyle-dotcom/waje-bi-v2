@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { jsonError, updateMemoryProposal } from "../../../_conversationStore";
+import { customerJsonError, updateMemoryProposal, withCustomerActorScope } from "../../../_conversationStore";
 import { resolveCustomerActor } from "../../../_customerActor";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +10,13 @@ type RouteContext = { params: Promise<{ proposalId: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
   const { proposalId } = await context.params;
+  let actorId: string | undefined;
   try {
-    const actorId = resolveCustomerActor(request);
-    return NextResponse.json({ memoryProposal: await updateMemoryProposal(proposalId, "accepted", actorId) });
+    actorId = resolveCustomerActor(request);
+    return withCustomerActorScope(actorId, async () => NextResponse.json({
+      memoryProposal: await updateMemoryProposal(proposalId, "accepted", actorId!),
+    }));
   } catch (error) {
-    return jsonError(error);
+    return customerJsonError(error, { actorId });
   }
 }

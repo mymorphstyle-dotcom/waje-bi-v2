@@ -109,12 +109,12 @@ def test_latest_active_release_is_pinned_and_all_datasets_are_covered() -> None:
         if item["dataset_id"] == "paid_order_success"
     )
     assert paid_order["availability"] == "claim_ready"
-    payment_attempt = next(
+    payment_final_outcome = next(
         item
         for item in context.dataset_coverage
-        if item["dataset_id"] == "payment_attempt"
+        if item["dataset_id"] == "payment_final_outcome"
     )
-    assert payment_attempt["availability"] == "missing_contract"
+    assert payment_final_outcome["availability"] == "unavailable"
 
 
 def test_release_membership_must_be_active_as_one_authority_set() -> None:

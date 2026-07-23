@@ -9,6 +9,67 @@ import textwrap
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_general_agent_trace_projects_model_tool_error_and_full_technical_records() -> None:
+    result = _run_typescript(
+        """
+        import { traceRunFromRuntimeState } from "./app/api/_customerRunProjection.ts";
+
+        const records = [{
+          event_type: "span_finished",
+          span_data: { type: "generation", model: "deepseek-chat" },
+          error: null,
+        }, {
+          event_type: "span_finished",
+          span_data: { type: "function", name: "run_bi_analysis" },
+          error: { message: "tool failed" },
+        }];
+        const run = traceRunFromRuntimeState({
+          id: "run:agent-run-test",
+          label: "General Agent test",
+          runId: "agent-run-test",
+          runStatus: "completed_with_limits",
+          question: "分析付费金额变化",
+          request: {
+            runtime_kind: "general_agent",
+            interaction_result: { response_text: "分析已完成。" },
+          },
+          runNodes: [{
+            node_name: "general_agent_model_turn",
+            label: "大陆模型推理",
+            summary: "模型 deepseek-chat 完成一次 Runner 推理。",
+            owner: "LLM",
+            status: "completed",
+          }, {
+            node_name: "general_agent_tool_call",
+            label: "工具调用 · run_bi_analysis",
+            summary: "Runner 调用工具失败。",
+            owner: "本地系统",
+            status: "failed",
+          }],
+          llmCallCount: 1,
+          technicalTrace: {
+            runtime: "general_agent",
+            provider: "deepseek",
+            model: "deepseek-chat",
+            transport: "chat_completions",
+            records,
+          },
+          createdAt: "2026-07-22T00:00:00.000Z",
+          updatedAt: "2026-07-22T00:00:01.000Z",
+        });
+        console.log(JSON.stringify(run));
+        """
+    )
+
+    assert result["runOutcome"] == "completed"
+    assert result["processSummary"]["llmCallCount"] == 1
+    assert result["traceCompleteness"]["llmCalls"] == "known"
+    assert result["processSummary"]["nodes"][0]["owner"] == "LLM"
+    assert result["processSummary"]["nodes"][1]["outcome"] == "failed"
+    assert result["technicalTrace"]["provider"] == "deepseek"
+    assert result["technicalTrace"]["records"][1]["error"]["message"] == "tool failed"
+
+
 def test_customer_publication_projects_authoritative_replay_fields() -> None:
     result = _run_typescript(
         """

@@ -23,6 +23,7 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
+from bi_agent.runtime.factor_coverage import compile_factor_coverage_plan
 from bi_agent.runtime.durable_call_journal import InMemoryDurableCallJournal
 from bi_agent.runtime.llm_client import LLMResult
 from bi_agent.runtime.plan_authority import (
@@ -66,7 +67,16 @@ def _registry() -> RuntimeContractRegistry:
     return RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
 
 
-def _intent_revision(registry: RuntimeContractRegistry) -> IntentRevision:
+def _intent_revision(
+    registry: RuntimeContractRegistry,
+    *,
+    requested_factor_refs: tuple[str, ...] = (),
+    requested_analysis_axes: tuple[str, ...] = (
+        "formula_tree",
+        "dimension_localization",
+        "time_context",
+    ),
+) -> IntentRevision:
     original_user_text = f"{TARGET_DATE}付费金额为什么上涨？"
     metric_text = "付费金额"
     metric_start = original_user_text.index(metric_text)
@@ -83,11 +93,8 @@ def _intent_revision(registry: RuntimeContractRegistry) -> IntentRevision:
             "slot_id": "comparison_baseline",
         },
         direction_premise="user_hypothesis_positive",
-        requested_analysis_axes=(
-            "formula_tree",
-            "dimension_localization",
-            "time_context",
-        ),
+        requested_factor_refs=requested_factor_refs,
+        requested_analysis_axes=requested_analysis_axes,
         desired_decisions=(
             {"decision_kind": "explain_change", "target_ref": "paid_amount"},
         ),
@@ -119,8 +126,8 @@ def _intent_revision(registry: RuntimeContractRegistry) -> IntentRevision:
                 "text": TARGET_DATE,
             },
         ),
-        schema_version="intent-revision.v1",
-        prompt_version="single-authority-intent.v1",
+        schema_version="intent-revision.v2",
+        prompt_version="single-authority-intent.v2",
         model_version="deepseek-v4-flash",
         known_goal_ids=set(registry.analysis_goal_ids),
         known_metric_ids=set(registry.metric_ids),
@@ -141,6 +148,28 @@ def _decision_ledger(intent: IntentRevision) -> DecisionLedger:
         option_id="baseline.previous_day",
     )
     return DecisionLedger().append(decision)
+
+
+def test_requested_factor_refs_flow_into_typed_analysis_focus() -> None:
+    registry = _registry()
+    intent = _intent_revision(
+        registry,
+        requested_factor_refs=("paid_users", "paid_amount_per_paid_user"),
+    )
+
+    projection = langgraph_workflow._intent_revision_phase2_projection(
+        intent,
+        ledger=_decision_ledger(intent),
+        registry=registry,
+    )
+
+    assert projection["component_ids"] == [
+        "paid_users",
+        "paid_amount_per_paid_user",
+    ]
+    assert projection["explicit_focus"]["component_ids"] == projection[
+        "component_ids"
+    ]
 
 
 def _goal_temporal_fixture(
@@ -362,6 +391,7 @@ def test_only_required_primary_baseline_axis_forces_a_physical_window_pair() -> 
             "aggregation": "mean_of_complete_days",
         },
         direction_premise="unknown",
+        requested_factor_refs=(),
         requested_analysis_axes=(),
         desired_decisions=(),
         ambiguity_slots=(),
@@ -498,7 +528,7 @@ def _authority_context(
     registry: RuntimeContractRegistry,
     *,
     release_suffix: str = "r1",
-    payment_attempt_status: str = "missing_contract",
+    payment_final_outcome_status: str = "unavailable",
 ) -> AuthorityContext:
     release_ref = f"release:paid-order-success:{release_suffix}"
     snapshot_ref = f"snapshot:paid-order-success:{release_suffix}"
@@ -516,26 +546,27 @@ def _authority_context(
                 "limitation_ref": None,
             },
             {
-                "dataset_id": "payment_attempt",
-                "availability": payment_attempt_status,
+                "dataset_id": "payment_final_outcome",
+                "availability": payment_final_outcome_status,
                 "release_ref": None,
                 "snapshot_refs": (),
-                "limitation_ref": "limitation:payment-attempt-contract",
+                "limitation_ref": "limitation:payment-final-outcome-unavailable",
             },
-            {
-                "dataset_id": "external_event",
-                "availability": "missing_contract",
-                "release_ref": None,
-                "snapshot_refs": (),
-                "limitation_ref": "limitation:external-event-contract",
-            },
-            {
-                "dataset_id": "internal_operation_event",
-                "availability": "missing_contract",
-                "release_ref": None,
-                "snapshot_refs": (),
-                "limitation_ref": "limitation:operation-event-contract",
-            },
+            *(
+                {
+                    "dataset_id": dataset_id,
+                    "availability": (
+                        "missing_contract"
+                        if dataset_id == "internal_operation_event"
+                        else "unavailable"
+                    ),
+                    "release_ref": None,
+                    "snapshot_refs": (),
+                    "limitation_ref": f"limitation:{dataset_id}-unavailable",
+                }
+                for dataset_id in registry.dataset_ids
+                if dataset_id not in {"paid_order_success", "payment_final_outcome"}
+            ),
         ),
         contract_versions={
             "runtime_bindings": registry.contract_version,
@@ -554,7 +585,7 @@ def _planner_proposal(
     auxiliary_axis_proposals: list[dict[str, Any]] = [
         {
             "proposal_item_id": "proposal-axis-business-context",
-            "axis_id": "business_context",
+            "axis_id": "external_context_screen",
             "rationale": "检查活动与运营事件是否能解释同期变化。",
             "supports_claim_kinds": ("candidate_mechanism",),
         }
@@ -587,7 +618,9 @@ def _planner_proposal(
                 "statement": "运营活动可能与变化窗口重叠，但需要事件证据验证。",
                 "target_claim_kind": "candidate_mechanism",
                 "requested_axis_ids": (
-                    "invented_axis" if include_unknown_axis else "business_context",
+                    "invented_axis"
+                    if include_unknown_axis
+                    else "external_context_screen",
                 ),
                 "assumption_refs": (),
             },
@@ -616,7 +649,7 @@ def _planner_proposal(
             },
             {
                 "proposal_item_id": "proposal-priority-business-context",
-                "target_ref": "business_context",
+                "target_ref": "external_context_screen",
                 "rationale": "最后核查业务事件候选解释。",
             },
         ),
@@ -634,6 +667,12 @@ def _compile_plan(
     authority_context: AuthorityContext | None = None,
     supersedes_plan_revision: PlanRevision | None = None,
     registry: RuntimeContractRegistry | None = None,
+    requested_factor_refs: tuple[str, ...] = (),
+    requested_analysis_axes: tuple[str, ...] = (
+        "formula_tree",
+        "dimension_localization",
+        "time_context",
+    ),
 ) -> tuple[
     RuntimeContractRegistry,
     IntentRevision,
@@ -643,7 +682,11 @@ def _compile_plan(
     PlanRevision,
 ]:
     registry = registry or _registry()
-    intent = _intent_revision(registry)
+    intent = _intent_revision(
+        registry,
+        requested_factor_refs=requested_factor_refs,
+        requested_analysis_axes=requested_analysis_axes,
+    )
     context = authority_context or _authority_context(registry)
     ledger = _decision_ledger(intent)
     decision_refs = tuple(record.decision_id for record in ledger.records)
@@ -757,8 +800,10 @@ def test_phase02_records_are_frozen_content_addressed_and_roundtrip() -> None:
                 "item_kind": "analysis_axis",
                 "status": "admitted",
                 "reason_code": "supported_auxiliary_axis",
-                "contract_refs": ["clickhouse-analysis-bindings#business_context"],
-                "normalized_execution_ref": "business_context",
+                "contract_refs": [
+                    "clickhouse-analysis-bindings#external_context_screen"
+                ],
+                "normalized_execution_ref": "external_context_screen",
             },
         ),
         compiler_version="single-authority-plan-compiler.v1",
@@ -869,7 +914,7 @@ def test_case_b_plan_derives_the_complete_mandatory_analysis_spine() -> None:
     assert set(axes["dimension_localization"].dimension_refs) == set(
         registry.analysis_axis("dimension_localization")["dimension_refs"]
     )
-    assert "payment_success_rate" in axes["formula_tree"].metric_refs
+    assert "payment_success_rate" in axes["payment_outcome_health"].metric_refs
 
     claim_kinds = {item.claim_kind for item in plan.claim_obligations}
     assert {
@@ -896,6 +941,85 @@ def test_case_b_plan_derives_the_complete_mandatory_analysis_spine() -> None:
         BASELINE_WINDOW_REF,
     }
     assert plan.executable is True
+
+
+def test_explicit_requested_factors_become_scoped_user_required_obligations() -> None:
+    requested_factors = (
+        "terminal_payment_orders",
+        "successful_payment_orders",
+        "not_paid_payment_orders",
+        "payment_success_rate",
+    )
+    registry, _, context, _, _, plan = _compile_plan(
+        requested_factor_refs=requested_factors,
+        requested_analysis_axes=(
+            "formula_tree",
+            "dimension_localization",
+            "time_context",
+            "payment_outcome_health",
+        ),
+    )
+
+    factor_obligations = {
+        str(obligation.subject["target_metric_ref"]): obligation
+        for obligation in plan.claim_obligations
+        if obligation.role == "user_required"
+        and obligation.subject["target_metric_ref"] in requested_factors
+    }
+    assert set(factor_obligations) == set(requested_factors)
+    assert {
+        obligation.claim_kind for obligation in factor_obligations.values()
+    } == {"comparative_change"}
+    assert all(
+        obligation.success_policy["outcome_refs"]
+        == ("requested_factor_evidence",)
+        for obligation in factor_obligations.values()
+    )
+    assert all(
+        obligation.success_policy["requested_dimension_refs"]
+        == ("payment_method", "channel")
+        for obligation in factor_obligations.values()
+    )
+    assert [
+        factor_obligations[factor_ref].success_policy[
+            "dimension_summary_anchor"
+        ]
+        for factor_ref in requested_factors
+    ] == [True, False, False, False]
+
+    payment_axis = next(
+        axis for axis in plan.analysis_axes
+        if axis.axis_id == "payment_outcome_health"
+    )
+    requested_obligation_ids = {
+        obligation.obligation_id for obligation in factor_obligations.values()
+    }
+    assert set(requested_factors).issubset(payment_axis.metric_refs)
+    assert payment_axis.target_metric_refs == ("paid_amount",)
+    assert requested_obligation_ids.issubset(payment_axis.supports_obligation_ids)
+
+    payment_task = next(
+        task for task in plan.capability_tasks
+        if task.capability_id == "payment_outcome_compare"
+    )
+    assert requested_obligation_ids.issubset(payment_task.supports_obligation_ids)
+    assert all(
+        edge["required"]
+        for edge in payment_task.obligation_edges
+        if edge["obligation_id"] in requested_obligation_ids
+    )
+    assert all(
+        requested_obligation_ids.isdisjoint(task.supports_obligation_ids)
+        for task in plan.capability_tasks
+        if task.capability_id != "payment_outcome_compare"
+    )
+    factor_coverage = compile_factor_coverage_plan(
+        plan_revision=plan,
+        authority_context=context,
+        runtime_registry=registry,
+    )
+    assert factor_coverage.target_metric_ref == "paid_amount"
+    assert PlanRevision.from_dict(plan.to_dict()) == plan
 
 
 def test_context_window_execution_defaults_are_method_aligned() -> None:
@@ -1024,7 +1148,7 @@ def test_planner_proposal_is_additive_and_cannot_remove_mandatory_obligations() 
     assert proposal.auxiliary_axes == (
         {
             "proposal_item_id": "proposal-axis-business-context",
-            "axis_id": "business_context",
+            "axis_id": "external_context_screen",
             "rationale": "检查活动与运营事件是否能解释同期变化。",
             "supports_claim_kinds": ("candidate_mechanism",),
         },
@@ -1068,6 +1192,7 @@ def test_primary_and_supporting_goals_merge_into_one_plan_revision() -> None:
         time_spec=base.time_spec,
         comparison_spec=base.comparison_spec,
         direction_premise=base.direction_premise,
+        requested_factor_refs=base.requested_factor_refs,
         requested_analysis_axes=(),
         desired_decisions=base.desired_decisions,
         ambiguity_slots=base.ambiguity_slots,
@@ -1121,7 +1246,7 @@ def test_auxiliary_proposals_are_admitted_or_omitted_without_clarification() -> 
     }
     admitted = admissions["proposal-axis-business-context"]
     assert admitted["status"] == "admitted"
-    assert admitted["normalized_execution_ref"] == "business_context"
+    assert admitted["normalized_execution_ref"] == "external_context_screen"
     unknown = admissions["proposal-axis-invented"]
     assert unknown["status"] == "rejected"
     assert unknown["reason_code"] == "unknown_axis_ref"
@@ -1161,11 +1286,11 @@ def test_capability_tasks_form_a_dag_and_requiredness_lives_on_edges() -> None:
     assert supported_obligation_ids == obligation_ids
 
 
-def test_optional_payment_success_unavailability_keeps_plan_executable() -> None:
+def test_optional_payment_final_outcome_unavailability_keeps_plan_executable() -> None:
     registry = _registry()
     context = _authority_context(
         registry,
-        payment_attempt_status="missing_contract",
+        payment_final_outcome_status="unavailable",
     )
     _, _, _, _, _, plan = _compile_plan(authority_context=context)
 
@@ -1173,16 +1298,20 @@ def test_optional_payment_success_unavailability_keeps_plan_executable() -> None
     formula_axis = next(
         axis for axis in plan.analysis_axes if axis.axis_id == "formula_tree"
     )
-    assert "payment_success_rate" in formula_axis.metric_refs
+    assert "payment_success_rate" not in formula_axis.metric_refs
+    payment_axis = next(
+        axis for axis in plan.analysis_axes if axis.axis_id == "payment_outcome_health"
+    )
+    assert "payment_success_rate" in payment_axis.metric_refs
     assert any(
         task.capability_id == "formula_decompose" for task in plan.capability_tasks
     )
     payment_coverage = next(
         item
         for item in context.dataset_coverage
-        if item["dataset_id"] == "payment_attempt"
+        if item["dataset_id"] == "payment_final_outcome"
     )
-    assert payment_coverage["availability"] == "missing_contract"
+    assert payment_coverage["availability"] == "unavailable"
 
 
 def test_plan_change_inherits_the_pinned_authority_context() -> None:
@@ -1790,6 +1919,7 @@ def test_every_launch_goal_compiles_to_one_executable_plan(
         time_spec=time_spec,
         comparison_spec=comparison_spec,
         direction_premise="unknown",
+        requested_factor_refs=(),
         requested_analysis_axes=(),
         desired_decisions=(),
         ambiguity_slots=(),

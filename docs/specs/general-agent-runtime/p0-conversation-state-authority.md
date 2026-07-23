@@ -16,6 +16,9 @@
   trace，客户投影只得到可操作说明；
 - Gateway 的新 user item 带 operation key、canonical digest 和 customer visibility，客户
   消息查询只读取 `customer_visible=true` 的同一 ledger；
+- 每个 operation 由进程生命周期 advisory lock 单飞；原执行进程退出后锁由 PostgreSQL
+  自动释放，常驻 recovery worker 从持久化 user item、ThreadHead 和 owner authority 重建
+  精确命令继续执行；
 - 已删除总为空的 `prior_topic_material_context` 运行合同。
 
 现有 BI LangGraph、IntentRevision、PlanRevision、query/evidence、claim、publication 和
@@ -67,23 +70,38 @@ CAS 追加 customer-visible assistant item 和 server-only task terminal；有 l
 ThreadHead 进入 `completed_with_limits`。Provider、SDK、Session、工具或引用合同失败时，
 写入 `failed` assistant/terminal/head，原始错误不进入客户 projection。
 
-重复提交同一 operation 会直接返回已持久化 assistant 与 terminal，不再次调用模型。
+重复提交同一 operation 会直接返回已持久化 assistant 与 terminal，不再次调用模型。执行中
+的同 operation 返回 retryable `agent_turn_operation_in_progress`，不会启动第二个模型—工具
+循环。
 
 ## Gateway 边界
 
-Gateway 仍从 `conversation_messages` 读取 user/assistant 历史，增加
-`customer_visible=true` 过滤并按 `item_sequence` 排序。新 user operation 在创建 run 和
-dispatch 的同一事务写入 ledger，并把 ThreadHead 置为 working。现有 SSE 和 BI run 状态
-投影继续服务当前 LangGraph 入口，后续入口切换会让普通 Agent turn 的 state version 和
-item cursor 成为统一增量源。
+Gateway 从 `conversation_messages` 读取 user/assistant 历史，使用
+`customer_visible=true` 过滤并按 `item_sequence` 排序。General Agent process 先把 user
+operation 写入 ledger 并把 ThreadHead 置为 working，随后才通过专用 startup control pipe
+确认接受；HTTP 连接不承担后台执行生命周期。
 
-## 本阶段之后
+## 进程监督与常驻恢复
 
-已有材料解释已由
-[P0 已有材料解释](./p0-existing-material-explanation.md) 完成，BI 分析工具提交边界已由
-[P1 BI 分析工具提交边界](./p1-bi-analysis-tools.md) 完成。以下工作尚未进入：
+常驻 `tools.runtime.recover_run_dispatches` worker 每个周期处理三类持久化工作：
 
-- 将所有现有 Conversation 请求全面切到 `AgentTurnRuntime`；
-- durable long-tool checkpoint、lease 后恢复 SDK run state；
-- clarification/approval interruption、完整 SSE cursor 与真实浏览器恢复验收已在 P1
-  transport cutover 完成。
+1. 已提交的 BI `run_dispatches`；
+2. `customer_state=working`、active task 为 General Agent run、已有 user item 且没有
+   checkpoint/terminal 的应用轮次；
+3. 已终局 BI task 对应的 `agent_task_resume_outbox`。
+
+General Agent 恢复命令只从 thread owner、稳定 operation key、user message 和已持久化 typed
+pending-action resolution 重建，并重新验证派生 run/item identity。活跃原进程仍持有 operation
+lock 时 worker 只记录 `in_progress`；进程消失后数据库释放锁，后续周期接管。恢复会复用
+ThreadItemLedger 与 SDK Session 中已有的 user/tool items，终局仍由 `AgentTurnRuntime` 原子
+提交。
+
+`npm run worker` 启动连续模式；`--once` 用于部署探测。连续模式隔离每个数据库周期、记录
+稳定周期状态、在临时数据库错误后继续轮询，并在 SIGTERM/SIGINT 后于周期边界停止。
+
+## 后续边界
+
+已有材料解释见 [P0 已有材料解释](./p0-existing-material-explanation.md)，BI 分析工具提交见
+[P1 BI 分析工具提交边界](./p1-bi-analysis-tools.md)。durable long-tool checkpoint、typed
+clarification/approval interruption、SSE cursor 与浏览器恢复已经接入当前运行链；它们仍需
+遵守各自的审批绑定、重试终局和资源预算加固合同。

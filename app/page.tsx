@@ -478,14 +478,25 @@ function AnswerMessage({ state }: { state: Extract<CustomerAnalysisState, {
           </header>
           <div className="answer-body">
             {mainBlocks.map((block) => (
-              <MessageResponse className={block.kind} key={block.key}>
-                {block.text}
-              </MessageResponse>
+              <section
+                aria-labelledby={block.heading ? `${block.key}-heading` : undefined}
+                className={`answer-section ${block.kind}`}
+                key={block.key}
+              >
+                {block.heading ? (
+                  <h3 className="answer-section-heading" id={`${block.key}-heading`}>
+                    {block.heading}
+                  </h3>
+                ) : null}
+                <MessageResponse className="answer-section-copy">
+                  {block.text}
+                </MessageResponse>
+              </section>
             ))}
           </div>
           {recommendations.length ? (
             <section className="answer-next-actions">
-              <h3>建议下一步</h3>
+              <h3>{recommendations[0].heading ?? "运营建议"}</h3>
               {recommendations.map((block) => (
                 <MessageResponse key={block.key}>{block.text}</MessageResponse>
               ))}
@@ -1026,6 +1037,11 @@ export default function Home() {
               </Message>
             ) : null}
 
+            {snapshot?.state.status === "completed"
+              || snapshot?.state.status === "completed_with_limits" ? (
+                <AnswerMessage state={snapshot.state} />
+              ) : null}
+
             {snapshot && (snapshot.state.status !== "idle" || pending) ? (
               <ProgressTimeline
                 connection={connection}
@@ -1064,11 +1080,6 @@ export default function Home() {
                 </MessageContent>
               </Message>
             ) : null}
-
-            {snapshot?.state.status === "completed"
-              || snapshot?.state.status === "completed_with_limits" ? (
-                <AnswerMessage state={snapshot.state} />
-              ) : null}
 
             {error ? (
               <Message className="error-message" from="assistant">

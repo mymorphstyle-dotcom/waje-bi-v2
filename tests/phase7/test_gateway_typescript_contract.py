@@ -11,10 +11,11 @@ import textwrap
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_gateway_python_runtime_is_one_explicit_uv_python_312_invocation() -> None:
+def test_gateway_python_runtime_uses_prebuilt_immutable_environment() -> None:
     result = _run_typescript(
         textwrap.dedent(
             """
+            process.env.WAJE_PYTHON_EXECUTABLE = process.execPath;
             const { wajePythonInvocation } = await import(
               "./app/api/_pythonRuntime.ts"
             );
@@ -23,19 +24,109 @@ def test_gateway_python_runtime_is_one_explicit_uv_python_312_invocation() -> No
         )
     )
 
+    assert Path(result["command"]).is_absolute()
+    assert Path(result["command"]).exists()
+    assert result["args"] == ["-c", "pass"]
+
+
+def test_production_customer_actor_requires_fresh_request_bound_signature() -> None:
+    result = _run_typescript(
+        textwrap.dedent(
+            """
+            import { createHmac } from "node:crypto";
+
+            process.env.NODE_ENV = "production";
+            process.env.WAJE_AUTH_HEADER_SECRET = "s".repeat(64);
+            const { resolveCustomerActor } = await import(
+              "./app/api/_customerActor.ts"
+            );
+            const actorId = "customer-17";
+            const issuedAt = String(Math.floor(Date.now() / 1000));
+            const requestUrl = "https://waje.example/api/threads/thread-1/messages?view=current";
+            const canonical = [
+              "waje-auth-v1",
+              "POST",
+              "/api/threads/thread-1/messages?view=current",
+              issuedAt,
+              actorId,
+            ].join("\\n");
+            const signature = createHmac(
+              "sha256",
+              process.env.WAJE_AUTH_HEADER_SECRET,
+            ).update(canonical).digest("hex");
+            const headers = {
+              "x-waje-authenticated-user-id": actorId,
+              "x-waje-authenticated-user-issued-at": issuedAt,
+              "x-waje-authentication-signature": signature,
+            };
+            const valid = resolveCustomerActor(new Request(requestUrl, {
+              method: "POST",
+              headers,
+            }));
+            const failure = (request) => {
+              try {
+                resolveCustomerActor(request);
+                return "accepted";
+              } catch (error) {
+                return error instanceof Error ? error.message : "unknown";
+              }
+            };
+            const unsigned = failure(new Request(requestUrl, {
+              method: "POST",
+              headers: { "x-waje-authenticated-user-id": actorId },
+            }));
+            const wrongPath = failure(new Request(
+              "https://waje.example/api/threads/thread-2/messages?view=current",
+              { method: "POST", headers },
+            ));
+            const expiredAt = String(Number(issuedAt) - 3600);
+            const expiredCanonical = [
+              "waje-auth-v1",
+              "POST",
+              "/api/threads/thread-1/messages?view=current",
+              expiredAt,
+              actorId,
+            ].join("\\n");
+            const expiredSignature = createHmac(
+              "sha256",
+              process.env.WAJE_AUTH_HEADER_SECRET,
+            ).update(expiredCanonical).digest("hex");
+            const expired = failure(new Request(requestUrl, {
+              method: "POST",
+              headers: {
+                ...headers,
+                "x-waje-authenticated-user-issued-at": expiredAt,
+                "x-waje-authentication-signature": expiredSignature,
+              },
+            }));
+            console.log(JSON.stringify({ valid, unsigned, wrongPath, expired }));
+            """
+        )
+    )
+
     assert result == {
-        "command": "uv",
-        "args": [
-            "run",
-            "--python",
-            "3.12",
-            "--with-requirements",
-            "requirements.txt",
-            "python",
-            "-c",
-            "pass",
-        ],
+        "valid": "customer-17",
+        "unsigned": "customer_identity_untrusted",
+        "wrongPath": "customer_identity_untrusted",
+        "expired": "customer_identity_expired",
     }
+
+
+def test_nonproduction_customer_actor_keeps_local_development_identity() -> None:
+    result = _run_typescript(
+        textwrap.dedent(
+            """
+            const { resolveCustomerActor } = await import(
+              "./app/api/_customerActor.ts"
+            );
+            console.log(JSON.stringify({
+              actor: resolveCustomerActor(new Request("http://localhost/api/threads")),
+            }));
+            """
+        )
+    )
+
+    assert result == {"actor": "local-user"}
 
 
 def test_inline_bridge_preserves_typed_failed_terminal_on_exit_one() -> None:

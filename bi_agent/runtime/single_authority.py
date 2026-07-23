@@ -101,6 +101,7 @@ _INTENT_PROVIDER_FIELDS = frozenset(
         "comparison_spec",
         "direction_premise",
         "requested_analysis_axes",
+        "requested_factor_refs",
         "desired_decisions",
         "ambiguity_slots",
         "source_spans",
@@ -118,6 +119,7 @@ _INTENT_FIELDS = (
     "comparison_spec",
     "direction_premise",
     "requested_analysis_axes",
+    "requested_factor_refs",
     "desired_decisions",
     "ambiguity_slots",
     "source_spans",
@@ -263,6 +265,7 @@ class IntentRevision:
     comparison_spec: Mapping[str, Any]
     direction_premise: str
     requested_analysis_axes: tuple[str, ...]
+    requested_factor_refs: tuple[str, ...]
     desired_decisions: tuple[Mapping[str, Any], ...]
     ambiguity_slots: tuple[Mapping[str, Any], ...]
     source_spans: tuple[Mapping[str, Any], ...]
@@ -285,6 +288,7 @@ class IntentRevision:
         comparison_spec: Mapping[str, Any],
         direction_premise: str,
         requested_analysis_axes: Sequence[str],
+        requested_factor_refs: Sequence[str],
         desired_decisions: Sequence[Mapping[str, Any]],
         ambiguity_slots: Sequence[Mapping[str, Any]],
         source_spans: Sequence[Mapping[str, Any]],
@@ -399,6 +403,19 @@ class IntentRevision:
             known_analysis_axis_ids,
             "intent_revision_analysis_axis_ref_unknown",
         )
+        requested_factor_refs = _string_tuple(
+            requested_factor_refs,
+            "intent_revision_factor_refs_invalid",
+        )
+        _validate_catalog_refs(
+            requested_factor_refs,
+            known_metric_ids,
+            "intent_revision_factor_ref_unknown",
+        )
+        if set(requested_factor_refs) & set(target_metric_refs):
+            raise SingleAuthorityContractError(
+                "intent_revision_factor_target_overlap_invalid"
+            )
         normalized_desired = _mapping_sequence(
             desired_decisions, "intent_revision_desired_decisions_invalid"
         )
@@ -543,6 +560,7 @@ class IntentRevision:
             "comparison_spec": normalized_comparison_spec,
             "direction_premise": direction_premise,
             "requested_analysis_axes": requested_analysis_axes,
+            "requested_factor_refs": requested_factor_refs,
             "desired_decisions": normalized_desired,
             "ambiguity_slots": normalized_slots,
             "source_spans": normalized_spans,
@@ -641,6 +659,7 @@ class IntentRevision:
                 "comparison_spec": self.comparison_spec,
                 "direction_premise": self.direction_premise,
                 "requested_analysis_axes": self.requested_analysis_axes,
+                "requested_factor_refs": self.requested_factor_refs,
                 "desired_decisions": self.desired_decisions,
                 "ambiguity_slots": [
                     {key: value for key, value in slot.items() if key != "question"}

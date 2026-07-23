@@ -1,0 +1,172 @@
+{
+  "adapterCounts": {
+    "agent_live": 1
+  },
+  "caseCount": 1,
+  "cases": [
+    {
+      "adapter": "agent_live",
+      "caseId": "p4_full_factor_change_investigation",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "agent_live",
+          "advisoryReview": {
+            "decisionCase": true,
+            "dimensions": [
+              "conclusion_directness",
+              "analysis_completeness",
+              "mechanisms_offsets_alternatives",
+              "operational_meaning",
+              "evidence_boundaries",
+              "readability",
+              "actionability"
+            ],
+            "mode": "human_advisory",
+            "observations": [
+              {
+                "characterCount": 1382,
+                "hasAnswer": true,
+                "paragraphCount": 21,
+                "turnId": "initial"
+              },
+              {
+                "characterCount": 941,
+                "hasAnswer": true,
+                "paragraphCount": 5,
+                "turnId": "funnel_follow_up"
+              },
+              {
+                "characterCount": 423,
+                "hasAnswer": true,
+                "paragraphCount": 4,
+                "turnId": "tier_event_follow_up"
+              }
+            ],
+            "reviewNote": "评价回答是否宽进深出，主结论完整，漏斗与档位有业务解释，外部因素保持候选或缺口边界，连续追问能复用已发布材料。",
+            "status": "pending_human_review"
+          },
+          "caseId": "p4_full_factor_change_investigation",
+          "failures": [],
+          "hardStatus": "passed",
+          "threadId": "thread-eval-p4_full_factor_change_investigation-20260722212212ca83b7-r1",
+          "turns": [
+            {
+              "completionKind": "analysis_publication",
+              "customerMessage": "2026年第2季度（4月1日-6月30日）付费金额从2026年第1季度的236.55亿增长至275.17亿，绝对增加38.62亿，相对增长16.3%。\n\n在分析的8个可比周窗口中，增长方向一致且均达到实质性阈值，表明该增长并非偶然波动。\n\n付费金额增长由公式成分驱动，按绝对贡献排序：\n\n1. **付费频次**：贡献+29.53亿，贡献份额76.5%。平均付费频次从15.998次升至17.959次，增加1.96次。\n2. **付费人数**：贡献+13.38亿，贡献份额34.6%。付费人数从68.32万增至71.99万，增加3.67万人。\n3. **单笔付费金额**：贡献-4.29亿，贡献份额-11.1%。单笔付费金额从2164.27元降至2128.31元，减少35.96元。\n\n综合来看，付费总金额的增长主要源于用户付费频次的提升，但部分被单笔付费金额下降所抵消。付费人数的增加也提供了正向贡献。\n\n付费金额变化的进一步背景验证存在限制：\n\n- **市场健康比较**不可用：无法对比活跃用户、投放成本等市场健康指标，缺少对增长是否伴随市场整体上升的判断。\n- **拉新注册首充漏斗**不可用：无法分解新用户注册到首次付费的转化链，难以判断增长是否由新用户获取驱动。\n\n这些限制不影响观察到付费金额本身的增长，但使得深层归因缺乏完整上下文。\n\n各维度的细分贡献分析无法执行，因为所选维度（渠道、金额段、支付方式、国家、地区、城市、设备品牌、设备型号、操作系统、网络类型）的维度值过于稀疏，未达到统计要求。\n\n因此，无法提供哪些客群或渠道驱动了增长的具体量化证据。\n\n无法归因于具体的外部事件或内部运营动作：\n\n- **外部环境与事件**分析不可用：缺少外部事件证据（如节假日、市场活动等），无法判断付费金额变化是否与外部因素同步。\n- **产品与内部运营事件**分析不可用：缺少内部运营事件记录（如版本更新、运营活动等），无法判断内部动作的影响。\n\n跨数据源的关联分析（如玩法下注与付费金额的关联）可用作背景参考，但无法提供归因性的候选驱动因素：\n\n- 玩法与投注行为数据集仅提供背景上下文，不能用于直接归因或因果结论。\n- 分析窗口期数据截止于6月2日，未覆盖整个季度；跨源映射覆盖率不足，无法建立权威关联。\n- 由于观测性面板数据的固有局限，无法排除混杂因素，且未估算聚类稳健标准误，系数仅反映观测对齐面板。\n- 双因素固定效应残差化未收敛，且存在序列相关未调整等问题。\n\n因此，该部分分析只能作为敏感性参考，不能作为付费金额变化的业务归因。\n\n付费金额的数据覆盖范围处于信任边界：\n\n- 所有结果基于单一数据集，未经过跨源验证。\n- 指标本身在窗口内记录完整，共覆盖2385万个源记录，生成181个窗口聚合值。\n- 但投放渠道与增长运营维度的上下文数据不可用，限制了与市场获客效果的交叉验证。\n\n因此，尽管指标数值完整，其可靠性依赖单一数据源，需谨慎用于关键业务决策。\n\n**建议行动**：调查数据覆盖与质量限制对付费金额指标可靠性的影响。\n\n- **行动域**：数据质量\n- **阶段**：调查\n- **预期成果**：改善数据覆盖和信任，降低业务决策中的度量误差风险。\n\n当前诊断前提：付费金额数据集处于信任边界，跨源映射能力有限，可能影响指标可信度。",
+              "durationSeconds": 741.375,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 38,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 1,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "adfdfd1f300790bd52b0b842ce076a5d685247680f64285fa1bd286f8fc4d6af",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "cc34eb05bca350159bffc2d31ce8ada8a8211b885e48a4d239d994b5a5ed6a98",
+                "materialDecisionTopics": [],
+                "requiredToolName": "run_bi_analysis",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval",
+                  "run_bi_analysis"
+                ],
+                "selectionDigest": "b6f64b1c9f8e04a5f5b172ac54b6073e7087fa8c23528ad75faa838007431e7d"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "run_bi_analysis"
+              ],
+              "turnId": "initial"
+            },
+            {
+              "completionKind": "context_response",
+              "customerMessage": "根据已发布的材料，2026年第2季度（4月1日-6月30日）付费金额从第1季度的236.55亿增长至275.17亿，绝对增加38.62亿，相对增长16.3%。增长在8个可比周窗口中方向一致且均达到实质性阈值，表明并非偶然波动。\n\n**支付公式分解**（有证据）：\n- 付费金额增长由公式成分驱动：付费频次贡献+29.53亿（份额76.5%），付费人数贡献+13.38亿（份额34.6%），单笔付费金额贡献-4.29亿（份额-11.1%）。\n- 平均付费频次从15.998次升至17.959次，增加1.96次；付费人数从68.32万增至71.99万，增加3.67万人；单笔付费金额从2164.27元降至2128.31元，减少35.96元。\n- 增长主要源于用户付费频次提升，部分被单笔付费金额下降抵消，付费人数增加也提供正向贡献。\n\n**拉新、注册、首充、新增首日付费链**（缺口）：\n- 材料明确说明“拉新注册首充漏斗不可用”，无法分解新用户注册到首次付费的转化链，难以判断增长是否由新用户获取驱动。\n- 因此，新增、注册、首充、新增首日付费这条链的分析无法基于现有证据进行，属于数据缺口。\n\n**充值档位、支付链路、玩法、运营活动、外部事件**（缺口）：\n- 各维度的细分贡献分析无法执行，因为所选维度（包括渠道、金额段、支付方式等）的维度值过于稀疏，未达到统计要求，无法提供哪些客群或渠道驱动增长的具体量化证据。\n- 外部环境与事件分析不可用，缺少外部事件证据（如节假日、市场活动等），无法判断付费金额变化是否与外部因素同步。\n- 产品与内部运营事件分析不可用，缺少内部运营事件记录（如版本更新、运营活动等），无法判断内部动作的影响。\n- 跨数据源的关联分析（如玩法下注与付费金额）仅作为背景参考，不能用于归因或因果结论，且存在数据截止于6月2日、映射覆盖率不足、未排除混杂因素等限制。\n\n**数据覆盖与信任边界**：\n- 所有结果基于单一数据集，未经过跨源验证。指标在窗口内记录完整，共覆盖2385万个源记录，生成181个窗口聚合值。但投放渠道与增长运营维度的上下文数据不可用，限制了与市场获客效果的交叉验证。\n- 建议行动：调查数据覆盖与质量限制对付费金额指标可靠性的影响。",
+              "durationSeconds": 14.515,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 37,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 0,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "ca904c3471590f8724b529f1cd213fb0b33a901dbb5dcd34640bda7677cc6f66",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "respond",
+                "inputDigest": "70443494da6f730d679e9bfc927205a819f2754072bb74f55f82300a5f10084a",
+                "materialDecisionTopics": [],
+                "requiredToolName": null,
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval"
+                ],
+                "selectionDigest": "423bbf0991c64ce3907e550593c153a22ed3e0359716e027322555c895e47a80"
+              },
+              "taskCount": 1,
+              "toolCalls": [],
+              "turnId": "funnel_follow_up"
+            },
+            {
+              "completionKind": "tool_response",
+              "customerMessage": "根据已发布材料，关于充值档位结构和外部事件的支持程度如下：\n\n**充值档位结构**：\n- 材料明确说明，所选维度中包括“金额段”（即充值档位），但由于维度值过于稀疏，未达到统计要求，细分贡献分析无法执行。\n- 因此，**无法提供充值档位结构对付费金额变化的具体量化证据**。这不是说充值档位没有影响，而是现有数据不足以支撑该维度的分析，属于数据缺口。\n\n**外部事件**：\n- 材料明确说明，“外部环境与事件分析不可用：缺少外部事件证据（如节假日、市场活动等），无法判断付费金额变化是否与外部因素同步。”\n- 因此，**无法判断外部事件对付费金额变化的影响**。这不是说外部事件没有影响，而是缺少相关数据记录，无法进行任何归因或同步性判断，属于数据缺口。\n\n**总结**：充值档位结构和外部事件均因数据不可用或数据稀疏，无法支持任何方向的结论。这些缺口不影响观察到付费金额本身的增长（+38.62亿，+16.3%），但使得深层归因缺乏完整上下文。",
+              "durationSeconds": 34.236,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 38,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 0,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "39e5bb67f5a9cca4f93f2f3d49e2a86ad1ac42e170877da1e570a75d6f070dd3",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "e92094fca067875d0f4b92c59b294fd2976e4f118e8bd6daa50e48b2b35c6982",
+                "materialDecisionTopics": [],
+                "requiredToolName": "inspect_analysis_artifact",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "inspect_analysis_artifact",
+                  "request_approval"
+                ],
+                "selectionDigest": "e45893aa2cd3a4acfaab92837511ea3f3cd86d1c821b2a68cfcf6be7913ab9d7"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "inspect_analysis_artifact",
+                "inspect_analysis_artifact",
+                "inspect_analysis_artifact"
+              ],
+              "turnId": "tier_event_follow_up"
+            }
+          ]
+        }
+      ],
+      "riskTier": "critical"
+    }
+  ],
+  "generatedAt": "2026-07-22T21:35:22.215214+00:00",
+  "mode": "execution",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": "https://api.deepseek.com",
+  "passedCaseCount": 1,
+  "profile": "smoke",
+  "provider": "deepseek",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

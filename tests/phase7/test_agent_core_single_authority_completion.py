@@ -13,7 +13,14 @@ from bi_agent.conversation.agent_core import (
 )
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.conversation.store import InMemoryConversationStore
-from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+from bi_agent.runtime.evidence_authority import EvidenceIntegrityError, canonical_digest
+from bi_agent.runtime.factor_coverage import (
+    FactorCoveragePlan,
+    FactorCoveragePlanItem,
+    build_investigation_branches,
+    settle_factor_coverage,
+    synthesize_factor_coverage,
+)
 from bi_agent.runtime.llm_client import LLMResult
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
 from bi_agent.runtime.narrative_workflow import run_narrative_workflow
@@ -22,6 +29,7 @@ import bi_agent.runtime.post_execution_workflow as post_execution
 from bi_agent.runtime.post_seal_failure_persistence import PostSealFailureTerminal
 from bi_agent.runtime.publication_persistence import DeliveryMessage
 from bi_agent.runtime.single_authority import FailureRecord
+from tests.phase7.test_narrative_workflow import _provider_material_facts
 from tests.phase7.test_post_execution_workflow import _accepted_fixture
 
 
@@ -99,7 +107,9 @@ class _WithheldNarrativeLLM:
             item["material_handle"]: item
             for item in material_projection["evidence_materials"]
         }
-        fact = materials_by_handle[claim["material_handles"][0]]["facts"][0]
+        fact = _provider_material_facts(
+            materials_by_handle[claim["material_handles"][0]]
+        )[0]
         recommendations = material_projection["recommendations"]
         return {
             "blocks": [
@@ -305,12 +315,78 @@ def _coverage_refs(post_result: PostExecutionWorkflowResult) -> dict[str, Any]:
     }
 
 
+def _factor_coverage_bundle(source: Any) -> dict[str, Any]:
+    execution = source.execution
+    plan_revision = execution.plan_revision
+    target_metric_refs = tuple(
+        dict.fromkeys(
+            metric_ref
+            for axis in plan_revision.analysis_axes
+            for metric_ref in axis.target_metric_refs
+        )
+    )
+    assert len(target_metric_refs) == 1
+    item = FactorCoveragePlanItem.create(
+        factor_domain_id="payment_order_metric_chain",
+        business_name="支付金额与订单指标链",
+        role="required",
+        axis_refs=tuple(axis.axis_id for axis in plan_revision.analysis_axes),
+        capability_refs=tuple(
+            dict.fromkeys(
+                task.capability_id for task in plan_revision.capability_tasks
+            )
+        ),
+        dataset_refs=tuple(
+            item["dataset_id"] for item in source.context.dataset_coverage
+        ),
+        dimension_refs=(),
+        reconciliation_group="payment_amount_bridge",
+        task_refs=tuple(task.task_id for task in plan_revision.capability_tasks),
+        source_refs=("contract:test-factor-coverage",),
+    )
+    plan = FactorCoveragePlan.create(
+        run_attempt_id=execution.run_attempt_id,
+        intent_revision_id=execution.intent_revision_id,
+        plan_revision_id=execution.plan_revision_id,
+        authority_context_ref=execution.authority_context_ref,
+        runtime_contract_version="test-runtime.v1",
+        runtime_contract_digest=canonical_digest({"contract": "test-runtime.v1"}),
+        target_metric_ref=target_metric_refs[0],
+        coverage_items=(item,),
+    )
+    result = settle_factor_coverage(plan=plan, execution_result=execution)
+    assert set(result.outcomes[0].evidence_refs) == {
+        entry.entry_ref
+        for bundle in execution.capability_outcome_bundles
+        for entry in bundle[2]
+    }
+    branches = build_investigation_branches(
+        plan=plan,
+        authority_context=source.context,
+    )
+    synthesis = synthesize_factor_coverage(
+        plan=plan,
+        coverage_result=result,
+        claim_settlement=source.semantic_result.settlement,
+    )
+    return {
+        "factor_coverage_plan": plan.to_dict(),
+        "factor_coverage_result": result.to_dict(),
+        "investigation_branches": tuple(item.to_dict() for item in branches),
+        "investigation_synthesis": synthesis.to_dict(),
+    }
+
+
 def _finalize(
     post_result: PostExecutionWorkflowResult,
     *,
+    source: Any,
     stop_after_phase: str | None = None,
 ) -> tuple[dict[str, Any], InMemoryConversationStore]:
     store = InMemoryConversationStore()
+    store.load_authority_context = lambda run_id: (  # type: ignore[attr-defined]
+        source.context if run_id == source.context.run_attempt_id else None
+    )
     store.create_thread("thread-agent-core-cutover", owner_id="owner-agent-core")
     store.upsert_run(
         post_result.run_attempt_id,
@@ -327,6 +403,7 @@ def _finalize(
         status=post_result.status,
         run_id=post_result.run_attempt_id,
         post_execution_result=post_result,
+        **_factor_coverage_bundle(source),
     )
     response = _finalize_workflow_terminal(
         store=store,
@@ -366,6 +443,7 @@ def test_agent_core_does_not_rehydrate_internal_typed_post_execution_result(
 
     response, _store = _finalize(
         _post_result(accepted_fixture, "authority_sealed"),
+        source=accepted_fixture.source,
         stop_after_phase="phase04",
     )
 
@@ -389,7 +467,11 @@ def test_agent_core_validates_typed_post_execution_manifest_without_deep_seriali
         forbidden_serialization,
     )
 
-    response, _store = _finalize(post_result, stop_after_phase="phase04")
+    response, _store = _finalize(
+        post_result,
+        source=accepted_fixture.source,
+        stop_after_phase="phase04",
+    )
 
     assert response["status"] == "authority_sealed"
 
@@ -409,6 +491,7 @@ def test_phase45_stops_preserve_only_safe_authority_refs(
 ) -> None:
     response, store = _finalize(
         _post_result(accepted_fixture, post_status),
+        source=accepted_fixture.source,
         stop_after_phase=stop_after_phase,
     )
 
@@ -425,7 +508,7 @@ def test_published_completion_returns_only_persisted_customer_publication(
     accepted_fixture: Any,
 ) -> None:
     post_result = _post_result(accepted_fixture, "completed")
-    response, store = _finalize(post_result)
+    response, store = _finalize(post_result, source=accepted_fixture.source)
 
     assert response["status"] == "completed"
     assert response["publication_status"] == "published"
@@ -438,9 +521,25 @@ def test_published_completion_returns_only_persisted_customer_publication(
         "payload": post_result.customer_payload,
     }
     assert "llm_calls" not in response
+    serialized_response = json.dumps(response, ensure_ascii=False, sort_keys=True)
+    assert "factor_coverage" not in serialized_response
+    assert "investigation_branches" not in serialized_response
+    assert "coverage_item_ref" not in serialized_response
     persisted = store.get_run_state(post_result.run_attempt_id)
     assert persisted["status"] == "completed"
     assert persisted["request"]["publication_refs"] == response["publication_refs"]
+    factor_event = next(
+        event
+        for event in store.audit_events
+        if event["event_type"] == "factor_coverage_settled"
+    )
+    assert factor_event["payload"]["schema_version"] == "factor-coverage-audit.v1"
+    assert factor_event["payload"]["coverage_plan"]["coverage_items"]
+    assert factor_event["payload"]["investigation_branches"]
+    assert factor_event["payload"]["investigation_synthesis"]
+    assert factor_event["payload"]["investigation_synthesis"][
+        "ranked_factor_domain_refs"
+    ] == ["payment_order_metric_chain"]
 
 
 @pytest.mark.parametrize(
@@ -455,7 +554,10 @@ def test_delivery_failure_is_orthogonal_to_analysis_completion(
     post_status: str,
     delivery_status: str,
 ) -> None:
-    response, store = _finalize(_post_result(accepted_fixture, post_status))
+    response, store = _finalize(
+        _post_result(accepted_fixture, post_status),
+        source=accepted_fixture.source,
+    )
 
     assert response["status"] == "completed"
     assert response["analysis_status"] == "complete"
@@ -487,7 +589,7 @@ def test_post_seal_operational_failure_keeps_analysis_authority_and_safe_project
         status=post_status,
         retryability=retryability,
     )
-    response, store = _finalize(post_result)
+    response, store = _finalize(post_result, source=accepted_fixture.source)
 
     failure = post_result.post_seal_failure_terminal.failure_record
     assert response["status"] == "completed"
@@ -551,7 +653,7 @@ def test_tampered_post_execution_result_cannot_complete_run(
         EvidenceIntegrityError,
         match="^post_execution_workflow_result_invalid$",
     ):
-        _finalize(tampered)
+        _finalize(tampered, source=accepted_fixture.source)
 
 
 def test_phase46_runtime_bindings_are_explicit_and_postgres_scoped() -> None:

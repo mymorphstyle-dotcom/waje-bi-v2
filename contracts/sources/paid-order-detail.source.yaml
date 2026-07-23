@@ -1,7 +1,7 @@
-contract_version: "0.3"
+contract_version: "0.4"
 source_id: paid_order_detail_20240101_20260704
 business_name: 付费订单明细真实数据源合同
-review_status: accepted_current_snapshot_2026-07-05
+review_status: accepted_current_snapshot_2026-07-23
 data_contract_state: contract_backed
 business_evidence_state: quantifiable
 
@@ -37,11 +37,11 @@ source_snapshot:
     historical_answers: do_not_rewrite_prior_answers
 
 owner_acceptance:
-  accepted_on: "2026-07-05"
+  accepted_on: "2026-07-23"
   accepted_by:
     - business_owner
     - data_owner
-  acceptance_scope: current paid_order_detail snapshot using the accepted status, dedup, currency, and business-date policies
+  acceptance_scope: current paid_order_detail snapshot using the accepted status, order dedup, canonical first-payment, timezone, currency, and business-date policies
   acceptance_status: accepted_for_phase_1_review_and_phase_2_compiler_prep
 
 storage_boundary:
@@ -52,7 +52,7 @@ storage_boundary:
   dev_clickhouse_native_port: 19000
   analytical_database: waje_bi
   raw_table: paid_order_detail_raw_20240101_20260704
-  clean_table: paid_order_success_clean_20240101_20260704
+  clean_table: paid_order_success_clean_20240101_20260704_v2
   clean_schema:
     - {name: order_id, type: String}
     - {name: user_id, type: String}
@@ -63,6 +63,7 @@ storage_boundary:
     - {name: currency, type: String}
     - {name: is_new_user, type: String}
     - {name: is_first_payment, type: String}
+    - {name: is_first_payment_source, type: String}
     - {name: channel, type: "Nullable(String)"}
     - {name: payment_method, type: String}
     - {name: country, type: "Nullable(String)"}
@@ -72,14 +73,17 @@ storage_boundary:
     - {name: device_model, type: "Nullable(String)"}
     - {name: os, type: "Nullable(String)"}
     - {name: network_type, type: "Nullable(String)"}
-    - {name: registered_at, type: "Nullable(String)"}
-    - {name: first_paid_at, type: "Nullable(String)"}
+    - {name: registered_at, type: "Nullable(DateTime64(3, 'Africa/Lagos'))"}
+    - {name: first_paid_at, type: "Nullable(DateTime64(3, 'Africa/Lagos'))"}
+    - {name: registered_to_first_paid_lag_seconds, type: "Nullable(Int64)"}
+    - {name: registered_to_first_paid_lag_quality, type: String}
     - {name: payment_latency_seconds, type: "Nullable(String)"}
     - {name: raw_date, type: String}
-  daily_summary_table: paid_order_success_daily_20240101_20260704
-  latest_key_helper_table: paid_order_success_latest_key_20240101_20260704
-  metadata_table: load_metadata_20240101_20260704
-  active_parts_size: 7.17 GiB
+  daily_summary_table: paid_order_success_daily_20240101_20260704_v2
+  latest_key_helper_table: paid_order_success_latest_key_20240101_20260704_v2
+  first_payment_authority_table: paid_order_success_first_payment_20240101_20260704_v2
+  metadata_table: load_metadata_20240101_20260704_v2
+  active_parts_size: 2.30 GiB
   analytical_fact_table: dev_clickhouse_fact_table_loaded
   runtime_contract_record: dev_postgres_runtime_mirror_initialized
   status: dev_clickhouse_loaded_and_dev_postgres_mirror_initialized
@@ -176,6 +180,48 @@ paid_amount_boundary:
     clean_rows_above_latest_key_count: 0
     raw_date_mismatch_success_rows: 25719
 
+first_payment_authority:
+  source_candidate_rule: successful orders whose source first-payment flag equals 1
+  canonical_key: user_id
+  canonical_ordering: [payment_completed_ms_ascending, order_id_ascending]
+  canonical_rule: keep the earliest candidate order under canonical_ordering
+  left_censoring_policy: do_not_infer_first_payment_from_all_successful_orders
+  source_first_payment_rows: 2432324
+  canonical_first_payment_rows: 2430586
+  canonical_first_payment_users: 2430586
+  source_duplicate_users: 1719
+  duplicate_source_flags_removed: 1738
+  canonical_duplicate_users: 0
+  raw_audit_field: is_first_payment_source
+  canonical_runtime_field: is_first_payment
+
+timestamp_authority:
+  business_timezone: Africa/Lagos
+  registered_at:
+    source_encoding: naive_wall_clock_text
+    source_timezone: Asia/Shanghai
+    normalization: interpret in Asia/Shanghai then project to Africa/Lagos
+  first_paid_at:
+    source_encoding: unix_epoch_milliseconds
+    source_timezone: UTC
+    normalization: interpret as UTC instant then project to Africa/Lagos
+    canonical_scope: canonical first-payment row only
+  registered_to_first_paid_lag:
+    publishable_quality_values: [valid]
+    blocked_quality_values: [missing_registered_at, negative_source_anomaly]
+    not_applicable_value: not_first_payment
+    canonical_rows_valid: 2425013
+    canonical_rows_missing_registered_at: 5506
+    canonical_rows_negative_source_anomaly: 67
+    valid_lag_seconds_quantiles:
+      p00: 0
+      p01: 52
+      p10: 174
+      p50: 2139
+      p90: 2226337
+      p99: 33634225
+      p100: 90626909
+
 reviewed_field_decisions:
   channel_field:
     source_field: 分包渠道
@@ -232,6 +278,8 @@ amount_bucket_policy:
       max_inclusive: null
 
 known_limits:
-  - payment_latency_missing_on_5247_success_rows_for_latency_specific_analysis
-  - network_type_missing_on_5895702_clean_paid_rows
-  - device_brand_and_model_missing_on_1737237_clean_paid_rows
+  - registered_to_first_payment_lag_excludes_5506_missing_registered_at_rows
+  - registered_to_first_payment_lag_excludes_67_negative_source_anomaly_rows
+  - payment_latency_missing_on_4463_success_rows_for_latency_specific_analysis
+  - network_type_missing_on_9626012_clean_paid_rows
+  - device_brand_and_model_missing_on_2347968_clean_paid_rows

@@ -9,7 +9,7 @@ import pytest
 import bi_agent.runtime.general_agent_entry as general_agent_entry
 from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_sdk_contracts import WajeAgentRunRequest, WajeAgentRunResult
-from bi_agent.runtime.agent_turn_runtime import AgentTurnRuntime
+from bi_agent.runtime.agent_turn_runtime import AgentFinalOutput, AgentTurnRuntime
 from bi_agent.runtime.general_agent_entry import (
     GENERAL_AGENT_INSTRUCTIONS,
     GeneralAgentRuntimeBindings,
@@ -86,8 +86,30 @@ def test_general_agent_entry_runs_one_sdk_neutral_direct_turn() -> None:
         "transport": {"stateVersion": "2", "latestItemSequence": 3},
     }
     assert adapter.calls[0].instructions.startswith(GENERAL_AGENT_INSTRUCTIONS.strip())
+    assert "actor-1" not in adapter.calls[0].instructions
+    assert '"analysis_access":"single_customer_analysis_access"' in (
+        adapter.calls[0].instructions
+    )
+    assert "artifact content" in adapter.calls[0].instructions
+    assert "untrusted data" in adapter.calls[0].instructions
     assert command.agent_run_id.startswith("agent-run-")
     assert command.user_item_id.startswith("agent-message-")
+
+
+def test_general_agent_customer_answer_forbids_opaque_material_refs() -> None:
+    with pytest.raises(ValueError, match="agent_answer_internal_ref_forbidden"):
+        AgentFinalOutput(
+            answerMarkdown=(
+                "材料 narrative-evidence-material:sha256:" + "a" * 64
+            ),
+            materialRefs=["narrative-evidence-material:sha256:" + "a" * 64],
+            limitationRefs=[],
+        )
+
+    schema = AgentFinalOutput.model_json_schema(by_alias=True)
+    description = schema["properties"]["answerMarkdown"]["description"]
+    assert "without recalculation, rounding, or unit conversion" in description
+    assert "Opaque refs belong only in materialRefs" in description
 
 
 def test_general_agent_entry_identity_is_stable_and_request_scoped() -> None:
@@ -149,6 +171,22 @@ def test_general_agent_entry_accepts_only_typed_pending_action_resolution() -> N
             }
         )
 
+    with pytest.raises(ValueError, match="general_agent_resolution_message_mismatch"):
+        GeneralAgentTurnCommand.model_validate(
+            {
+                "threadId": "thread-entry",
+                "actorId": "actor-1",
+                "operationId": "request-3",
+                "message": "选择 A",
+                "pendingActionResolution": {
+                    "actionRef": "pending-action:1",
+                    "decision": "answered",
+                    "selectedOptionId": "b",
+                    "answerText": "选择 B",
+                },
+            }
+        )
+
 
 def test_cli_acknowledges_only_after_the_turn_is_durably_accepted(
     monkeypatch: pytest.MonkeyPatch,
@@ -195,6 +233,11 @@ def test_cli_acknowledges_only_after_the_turn_is_durably_accepted(
             provider=Provider(),
             runtime=runtime,
             tools=(),
+            trace_store=SimpleNamespace(
+                connection=SimpleNamespace(
+                    close=lambda: events.append("trace_store_closed")
+                )
+            ),
         )
         command = GeneralAgentTurnCommand(
             threadId="thread-entry",
@@ -223,6 +266,7 @@ def test_cli_acknowledges_only_after_the_turn_is_durably_accepted(
         "model_started",
         "acknowledged",
         "provider_closed",
+        "trace_store_closed",
         "store_closed",
     ]
     assert "持久化接受后继续。" in texts

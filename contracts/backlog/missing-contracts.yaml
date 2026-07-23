@@ -305,17 +305,55 @@ backlog:
         - failure_path_review
         - anomaly_review
     reviewed_progress:
-      decided_on: "2026-07-05"
-      accepted_source_contract: contracts/sources/paid-order-detail.source.yaml
+      decided_on: "2026-07-23"
+      accepted_source_contract: contracts/sources/payment-final-outcome.source.yaml
       final_success_status: pay_success
       non_paid_status: order_success
       overlap_rule: ignore order_success when same 订单id has pay_success
       duplicate_success_rule: keep latest 支付完成时间
-      clean_paid_records: 23858847
+      unique_terminal_orders: 75984873
+      clean_paid_records: 41234677
+      non_paid_as_of_snapshot_orders: 34750196
+      runtime_dataset: payment_final_outcome
     expected_owner: data_owner
-    review_need: Bind the same status taxonomy and dedup policy into the Postgres contract mirror and future source snapshots.
-    launch_impact: Current snapshot counts, paid_amount boundary, and success-rate denominator can use the accepted status/dedup policy; latency-specific analysis still carries missingness limits.
-    upgrade_path: Add status enum, dedup key policy, and freshness checks to source contract.
+    review_need: Keep future snapshots versioned and preserve the reviewed final-status mapping, overlap rule, dedup rule, and reconciliation profile.
+    launch_impact: Final-status order counts, paid_amount boundary, success rate, payment-method comparison, and channel comparison are active. Failure reason, failure stage, retry-chain, and processing-latency claims remain unavailable.
+    upgrade_path: Keep status enum, dedup key policy, snapshot cutoff, and freshness checks versioned in future source releases.
+
+  - backlog_id: payment_process_event_contract
+    title: Add event-level payment attempts, retries, failure stages, failure reasons, and processing timestamps.
+    data_contract_state: missing_contract
+    affected_factor_groups:
+      - payment_status_latency_and_quality
+    affected_capabilities:
+      - payment_outcome_compare
+      - outlier_scan
+      - data_quality_check
+    affected_question_families:
+      - paid_amount_change_explanation
+      - pattern_explanation
+      - revenue_health_review
+      - anomaly_or_black_swan_review
+      - data_quality_or_evidence_review
+    source_refs:
+      required_fields:
+        - attempt_id
+        - order_id
+        - attempt_started_at
+        - attempt_completed_at
+        - terminal_status
+        - failure_stage
+        - failure_reason_code
+        - retry_sequence
+    business_decision:
+      status: accepted_gap
+      decided_on: "2026-07-23"
+      current_final_status_source: contracts/sources/payment-final-outcome.source.yaml
+      derivation_policy: do_not_infer_process_events_from_final_status
+    expected_owner: data_owner
+    review_need: Publish an event-level source with Lagos time mapping, stable order and attempt keys, reviewed status transitions, retry semantics, and failure-code taxonomy.
+    launch_impact: Does not block reviewed final-status or success-rate comparisons. Blocks failure-reason, failure-stage, retry, processing-latency, and payment-incident attribution claims.
+    upgrade_path: Add a versioned event-level source and a reconciliation contract from attempts to final outcomes.
 
   - backlog_id: channel_payment_dimension_contracts
     title: Add channel and payment-method dimension contracts.

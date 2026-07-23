@@ -41,6 +41,45 @@ MATERIALIZATION_ISSUE_CODES = frozenset(
 )
 _TYPED_FACT_FIELDS = frozenset({"name", "fact_kind", "value", "range_end", "unit"})
 _MATERIAL_METADATA_FIELDS = frozenset({"interpretation_contract", "synthesis_contract"})
+_PUBLIC_FACT_PROJECTION_FIELDS = frozenset({"schema_version", "public_fact_paths"})
+
+
+def _public_fact_projection_keys(value: Mapping[str, Any]) -> tuple[str, ...] | None:
+    contract = value.get("synthesis_contract")
+    if contract is None:
+        return None
+    if (
+        not isinstance(contract, Mapping)
+        or set(contract) != _PUBLIC_FACT_PROJECTION_FIELDS
+        or contract.get("schema_version") != "public-fact-projection.v1"
+    ):
+        raise PublicFactMaterializationContractError(
+            "public_fact_materialization_synthesis_contract_invalid"
+        )
+    paths = contract.get("public_fact_paths")
+    if isinstance(paths, (str, bytes)) or not isinstance(paths, Sequence):
+        raise PublicFactMaterializationContractError(
+            "public_fact_materialization_synthesis_contract_invalid"
+        )
+    normalized = tuple(paths)
+    if (
+        not normalized
+        or any(
+            not isinstance(path, str)
+            or not path
+            or path != path.strip()
+            or "." in path
+            or "[" in path
+            or path in _MATERIAL_METADATA_FIELDS
+            or path not in value
+            for path in normalized
+        )
+        or len(normalized) != len(set(normalized))
+    ):
+        raise PublicFactMaterializationContractError(
+            "public_fact_materialization_synthesis_contract_invalid"
+        )
+    return tuple(sorted(normalized))
 
 
 def _plain(value: Any) -> Any:
@@ -621,7 +660,8 @@ def _extract_value(
             )
         candidates: list[_FactCandidate] = []
         issues: list[PublicFactMaterializationIssue] = []
-        for key in sorted(value):
+        projected_keys = _public_fact_projection_keys(value)
+        for key in projected_keys or tuple(sorted(value)):
             if key in _MATERIAL_METADATA_FIELDS:
                 continue
             if key in set(visibility_policy.forbidden_fields):

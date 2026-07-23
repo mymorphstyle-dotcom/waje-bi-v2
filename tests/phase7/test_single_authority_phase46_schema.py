@@ -113,6 +113,16 @@ def test_every_phase46_authority_record_is_owner_and_run_scoped_content_addresse
         assert "ON DELETE SET NULL" not in body, table
 
 
+def test_customer_publication_exposes_its_payload_digest_as_a_required_column():
+    body = _table_body("publication_customer_payloads")
+
+    assert "customer_payload_digest text GENERATED ALWAYS AS (" in body
+    assert "payload->>'customer_payload_digest'" in body
+    phase46 = _phase46()
+    assert "publication_customer_payloads_customer_payload_digest_check" in phase46
+    assert "CHECK (length(customer_payload_digest) = 64)" in phase46
+
+
 def test_guardrail_promotion_is_cross_run_governance_authority():
     body = _table_body("guardrail_promotion_records")
     assert "governance_scope_ref text NOT NULL" in body

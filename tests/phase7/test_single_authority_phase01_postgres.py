@@ -74,6 +74,7 @@ def _revision(
         scope={"scope_type": "full_sample", "filters": []},
         time_spec={"kind": "date", "target": target},
         direction_premise="user_hypothesis_positive",
+        requested_factor_refs=(),
         requested_analysis_axes=("formula_tree", "dimension_screen", "time_context"),
         desired_decisions=(
             {"decision_kind": "explain_change", "target_ref": "paid_amount"},
@@ -106,7 +107,7 @@ def _revision(
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v1",
+        schema_version="intent-revision.v2",
         prompt_version="single-authority.phase01.test.v1",
         model_version="deterministic-contract-record",
         known_goal_ids={"explain_change"},

@@ -30,9 +30,11 @@ from bi_agent.runtime.narrative_authority import (
 from bi_agent.runtime.narrative_material_projection import (
     NarrativeMaterialProjection,
     NarrativeMaterialProjectionContractError,
+    ProjectedEvidenceFact,
     ProjectedEvidenceMaterial,
     ProjectedPublicationRequirement,
     _project_material_facts,
+    _requested_factor_fact_handles,
 )
 from tests.phase7.test_claim_settlement import (
     _EvidenceSpec,
@@ -58,7 +60,7 @@ _DIMENSION_INTERPRETATION_CONTRACT = {
     },
 }
 _FORMULA_INTERPRETATION_CONTRACT = {
-    "contract_id": "formula-accounting-decomposition-interpretation.v1",
+    "contract_id": "formula-accounting-decomposition-interpretation.v2",
     "ranking_scope": "within_formula_decomposition_components",
     "contribution_semantics": {
         "contribution": "signed_accounting_component_change",
@@ -397,15 +399,88 @@ def test_only_user_required_obligations_become_writer_publication_requirements()
     writer_requirement = projection.to_writer_payload()["publication_requirements"][0]
     assert set(writer_requirement) == {
         "requirement_handle",
+        "obligation_id",
         "status",
         "coverage_semantics",
         "claim_kind",
         "assertion_scope",
         "required_claim_strength",
         "claim_handles",
+        "required_fact_handles",
         "limitation_handles",
     }
-    assert requirement.obligation_id not in writer_requirement.values()
+    assert writer_requirement["obligation_id"] == requirement.obligation_id
+
+
+def test_requested_factor_requirement_resolves_exact_metric_baseline_and_target_facts() -> (
+    None
+):
+    palette, settlement, entries = _fixture()
+    projection = _derive((palette, settlement, entries))
+    requirement = projection.publication_requirements[0]
+    basis = next(
+        item
+        for item in settlement.checkpoint.obligation_basis
+        if item.obligation_id == requirement.obligation_id
+    )
+    claim = next(
+        item
+        for item in projection.claims
+        if item.claim_ref in set(requirement.claim_refs)
+    )
+    source_material = next(
+        item
+        for item in projection.evidence_materials
+        if item.material_handle in set(claim.material_handles)
+    )
+    facts = tuple(
+        ProjectedEvidenceFact.create(
+            evidence_entry_ref=source_material.evidence_entry_ref,
+            source_fact_refs=(f"public-fact:{name}",),
+            name=f"observation_{index}.{name}",
+            fact_kind="number",
+            value=value,
+            range_end=None,
+            unit=None,
+        )
+        for index, (name, value) in enumerate(
+            (
+                ("baseline_paid_amount", "100"),
+                ("target_paid_amount", "120"),
+                ("dimension_channel_representative_member", "WajeSpecial"),
+                ("dimension_channel_baseline_paid_amount", "40"),
+                ("dimension_channel_target_paid_amount", "55"),
+                ("baseline_unrelated_metric", "7"),
+            ),
+            start=1,
+        )
+    )
+    material = replace(source_material, facts=facts)
+    requested_factor_basis = replace(
+        basis,
+        success_policy={
+            **canonical_value(basis.success_policy),
+            "outcome_refs": ("requested_factor_evidence",),
+            "requested_dimension_refs": ("channel",),
+            "dimension_summary_anchor": True,
+        },
+    )
+
+    handles = _requested_factor_fact_handles(
+        basis=requested_factor_basis,
+        assertion_scope=requirement.assertion_scope,
+        claim_refs=requirement.claim_refs,
+        projected_claim_by_ref={item.claim_ref: item for item in projection.claims},
+        material_by_handle={
+            **{
+                item.material_handle: item
+                for item in projection.evidence_materials
+            },
+            material.material_handle: material,
+        },
+    )
+
+    assert handles == tuple(item.fact_handle for item in facts[:5])
 
 
 def test_publication_requirement_statuses_preserve_exact_handle_closure() -> None:

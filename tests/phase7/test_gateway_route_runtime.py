@@ -382,7 +382,7 @@ def _compiled_gateway_run(
         if fake_python is not None:
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
-            executable = bin_dir / "uv"
+            executable = bin_dir / "waje-python"
             executable.write_text(
                 fake_python.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1),
                 encoding="utf-8",
@@ -391,6 +391,7 @@ def _compiled_gateway_run(
                 executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
             )
             process_env["PATH"] = f"{bin_dir}:{process_env['PATH']}"
+            process_env["WAJE_PYTHON_EXECUTABLE"] = str(executable)
         process_env.update(explicit_env)
         result = subprocess.run(
             [shutil.which("node") or "node", "-e", source],
@@ -413,7 +414,7 @@ def _general_agent_ack_script() -> str:
         import sys
         import time
 
-        command = json.loads(sys.argv[sys.argv.index("--command-json") + 1])
+        command = json.load(sys.stdin)
         target = os.path.join(
             os.environ["WAJE_GATEWAY_TEST_TMP"],
             "general-agent-command.json",

@@ -27,6 +27,7 @@ from bi_agent.capabilities.metric_coverage_profile import metric_coverage_profil
 from bi_agent.capabilities.metric_timeseries import metric_timeseries
 from bi_agent.capabilities.outlier_contribution import outlier_contribution
 from bi_agent.capabilities.outlier_scan import outlier_scan
+from bi_agent.capabilities.payment_outcome_compare import payment_outcome_compare
 from bi_agent.capabilities.pattern_scan import PatternScanResult, scan_pattern
 from bi_agent.capabilities.segment_contribution import segment_contribution
 from bi_agent.capabilities.segment_distribution import (
@@ -46,7 +47,10 @@ from bi_agent.runtime.evidence_taxonomy import (
     EvidenceTaxonomyContractError,
     publication_evidence_kind,
 )
-from bi_agent.runtime.formula_graph import decompose_formula_change
+from bi_agent.runtime.formula_graph import (
+    decompose_formula_change,
+    validate_formula_contribution_groupings,
+)
 from bi_agent.runtime.plan_authority import CapabilityTask, PlanRevision
 from bi_agent.runtime.window_metric_evidence import (
     aggregate_window_metric_comparison,
@@ -550,6 +554,13 @@ def builtin_capability_adapter_registry() -> CapabilityTaskAdapterRegistry:
             "market_health_compare", _window_metric_comparison_adapter
         ),
         CapabilityAdapterRegistration(
+            "post_payment_behavior_compare", _window_metric_comparison_adapter
+        ),
+        CapabilityAdapterRegistration(
+            "post_payment_tier_behavior",
+            _primitive_adapter(segment_breakdown, hierarchy_paths=True),
+        ),
+        CapabilityAdapterRegistration(
             "market_channel_context", _primitive_adapter(market_channel_context)
         ),
         CapabilityAdapterRegistration(
@@ -567,10 +578,21 @@ def builtin_capability_adapter_registry() -> CapabilityTaskAdapterRegistry:
         CapabilityAdapterRegistration(
             "event_window_compare", _event_window_metric_comparison_adapter
         ),
+        CapabilityAdapterRegistration(
+            "internal_operation_event_window_compare",
+            _event_window_metric_comparison_adapter,
+        ),
         CapabilityAdapterRegistration("formula_decompose", _formula_graph_adapter),
+        CapabilityAdapterRegistration(
+            "funnel_decompose", _funnel_decomposition_adapter
+        ),
         CapabilityAdapterRegistration(
             "candidate_dimension_screen",
             _primitive_adapter(candidate_dimension_screen, hierarchy_paths=True),
+        ),
+        CapabilityAdapterRegistration(
+            "payment_outcome_compare",
+            _primitive_adapter(payment_outcome_compare),
         ),
         CapabilityAdapterRegistration(
             "data_quality_profile", _primitive_adapter(data_quality_check)
@@ -582,6 +604,9 @@ def builtin_capability_adapter_registry() -> CapabilityTaskAdapterRegistry:
             "metric_timeseries", _primitive_adapter(metric_timeseries)
         ),
         CapabilityAdapterRegistration("event_evidence", _event_evidence_adapter),
+        CapabilityAdapterRegistration(
+            "internal_operation_event_evidence", _event_evidence_adapter
+        ),
         CapabilityAdapterRegistration(
             "cross_source_association",
             _primitive_adapter(cross_source_association),
@@ -857,15 +882,21 @@ def _formula_graph_adapter(
         kwargs.pop("formula_contract_ref", None),
         "task_runtime_formula_contract_ref_missing",
     )
+    factor_metric_ids = kwargs.get("factor_metric_ids")
+    factor_groupings = validate_formula_contribution_groupings(
+        kwargs.pop("factor_groupings", ()),
+        factor_metric_ids=factor_metric_ids,
+    )
     decomposition = decompose_formula_change(
         kwargs.pop("formula_ast"),
+        factor_groupings=factor_groupings,
         **kwargs,
     )
     payload = {
         "formula_path_id": formula_path_id,
         "formula_contract_ref": formula_contract_ref,
         "interpretation_contract": {
-            "contract_id": "formula-accounting-decomposition-interpretation.v1",
+            "contract_id": "formula-accounting-decomposition-interpretation.v2",
             "analysis_role": "accounting_decomposition",
             "ranking_scope": "within_formula_decomposition_components",
             "ranking_subject": "formula_component",
@@ -882,6 +913,31 @@ def _formula_graph_adapter(
             "contribution_share_denominator": ("decomposition.contribution_total"),
             "contribution_share_range": "unbounded_signed",
             "zero_contribution_total_policy": ("contribution_share_unavailable"),
+            "factor_hierarchy": {
+                "leaf_decomposition": "decomposition.contributions",
+                "grouped_decompositions": "decomposition.grouped_decompositions",
+                "grouping_method": (
+                    "independent_grouped_shapley_over_contract_declared_partition"
+                ),
+                "cross_level_additivity": "forbidden",
+                "comparison_rule": (
+                    "compare_factors_only_within_the_same_grouping_id"
+                ),
+                "groupings": [
+                    {
+                        "grouping_id": grouping.grouping_id,
+                        "method": grouping.method,
+                        "factors": [
+                            {
+                                "factor_ref": group.factor_id,
+                                "member_metric_refs": list(group.member_metric_ids),
+                            }
+                            for group in grouping.groups
+                        ],
+                    }
+                    for grouping in factor_groupings
+                ],
+            },
             "dimension_localization_relationship": (
                 "co_report_only_no_shared_rank_sum_or_share"
             ),
@@ -972,6 +1028,112 @@ def _formula_graph_adapter(
         affected_obligation_ids=task.supports_obligation_ids,
         limitation_refs=scoped_input.limitation_refs,
         retryability="never",
+    )
+
+
+def _funnel_decomposition_adapter(
+    plan_revision: PlanRevision,
+    task: CapabilityTask,
+    _attempt: CapabilityAttempt,
+    scoped_input: TaskScopedCapabilityInput,
+) -> CapabilityAdapterOutput:
+    payload = dict(scoped_input.payload)
+    expected_fields = {
+        "contract_id",
+        "source_grain",
+        "lifetime_first_payment_supported",
+        "target_window_ref",
+        "baseline_window_ref",
+        "stages",
+    }
+    raw_stages = payload.get("stages")
+    if (
+        set(payload) != expected_fields
+        or payload.get("contract_id") != "new-user-funnel-decomposition.v1"
+        or payload.get("source_grain") != "dashboard_daily"
+        or payload.get("lifetime_first_payment_supported") is not False
+        or isinstance(raw_stages, (str, bytes))
+        or not isinstance(raw_stages, Sequence)
+        or not raw_stages
+        or any(not isinstance(item, Mapping) for item in raw_stages)
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "task_runtime_funnel_payload_invalid"
+        )
+    stages = tuple(dict(item) for item in raw_stages)
+    if any(
+        item.get("target_reconciled") is not True
+        or item.get("baseline_reconciled") is not True
+        for item in stages
+    ):
+        return CapabilityAdapterOutput.create(
+            status="unavailable",
+            output_payload={
+                "contract_id": payload["contract_id"],
+                "rate_reconciliation": "mismatch",
+            },
+            evidence=(),
+            affected_obligation_ids=task.supports_obligation_ids,
+            limitation_refs=("funnel-rate-reconciliation-mismatch",),
+            retryability="replan_required",
+        )
+    numeric_facts: dict[str, Any] = {}
+    typed_stages = []
+    for item in stages:
+        stage_id = _required_string(
+            item.get("stage_id"), "task_runtime_funnel_stage_id_invalid"
+        )
+        stage_payload = dict(item)
+        target_rate = stage_payload.get("target_rate")
+        baseline_rate = stage_payload.get("baseline_rate")
+        for field in (
+            "target_numerator",
+            "baseline_numerator",
+            "target_denominator",
+            "baseline_denominator",
+            "target_rate",
+            "baseline_rate",
+        ):
+            value = stage_payload.get(field)
+            if value is not None:
+                numeric_facts[f"{stage_id}_{field}"] = value
+        stage_payload["rate_delta"] = (
+            None
+            if target_rate is None or baseline_rate is None
+            else float(target_rate) - float(baseline_rate)
+        )
+        if stage_payload["rate_delta"] is not None:
+            numeric_facts[f"{stage_id}_rate_delta"] = stage_payload["rate_delta"]
+        typed_stages.append(stage_payload)
+    typed_payload = {
+        **payload,
+        "stages": tuple(typed_stages),
+        "interpretation_contract": {
+            "contract_id": "funnel-comparison-interpretation.v1",
+            "analysis_role": "window_funnel_comparison",
+            "rate_semantics": "ratio_recomputed_from_window_sums",
+            "cross_stage_additivity": "forbidden",
+            "lifetime_first_payment_inference": "forbidden",
+            "causal_interpretation": "forbidden",
+        },
+    }
+    envelope = make_evidence_envelope(
+        task.capability_id,
+        evidence_type="observed_comparison",
+        strength="directional",
+        wording_limit="comparative",
+        numeric_facts=numeric_facts,
+        typed_payload=typed_payload,
+        limitations=("dashboard_daily_funnel_not_lifetime_cohort",),
+        result_refs=scoped_input.result_refs,
+        evidence_ref=f"funnel-decomposition:{task.task_id}",
+    )
+    return _envelope_output(
+        plan_revision,
+        task,
+        scoped_input,
+        envelope,
+        hierarchy_paths=False,
     )
 
 

@@ -25,6 +25,7 @@ from bi_agent.runtime.capability_authority import (
     CapabilityAdapterOutput,
     CapabilityAttempt,
     CapabilityEvidence,
+    CapabilityFailure,
     CapabilityOutcome,
     EvidenceLedgerEntry,
     ExecutionSnapshot,
@@ -38,6 +39,7 @@ from bi_agent.runtime.evidence_authority import (
     canonical_value,
 )
 from bi_agent.runtime.evidence_taxonomy import publication_evidence_kinds
+from bi_agent.runtime.factor_coverage import FactorCoveragePlan, FactorCoverageResult
 from bi_agent.runtime.durable_call_journal import InMemoryDurableCallJournal
 from bi_agent.runtime.single_authority import DecisionLedger, DurableTransition
 from bi_agent.runtime.runtime_persistence import CapabilitySettlementAuthority
@@ -238,8 +240,14 @@ class _Phase03AuthorityStore(_Phase02AuthorityStore):
 
 
 class _AdapterRegistry:
-    def __init__(self, runtime_registry: Any) -> None:
+    def __init__(
+        self,
+        runtime_registry: Any,
+        *,
+        failed_factor_domain: str | None = None,
+    ) -> None:
         self.runtime_registry = runtime_registry
+        self.failed_factor_domain = failed_factor_domain
         self.bind_calls: list[tuple[Any, Any]] = []
         self.executed_task_ids: list[str] = []
         self._lock = Lock()
@@ -254,6 +262,30 @@ class _AdapterRegistry:
             assert attempt == CapabilityAttempt.create(plan_revision, task)
             with self._lock:
                 self.executed_task_ids.append(task.task_id)
+            if (
+                self.failed_factor_domain is not None
+                and f"factor-domain:{self.failed_factor_domain}"
+                in task.normalized_input_refs
+            ):
+                return CapabilityAdapterOutput.create(
+                    status="technical_failed",
+                    output_payload={"task_id": task.task_id, "stage": "query"},
+                    evidence=(),
+                    affected_obligation_ids=task.supports_obligation_ids,
+                    limitation_refs=(f"limitation:{task.task_id}",),
+                    retryability="same_input",
+                    failure=CapabilityFailure.create(
+                        layer="query",
+                        kind="query_transport_failed",
+                        scope="task",
+                        affected_refs=(task.task_id, *task.supports_obligation_ids),
+                        integrity_level="task",
+                        retryability="same_input",
+                        user_actionable=False,
+                        business_boundary="query_result_unavailable",
+                        technical_detail_ref=f"technical-detail:{task.task_id}",
+                    ),
+                )
             obligation_by_id = {
                 item.obligation_id: item for item in plan_revision.claim_obligations
             }
@@ -305,6 +337,7 @@ def _install_materializer_fixture(
     runtime_inputs = SimpleNamespace(
         settlement_authority=None,
         accepted_query_attempt_refs=(),
+        performance_observations=(),
     )
 
     def materialize(**kwargs):
@@ -385,10 +418,17 @@ def _compiled_state(
     return registry, intent, ledger, store, compiled
 
 
-def _compile_and_execute(monkeypatch: pytest.MonkeyPatch):
+def _compile_and_execute(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    failed_factor_domain: str | None = None,
+):
     materializer, runtime_inputs = _install_materializer_fixture(monkeypatch)
     registry, intent, ledger, store, compiled = _compiled_state(monkeypatch)
-    adapter_registry = _AdapterRegistry(registry)
+    adapter_registry = _AdapterRegistry(
+        registry,
+        failed_factor_domain=failed_factor_domain,
+    )
     monkeypatch.setattr(
         langgraph_workflow,
         "builtin_capability_adapter_registry",
@@ -507,6 +547,53 @@ def test_accepted_phase03_snapshot_resumes_without_query_materialization_or_adap
     assert replayed["execution_result"] == wired.state["execution_result"]
 
 
+def test_p4_factor_branch_failure_is_local_and_exact_replay_is_pure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wired = _compile_and_execute(
+        monkeypatch,
+        failed_factor_domain="external_context_events",
+    )
+    plan = FactorCoveragePlan.from_dict(wired.state["factor_coverage_plan"])
+    result = FactorCoverageResult.from_dict(
+        wired.state["factor_coverage_result"],
+        plan=plan,
+    )
+    outcomes = {item.factor_domain_id: item for item in result.outcomes}
+
+    assert outcomes["external_context_events"].status == "failed"
+    assert outcomes["external_context_events"].retryability == "same_input"
+    assert outcomes["product_operation_events"].status == "analyzed"
+    assert outcomes["payment_order_metric_chain"].status == "analyzed"
+    assert wired.state["workflow_status"] == "evidence_ready"
+
+    transition = wired.store.execution_transition
+    assert transition is not None
+    resumed_state = dict(wired.state)
+    resumed_state["request"] = dict(wired.state["request"])
+    resumed_state["durable_transition_id"] = transition.parent_transition_id
+    resumed_state["execution_result"] = None
+    resumed_state["factor_coverage_plan"] = None
+    resumed_state["factor_coverage_result"] = None
+    resumed_state["investigation_branches"] = ()
+    resumed_state["investigation_synthesis"] = None
+    wired.materializer.reset_mock()
+    forbidden_registry = Mock()
+    monkeypatch.setattr(
+        langgraph_workflow,
+        "builtin_capability_adapter_registry",
+        forbidden_registry,
+    )
+
+    replayed = langgraph_workflow._execute_capability_dag(resumed_state)
+
+    wired.materializer.assert_not_called()
+    forbidden_registry.assert_not_called()
+    assert replayed["execution_result"] == wired.state["execution_result"]
+    assert replayed["factor_coverage_plan"] == wired.state["factor_coverage_plan"]
+    assert replayed["factor_coverage_result"] == wired.state["factor_coverage_result"]
+
+
 def test_explicit_phase02_stop_is_planned_without_materialization_or_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,6 +621,10 @@ def _finalize(wired) -> dict[str, Any]:
         store=wired.store,
         plan_result=wired.state["plan_result"],
         execution_result=wired.state["execution_result"],
+        factor_coverage_plan=wired.state["factor_coverage_plan"],
+        factor_coverage_result=wired.state["factor_coverage_result"],
+        investigation_branches=wired.state["investigation_branches"],
+        investigation_synthesis=wired.state["investigation_synthesis"],
         run_id=wired.intent.run_attempt_id,
         thread_id="thread-phase03-core",
         turn_id="turn-phase03-core",
@@ -704,6 +795,10 @@ def test_clarification_resume_accepts_evidence_ready_and_rebinds_runtime(
             status="evidence_ready",
             plan_result={"status": "planned"},
             execution_result={"status": "evidence_ready"},
+            factor_coverage_plan={"schema_version": "test-factor-plan"},
+            factor_coverage_result={"schema_version": "test-factor-result"},
+            investigation_branches=({"schema_version": "test-branch"},),
+            investigation_synthesis={"schema_version": "test-synthesis"},
             failure_reason="",
             checkpoint_events=(),
             llm_calls=(),

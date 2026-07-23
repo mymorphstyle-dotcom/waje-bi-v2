@@ -1065,11 +1065,10 @@ def _planned_clarification_agent_core() -> str:
         import sys
         import time
 
-        run_id = sys.argv[sys.argv.index("--run-id") + 1]
-        dispatch_id = sys.argv[sys.argv.index("--dispatch-id") + 1]
-        clarification = json.loads(
-            sys.argv[sys.argv.index("--clarification") + 1]
-        )
+        command = json.load(sys.stdin)
+        run_id = command["runId"]
+        dispatch_id = command["runDispatch"]["dispatchId"]
+        clarification = command["clarification"]
         invocation_path = os.path.join(
             os.environ["WAJE_GATEWAY_TEST_TMP"],
             "phase02-clarification-invocation.json",

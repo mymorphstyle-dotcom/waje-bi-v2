@@ -11,6 +11,7 @@ class PatternScanResult:
     evidence_type: str
     strength: str
     wording_limit: str
+    numeric_facts: dict[str, Any]
     typed_payload: dict[str, Any]
     limitations: tuple[str, ...]
     result_refs: tuple[str, ...]
@@ -113,6 +114,15 @@ def scan_pattern(
         if present
     )
 
+    numeric_facts = {
+        "materiality_floor": materiality_floor,
+        "direction_ratio": direction_ratio,
+        "direction_consistency_ratio": direction_consistency_ratio,
+        "materiality_hit_ratio": materiality_hit_ratio,
+        "median_uplift": median_uplift,
+        "comparable_periods": comparable_periods,
+        "min_periods": min_periods,
+    }
     typed_payload = {
         "interpretation_contract": {
             "contract_id": "pattern-scan-interpretation.v1",
@@ -146,6 +156,7 @@ def scan_pattern(
         evidence_type=evidence_type,
         strength=strength,
         wording_limit=wording_limit,
+        numeric_facts=numeric_facts,
         typed_payload=typed_payload,
         limitations=limitations,
         result_refs=result_refs,

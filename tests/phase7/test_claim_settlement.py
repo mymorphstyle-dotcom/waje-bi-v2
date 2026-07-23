@@ -1134,7 +1134,7 @@ def test_partial_evidence_is_local_basis_while_complete_evidence_supports_claim(
                 ),
             ),
             _TaskSpec(
-                "partial_payment_attempt",
+                "partial_payment_process",
                 "formula_decompose",
                 ("payment_formula",),
                 evidence=(
@@ -1142,7 +1142,7 @@ def test_partial_evidence_is_local_basis_while_complete_evidence_supports_claim(
                         "derived",
                         "accounting_contribution",
                         ("formula_component_contribution",),
-                        "payment_attempt_delta",
+                        "payment_process_delta",
                         -3,
                         data_contract_state="partial",
                         limitation_refs=(
@@ -1155,7 +1155,7 @@ def test_partial_evidence_is_local_basis_while_complete_evidence_supports_claim(
     )
     settlement = _settle(execution)
     partial_entry = _ledger_by_evidence_ref(execution)[
-        "evidence:partial_payment_attempt:0"
+        "evidence:partial_payment_process:0"
     ]
 
     assert len(settlement.accepted_claims) == 1
@@ -1251,7 +1251,7 @@ def test_only_partial_evidence_forms_boundary_authority_without_verified_claim()
         obligations={"payment_formula": ("formula_component_contribution", "derived")},
         tasks=(
             _TaskSpec(
-                "partial_payment_attempt",
+                "partial_payment_process",
                 "formula_decompose",
                 ("payment_formula",),
                 evidence=(
@@ -1259,7 +1259,7 @@ def test_only_partial_evidence_forms_boundary_authority_without_verified_claim()
                         "derived",
                         "accounting_contribution",
                         ("formula_component_contribution",),
-                        "payment_attempt_delta",
+                        "payment_process_delta",
                         -3,
                         data_contract_state="partial",
                         limitation_refs=(

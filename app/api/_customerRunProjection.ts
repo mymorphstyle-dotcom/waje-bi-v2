@@ -40,6 +40,9 @@ type ProjectionRows = {
   request?: JsonObject;
   createdAt?: string;
   updatedAt?: string;
+  llmCallCount?: number;
+  technicalTrace?: TraceRun["technicalTrace"];
+  factorCoverage?: TraceRun["factorCoverage"];
 };
 
 export type RuntimeTraceProjectionInput = ProjectionRows & {
@@ -221,6 +224,7 @@ export function traceRunFromCustomerPublication(
       evidence,
     },
     humanReview,
+    ...(options.factorCoverage ? { factorCoverage: options.factorCoverage } : {}),
     lifecycle,
     traceCompleteness: traceCompleteness({
       trace,
@@ -273,6 +277,8 @@ export function traceRunFromRuntimeState(
       evidenceCompleteness: evidenceTraceCompleteness(input.evidenceRefs),
     }),
     timing: trace.timing,
+    ...(input.technicalTrace ? { technicalTrace: input.technicalTrace } : {}),
+    ...(input.factorCoverage ? { factorCoverage: input.factorCoverage } : {}),
     processSummary: {
       checkpointCount: trace.nodes.length,
       llmCallCount: trace.llmCallCount,
@@ -346,7 +352,7 @@ function projectTraceRows(rows: ProjectionRows) {
     }
   }
   const acceptedGraph = projectAcceptedGraph(rows.acceptedGraph);
-  const llmCallCount = rows.stageTimings === undefined
+  const llmCallCount = rows.llmCallCount ?? (rows.stageTimings === undefined
     ? undefined
     : rows.stageTimings.reduce(
         (count, timing) => count + requiredNonNegativeInteger(
@@ -354,14 +360,16 @@ function projectTraceRows(rows: ProjectionRows) {
           "workbench_stage_timing_invalid",
         ),
         0,
-      );
+      ));
   const requiredTimingAttemptIds = acceptedTransitions?.flatMap((transition) =>
     transitionRequiresDurableTiming(transition)
       ? [requiredString(transition.attempt_id, "workbench_transition_invalid")]
       : []
   );
-  const llmCompleteness: TraceCompleteness = rows.stageTimings === undefined
-    ? "unknown"
+  const llmCompleteness: TraceCompleteness = rows.llmCallCount !== undefined
+    ? "known"
+    : rows.stageTimings === undefined
+      ? "unknown"
     : requiredTimingAttemptIds === undefined
       ? "incomplete"
       : requiredTimingAttemptIds.every((attemptId) => stageTimingByAttempt?.has(attemptId))
@@ -733,8 +741,8 @@ function snapshotNodes(
       id: `snapshot:${index + 1}:${nodeName}`,
       index: index + 1,
       node: nodeName,
-      label: projection.label,
-      owner: "未知" as const,
+      label: optionalString(node.label) ?? projection.label,
+      owner: optionalTraceOwner(node.owner) ?? "未知",
       status,
       outcome: nodeOutcome(status),
       ...(durationMs === undefined ? {} : { durationMs }),
@@ -751,7 +759,8 @@ function snapshotNodes(
         && claimRefs !== undefined
         ? { claimRefs }
         : {}),
-      summary: `${projection.summary} 当前仅保存业务快照，节点执行主体未记录。`,
+      summary: optionalString(node.summary)
+        ?? `${projection.summary} 当前仅保存业务快照，节点执行主体未记录。`,
     };
   });
 }
@@ -932,6 +941,11 @@ function runtimeLifecycle(
 
 function executionLifecycle(runStatus: string, analysisStatus: string | undefined) {
   if (runStatus === "failed") return lifecycleState("failed", runStatus);
+  if (["completed", "completed_with_limits"].includes(runStatus)) {
+    return lifecycleState("complete", runStatus);
+  }
+  if (runStatus === "working") return lifecycleState("running", runStatus);
+  if (runStatus === "needs_input") return lifecycleState("pending", runStatus);
   if (["planned", "evidence_ready", "authority_sealed", "narrative_ready"].includes(runStatus)) {
     return lifecycleState("checkpoint", runStatus);
   }
@@ -1627,6 +1641,12 @@ function requiredObject(value: unknown, error: string): JsonObject {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function optionalTraceOwner(value: unknown): TraceOwner | undefined {
+  return ["LLM", "本地系统", "混合", "用户", "未知"].includes(String(value))
+    ? value as TraceOwner
+    : undefined;
 }
 
 function stringValue(value: unknown) {

@@ -31,6 +31,7 @@ from bi_agent.runtime.capability_task_adapter import (
     TaskScopedCapabilityInput,
     builtin_capability_adapter_registry,
 )
+from bi_agent.runtime.evidence_authority import canonical_value
 from bi_agent.runtime.plan_authority import (
     AnalysisAxis,
     ClaimObligation,
@@ -422,6 +423,72 @@ def test_existing_primitive_is_wrapped_into_one_typed_adapter_output() -> None:
     assert output.evidence[0].result_refs == (f"result:{task.task_id}",)
     assert output.evidence[0].observation_facts == (
         output.output_payload["typed_payload"],
+    )
+
+
+def test_pattern_adapter_carries_aggregate_statistics_into_claim_evidence() -> None:
+    plan = _plan(("rolling_window_compare",), seed="pattern-statistics")
+    task = plan.capability_tasks[0]
+    payload = {
+        "rows": (
+            {
+                "observed_on": "2026-06-18",
+                "window_role": "baseline",
+                "value": 100.0,
+            },
+            {
+                "observed_on": "2026-06-19",
+                "window_role": "target",
+                "value": 125.0,
+            },
+        ),
+        "materiality_floor": 0.0,
+        "min_periods": 1,
+        "rolling_span_days": 1,
+        "rolling_step_days": 1,
+        "observation_key": "observed_on",
+        "window_role_key": "window_role",
+        "target_role": "target",
+        "baseline_role": "baseline",
+        "value_key": "value",
+    }
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(
+            _bound(
+                plan,
+                payload=payload,
+                maximum_claim_strength="directional",
+                supported_evidence_types=("statistical_association",),
+            )
+        ),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    assert output.output_payload["numeric_facts"] == {
+        "materiality_floor": 0.0,
+        "direction_ratio": 1.0,
+        "direction_consistency_ratio": 1.0,
+        "materiality_hit_ratio": 1.0,
+        "median_uplift": 0.25,
+        "comparable_periods": 1,
+        "min_periods": 1,
+    }
+    evidence_facts = output.evidence[0].observation_facts
+    interpretation = next(
+        item["interpretation_contract"]
+        for item in evidence_facts
+        if "interpretation_contract" in item
+    )
+    assert interpretation["contract_id"] == (
+        "pattern-scan-interpretation.v1"
+    )
+    assert {
+        item["name"]: item["value"] for item in evidence_facts if "name" in item
+    } == (
+        output.output_payload["numeric_facts"]
     )
 
 
@@ -1155,6 +1222,15 @@ def test_formula_adapter_uses_formula_graph_reconciliation() -> None:
     assert sum(
         item["contribution_share"] for item in observed_decomposition["contributions"]
     ) == pytest.approx(1.0)
+    grouped = observed_decomposition["grouped_decompositions"]
+    assert len(grouped) == 1
+    assert grouped[0]["grouping_id"] == (
+        "paid_users_vs_paid_amount_per_paid_user"
+    )
+    assert {item["metric_id"] for item in grouped[0]["contributions"]} == {
+        "paid_users",
+        "paid_amount_per_paid_user",
+    }
     interpretation = output.evidence[0].observation_facts[0]["interpretation_contract"]
     assert interpretation["contribution_share_denominator"] == (
         "decomposition.contribution_total"
@@ -1163,6 +1239,136 @@ def test_formula_adapter_uses_formula_graph_reconciliation() -> None:
     assert interpretation["dimension_localization_relationship"] == (
         "co_report_only_no_shared_rank_sum_or_share"
     )
+    assert interpretation["contract_id"] == (
+        "formula-accounting-decomposition-interpretation.v2"
+    )
+    assert canonical_value(
+        interpretation["factor_hierarchy"]["groupings"]
+    ) == [
+        {
+            "grouping_id": "paid_users_vs_paid_amount_per_paid_user",
+            "method": "grouped_shapley",
+            "factors": [
+                {
+                    "factor_ref": "paid_users",
+                    "member_metric_refs": ["paid_users"],
+                },
+                {
+                    "factor_ref": "paid_amount_per_paid_user",
+                    "member_metric_refs": [
+                        "paid_frequency",
+                        "avg_order_amount",
+                    ],
+                },
+            ],
+        }
+    ]
+
+
+def test_funnel_adapter_compares_reconciled_daily_rates_without_lifetime_inference() -> None:
+    plan = _plan(("funnel_decompose",), seed="p4-funnel")
+    task = plan.capability_tasks[0]
+    payload = {
+        "contract_id": "new-user-funnel-decomposition.v1",
+        "source_grain": "dashboard_daily",
+        "lifetime_first_payment_supported": False,
+        "target_window_ref": plan.resolved_window_refs[0],
+        "baseline_window_ref": plan.resolved_window_refs[1],
+        "stages": (
+            {
+                "stage_id": "registration",
+                "numerator_metric": "registrations",
+                "denominator_metric": "new_users",
+                "rate_metric": "registration_rate_new_base",
+                "target_numerator": 80,
+                "target_denominator": 100,
+                "target_rate": 0.8,
+                "target_recomputed_rate": 0.8,
+                "target_reconciled": True,
+                "baseline_numerator": 60,
+                "baseline_denominator": 100,
+                "baseline_rate": 0.6,
+                "baseline_recomputed_rate": 0.6,
+                "baseline_reconciled": True,
+            },
+            {
+                "stage_id": "first_payment",
+                "numerator_metric": "first_paid_users",
+                "denominator_metric": "new_users",
+                "rate_metric": "first_pay_rate_new_base",
+                "target_numerator": 20,
+                "target_denominator": 100,
+                "target_rate": 0.2,
+                "target_recomputed_rate": 0.2,
+                "target_reconciled": True,
+                "baseline_numerator": 10,
+                "baseline_denominator": 100,
+                "baseline_rate": 0.1,
+                "baseline_recomputed_rate": 0.1,
+                "baseline_reconciled": True,
+            },
+        ),
+    }
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(
+            _bound(
+                plan,
+                payload=payload,
+                maximum_claim_strength="directional",
+                supported_evidence_types=("observed_comparison",),
+            )
+        ),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    typed = output.output_payload["typed_payload"]
+    stages = {item["stage_id"]: item for item in typed["stages"]}
+    assert output.status == "succeeded"
+    assert stages["registration"]["rate_delta"] == pytest.approx(0.2)
+    assert stages["first_payment"]["rate_delta"] == pytest.approx(0.1)
+    assert typed["interpretation_contract"] == {
+        "contract_id": "funnel-comparison-interpretation.v1",
+        "analysis_role": "window_funnel_comparison",
+        "rate_semantics": "ratio_recomputed_from_window_sums",
+        "cross_stage_additivity": "forbidden",
+        "lifetime_first_payment_inference": "forbidden",
+        "causal_interpretation": "forbidden",
+    }
+    assert output.limitation_refs == (
+        "dashboard_daily_funnel_not_lifetime_cohort",
+    )
+
+
+def test_funnel_adapter_fails_closed_on_rate_reconciliation_mismatch() -> None:
+    plan = _plan(("funnel_decompose",), seed="p4-funnel-mismatch")
+    task = plan.capability_tasks[0]
+    payload = {
+        "contract_id": "new-user-funnel-decomposition.v1",
+        "source_grain": "dashboard_daily",
+        "lifetime_first_payment_supported": False,
+        "target_window_ref": plan.resolved_window_refs[0],
+        "baseline_window_ref": plan.resolved_window_refs[1],
+        "stages": (
+            {
+                "stage_id": "registration",
+                "target_reconciled": False,
+                "baseline_reconciled": True,
+            },
+        ),
+    }
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(_bound(plan, payload=payload)),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "unavailable"
+    assert output.retryability == "replan_required"
+    assert output.limitation_refs == ("funnel-rate-reconciliation-mismatch",)
+    assert output.evidence == ()
 
 
 def test_formula_graph_missing_input_is_unavailable_and_mismatch_is_typed_failure() -> (
@@ -1677,6 +1883,22 @@ def _formula_payload() -> dict:
             "paid_users",
             "paid_frequency",
             "avg_order_amount",
+        ),
+        "factor_groupings": (
+            {
+                "grouping_id": "paid_users_vs_paid_amount_per_paid_user",
+                "method": "grouped_shapley",
+                "groups": (
+                    {
+                        "factor_id": "paid_users",
+                        "member_metric_ids": ("paid_users",),
+                    },
+                    {
+                        "factor_id": "paid_amount_per_paid_user",
+                        "member_metric_ids": ("paid_frequency", "avg_order_amount"),
+                    },
+                ),
+            },
         ),
         "observed_baseline": 100,
         "observed_target": 120,

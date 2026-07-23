@@ -61,13 +61,18 @@ class PostgresAgentSession:
         resolved_limit = self._history_limit if limit is None else limit
         if isinstance(resolved_limit, bool) or resolved_limit < 1:
             raise AgentSessionError("agent_session_limit_invalid")
-        ledger_items = await asyncio.to_thread(
-            self._ledger.list_items,
-            self.session_id,
-            limit=resolved_limit,
-            after_sequence=self._replay_after_sequence,
-            through_sequence=self._replay_through_sequence,
-        )
+        try:
+            ledger_items = await asyncio.to_thread(
+                self._ledger.list_items,
+                self.session_id,
+                limit=resolved_limit,
+                after_sequence=self._replay_after_sequence,
+                through_sequence=self._replay_through_sequence,
+            )
+        except AgentSessionError:
+            raise
+        except Exception as exc:
+            raise AgentSessionError("agent_session_read_failed") from exc
         replay_items: list[dict[str, Any]] = []
         for item in ledger_items:
             sdk_item = _sdk_item_from_thread_item(item)
@@ -90,26 +95,33 @@ class PostgresAgentSession:
                 operation_id=self._operation_id,
                 index=index,
             )
-            if (
-                projected_item is not None
-                and projected_item.operation_key is not None
-                and await asyncio.to_thread(
-                    self._ledger.get_item_by_operation_key,
-                    self.session_id,
-                    projected_item.operation_key,
-                )
-                is not None
-            ):
-                continue
+            if projected_item is not None and projected_item.operation_key is not None:
+                try:
+                    existing = await asyncio.to_thread(
+                        self._ledger.get_item_by_operation_key,
+                        self.session_id,
+                        projected_item.operation_key,
+                    )
+                except AgentSessionError:
+                    raise
+                except Exception as exc:
+                    raise AgentSessionError("agent_session_read_failed") from exc
+                if existing is not None:
+                    continue
             if projected_item is not None:
                 projected.append(projected_item)
         if not projected:
             return
-        await asyncio.to_thread(
-            self._ledger.append_items,
-            self.session_id,
-            projected,
-        )
+        try:
+            await asyncio.to_thread(
+                self._ledger.append_items,
+                self.session_id,
+                projected,
+            )
+        except AgentSessionError:
+            raise
+        except Exception as exc:
+            raise AgentSessionError("agent_session_write_failed") from exc
 
     async def pop_item(self) -> dict[str, Any] | None:
         raise AgentSessionError("agent_session_append_only")
@@ -176,11 +188,16 @@ class PostgresAgentSession:
         operation_key: str,
         extra_payload: Mapping[str, Any] | None = None,
     ) -> None:
-        existing = await asyncio.to_thread(
-            self._ledger.get_item_by_operation_key,
-            self.session_id,
-            operation_key,
-        )
+        try:
+            existing = await asyncio.to_thread(
+                self._ledger.get_item_by_operation_key,
+                self.session_id,
+                operation_key,
+            )
+        except AgentSessionError:
+            raise
+        except Exception as exc:
+            raise AgentSessionError("agent_session_read_failed") from exc
         if existing is not None:
             persisted = existing.payload.get("sdk_item")
             if not isinstance(persisted, Mapping) or (
@@ -196,25 +213,30 @@ class PostgresAgentSession:
                 "sdk_item": dict(sdk_item),
             }
         )
-        await asyncio.to_thread(
-            self._ledger.append_items,
-            self.session_id,
-            [
-                NewThreadItem(
-                    item_id=f"agent-item-{digest[:24]}",
-                    item_type=item_type,
-                    role="tool",
-                    text="",
-                    operation_key=operation_key,
-                    customer_visible=False,
-                    payload={
-                        "sdk_item": dict(sdk_item),
-                        "sdk_replay": True,
-                        **dict(extra_payload or {}),
-                    },
-                )
-            ],
-        )
+        try:
+            await asyncio.to_thread(
+                self._ledger.append_items,
+                self.session_id,
+                [
+                    NewThreadItem(
+                        item_id=f"agent-item-{digest[:24]}",
+                        item_type=item_type,
+                        role="tool",
+                        text="",
+                        operation_key=operation_key,
+                        customer_visible=False,
+                        payload={
+                            "sdk_item": dict(sdk_item),
+                            "sdk_replay": True,
+                            **dict(extra_payload or {}),
+                        },
+                    )
+                ],
+            )
+        except AgentSessionError:
+            raise
+        except Exception as exc:
+            raise AgentSessionError("agent_session_write_failed") from exc
 
 
 def _thread_item_from_sdk_item(
@@ -286,6 +308,12 @@ def _thread_item_from_sdk_item(
 
 
 def _sdk_item_from_thread_item(item: ThreadItem) -> dict[str, Any] | None:
+    if item.item_type in {"tool_call", "tool_result"}:
+        # Tool I/O remains authoritative in the ledger and Workbench. Replaying a
+        # settled operation's raw tool payload into a later model turn duplicates
+        # material already represented by the assistant answer and artifact index,
+        # and can make otherwise small follow-ups exceed the provider context.
+        return None
     if item.payload.get("sdk_replay") is False:
         return None
     sdk_item = item.payload.get("sdk_item")

@@ -128,6 +128,7 @@ class ReleaseManifestTest(unittest.TestCase):
             {
                 "bi_agent/runtime/analysis_runtime.py",
                 "bi_agent/runtime/authoritative_execution_result.py",
+                "bi_agent/runtime/factor_coverage.py",
                 "bi_agent/runtime/formula_graph.py",
                 "bi_agent/runtime/evidence_taxonomy.py",
             }
@@ -139,6 +140,10 @@ class ReleaseManifestTest(unittest.TestCase):
         )
         self.assertIn(
             "bi_agent/runtime/narrative_material_projection.py",
+            paths_by_component["claim_and_narrative_authority"],
+        )
+        self.assertIn(
+            "bi_agent/runtime/answer_completeness.py",
             paths_by_component["claim_and_narrative_authority"],
         )
         self.assertIn(

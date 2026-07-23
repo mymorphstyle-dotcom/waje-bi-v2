@@ -155,6 +155,7 @@ def _records():
             "slot_id": "comparison_baseline",
         },
         direction_premise="user_hypothesis_positive",
+        requested_factor_refs=(),
         requested_analysis_axes=("change_validation",),
         desired_decisions=(
             {"decision_kind": "explain_change", "target_ref": "paid_amount"},
@@ -170,8 +171,8 @@ def _records():
             },
         ),
         source_spans=(),
-        schema_version="intent-revision.v1",
-        prompt_version="single-authority-intent.v1",
+        schema_version="intent-revision.v2",
+        prompt_version="single-authority-intent.v2",
         model_version="test-model",
     )
     decision = DecisionRecord.create(
@@ -1019,8 +1020,8 @@ def test_ready_binding_omits_gap_for_unselected_alternative_dataset(monkeypatch)
     intent, ledger, context, plan = _records()
     gap = ContractGap(
         gap_type="source_unbound",
-        gap_id="dataset:payment_attempt:source_unbound",
-        dataset_id="payment_attempt",
+        gap_id="dataset:payment_final_outcome:source_unbound",
+        dataset_id="payment_final_outcome",
         affected_capabilities=("compare_periods",),
         affected_claim_types=("comparative_change",),
     )
@@ -1040,7 +1041,7 @@ def test_ready_binding_omits_gap_for_unselected_alternative_dataset(monkeypatch)
         plan.plan_revision_id, plan.capability_tasks[0].task_id
     )
     assert scoped.data_contract_state == "complete"
-    assert "contract-gap:dataset:payment_attempt:source_unbound" not in (
+    assert "contract-gap:dataset:payment_final_outcome:source_unbound" not in (
         scoped.limitation_refs
     )
 

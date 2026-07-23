@@ -116,10 +116,68 @@ class AgentRunsPersistedAdapterTest(unittest.TestCase):
             "listPersistedPublicationRuns(limit, client)"
         )
         runtime_read = store.index("listPersistedRuntimeRuns(limit, client)")
-        commit = store.index('client.query("COMMIT")', runtime_read)
+        general_agent_read = store.index(
+            "listPersistedGeneralAgentRuns(limit, client)"
+        )
+        commit = store.index('client.query("COMMIT")', general_agent_read)
         self.assertLess(publication_read, runtime_read)
-        self.assertLess(runtime_read, commit)
+        self.assertLess(runtime_read, general_agent_read)
+        self.assertLess(general_agent_read, commit)
         self.assertIn('client.query("ROLLBACK")', store)
+
+    def test_general_agent_sdk_trace_is_available_only_through_internal_workbench(self):
+        agent_runs = (ROOT / "app" / "api" / "agent-runs" / "route.ts").read_text(
+            encoding="utf-8"
+        )
+        store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(
+            encoding="utf-8"
+        )
+        workbench = (
+            ROOT / "app" / "agent-run-workbench" / "AgentRunWorkbench.tsx"
+        ).read_text(encoding="utf-8")
+        customer_route = (
+            ROOT / "app" / "api" / "threads" / "[threadId]" / "route.ts"
+        ).read_text(encoding="utf-8") + (
+            ROOT
+            / "app"
+            / "api"
+            / "threads"
+            / "[threadId]"
+            / "messages"
+            / "route.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("assertInternalRouteAvailable()", agent_runs)
+        self.assertIn("listPersistedGeneralAgentRuns", store)
+        self.assertIn("agents_sdk_trace_recorded", store)
+        self.assertIn("general_agent_model_turn", store)
+        self.assertIn("general_agent_tool_call", store)
+        self.assertIn("technicalTrace: row.technicalTrace", agent_runs)
+        self.assertIn("SDK、模型、工具与错误 trace", workbench)
+        self.assertIn("technicalTrace.records", workbench)
+        self.assertNotIn("technicalTrace", customer_route)
+
+    def test_factor_coverage_topology_is_available_only_in_internal_workbench(self):
+        agent_runs = (ROOT / "app/api/agent-runs/route.ts").read_text(
+            encoding="utf-8"
+        )
+        store = (ROOT / "app/api/_conversationStore.ts").read_text(
+            encoding="utf-8"
+        )
+        workbench = (
+            ROOT / "app/agent-run-workbench/AgentRunWorkbench.tsx"
+        ).read_text(encoding="utf-8")
+        customer_route = (
+            ROOT / "app/api/threads/[threadId]/route.ts"
+        ).read_text(encoding="utf-8") + (
+            ROOT / "app/api/threads/[threadId]/messages/route.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("factor_coverage_settled", store)
+        self.assertIn("factorCoverage: row.factorCoverage", agent_runs)
+        self.assertIn("因素覆盖与调查分支", workbench)
+        self.assertIn("run.factorCoverage", workbench)
+        self.assertNotIn("factorCoverage", customer_route)
 
     def test_publication_candidate_requires_closed_delivery_matrix(self):
         store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(

@@ -827,6 +827,89 @@ def _requirement_semantic_authority(
     return next(iter(claim_kinds)), _assertion_scope_from_claim_keys(claim_keys)
 
 
+def _requested_factor_fact_handles(
+    *,
+    basis: ObligationSettlementBasis,
+    assertion_scope: Mapping[str, Any],
+    claim_refs: Sequence[str],
+    projected_claim_by_ref: Mapping[str, ProjectedNarrativeClaim],
+    material_by_handle: Mapping[str, ProjectedEvidenceMaterial],
+) -> tuple[str, ...]:
+    """Resolve exact baseline/target facts for a typed requested-factor obligation."""
+
+    raw_outcome_refs = basis.success_policy.get("outcome_refs", ())
+    if isinstance(raw_outcome_refs, (str, bytes)) or not isinstance(
+        raw_outcome_refs, Sequence
+    ):
+        raise NarrativeMaterialProjectionContractError(
+            "narrative_material_projection_requirement_outcome_refs_invalid"
+        )
+    outcome_refs = _string_tuple(
+        raw_outcome_refs,
+        "narrative_material_projection_requirement_outcome_refs_invalid",
+    )
+    if "requested_factor_evidence" not in outcome_refs:
+        return ()
+    metric_refs = _string_tuple(
+        assertion_scope.get("metric_refs"),
+        "narrative_material_projection_requirement_factor_scope_invalid",
+    )
+    if len(metric_refs) != 1:
+        raise NarrativeMaterialProjectionContractError(
+            "narrative_material_projection_requirement_factor_scope_invalid"
+        )
+    metric_ref = metric_refs[0]
+    raw_dimension_refs = basis.success_policy.get("requested_dimension_refs", ())
+    if isinstance(raw_dimension_refs, (str, bytes)) or not isinstance(
+        raw_dimension_refs, Sequence
+    ):
+        raise NarrativeMaterialProjectionContractError(
+            "narrative_material_projection_requirement_dimension_refs_invalid"
+        )
+    dimension_refs = _string_tuple(
+        raw_dimension_refs,
+        "narrative_material_projection_requirement_dimension_refs_invalid",
+        sort=False,
+    )
+    dimension_summary_anchor = basis.success_policy.get(
+        "dimension_summary_anchor", False
+    )
+    if type(dimension_summary_anchor) is not bool:
+        raise NarrativeMaterialProjectionContractError(
+            "narrative_material_projection_requirement_dimension_anchor_invalid"
+        )
+    expected_names = [
+        f"baseline_{metric_ref}",
+        f"target_{metric_ref}",
+    ]
+    for dimension_ref in dimension_refs:
+        prefix = f"dimension_{dimension_ref}"
+        if dimension_summary_anchor:
+            expected_names.append(f"{prefix}_representative_member")
+        expected_names.extend(
+            (
+                f"{prefix}_baseline_{metric_ref}",
+                f"{prefix}_target_{metric_ref}",
+            )
+        )
+    material_handles = tuple(
+        dict.fromkeys(
+            material_handle
+            for claim_ref in claim_refs
+            for material_handle in projected_claim_by_ref[claim_ref].material_handles
+        )
+    )
+    resolved: list[str] = []
+    for expected_name in expected_names:
+        resolved.extend(
+            fact.fact_handle
+            for material_handle in material_handles
+            for fact in material_by_handle[material_handle].facts
+            if fact.name == expected_name or fact.name.endswith("." + expected_name)
+        )
+    return tuple(dict.fromkeys(resolved))
+
+
 @dataclass(frozen=True)
 class ProjectedPublicationRequirement:
     projected_requirement_ref: str
@@ -843,6 +926,7 @@ class ProjectedPublicationRequirement:
     required_claim_strength: str
     claim_refs: tuple[str, ...]
     claim_handles: tuple[str, ...]
+    required_fact_handles: tuple[str, ...]
     limitation_refs: tuple[str, ...]
     limitation_handles: tuple[str, ...]
     content_digest: str
@@ -858,6 +942,7 @@ class ProjectedPublicationRequirement:
         limitation_handle_by_ref: Mapping[str, str],
         claim_kind: str,
         assertion_scope: Mapping[str, Any],
+        required_fact_handles: Sequence[str] = (),
     ) -> "ProjectedPublicationRequirement":
         if (
             type(basis) is not ObligationSettlementBasis
@@ -959,6 +1044,11 @@ class ProjectedPublicationRequirement:
             "required_claim_strength": basis.required_claim_strength,
             "claim_refs": claim_refs,
             "claim_handles": claim_handles,
+            "required_fact_handles": _string_tuple(
+                required_fact_handles,
+                "narrative_material_projection_requirement_fact_handles_invalid",
+                sort=False,
+            ),
             "limitation_refs": limitation_refs,
             "limitation_handles": limitation_handles,
         }
@@ -1000,6 +1090,11 @@ class ProjectedPublicationRequirement:
             "narrative_material_projection_requirement_integrity_invalid",
             sort=False,
         )
+        required_fact_handles = _string_tuple(
+            self.required_fact_handles,
+            "narrative_material_projection_requirement_integrity_invalid",
+            sort=False,
+        )
         body = {
             "obligation_id": self.obligation_id,
             "obligation_basis_ref": self.obligation_basis_ref,
@@ -1013,6 +1108,7 @@ class ProjectedPublicationRequirement:
             "required_claim_strength": self.required_claim_strength,
             "claim_refs": self.claim_refs,
             "claim_handles": self.claim_handles,
+            "required_fact_handles": self.required_fact_handles,
             "limitation_refs": self.limitation_refs,
             "limitation_handles": self.limitation_handles,
         }
@@ -1037,6 +1133,8 @@ class ProjectedPublicationRequirement:
                 and bool(self.limitation_handles)
             )
         )
+        if self.status == "unavailable" and self.required_fact_handles:
+            status_closure_valid = False
         if (
             self.projected_requirement_ref != expected_ref
             or self.requirement_handle != _opaque_handle("pr", body)
@@ -1046,12 +1144,15 @@ class ProjectedPublicationRequirement:
             or self.coverage_semantics != _COVERAGE_SEMANTICS_BY_STATUS.get(self.status)
             or claim_refs != self.claim_refs
             or claim_handles != self.claim_handles
+            or required_fact_handles != self.required_fact_handles
             or limitation_refs != self.limitation_refs
             or limitation_handles != self.limitation_handles
             or len(self.claim_refs) != len(self.claim_handles)
             or len(self.limitation_refs) != len(self.limitation_handles)
             or len(set(self.claim_refs)) != len(self.claim_refs)
             or len(set(self.claim_handles)) != len(self.claim_handles)
+            or len(set(self.required_fact_handles))
+            != len(self.required_fact_handles)
             or len(set(self.limitation_refs)) != len(self.limitation_refs)
             or len(set(self.limitation_handles)) != len(self.limitation_handles)
             or not status_closure_valid
@@ -1067,12 +1168,14 @@ class ProjectedPublicationRequirement:
         self.assert_integrity()
         return {
             "requirement_handle": self.requirement_handle,
+            "obligation_id": self.obligation_id,
             "status": self.status,
             "coverage_semantics": self.coverage_semantics,
             "claim_kind": self.claim_kind,
             "assertion_scope": canonical_value(self.assertion_scope),
             "required_claim_strength": self.required_claim_strength,
             "claim_handles": list(self.claim_handles),
+            "required_fact_handles": list(self.required_fact_handles),
             "limitation_handles": list(self.limitation_handles),
         }
 
@@ -1539,6 +1642,12 @@ class NarrativeMaterialProjection:
             item.limitation_ref: item.limitation_handle
             for item in projected_limitations
         }
+        projected_claim_by_ref = {
+            item.claim_ref: item for item in projected_claims
+        }
+        material_by_handle = {
+            item.material_handle: item for item in materials
+        }
         basis_by_obligation_id = {
             item.obligation_id: item for item in settlement.checkpoint.obligation_basis
         }
@@ -1565,6 +1674,13 @@ class NarrativeMaterialProjection:
                         limitation_handle_by_ref=limitation_handle_by_ref,
                         claim_kind=claim_kind,
                         assertion_scope=assertion_scope,
+                        required_fact_handles=_requested_factor_fact_handles(
+                            basis=basis,
+                            assertion_scope=assertion_scope,
+                            claim_refs=coverage.claim_refs,
+                            projected_claim_by_ref=projected_claim_by_ref,
+                            material_by_handle=material_by_handle,
+                        ),
                     )
                 )
             publication_requirements = tuple(publication_requirements_list)
@@ -1676,6 +1792,12 @@ class NarrativeMaterialProjection:
         claim_handle_by_ref = {
             ref: item.claim_handle for ref, item in claim_by_ref.items()
         }
+        fact_handles_by_material = {
+            item.material_handle: frozenset(
+                fact.fact_handle for fact in item.facts
+            )
+            for item in self.evidence_materials
+        }
         limitation_handle_by_ref = {
             item.limitation_ref: item.limitation_handle for item in self.limitations
         }
@@ -1702,6 +1824,15 @@ class NarrativeMaterialProjection:
                     "narrative_material_projection_integrity_invalid"
                 )
         for requirement in self.publication_requirements:
+            requirement_fact_handles = frozenset(
+                fact_handle
+                for ref in requirement.claim_refs
+                if ref in claim_by_ref
+                for material_handle in claim_by_ref[ref].material_handles
+                for fact_handle in fact_handles_by_material.get(
+                    material_handle, frozenset()
+                )
+            )
             if (
                 tuple(claim_handle_by_ref.get(ref) for ref in requirement.claim_refs)
                 != requirement.claim_handles
@@ -1710,6 +1841,9 @@ class NarrativeMaterialProjection:
                     for ref in requirement.limitation_refs
                 )
                 != requirement.limitation_handles
+                or not set(requirement.required_fact_handles).issubset(
+                    requirement_fact_handles
+                )
                 or (
                     requirement.status == "satisfied"
                     and any(

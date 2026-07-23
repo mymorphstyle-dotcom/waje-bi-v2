@@ -731,14 +731,15 @@ factor_groups:
       - insufficient
       - blocked
     known_gaps:
-      - payment_status_and_dedup_contract
+      - payment_process_event_contract
       - product_operation_event_contracts
       - external_context_event_contracts
     reviewed_progress:
-      - paid_order_detail_2026_h1_has_accepted_payment_status_and_dedup_policy
-      - latency_specific_analysis_must_carry_missingness_limits
+      - payment_final_outcome_has_accepted_status_dedup_overlap_and_snapshot_policy
+      - final_status_success_rate_payment_method_and_channel_comparisons_are_contract_backed
+      - failure_reason_failure_stage_retry_and_latency_analysis_remain_unavailable
       - server_grafana_payment_incident_sources_are_unavailable_without_new_source
-    upgrade_path: Define final-success status enum, retry handling, latency quality checks, late-update rules, and incident/event links.
+    upgrade_path: Add event-level attempts, retry handling, failure taxonomy, latency quality checks, late-update rules, and incident/event links without changing the final-outcome authority.
     launch_priority: p0
 
   - factor_group_id: sensitive_identity_and_dedup_fields

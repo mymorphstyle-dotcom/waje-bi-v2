@@ -72,10 +72,16 @@ class AuthoritativePlanCompiler:
             decision_ledger=decision_ledger,
             goal_axes=goal_axes,
         )
-        mandatory_obligations = self._mandatory_obligations(
-            intent_revision=intent_revision,
-            goal_plans=goal_plans,
-            temporal_authority=temporal_authority,
+        mandatory_obligations = (
+            *self._mandatory_obligations(
+                intent_revision=intent_revision,
+                goal_plans=goal_plans,
+                temporal_authority=temporal_authority,
+            ),
+            *self._requested_factor_obligations(
+                intent_revision=intent_revision,
+                temporal_authority=temporal_authority,
+            ),
         )
         resolved_window_refs = temporal_authority.resolved_window_refs
 
@@ -351,6 +357,166 @@ class AuthoritativePlanCompiler:
                 f"{claim_kind}:{temporal_authority.mode}"
             )
         return publication_evidence_kinds(tuple(evidence_types))
+
+    def _requested_factor_obligations(
+        self,
+        *,
+        intent_revision: IntentRevision,
+        temporal_authority: EffectiveTemporalComparison,
+    ) -> tuple[ClaimObligation, ...]:
+        goal_ids = tuple(
+            str(binding["goal_id"]) for binding in intent_revision.goal_bindings
+        )
+        obligations: list[ClaimObligation] = []
+        for factor_index, factor_ref in enumerate(
+            intent_revision.requested_factor_refs
+        ):
+            claim_kind, axis_ids, evidence_types = self._requested_factor_route(
+                factor_ref=str(factor_ref),
+                intent_revision=intent_revision,
+                temporal_authority=temporal_authority,
+            )
+            success_policy: dict[str, Any] = {
+                "policy": "verified_or_explicit_boundary",
+                "minimum_claim_strength": (
+                    self._registry.claim_required_publication_strength(
+                        claim_kind,
+                        goal_ids=goal_ids,
+                        axis_ids=axis_ids,
+                    )
+                ),
+                "outcome_refs": ("requested_factor_evidence",),
+                "requested_axis_ids": axis_ids,
+                "requested_dimension_refs": tuple(
+                    dict.fromkeys(
+                        dimension_ref
+                        for axis_id in axis_ids
+                        for dimension_ref in self._registry.analysis_axis(
+                            axis_id
+                        )["dimension_refs"]
+                    )
+                ),
+                "dimension_summary_anchor": factor_index == 0,
+            }
+            composite_policy = self._registry.claim_composite_support_policy(
+                claim_kind
+            )
+            if composite_policy is not None:
+                success_policy["composite_support_policy"] = composite_policy
+            obligations.append(
+                ClaimObligation.create(
+                    claim_kind=claim_kind,
+                    role="user_required",
+                    subject={
+                        "target_metric_ref": str(factor_ref),
+                        "scope": intent_revision.scope,
+                        "outcome_refs": ("requested_factor_evidence",),
+                        "goal_refs": goal_ids,
+                    },
+                    evidence_requirement=EvidenceRequirement.create(
+                        operator="any_of",
+                        evidence_kinds=evidence_types,
+                    ),
+                    success_policy=success_policy,
+                )
+            )
+        return tuple(obligations)
+
+    def _requested_factor_route(
+        self,
+        *,
+        factor_ref: str,
+        intent_revision: IntentRevision,
+        temporal_authority: EffectiveTemporalComparison,
+    ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        relevant_axis_ids = tuple(
+            axis_id
+            for axis_id in dict.fromkeys(
+                (
+                    *intent_revision.requested_analysis_axes,
+                    *self._registry.analysis_axis_ids,
+                )
+            )
+            if factor_ref
+            in set(self._registry.analysis_axis(axis_id)["metric_refs"])
+        )
+        metric_claim_kinds = tuple(
+            dict.fromkeys(
+                str(claim_kind)
+                for source in self._registry.metric_sources(factor_ref).values()
+                for claim_kind in source.get("claim_types", ())
+            )
+        )
+        for claim_kind in metric_claim_kinds:
+            axis_ids, evidence_types = self._factor_claim_route(
+                claim_kind=claim_kind,
+                axis_ids=relevant_axis_ids,
+                temporal_authority=temporal_authority,
+            )
+            if axis_ids:
+                return claim_kind, axis_ids, evidence_types
+
+        boundary_axis_ids = tuple(
+            axis_id
+            for axis_id in self._registry.analysis_axis_ids
+            if set(
+                self._registry.analysis_axis(axis_id)["target_metric_refs"]
+            ).intersection(intent_revision.target_metric_refs)
+        )
+        axis_ids, evidence_types = self._factor_claim_route(
+            claim_kind="contract_coverage_and_trust_boundary",
+            axis_ids=boundary_axis_ids,
+            temporal_authority=temporal_authority,
+        )
+        if not axis_ids:
+            raise PlanAuthorityContractError(
+                "plan_compiler_requested_factor_boundary_route_missing:"
+                + factor_ref
+            )
+        return "contract_coverage_and_trust_boundary", axis_ids, evidence_types
+
+    def _factor_claim_route(
+        self,
+        *,
+        claim_kind: str,
+        axis_ids: Sequence[str],
+        temporal_authority: EffectiveTemporalComparison,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        routed_axis_ids: list[str] = []
+        evidence_types: list[str] = []
+        for axis_id in axis_ids:
+            axis_has_route = False
+            for capability_id in self._registry.analysis_axis(axis_id)[
+                "capability_refs"
+            ]:
+                capability = self._registry.capability_inputs(
+                    str(capability_id)
+                )
+                if capability.get("completion_authority"):
+                    continue
+                if not capability_supports_temporal_authority(
+                    capability,
+                    temporal_authority,
+                ):
+                    continue
+                if claim_kind not in capability.get(
+                    "supported_claim_types", ()
+                ):
+                    continue
+                axis_has_route = True
+                for evidence_type in capability.get(
+                    "supported_evidence_types", ()
+                ):
+                    if evidence_type not in evidence_types:
+                        evidence_types.append(str(evidence_type))
+            if axis_has_route:
+                routed_axis_ids.append(str(axis_id))
+        if not routed_axis_ids:
+            return (), ()
+        return (
+            tuple(routed_axis_ids),
+            publication_evidence_kinds(tuple(evidence_types)),
+        )
 
     def _merge_goal_axes(
         self, goal_plans: Sequence[Mapping[str, Any]]
@@ -702,6 +868,20 @@ class AuthoritativePlanCompiler:
         included.update(intent_revision.requested_analysis_axes)
         included.update(admitted_axis_ids)
         included.update(hypothesis_axis_ids)
+        active_goal_ids = tuple(
+            dict.fromkeys(
+                str(goal_ref)
+                for record in goal_axes.values()
+                for goal_ref in record["goal_refs"]
+            )
+        )
+        for factor_domain_id in self._registry.factor_domain_ids_for_goals(
+            active_goal_ids,
+            target_metric=str(intent_revision.target_metric_refs[0]),
+        ):
+            included.update(
+                self._registry.factor_domain(factor_domain_id)["axis_refs"]
+            )
         return included
 
     def _analyst_obligations(
@@ -868,14 +1048,47 @@ class AuthoritativePlanCompiler:
                 "conditional",
             }:
                 role = "required"
+            axis_supported_claims = self._axis_supported_claims(axis_id)
+            axis_target_metric_refs = tuple(
+                metric_ref
+                for metric_ref in intent_revision.target_metric_refs
+                if metric_ref in set(contract["target_metric_refs"])
+            )
             supported_obligation_ids = tuple(
                 obligation.obligation_id
-                for claim_kind in self._axis_supported_claims(axis_id)
+                for claim_kind in axis_supported_claims
                 for obligation in obligations_by_kind.get(claim_kind, ())
                 if (
-                    obligation.role == "user_required"
-                    or obligation.subject.get("proposal_item_ref")
-                    in set(hypothesis_by_axis.get(axis_id, ()))
+                    (
+                        obligation.role == "user_required"
+                        and (
+                            str(obligation.subject["target_metric_ref"])
+                            in set(axis_target_metric_refs)
+                            or (
+                                str(obligation.subject["target_metric_ref"])
+                                in set(intent_revision.requested_factor_refs)
+                                and (
+                                    str(
+                                        obligation.subject[
+                                            "target_metric_ref"
+                                        ]
+                                    )
+                                    in set(contract["metric_refs"])
+                                    or axis_id
+                                    in set(
+                                        obligation.success_policy.get(
+                                            "requested_axis_ids", ()
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                    or (
+                        obligation.role != "user_required"
+                        and obligation.subject.get("proposal_item_ref")
+                        in set(hypothesis_by_axis.get(axis_id, ()))
+                    )
                 )
             )
             proposal_refs = []
@@ -887,11 +1100,7 @@ class AuthoritativePlanCompiler:
                     axis_id=axis_id,
                     role=role,
                     axis_kind=contract["axis_kind"],
-                    target_metric_refs=tuple(
-                        metric_ref
-                        for metric_ref in intent_revision.target_metric_refs
-                        if metric_ref in set(contract["target_metric_refs"])
-                    ),
+                    target_metric_refs=axis_target_metric_refs,
                     metric_refs=tuple(contract["metric_refs"]),
                     dimension_refs=tuple(contract["dimension_refs"]),
                     context_source_refs=tuple(contract["context_source_refs"]),
@@ -1006,6 +1215,12 @@ class AuthoritativePlanCompiler:
                                 for item in axis.context_source_refs
                             ),
                             *(f"dataset:{item}" for item in dataset_ids),
+                            *(
+                                f"factor-domain:{item}"
+                                for item in self._registry.factor_domain_ids_for_axis(
+                                    axis.axis_id
+                                )
+                            ),
                             self._registry.capability_contract_ref(capability_id),
                         )
                     )

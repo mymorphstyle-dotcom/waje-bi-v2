@@ -586,7 +586,7 @@ def test_recommendation_input_projects_typed_authorization_from_claim_ceiling() 
     ),
     ids=("candidate-driver", "accounting-contribution"),
 )
-def test_noncausal_claim_ceiling_rejects_intervention_and_promised_effect(
+def test_noncausal_claim_ceiling_omits_intervention_and_preserves_analysis(
     spec: _ExecutionSpec,
 ) -> None:
     execution = _execution(spec)
@@ -602,15 +602,24 @@ def test_noncausal_claim_ceiling_rejects_intervention_and_promised_effect(
             expected_value_mode="expected_effect",
         )
 
-    with pytest.raises(
-        SemanticAuthorityWorkflowError,
-        match="recommendation_commitment_claim_ceiling_exceeded",
-    ):
-        run_semantic_authority_workflow(
-            execution,
-            authority_namespace=_namespace(execution),
-            llm_client=_FakeLLM((_accept_claims, overreach)),
-        )
+    result = run_semantic_authority_workflow(
+        execution,
+        authority_namespace=_namespace(execution),
+        llm_client=_FakeLLM((_accept_claims, overreach)),
+    )
+
+    assert result.settlement.accepted_claims
+    assert result.recommendation_proposals == ()
+    assert result.recommendations == ()
+    assert result.authority_bundle_inputs.recommendations == ()
+    assert result.provider_audits[-1].payload["policy_rejections"] == (
+        {
+            "disposition": "rejected",
+            "proposal_index": 0,
+            "reason_code": "recommendation_commitment_claim_ceiling_exceeded",
+        },
+    )
+    assert SemanticAuthorityResult.from_dict(result.to_dict()) == result
 
 
 def test_noncausal_claim_can_authorize_an_experiment_with_hypothesis_value() -> None:
@@ -650,7 +659,7 @@ def test_noncausal_claim_can_authorize_an_experiment_with_hypothesis_value() -> 
     assert action_commitment.action_stage == "experiment"
 
 
-def test_diagnostic_premise_cannot_upgrade_observed_claim_to_causal() -> None:
+def test_diagnostic_premise_upgrade_is_omitted_without_losing_claims() -> None:
     execution = _execution(_ExecutionSpec("comparative_change", "observed"))
 
     def causal_premise(call_input: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -666,15 +675,16 @@ def test_diagnostic_premise_cannot_upgrade_observed_claim_to_causal() -> None:
             diagnostic_mode="causal",
         )
 
-    with pytest.raises(
-        SemanticAuthorityWorkflowError,
-        match="recommendation_commitment_claim_ceiling_exceeded",
-    ):
-        run_semantic_authority_workflow(
-            execution,
-            authority_namespace=_namespace(execution),
-            llm_client=_FakeLLM((_accept_claims, causal_premise)),
-        )
+    result = run_semantic_authority_workflow(
+        execution,
+        authority_namespace=_namespace(execution),
+        llm_client=_FakeLLM((_accept_claims, causal_premise)),
+    )
+
+    assert result.settlement.accepted_claims
+    assert result.recommendation_proposals == ()
+    assert result.recommendations == ()
+    assert result.provider_audits[-1].payload["policy_rejections"]
 
 
 def test_scenario_claim_requires_conditional_value() -> None:
@@ -719,15 +729,16 @@ def test_scenario_claim_requires_conditional_value() -> None:
             expected_value_mode="expected_effect",
         )
 
-    with pytest.raises(
-        SemanticAuthorityWorkflowError,
-        match="recommendation_commitment_claim_ceiling_exceeded",
-    ):
-        run_semantic_authority_workflow(
-            execution,
-            authority_namespace=_namespace(execution),
-            llm_client=_FakeLLM((_accept_claims, unconditional_effect)),
-        )
+    rejected = run_semantic_authority_workflow(
+        execution,
+        authority_namespace=_namespace(execution),
+        llm_client=_FakeLLM((_accept_claims, unconditional_effect)),
+    )
+
+    assert rejected.settlement.accepted_claims
+    assert rejected.recommendation_proposals == ()
+    assert rejected.recommendations == ()
+    assert rejected.provider_audits[-1].payload["policy_rejections"]
 
 
 def test_accepted_recommendation_decision_must_cover_every_commitment_ref() -> None:

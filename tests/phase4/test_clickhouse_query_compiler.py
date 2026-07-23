@@ -58,6 +58,7 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
     ):
         table_names = {
             "paid_order_success": "analytics.paid_success",
+            "payment_final_outcome": "payment_final_outcome_daily__f6f6f6f6f6f6f6f6",
             "gameplay": "gameplay_daily__a1a1a1a1a1a1a1a1",
             "gameplay_channel": "gameplay_channel_daily__b2b2b2b2b2b2b2b2",
             "external_event": "business_events__c3c3c3c3c3c3c3c3",
@@ -65,6 +66,7 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
         }
         schema_fingerprints = {
             "paid_order_success": "e5" * 32,
+            "payment_final_outcome": "f6" * 32,
             "gameplay": "a1" * 32,
             "gameplay_channel": "b2" * 32,
             "external_event": "c3" * 32,
@@ -95,7 +97,8 @@ def compile_clickhouse_query(contract, snapshots, **kwargs):
                 * 64,
                 evidence_state=(
                     "claim_ready"
-                    if member_dataset == "paid_order_success"
+                    if member_dataset
+                    in {"paid_order_success", "payment_final_outcome"}
                     else "context_only"
                 ),
                 reconciliation_status="not_applicable",
@@ -212,31 +215,35 @@ def windows():
 
 def metric(dataset_id="paid_order_success", expression=None):
     required_fields = (
-        ("订单id", "支付状态", "支付发起时间")
-        if dataset_id == "payment_attempt"
+        ("terminal_orders", "final_outcome")
+        if dataset_id == "payment_final_outcome"
         else ("paid_amount_ngn",)
     )
     reviewed_expression = expression or (
-        "uniqExactIf(`订单id`, `支付状态` = 'pay_success') / "
-        "nullIf(uniqExact(`订单id`), 0)"
-        if dataset_id == "payment_attempt"
+        "sumIf(terminal_orders, final_outcome = 'successful') / "
+        "nullIf(sum(terminal_orders), 0)"
+        if dataset_id == "payment_final_outcome"
         else "sum(paid_amount_ngn)"
     )
     return MetricBinding(
-        "payment_success_rate" if dataset_id == "payment_attempt" else "paid_amount",
         (
-            "contracts/backlog/missing-contracts.yaml#payment_status_and_dedup_contract"
-            if dataset_id == "payment_attempt"
+            "payment_success_rate"
+            if dataset_id == "payment_final_outcome"
+            else "paid_amount"
+        ),
+        (
+            "contracts/sources/payment-final-outcome.source.yaml@0.1#coverage.supported_analyses"
+            if dataset_id == "payment_final_outcome"
             else "contracts/metrics/paid-amount.metric.yaml@0.1"
         ),
         dataset_id,
         reviewed_expression,
-        "ratio" if dataset_id == "payment_attempt" else "sum",
+        "ratio" if dataset_id == "payment_final_outcome" else "sum",
         required_fields,
         ("window_id",),
         claim_types=(
-            ()
-            if dataset_id == "payment_attempt"
+            ("comparative_change",)
+            if dataset_id == "payment_final_outcome"
             else (
                 "comparative_change",
                 "formula_component_contribution",
@@ -244,16 +251,32 @@ def metric(dataset_id="paid_order_success", expression=None):
                 "cross_source_statistical_association",
             )
         ),
-        reconciliation_tolerance=(0.0 if dataset_id == "payment_attempt" else 0.01),
+        reconciliation_tolerance=(
+            0.0 if dataset_id == "payment_final_outcome" else 0.01
+        ),
         reconciliation_strategy=(
-            "unsupported_non_additive"
-            if dataset_id == "payment_attempt"
+            "ratio_from_components"
+            if dataset_id == "payment_final_outcome"
             else "additive_sum"
         ),
-        value_semantics=(
-            "scalar_ratio" if dataset_id == "payment_attempt" else "raw_scalar"
+        numerator_metric=(
+            "successful_payment_orders"
+            if dataset_id == "payment_final_outcome"
+            else ""
         ),
-        display_format=("percent" if dataset_id == "payment_attempt" else "number"),
+        denominator_metric=(
+            "terminal_payment_orders"
+            if dataset_id == "payment_final_outcome"
+            else ""
+        ),
+        value_semantics=(
+            "scalar_ratio"
+            if dataset_id == "payment_final_outcome"
+            else "raw_scalar"
+        ),
+        display_format=(
+            "percent" if dataset_id == "payment_final_outcome" else "number"
+        ),
     )
 
 
@@ -310,7 +333,11 @@ def dashboard_metric(metric_id="paid_amount", dataset_id="market_dashboard"):
         aggregation="sum",
         required_fields=(field,),
         grain=("window_id",),
-        claim_types=("comparative_change", "source_reconciliation"),
+        claim_types=(
+            ("source_reconciliation",)
+            if metric_id == "paid_amount"
+            else ("comparative_change", "source_reconciliation")
+        ),
         reconciliation_tolerance=0.0 if exact_count else 0.01,
         reconciliation_strategy=(
             "exact_additive_count" if exact_count else "additive_sum"
@@ -337,6 +364,8 @@ def snapshot(
         table = "market_dashboard_daily__schema"
     if table == "analytics.paid_success" and dataset_id == "market_dashboard_channel":
         table = "market_dashboard_channel_daily__schema"
+    if table == "analytics.paid_success" and dataset_id == "payment_final_outcome":
+        table = "payment_final_outcome_daily__schema"
     default_fields = {
         "paid_order_success": (
             "business_date_lagos",
@@ -344,7 +373,13 @@ def snapshot(
             "user_id",
             "channel",
         ),
-        "payment_attempt": ("支付发起时间", "订单id", "支付状态"),
+        "payment_final_outcome": (
+            "snapshot_id",
+            "load_revision",
+            "business_date_lagos",
+            "final_outcome",
+            "terminal_orders",
+        ),
         "market_dashboard": (
             "snapshot_id",
             "load_revision",
@@ -631,6 +666,43 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             compiled.parameters["dimension_null_bucket_0"],
             "Blank",
         )
+
+    def test_reviewed_numeric_bucket_dimension_compiles_from_source_amount(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        reviewed = registry.dimension(
+            "amount_bucket",
+            dataset_id="paid_order_success",
+        )
+        bucket = DimensionBinding(
+            dimension_id="amount_bucket",
+            contract_ref=reviewed["contract_ref"],
+            dataset_id="paid_order_success",
+            source_field=reviewed["source_field"],
+            allowed_grains=tuple(reviewed["allowed_grains"]),
+            null_bucket=reviewed["null_bucket"],
+        )
+
+        compiled = compile_clickhouse_query(
+            contract(
+                query_intent="dimension_contribution_scan",
+                dimensions=(bucket,),
+            ),
+            {"snapshot:paid_order_success:1": snapshot()},
+            registry=registry,
+        )
+
+        self.assertIn("multiIf(", compiled.sql_text)
+        self.assertIn("`paid_amount_ngn` <= %(dimension_bucket_0_upper_0)s", compiled.sql_text)
+        self.assertIn("AS `amount_bucket`", compiled.sql_text)
+        self.assertEqual(compiled.parameters["dimension_bucket_0_upper_0"], 500)
+        self.assertEqual(compiled.parameters["dimension_bucket_0_label_0"], "<=500")
+        self.assertEqual(
+            compiled.parameters["dimension_bucket_0_overflow_label"],
+            ">100000",
+        )
+        self.assertNotIn("CASE", compiled.sql_text)
 
     def test_dashboard_bindings_require_verified_release_and_physical_revision(self):
         selected = snapshot(
@@ -1365,7 +1437,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
     def test_uses_validated_date_semantics_for_every_dataset_family(self):
         cases = {
             "paid_order_success": "`business_date_lagos`",
-            "payment_attempt": "fromUnixTimestamp64Milli(toInt64OrZero(`支付发起时间`))",
+            "payment_final_outcome": "`business_date_lagos`",
             "market_dashboard": "`business_date`",
             "gameplay": "`business_date`",
             "external_event": "`event_start_date`",
@@ -1375,7 +1447,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             with self.subTest(dataset_id=dataset_id):
                 has_reviewed_metric = dataset_id in {
                     "paid_order_success",
-                    "payment_attempt",
+                    "payment_final_outcome",
                 }
                 selected_metrics = (metric(dataset_id),) if has_reviewed_metric else ()
                 compiled = compile_clickhouse_query(
@@ -1384,8 +1456,8 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                         query_intent=(
                             "event_context_probe"
                             if dataset_id.endswith("event")
-                            else "payment_success_scan"
-                            if dataset_id == "payment_attempt"
+                            else "component_driver_scan"
+                            if dataset_id == "payment_final_outcome"
                             else "data_quality_probe"
                             if dataset_id in {"market_dashboard", "gameplay"}
                             else "daily_metric_baselines"
@@ -1399,6 +1471,8 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
                 expected_table = (
                     "FROM `market_dashboard_daily__schema`"
                     if dataset_id == "market_dashboard"
+                    else "FROM `payment_final_outcome_daily__f6f6f6f6f6f6f6f6`"
+                    if dataset_id == "payment_final_outcome"
                     else "FROM `gameplay_daily__a1a1a1a1a1a1a1a1`"
                     if dataset_id == "gameplay"
                     else "FROM `business_events__c3c3c3c3c3c3c3c3`"

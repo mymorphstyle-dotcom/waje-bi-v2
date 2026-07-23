@@ -1,7 +1,7 @@
 contract_version: "0.1"
 source_id: market_dashboard_2024_2026
 business_name: 经营大盘整体数据源
-review_status: draft_pending_owner_review
+review_status: accepted_current_stage_2026-07-23
 data_contract_state: evidence_linked
 business_evidence_state: quantifiable
 
@@ -19,6 +19,52 @@ source_file:
     end: "2026-06-02"
   game_scope:
     - Waje Special
+
+current_stage_coverage:
+  acceptance_status: accepted_complete_through
+  accepted_on: "2026-07-23"
+  complete_through: "2026-06-02"
+  completeness_meaning: All currently available market-dashboard days through 2026-06-02 are complete for the current analysis stage.
+  supported_use: Aggregate acquisition, registration, first-payment, same-day-new-payment, market-health, cost, and profit evidence whose requested window ends on or before 2026-06-02.
+  later_window_policy: emit_window_data_unavailable
+  comparison_policy: compare_only_explicit_complete_windows_and_disclose_calendar_scope
+
+paid_metric_reconciliation:
+  reconciliation_version: market-dashboard-paid-order-reconciliation.v1
+  controlling_source:
+    dataset_id: paid_order_success
+    contract_ref: contracts/sources/paid-order-detail.source.yaml@0.4
+    controlled_fields: [paid_amount, paid_users, paid_orders]
+  comparison_source:
+    dataset_id: market_dashboard
+    role: market_health_and_funnel_context
+  overlap_business_timezone: Africa/Lagos
+  observations:
+    - business_date: "2026-06-01"
+      dashboard_paid_amount_ngn: 308240309
+      paid_order_amount_ngn: 308240309
+      amount_status: matched
+      dashboard_paid_users: 37763
+      paid_order_users: 37764
+      paid_user_difference: -1
+      user_status: mismatch
+    - business_date: "2026-06-02"
+      dashboard_paid_amount_ngn: 185469962
+      paid_order_amount_ngn: 338323281
+      amount_difference_ngn: -152853319
+      amount_status: mismatch
+      dashboard_paid_users: 23976
+      paid_order_users: 39156
+      paid_user_difference: -15180
+      user_status: mismatch
+      diagnostic_evidence: Dashboard amount is closest to the authoritative intraday cumulative amount around 14:26 Africa/Lagos; no source metadata currently proves the extraction cutoff.
+  field_authority:
+    paid_amount: paid_order_success_controls_business_claims
+    paid_users: paid_order_success_controls_business_claims
+    paid_orders: paid_order_success_controls_business_claims
+    dashboard_paid_fields: source_reconciliation_and_context_only_on_mismatch
+    dashboard_funnel_fields: daily_dashboard_context_with_last_day_scope_disclosure
+  publication_policy: A dashboard paid metric mismatch must be observable and may not replace the paid-order authority or silently pass as a comparable business result.
 
 channel_source_files:
   path: data/raw/market-dashboard-channel-2024-01-01_2026-06-02
@@ -142,7 +188,7 @@ field_contracts:
   profit: {source_field: 利润, logical_type: decimal_amount, clickhouse_type: "Decimal(38, 12)", precision: 38, scale: 12, nullable: true, missing_tokens: ["", "NULL"], duplicate_aggregation: additive_sum, value_semantics: raw_scalar, display_format: number, rounding_mode: half_even, loss_policy: round_to_declared_scale, canonicalization_version: market-dashboard-decimal-v1}
 
 runtime_binding:
-  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@15
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@20
   snapshot_column: snapshot_id
   load_revision_column: load_revision
   overall:
@@ -289,6 +335,7 @@ known_limits:
   - dashboard_has_daily_and_channel_daily_aggregates_but_no_joint_grain
   - aggregate_marketing_cost_is_not_campaign_budget_bid_or_spend_detail
   - aggregate_marketing_cost_cannot_support_roi_roas_cpa_or_net_impact
+  - paid_amount_and_paid_users_on_2026_06_02_do_not_reconcile_to_paid_order_success_and_are_context_only
   - no_creative_ctr_cvr_fields
   - no_seo_geo_ranking_fields
   - no_referral_activity_fields

@@ -8,6 +8,10 @@ const baseTransport = {
   eventsUrl: null,
   eventCursor: "2000",
   latestItemSequence: 1,
+  messageHistory: {
+    hasMore: false,
+    beforeCursor: null,
+  },
   acceptedOperationIds: [] as string[],
   technicalDetailRef: null,
 };
@@ -89,9 +93,15 @@ function completedSnapshot(operationId = "operation-accepted") {
           {
             key: "answer-0",
             kind: "summary",
+            heading: "核心结论",
             text: "主要业务结论。这个结论包含足够长的业务解释，用来确认页面刷新后仍会完整恢复最终答案。",
           },
-          { key: "answer-1", kind: "limitation", text: "结论仅适用于当前数据范围。" },
+          {
+            key: "answer-1",
+            kind: "limitation",
+            heading: "证据边界",
+            text: "结论仅适用于当前数据范围。",
+          },
         ],
         warnings: ["当前结论需要结合业务背景复核。"],
         evidenceCount: 1,
@@ -123,17 +133,81 @@ function completedBoundarySnapshot() {
           {
             key: "answer-0",
             kind: "summary",
+            heading: "核心结论",
             text: "4 月 20 日付费金额较前一天下降 7.23%，主要由客单价下降驱动，付费用户数增长抵消了部分降幅。",
           },
           {
             key: "answer-1",
             kind: "finding",
+            heading: "驱动机制",
             text: "8 组可比滚动窗口中有 4 组方向一致，方向一致率为 50%。",
           },
           {
             key: "answer-2",
             kind: "limitation",
+            heading: "证据边界",
             text: "渠道数据已查询，可用于背景判断和候选定位；渠道合计与市场总量仍有未调和差额，因此不用于直接归因或因果结论。",
+          },
+        ],
+      },
+    },
+  };
+}
+
+function readableCompletedSnapshot() {
+  const snapshot = completedSnapshot();
+  return {
+    ...snapshot,
+    thread: {
+      ...snapshot.thread,
+      title: "2026 年 Q2 付费金额增长由什么驱动？",
+    },
+    messages: [{
+      key: "message-key",
+      role: "user",
+      text: "2026年Q2相比Q1付费金额提升，主要是付费用户数增加还是单付费用户金额提升带来的？",
+      createdAt: "2026-07-20T00:00:01.000Z",
+    }],
+    state: {
+      ...snapshot.state,
+      answer: {
+        ...snapshot.state.answer,
+        blocks: [
+          {
+            key: "answer-0",
+            kind: "summary",
+            heading: "核心结论",
+            text: "2026 年 Q2 付费金额较 Q1 增长 38.62 亿元，增幅为 16.3%。从同层因素贡献看，单付费用户金额贡献约 25.25 亿元，占增量的 65.4%，付费人数贡献约 13.37 亿元，占 34.6%，所以当前增长首先表现为已有付费用户价值提升。\n\n这个判断影响运营优先级：短期应先解释单个付费用户为什么贡献更多，再判断新增付费用户能否继续扩大增长。付费人数仍然提供了重要增量，但它目前承担的是第二增长来源。",
+          },
+          {
+            key: "answer-1",
+            kind: "finding",
+            heading: "驱动机制",
+            text: "继续拆开单付费用户金额，可以看到增长由付费频次推动，单笔付费金额形成抵消。付费频次由 16.0 次提高到 17.96 次，对总增量贡献 29.53 亿元；单笔付费金额由 2164.3 元下降到 2128.3 元，带来 4.29 亿元的负向贡献。\n\n两项合并后，单付费用户金额净贡献约 25.24 亿元。这说明增长依赖用户更频繁地付费，单次交易价值暂未同步改善。如果后续频次回落，当前增长会缺少单笔金额这一层缓冲。\n\n- 付费频次：主要正向来源\n- 单笔金额：持续负向抵消\n- 付费人数：第二增长来源",
+          },
+          {
+            key: "answer-2",
+            kind: "finding",
+            heading: "重点定位",
+            text: "维度诊断把排查重点指向地区和部分产品属性。地区维度中，拉各斯州的诊断优先级最高，并出现最大的超额变动；设备型号、渠道、网络类型、支付方式和设备品牌也提供了候选定位线索。\n\n这些分数用于安排调查顺序，不能直接理解为各维度对总增长的可加总贡献。运营上更有价值的动作，是先在高优先级地区核对付费频次提升来自哪些用户群和场景，再检查相同模式能否在其他地区复现。",
+          },
+          {
+            key: "answer-3",
+            kind: "context",
+            heading: "补充观察",
+            text: "当前结果来自统一数据快照，覆盖约 181 个窗口聚合组和 2386 万条窗口级记录。核心金额、人数与频次分解通过了现有数据合同和证据校验，可以支撑增长来源判断。\n\n市场健康度和渠道材料适合提供背景与候选方向。它们能帮助解释外部环境和渠道差异，但没有获得与核心付费数据相同的归因强度。",
+          },
+          {
+            key: "answer-4",
+            kind: "recommendation",
+            heading: "运营建议",
+            text: "第一，优先复核高贡献地区中付费频次增长的用户构成、触发场景和留存表现，判断它是可复制的行为变化还是阶段性集中。\n\n第二，单独调查单笔付费金额下降的原因，区分价格、商品结构、折扣和支付场景变化。这样可以在保留频次增长的同时，减少交易价值继续下滑带来的风险。",
+          },
+          {
+            key: "answer-5",
+            kind: "limitation",
+            heading: "证据边界",
+            text: "当前材料支持会计分解、同口径比较和候选维度定位，尚不足以把地区、渠道或设备差异表述为已经证实的因果关系。重要运营决策仍需结合用户行为日志、活动记录或受控实验复核。",
           },
         ],
       },
@@ -162,6 +236,10 @@ function idleSnapshot(threadHandle = "thread-created") {
       eventsUrl: null,
       eventCursor: "1000",
       latestItemSequence: 0,
+      messageHistory: {
+        hasMore: false,
+        beforeCursor: null,
+      },
       acceptedOperationIds: [] as string[],
       technicalDetailRef: null,
     },
@@ -680,6 +758,94 @@ test("移动端恢复已完成任务时从业务参考开头阅读", async ({ pa
   const box = await answerTitle.boundingBox();
   expect(box?.y ?? 9999).toBeLessThan(844);
   await expect(page.locator(".answer-facts")).toHaveCount(0);
+});
+
+test("完成态只显示一份答案并优先于折叠的分析过程", async ({ page }) => {
+  await installConversationRoutes(page, readableCompletedSnapshot());
+  await page.goto("/");
+
+  await expect(page.getByText(/付费金额较 Q1 增长 38\.62 亿元/)).toHaveCount(1);
+  const answer = page.locator(".business-reference");
+  const progress = page.locator(".progress-timeline.completed_with_limits");
+  await expect(answer).toBeVisible();
+  await expect(progress).toBeVisible();
+  expect(await answer.evaluate((element, other) => (
+    Boolean(element.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
+  ), await progress.elementHandle())).toBe(true);
+  await expect(progress.locator(".completed-progress")).not.toHaveAttribute("open", "");
+});
+
+test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区域", async ({ page }) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  await installConversationRoutes(page, readableCompletedSnapshot());
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+
+    const summary = page.locator(".answer-section.summary");
+    const summaryCopy = summary.locator(".answer-section-copy");
+    const finding = page.locator(".answer-section.finding").first();
+    await expect(summary).toBeVisible();
+    await expect(summary.getByRole("heading", { name: "核心结论" })).toBeVisible();
+    await expect(finding.getByRole("heading", { name: "驱动机制" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "重点定位" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "运营建议" })).toBeVisible();
+    await expect(summaryCopy.locator("p")).toHaveCount(2);
+    const typography = await summaryCopy.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        fontSize: Number.parseFloat(style.fontSize),
+        lineHeight: Number.parseFloat(style.lineHeight),
+      };
+    });
+    expect(typography.fontSize).toBeGreaterThanOrEqual(16);
+    expect(typography.lineHeight).toBeGreaterThanOrEqual(27);
+    const paragraphSpacing = await summaryCopy.locator("p").first().evaluate(
+      (element) => Number.parseFloat(getComputedStyle(element).marginBottom),
+    );
+    expect(paragraphSpacing).toBeGreaterThanOrEqual(16);
+    expect((await page.locator(".business-reference").innerText()).length).toBeGreaterThan(800);
+
+    const listItems = finding.locator("li");
+    await expect(listItems).toHaveCount(3);
+    const composerBox = await page.locator(".composer").boundingBox();
+    const listBox = await page.locator(".message-list").boundingBox();
+    expect((listBox?.y ?? 0) + (listBox?.height ?? 0)).toBeLessThanOrEqual(
+      (composerBox?.y ?? Number.POSITIVE_INFINITY) + 1,
+    );
+    expect(await page.locator("main").evaluate((element) => (
+      element.scrollWidth <= element.clientWidth
+    ))).toBe(true);
+    await expect(page.locator("body")).not.toContainText(/Build Error|Runtime Error|Unhandled Error/);
+    if (viewport.width === 1440) {
+      const boundaries = page.locator(".answer-boundaries");
+      await boundaries.locator("summary").click();
+      await expect(boundaries).not.toHaveAttribute("open", "");
+      await boundaries.locator("summary").click();
+      await expect(boundaries).toHaveAttribute("open", "");
+    }
+  }
+  expect(browserErrors).toEqual([]);
+
+  const evidenceDirectory = process.env.WAJE_VISUAL_EVIDENCE_DIR;
+  if (evidenceDirectory) {
+    for (const viewport of [
+      { name: "desktop", width: 1728, height: 1600 },
+      { name: "mobile", width: 390, height: 1200 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/");
+      await page.screenshot({
+        path: `${evidenceDirectory}/answer-readability-${viewport.name}.png`,
+      });
+    }
+  }
 });
 
 test("完成答案在桌面和移动端保持业务术语、精确比例和证据角色", async ({ page }) => {

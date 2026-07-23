@@ -49,6 +49,13 @@ def test_frequency_ticket_size_keeps_distinct_source_and_runtime_ast() -> None:
     )
     assert "paid_dau" not in formula_metric_ids(path.runtime_ast)
     assert path.runtime_ast.kind == "relationship"
+    assert len(path.contribution_groupings) == 1
+    grouping = path.contribution_groupings[0]
+    assert grouping.grouping_id == "paid_users_vs_paid_amount_per_paid_user"
+    assert tuple(group.factor_id for group in grouping.groups) == (
+        "paid_users",
+        "paid_amount_per_paid_user",
+    )
     assert (
         evaluate_formula(
             path.runtime_ast,
@@ -188,6 +195,44 @@ def test_n_factor_shapley_is_order_independent_and_exactly_reconciled() -> None:
     assert first.movement_residual == 0
     assert first.contribution_total == pytest.approx(124)
     assert first.contributions == second.contributions
+
+
+def test_contract_declared_grouped_shapley_recomputes_primary_factor_level() -> None:
+    path = load_formula_graph(METRIC_CONTRACT).path("frequency_ticket_size")
+
+    result = decompose_formula_change(
+        path.runtime_ast,
+        baseline_metrics={
+            "paid_users": 10,
+            "paid_frequency": 2,
+            "avg_order_amount": 5,
+        },
+        target_metrics={
+            "paid_users": 12,
+            "paid_frequency": 3,
+            "avg_order_amount": 4,
+        },
+        factor_metric_ids=("paid_users", "paid_frequency", "avg_order_amount"),
+        factor_groupings=path.contribution_groupings,
+        observed_baseline=100,
+        observed_target=144,
+    )
+
+    assert result.status == "reconciled"
+    assert len(result.grouped_decompositions) == 1
+    grouped = result.grouped_decompositions[0]
+    assert grouped.grouping_id == "paid_users_vs_paid_amount_per_paid_user"
+    assert grouped.component_residual == 0
+    assert grouped.contribution_total == pytest.approx(44)
+    assert [item.metric_id for item in grouped.contributions] == [
+        "paid_users",
+        "paid_amount_per_paid_user",
+    ]
+    assert [item.baseline_value for item in grouped.contributions] == [10, 10]
+    assert [item.target_value for item in grouped.contributions] == [12, 12]
+    assert sum(
+        item.contribution_share for item in grouped.contributions
+    ) == pytest.approx(1.0)
 
 
 def test_observed_target_baseline_direction_must_match_formula_direction() -> None:

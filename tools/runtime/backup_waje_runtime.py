@@ -531,7 +531,10 @@ def _connect(database_url: str) -> Any:
         import psycopg
     except ImportError as exc:
         raise RuntimeBackupError("psycopg_required") from exc
-    return psycopg.connect(database_url)
+    return psycopg.connect(
+        database_url,
+        options="-c waje.actor_id=system",
+    )
 
 
 def main() -> int:

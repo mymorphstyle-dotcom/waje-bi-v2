@@ -76,8 +76,8 @@ def _authority_context() -> AuthorityContext:
                 "limitation_ref": None,
             },
             {
-                "dataset_id": "payment_attempt",
-                "availability": "missing_contract",
+                "dataset_id": "payment_final_outcome",
+                "availability": "unavailable",
                 "release_ref": None,
                 "snapshot_refs": (),
                 "limitation_ref": "limitation:payment-attempt",
@@ -490,7 +490,10 @@ def test_unresolved_coverage_exposes_only_unscheduled_contract_routes() -> None:
     assert evaluation.unresolved_obligation_ids == (obligation.obligation_id,)
     assert evaluation.scheduled_axis_ids == ("change_validation",)
     routes = {item.axis_id: item for item in evaluation.admissible_routes}
-    assert set(routes) == {"time_context"}
+    assert set(routes) == {"payment_outcome_health", "time_context"}
+    payment_route = routes["payment_outcome_health"]
+    assert payment_route.business_name == "支付最终状态与成功率"
+    assert payment_route.incremental_capability_ids == ("payment_outcome_compare",)
     time_route = routes["time_context"]
     assert time_route.business_name == "时间背景"
     assert time_route.semantics
@@ -586,7 +589,7 @@ def test_route_excludes_capabilities_whose_claim_class_cannot_reach_policy() -> 
 
 
 @pytest.mark.parametrize("auxiliary_budget_limit", [0, 1])
-def test_route_is_removed_when_incremental_axis_cost_exceeds_remaining_budget(
+def test_auxiliary_route_is_removed_while_required_route_survives_budget(
     auxiliary_budget_limit: int,
 ) -> None:
     registry = _registry(auxiliary_budget_limit=auxiliary_budget_limit)
@@ -605,9 +608,9 @@ def test_route_is_removed_when_incremental_axis_cost_exceeds_remaining_budget(
     assert execution.exploration_stop_record.hard_budget_limit == (
         1 + auxiliary_budget_limit
     )
-    assert evaluation.admissible_routes == ()
-    decision = PlanExpansionDecision.deterministic_seal(evaluation)
-    assert decision.decision_authority == "deterministic_no_admissible_route"
+    assert tuple(item.axis_id for item in evaluation.admissible_routes) == (
+        "payment_outcome_health",
+    )
 
 
 def test_required_closing_tasks_do_not_consume_auxiliary_route_budget() -> None:
@@ -651,7 +654,11 @@ def test_selected_route_union_cannot_exceed_remaining_auxiliary_budget() -> None
         execution_result=execution,
         route_catalog=registry,
     )
-    source_route = source_evaluation.admissible_routes[0]
+    source_route = next(
+        item
+        for item in source_evaluation.admissible_routes
+        if item.axis_id == "time_context"
+    )
     second_route = AdmissibleAxisRoute.create(
         axis_id="second_time_context",
         business_name=source_route.business_name,
@@ -727,7 +734,10 @@ def test_verifier_ready_evidence_can_be_sealed_only_by_provider_judgment() -> No
     assert evaluation.unresolved_obligation_ids == (
         execution.plan_revision.claim_obligations[0].obligation_id,
     )
-    assert {route.axis_id for route in evaluation.admissible_routes} == {"time_context"}
+    assert {route.axis_id for route in evaluation.admissible_routes} == {
+        "payment_outcome_health",
+        "time_context",
+    }
     assert evaluation.obligation_coverages[0].status == "evidence_present"
     assert evaluation.obligation_coverages[0].evidence_entry_refs
 

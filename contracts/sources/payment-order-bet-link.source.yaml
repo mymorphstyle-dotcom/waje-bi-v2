@@ -1,0 +1,137 @@
+contract_version: "0.1"
+source_id: payment_order_bet_link
+business_name: 支付订单关联下注行为
+source_file:
+  path: /Users/luka/Downloads/支付订单关联下注金额.csv
+  bytes: 88686354
+  sha256: 176b115fc9656263a865f3ade4675bf18458dafb9afe69f92ebffe5d614b4967
+  encoding: utf-8-sig
+  rows_profiled: 299530
+  columns_profiled: 12
+  malformed_rows: 0
+  source_time_range:
+    start: "2026-06-01 07:00:00"
+    end: "2026-06-03 06:59:59"
+  business_date_range_lagos:
+    start: "2026-06-01"
+    end: "2026-06-02"
+
+grain:
+  unit: successful_payment_order
+  unique_key:
+    - order_id
+  observed_row_count: 299530
+  observed_unique_orders: 299530
+  observed_unique_users: 58494
+
+timestamp_authority:
+  source_field: 充值时间
+  source_timezone: Asia/Shanghai
+  business_timezone: Africa/Lagos
+  business_date_rule: convert_source_timestamp_to_Africa_Lagos_then_take_date
+  acceptance_basis:
+    - source starts at 07:00 Asia/Shanghai and ends immediately before 07:00 on the next Lagos business-day boundary
+    - exact order-level reconciliation against paid_order_success confirms both Lagos business dates
+  payment_24h_deadline_rule: 充值24h截止时间 must equal 充值时间 plus 24 hours
+
+field_mapping:
+  order_id: 订单id
+  user_id: uid
+  payment_completed_at_source: 充值时间
+  paid_amount_ngn: 充值金额
+  payment_24h_deadline_source: 充值24h截止时间
+  played_within_24h: 充值24h内是否游戏
+  bet_24h_amount_ngn: 充值24h内下注金额
+  reported_bet_to_paid_ratio_24h: 充值24h内下注金额/充值金额
+  gameplay_share_24h: 充值24h内各个玩法的下注金额占比
+  bet_7d_amount_ngn: 充值7d内下注金额
+  reported_bet_to_paid_ratio_7d: 充值7d内下注金额/充值金额
+  gameplay_share_7d: 充值7d内的各个玩法的下注金额占比
+
+storage_boundary:
+  analytical_store: ClickHouse
+  analytical_database: waje_bi
+  physical_table_prefix: payment_order_bet_link__
+  engine: MergeTree
+  order_by:
+    - snapshot_id
+    - load_revision
+    - business_date_lagos
+    - order_id
+  clean_schema:
+    - {name: snapshot_id, type: String}
+    - {name: load_revision, type: String}
+    - {name: order_id, type: String}
+    - {name: user_id, type: String}
+    - {name: business_date_lagos, type: Date}
+    - {name: payment_completed_at_lagos, type: "DateTime64(3, 'Africa/Lagos')"}
+    - {name: paid_amount_ngn, type: "Decimal(38, 4)"}
+    - {name: played_within_24h, type: UInt8}
+    - {name: bet_24h_amount_ngn, type: "Decimal(38, 4)"}
+    - {name: bet_7d_amount_ngn, type: "Decimal(38, 4)"}
+    - {name: reported_bet_to_paid_ratio_24h, type: "Decimal(38, 6)"}
+    - {name: reported_bet_to_paid_ratio_7d, type: "Decimal(38, 6)"}
+    - {name: gameplay_share_24h, type: String}
+    - {name: gameplay_share_7d, type: String}
+
+quality_profile:
+  paid_amount_ngn: 646563590.0
+  bet_24h_amount_ngn: 4165547141440
+  bet_7d_amount_ngn: 15015128192321
+  duplicate_order_rows: 0
+  negative_amount_rows: 0
+  bet_24h_greater_than_7d_rows: 0
+  played_flag_amount_mismatch_rows: 0
+  reported_ratio_rounding_tolerance: 0.005
+  reported_ratio_rounding_mismatch_rows: 0
+  gameplay_share_24h_nonempty_rows: 289662
+  gameplay_share_7d_nonempty_rows: 294964
+  gameplay_share_rounding_outlier_rows: 3
+
+paid_order_reconciliation:
+  authority_dataset_id: paid_order_success
+  authority_contract_ref: contracts/sources/paid-order-detail.source.yaml@0.4
+  required_join_fields:
+    - order_id
+  required_exact_matches:
+    - user_id
+    - business_date_lagos
+    - paid_amount_ngn
+  publication_policy: all source and authority rows in the covered business dates must match before claim_ready publication
+
+evidence_boundary:
+  paid_and_bet_amount_authority: observed_order_link
+  ratio_calculation: recompute_from_paid_and_bet_amounts
+  reported_ratio_authority: audit_only
+  gameplay_share_authority: context_only
+  gameplay_share_reason: per-game percentages are individually rounded and cannot support exact amount allocation
+  causal_claims: prohibited
+  customer_output: aggregate_only
+  blocked_raw_fields:
+    - order_id
+    - user_id
+    - gameplay_share_24h
+    - gameplay_share_7d
+
+coverage:
+  complete_business_date_start: "2026-06-01"
+  complete_business_date_end: "2026-06-02"
+  later_window_policy: window_data_unavailable
+  supported_windows:
+    - 24h_after_payment
+    - 7d_after_payment
+  supported_analyses:
+    - payment_amount_tier_by_post_payment_play
+    - post_payment_play_rate
+    - post_payment_bet_amount
+    - bet_to_paid_ratio
+    - order_level_paid_amount_reconciliation
+
+runtime_binding:
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@20
+  dataset_id: payment_order_bet_link
+  physical_table_prefix: payment_order_bet_link__
+  snapshot_field: snapshot_id
+  requires_physical_revision: true
+  requires_release: true
+  contract_ref: contracts/sources/payment-order-bet-link.source.yaml@0.1

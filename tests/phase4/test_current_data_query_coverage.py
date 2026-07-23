@@ -415,7 +415,7 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             overall.query_contract.contract_signature,
         )
 
-    def test_paid_success_never_uses_gameplay_aliases_or_payment_attempt_fields(self):
+    def test_paid_success_never_uses_gameplay_or_final_outcome_fields(self):
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         cases = current_data_coverage_cases(registry)
 
@@ -426,7 +426,7 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
         for case in paid_cases:
             fields = set(case.source_fields)
             self.assertNotIn("player_bet_amount", fields)
-            self.assertNotIn("payment_attempt", case.dataset_ids)
+            self.assertNotIn("payment_final_outcome", case.dataset_ids)
             self.assertFalse({"订单id", "支付状态", "支付发起时间"} & fields)
 
 

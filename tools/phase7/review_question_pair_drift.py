@@ -17,7 +17,9 @@ if str(ROOT) not in sys.path:
 from bi_agent.runtime.evidence_authority import canonical_value  # noqa: E402
 from bi_agent.runtime.llm_client import (  # noqa: E402
     LLMResult,
-    OpenAICompatibleLLMClient,
+)
+from bi_agent.runtime.mainland_model_provider import (  # noqa: E402
+    MainlandModelProvider,
 )
 from tools.phase7 import run_live_conversation_system_test as live  # noqa: E402
 
@@ -784,7 +786,7 @@ def main(
     argv: list[str] | None = None,
     *,
     connection_factory: Callable[[], Any] = live._connect_runtime_database,  # noqa: SLF001
-    llm_factory: Callable[[], Any] = OpenAICompatibleLLMClient.from_env,
+    llm_factory: Callable[[], Any] = MainlandModelProvider.structured_client_from_env,
 ) -> int:
     parser = argparse.ArgumentParser(
         description=(

@@ -1,0 +1,94 @@
+{
+  "adapterCounts": {
+    "agent_live": 1
+  },
+  "caseCount": 1,
+  "cases": [
+    {
+      "adapter": "agent_live",
+      "caseId": "p4_acquisition_funnel_live",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "agent_live",
+          "advisoryReview": {
+            "decisionCase": true,
+            "dimensions": [
+              "conclusion_directness",
+              "analysis_completeness",
+              "operational_meaning",
+              "evidence_boundaries",
+              "readability",
+              "actionability"
+            ],
+            "mode": "human_advisory",
+            "observations": [
+              {
+                "characterCount": 2250,
+                "hasAnswer": true,
+                "paragraphCount": 10,
+                "turnId": "initial"
+              }
+            ],
+            "reviewNote": "确认逐级漏斗口径、窗口率、lifetime 首付边界和运营含义都清楚。",
+            "status": "pending_human_review"
+          },
+          "caseId": "p4_acquisition_funnel_live",
+          "failures": [],
+          "hardStatus": "passed",
+          "threadId": "thread-eval-p4_acquisition_funnel_live-202607222135322658ba-r1",
+          "turns": [
+            {
+              "completionKind": "analysis_publication",
+              "customerMessage": "2026年Q2（4月1日至6月30日）付費金額從基期的236.55億增長至275.17億，環比增加38.62億，增幅約16.3%。增長主要由單用戶付費頻次（貢獻了76.5%的變動）和付費用戶數增加（34.6%）驅動，但平均訂單金額有所下降（-11.1%），部分抵消了總體增長。從地理和設備維度看，增量高度集中於拉各斯州地區和拉哥斯城市，其超額增量分別為28.16億和22.72億，顯示結構性向這些區域傾斜。數據覆蓋情況良好，分析基於單一完整數據集，記錄2386萬條。與遊戲行為的相關性分析顯示存在一些統計關聯，但受限於多種數據限制，無法得出因果結論。需注意，本次分析缺乏競爭對手數據、拉新轉化漏斗分解、外部事件及產品運營事件信息，這些路徑均無法評估。\n\n付費金額變動的穩定性：在8個連續滾動窗口的對比中，所有窗口均表現出增長（方向一致性比率=1），且全部達到基準以上的增長幅度（重要性達標率=1），中位數提升幅度為71.5%。這表明增長並非偶然波動，而是持續的趨勢。基期付費金額為236.55億，目標期為275.17億，絕對變動38.62億。\n\n付費金額的公式分解（使用分組沙普利值）顯示，總變動38.62億可歸因於以下兩組因素：付費用戶數增加貢獻13.37億（佔34.6%），單付費用戶平均金額提升貢獻25.25億（佔65.4%）。進一步將單付費用戶平均金額拆分為付費頻次和平均訂單金額：\n- 付費頻次（人均交易次數）上升，貢獻+29.53億（貢獻份額+76.5%）。\n- 平均訂單金額（每筆交易金額）下降，貢獻-4.29億（貢獻份額-11.1%）。\n- 付費用戶數增加，貢獻+13.37億（貢獻份額+34.6%）。\n因此，付費頻次的增加是核心驅動力，用戶數增長為輔，而單筆交易金額的下降則對增長構成拖累。\n\n十個維度的診斷優先級分析旨在識別付費金額變化最集中的維度。排名基於超額增量（目標期實際收入與按基期份額分配的預期收入之間的偏差）和差異化得分。結果如下表：\n\n| 維度 | 代表性分類 | 超額增量(元) | 診斷優先級分 | 排名 |\n|------|------------|---------------|--------------|------|\n| 地區 | 拉各斯州 | +2,815,763,434.87 | 0.545 | 1 |\n| 設備型號 | TECNO KI5k | -139,261,358.46 | 0.464 | 2 |\n| 城市 | 拉哥斯 | +2,271,816,013.38 | 0.420 | 3 |\n| 渠道 | WajeSpecial | -882,467,906.72 | 0.210 | 4 |\n| 充值檔位 | >100000 | -452,803,730.94 | 0.123 | 5 |\n| 操作系統 | Others | +643,581,049.07 | 0.104 | 6 |\n| 網絡類型 | WIFI | -727,007,772.12 | 0.097 | 7 |\n| 支付方式 | OPAY | +397,353,273.12 | 0.071 | 8 |\n| 設備品牌 | INFINIX | -145,659,394.72 | 0.071 | 9 |\n\n地區和城市維度表現出強烈的正向結構偏離，表明增量來源集中於拉各斯州及拉哥斯。設備型號TECNO KI5k雖然優先級高，但超額增量為負，可能源於其份額變化或波動。其他維度的診斷優先級較低，貢獻度有限。注意這些結果僅為關聯性候選，不能直接加總或視為因果。\n\n跨來源遊戲行為與付費金額的關聯性分析基於180個對齊觀測點，發現42項統計關聯中，最強相關系數達0.809，且全部42項關聯在穩健性檢驗中有28項保持顯著。關聯方向均為正，且無滯後效應。然而，這些發現僅為觀察性面板關聯，不能確立因果關係，主要原因包括：雙向固定效應回歸未收斂、未能控制序列相關性、部分數據僅為背景上下文（如遊戲渠道數據）、跨來源映射未經校準等。因此，這些關聯只能作為進一步探索的線索，而非可操作的貢獻度量。\n\n本次分析有以下重要證據邊界，限制了可獲得的結論：\n\n- **競爭與市場環境**：因市場健康度對比和市場渠道上下文分析路徑不可用，無法評估市場競爭態勢及宏觀環境對付費增長的影響。\n- **拉新轉化漏斗**：新增用戶註冊率和首充率分解未能完成，無法將增長歸因於用戶獲取效率的提升。\n- **外部及內部事件**：外部事件與內部運營事件數據缺失，無法分析可能觸發增長的政策、市場推廣、產品改動等特定事件。\n- **跨來源關聯限制**：已陳述的關聯分析面臨多項嚴格限制，結果僅為敏感性分析，不具備貢獻度量或因果解釋能力。\n- **數據稀疏性**：維度變量如城市、地區、設備品牌、型號、操作系統等在部分分類上數據稀疏，可能影響統計穩定性。\n- **數據時效與映射**：遊戲行為數據的執行窗口僅覆蓋至2026年6月2日，導致跨來源面板關聯的覆蓋度不足，且渠道遊戲數據僅作為背景上下文，無法直接歸因。\n\n建議業務運營團隊深入調查拉各斯州地區和拉哥斯城市付費金額強勁增長的具體成因。調查重點應包括支付方式（如OPAY）、渠道（如WajeSpecial）、設備環境等用戶結構特徵的變化，以及可能存在的產品或運營差異。由於數據的限制，該調查需以形成可測試的假設為目標，為未來對其他市場的可複製性評估奠定基礎。",
+              "durationSeconds": 790.156,
+              "failures": [],
+              "fidelityObservation": {
+                "authorityRefCount": 36,
+                "publicationCount": 1,
+                "publicationIntegrity": true
+              },
+              "recoveryCycleCount": 1,
+              "runtimeStatus": "completed_with_limits",
+              "selection": {
+                "actionContextDigest": "d28fc0923b5c82f4738e7159d88ae5004ccc0ccd15f0c1fa9a22057c8d24f5f9",
+                "catalogDigest": "e7b2a346d17abd07974426bccff4dd292766796a19a23fa1cbe2fa9ae444fb07",
+                "initialAction": "call_tool",
+                "inputDigest": "b817b9444d1b0ce01bd6d9895fc80c4a440fcfef8299de0418c0ad0ca5b8147a",
+                "materialDecisionTopics": [],
+                "requiredToolName": "run_bi_analysis",
+                "schemaVersion": "agent-turn-action-binding.v1",
+                "selectedTools": [
+                  "ask_user",
+                  "request_approval",
+                  "run_bi_analysis"
+                ],
+                "selectionDigest": "694469cacbee75de6b8ada957aaa5c7064ff7be4562cb013810bb0e89864ff2a"
+              },
+              "taskCount": 1,
+              "toolCalls": [
+                "run_bi_analysis"
+              ],
+              "turnId": "initial"
+            }
+          ]
+        }
+      ],
+      "riskTier": "high"
+    }
+  ],
+  "generatedAt": "2026-07-22T21:48:42.482600+00:00",
+  "mode": "execution",
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": "https://api.deepseek.com",
+  "passedCaseCount": 1,
+  "profile": "smoke",
+  "provider": "deepseek",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

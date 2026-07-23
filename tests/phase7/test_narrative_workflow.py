@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import json
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 import pytest
@@ -15,7 +16,7 @@ from bi_agent.runtime.claim_settlement import (
     settle_claim_checkpoint,
 )
 from bi_agent.runtime.evidence_authority import canonical_value
-from bi_agent.runtime.llm_client import LLMResult
+from bi_agent.runtime.llm_client import LLMProviderError, LLMResult
 from bi_agent.runtime.narrative_authority import (
     NarrativeAuthorityContractError,
     NarrativeBlock,
@@ -42,6 +43,58 @@ from tests.phase7.test_semantic_authority_workflow import (
 
 
 Responder = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
+
+
+_TEST_ACCEPTED_INTENT_CONTEXT = {
+    "goal_bindings": ({"goal_id": "explain_change", "role": "primary"},),
+    "target_metric_refs": ("paid_amount",),
+    "scope": {"scope_type": "full_sample", "filters": ()},
+    "time_spec": {"mode": "resolved_test_window"},
+    "comparison_spec": {"mode": "target_vs_baseline"},
+    "direction_premise": "unknown",
+    "requested_analysis_axes": ("formula_tree",),
+    "requested_factor_refs": ("paid_users",),
+    "desired_decisions": (
+        {"decision_kind": "driver_priority", "target_ref": "paid_amount"},
+    ),
+}
+_TEST_ACCEPTED_PLAN_CONTEXT = {
+    "user_required_obligations": (
+        {
+            "obligation_id": "claim-obligation:test",
+            "claim_kind": "comparative_change",
+            "subject": {
+                "target_metric_ref": "paid_amount",
+                "scope": {"scope_type": "full_sample", "filters": ()},
+                "outcome_refs": ("direction_and_magnitude",),
+                "goal_refs": ("explain_change",),
+            },
+            "minimum_claim_strength": "directional",
+        },
+    ),
+    "analysis_axes": (
+        {
+            "axis_id": "formula_tree",
+            "role": "required",
+            "axis_kind": "accounting",
+            "target_metric_refs": ("paid_amount",),
+            "metric_refs": ("paid_users", "paid_frequency", "avg_order_amount"),
+            "dimension_refs": (),
+            "capability_refs": ("formula_decompose",),
+            "reconciliation_group": "paid_amount_formula",
+            "goal_refs": ("explain_change",),
+            "supports_obligation_ids": ("claim-obligation:test",),
+        },
+    ),
+    "capability_route": (
+        {
+            "capability_id": "formula_decompose",
+            "execution_rank": 1,
+            "supports_obligation_ids": ("claim-obligation:test",),
+            "depends_on_capability_ids": (),
+        },
+    ),
+}
 
 
 class _FakeNarrativeLLM:
@@ -320,6 +373,8 @@ def _context(
         answer_goal="Give a decision-useful explanation with explicit evidence boundaries.",
         locale=locale,
         business_context=("Use the accepted comparison window.",),
+        accepted_intent_context=_TEST_ACCEPTED_INTENT_CONTEXT,
+        accepted_plan_context=_TEST_ACCEPTED_PLAN_CONTEXT,
     )
 
 
@@ -333,6 +388,152 @@ def _prepared_projection(authority: _AuthorityFixture) -> Any:
         visibility_policy=authority.policy,
     )
     return material_projection
+
+
+def _provider_material_facts(
+    material: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    columns = material.get("fact_columns")
+    if columns is None:
+        return tuple(dict(item) for item in material["facts"])
+    return tuple(
+        dict(zip(columns, row, strict=True))
+        for row in material["facts"]
+    )
+
+
+def test_requested_factor_comparison_focus_binds_accepted_group_to_fact_handles() -> (
+    None
+):
+    def fact(name: str, value: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            value=value,
+            fact_handle="f_" + name.replace(".", "_").replace("[", "_").replace(
+                "]", ""
+            ),
+        )
+
+    grouped_prefix = "decomposition.grouped_decompositions[3]"
+    fields = (
+        "metric_id",
+        "baseline_value",
+        "target_value",
+        "delta",
+        "contribution",
+        "contribution_share",
+    )
+    values = {
+        "paid_users": ("paid_users", "10", "12", "2", "13.38", "0.3464"),
+        "paid_amount_per_paid_user": (
+            "paid_amount_per_paid_user",
+            "10",
+            "12",
+            "2",
+            "25.24",
+            "0.6536",
+        ),
+    }
+    facts = [fact(f"{grouped_prefix}.grouping_id", "factor_comparison")]
+    for index, factor_ref in enumerate(("paid_users", "paid_amount_per_paid_user")):
+        facts.extend(
+            fact(
+                f"{grouped_prefix}.contributions[{index}].{field}",
+                value,
+            )
+            for field, value in zip(fields, values[factor_ref], strict=True)
+        )
+    facts.extend(
+        (
+            fact(f"{grouped_prefix}.contribution_total", "38.62"),
+            fact(f"{grouped_prefix}.component_residual", "0"),
+        )
+    )
+    material = SimpleNamespace(
+        material_handle="m_formula",
+        interpretation_contract={
+            "factor_hierarchy": {
+                "groupings": (
+                    {
+                        "grouping_id": "factor_comparison",
+                        "method": "grouped_shapley",
+                        "factors": (
+                            {
+                                "factor_ref": "paid_users",
+                                "member_metric_refs": ("paid_users",),
+                            },
+                            {
+                                "factor_ref": "paid_amount_per_paid_user",
+                                "member_metric_refs": (
+                                    "paid_frequency",
+                                    "avg_order_amount",
+                                ),
+                            },
+                        ),
+                    },
+                )
+            }
+        },
+        facts=tuple(facts),
+    )
+    projection = SimpleNamespace(
+        publication_requirements=(
+            SimpleNamespace(
+                claim_kind="formula_component_contribution",
+                status="satisfied",
+                claim_handles=("c_formula",),
+                requirement_handle="pr_formula",
+            ),
+        ),
+        claims=(
+            SimpleNamespace(
+                claim_handle="c_formula",
+                material_handles=("m_formula",),
+            ),
+        ),
+        evidence_materials=(material,),
+    )
+    context = SimpleNamespace(
+        accepted_intent_context={
+            "requested_factor_refs": (
+                "paid_amount_per_paid_user",
+                "paid_users",
+            )
+        }
+    )
+
+    focus = narrative_workflow_module._requested_factor_comparison_focus(
+        answer_context=context,
+        material_projection=projection,
+    )
+
+    assert focus["status"] == "matched"
+    assert focus["requested_factor_refs"] == [
+        "paid_amount_per_paid_user",
+        "paid_users",
+    ]
+    assert len(focus["matches"]) == 1
+    match = focus["matches"][0]
+    assert match["requirement_handles"] == ["pr_formula"]
+    assert match["claim_handles"] == ["c_formula"]
+    assert match["material_handle"] == "m_formula"
+    assert match["grouping_id"] == "factor_comparison"
+    assert match["comparison_level"] == "contract_declared_factor_group"
+    assert match["cross_level_additivity"] == "forbidden"
+    assert [item["factor_ref"] for item in match["factors"]] == [
+        "paid_amount_per_paid_user",
+        "paid_users",
+    ]
+    assert match["factors"][0]["member_metric_refs"] == [
+        "paid_frequency",
+        "avg_order_amount",
+    ]
+    assert set(match["factors"][0]["fact_handles"]) == set(fields)
+    assert set(match["reconciliation_fact_handles"]) == {
+        "contribution_total",
+        "component_residual",
+    }
+    assert "25.24" not in json.dumps(focus, ensure_ascii=False)
 
 
 def _claim_block(
@@ -352,7 +553,7 @@ def _claim_block(
         for item in palette_payload["evidence_materials"]
         if item["material_handle"] in set(claim["material_handles"])
     )
-    fact = material["facts"][0]
+    fact = _provider_material_facts(material)[0]
     return {
         "role": role,
         "text": text,
@@ -467,7 +668,7 @@ def _focused_writer(_: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         for item in payload["material_projection"]["evidence_materials"]
         if item["material_handle"] in set(claim["material_handles"])
     )
-    fact = material["facts"][0]
+    fact = _provider_material_facts(material)[0]
     target["material_fact_bindings"] = [
         {
             "claim_handle": claim["claim_handle"],
@@ -515,6 +716,7 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
         "material_projection",
         "requirement_limitation_scope",
         "answer_context",
+        "requested_factor_comparison",
     }
     writer_requirements = client.calls[0]["payload"]["material_projection"][
         "publication_requirements"
@@ -522,18 +724,25 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     assert len(writer_requirements) == 1
     assert set(writer_requirements[0]) == {
         "requirement_handle",
+        "obligation_id",
         "status",
         "coverage_semantics",
         "claim_kind",
         "assertion_scope",
-        "required_claim_strength",
-        "claim_handles",
-        "limitation_handles",
+            "required_claim_strength",
+            "claim_handles",
+            "required_fact_handles",
+            "limitation_handles",
     }
     assert all(
-        call["prompt_version"] == "single-authority-phase05.v13"
+        call["prompt_version"] == "single-authority-phase05.v21"
         for call in client.calls
     )
+    writer_prompt = client.calls[0]["messages"][0]["content"]
+    assert "Markdown blank lines" in writer_prompt
+    assert "operational meaning" in writer_prompt
+    assert "do not impose a fixed length or block count" in writer_prompt
+    assert "representative_not_exhaustive" in writer_prompt
     writer_requirement_scope = client.calls[0]["payload"][
         "requirement_limitation_scope"
     ]
@@ -548,6 +757,17 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     )
     assert "authority_bundle_ref" not in client.calls[0]["payload"]
     assert client.calls[0]["payload"]["material_projection"]["evidence_materials"]
+    assert (
+        client.calls[0]["payload"]["material_projection"]["transport_encoding"]
+        == "columnar-material-facts.v1"
+    )
+    assert all(
+        item["fact_columns"]
+        == ["fact_handle", "name", "fact_kind", "value", "range_end", "unit"]
+        for item in client.calls[0]["payload"]["material_projection"][
+            "evidence_materials"
+        ]
+    )
     assert all(
         "facts" not in claim
         for claim in client.calls[0]["payload"]["material_projection"]["claims"]
@@ -618,6 +838,89 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     }
 
 
+def test_writer_normalizes_a_fact_binding_with_one_legal_block_owner() -> None:
+    authority = _authority_fixture()
+    projection = _prepared_projection(authority)
+    claim = projection.claims[0]
+    wrong_owner = "c_wrong_unique_owner"
+    projection_with_foreign_claim = replace(
+        projection,
+        claims=(
+            claim,
+            replace(
+                claim,
+                claim_handle=wrong_owner,
+                evidence_entry_refs=(),
+                material_handles=(),
+                limitation_handles=(),
+            ),
+        ),
+    )
+    block = _claim_block(
+        narrative_workflow_module._columnar_material_fact_transport(
+            projection.to_writer_payload()
+        ),
+        role="executive_answer",
+        text="The published fact remains bound to its reviewed material.",
+    )
+    block["claim_handles"].append(wrong_owner)
+    block["material_fact_bindings"][0]["claim_handle"] = wrong_owner
+
+    normalized, findings = (
+        narrative_workflow_module._normalize_initial_writer_output_for_delivery(
+            {"blocks": [block]},
+            authority_mode=authority.bundle.authority_mode,
+            material_projection=projection_with_foreign_claim,
+        )
+    )
+
+    assert normalized["blocks"][0]["material_fact_bindings"][0][
+        "claim_handle"
+    ] == claim.claim_handle
+    assert findings == ("fact_binding_unique_owner_normalized",)
+
+
+def test_writer_does_not_guess_between_multiple_legal_fact_owners() -> None:
+    authority = _authority_fixture()
+    projection = _prepared_projection(authority)
+    claim = projection.claims[0]
+    projection_with_ambiguous_owners = replace(
+        projection,
+        claims=(
+            claim,
+            replace(claim, claim_handle="c_second_legal_owner"),
+            replace(
+                claim,
+                claim_handle="c_wrong_owner",
+                evidence_entry_refs=(),
+                material_handles=(),
+                limitation_handles=(),
+            ),
+        ),
+    )
+    block = _claim_block(
+        narrative_workflow_module._columnar_material_fact_transport(
+            projection.to_writer_payload()
+        ),
+        role="executive_answer",
+        text="The published fact must retain an unambiguous owner.",
+    )
+    block["claim_handles"].extend(
+        ["c_second_legal_owner", "c_wrong_owner"]
+    )
+    block["material_fact_bindings"][0]["claim_handle"] = "c_wrong_owner"
+
+    with pytest.raises(
+        narrative_workflow_module.NarrativeWorkflowError,
+        match="narrative_writer_fact_binding_claim_material_mismatch",
+    ):
+        narrative_workflow_module._normalize_initial_writer_output_for_delivery(
+            {"blocks": [block]},
+            authority_mode=authority.bundle.authority_mode,
+            material_projection=projection_with_ambiguous_owners,
+        )
+
+
 def test_run_rejects_a_replayed_projection_from_another_authority_before_provider() -> (
     None
 ):
@@ -653,6 +956,8 @@ def test_oversized_narrative_payload_fails_before_provider_call() -> None:
         answer_goal="Explain the verified movement.",
         locale="en-US",
         business_context=("x" * (NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT + 1),),
+        accepted_intent_context=_TEST_ACCEPTED_INTENT_CONTEXT,
+        accepted_plan_context=_TEST_ACCEPTED_PLAN_CONTEXT,
     )
 
     with pytest.raises(NarrativeProviderCallError) as captured:
@@ -672,6 +977,89 @@ def test_oversized_narrative_payload_fails_before_provider_call() -> None:
     assert captured.value.kind == "narrative_input_budget_exceeded"
     assert captured.value.retryability == "not_retryable"
     assert client.calls == []
+
+
+def test_large_authoritative_fact_set_uses_lossless_columnar_transport() -> None:
+    authority = _authority_fixture()
+    claim = authority.settlement.accepted_claims[0]
+    source_material_ref = claim.support_edge_refs[0]
+    additional_facts = tuple(
+        PublicFactDescriptor.create(
+            claim=claim,
+            public_name=f"transport_fact_{index:04d}",
+            fact_kind="number",
+            value=str(index),
+            range_end=None,
+            unit="count",
+            source_material_ref=source_material_ref,
+        )
+        for index in range(4_000)
+    )
+    materialization = ReviewedPublicFactMaterialization.create(
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        review_ref="public-fact-review:columnar-transport",
+        reviewed_by="review-policy:aggregate-public-facts-v1",
+        public_facts=authority.materialization.public_facts + additional_facts,
+        public_limitations=authority.materialization.public_limitations,
+    )
+    authority = replace(authority, materialization=materialization)
+    projection = _prepared_projection(authority)
+    full_material = projection.to_writer_payload()
+    compact_material = (
+        narrative_workflow_module._columnar_material_fact_transport(full_material)
+    )
+    full_bytes = len(
+        json.dumps(
+            full_material,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    compact_bytes = len(
+        json.dumps(
+            compact_material,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    original_facts = {
+        fact.fact_handle
+        for material in projection.evidence_materials
+        for fact in material.facts
+    }
+    transported_facts = {
+        fact["fact_handle"]
+        for material in compact_material["evidence_materials"]
+        for fact in _provider_material_facts(material)
+    }
+
+    assert full_bytes > NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT
+    assert compact_bytes < NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT
+    assert transported_facts == original_facts
+    client = _FakeNarrativeLLM((_initial_writer, _accept_every_block))
+    result = run_narrative_workflow(
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        evidence_entries=authority.evidence_entries,
+        recommendations=authority.recommendations,
+        public_materialization=authority.materialization,
+        visibility_policy=authority.policy,
+        material_projection=projection,
+        answer_context=_context(),
+        llm_client=client,
+        sensitive_output_inspector=_NoSensitiveOutput(),
+    )
+
+    assert result.publication_ready is True
+    assert len(client.calls) == 2
+    assert all(
+        call["payload"]["material_projection"]["transport_encoding"]
+        == "columnar-material-facts.v1"
+        for call in client.calls
+    )
 
 
 def test_oversized_verifier_request_fails_after_exactly_one_writer_call(
@@ -913,10 +1301,11 @@ def test_required_publication_coverage_status_matrix(
     )
 
     assert (
-        narrative_workflow_module._publication_requirements_covered(
-            material_projection=status_projection,
-            claim_handles=frozenset({claim_handle}) if bind_claim else frozenset(),
-            limitation_handles=(
+            narrative_workflow_module._publication_requirements_covered(
+                material_projection=status_projection,
+                claim_handles=frozenset({claim_handle}) if bind_claim else frozenset(),
+                fact_binding_pairs=frozenset(),
+                limitation_handles=(
                 frozenset({limitation_handle}) if bind_limitation else frozenset()
             ),
         )
@@ -988,6 +1377,7 @@ def test_requirement_limitation_scope_projects_typed_binding_topology_per_block(
     requirement_scope = scope[0]
     assert requirement_scope["coverage_semantics"] == "supported_with_limitations"
     assert requirement_scope["claim_handle_options"] == [claim.claim_handle]
+    assert requirement_scope["required_fact_binding_options"] == []
     assert requirement_scope["assertion_scope"] == canonical_value(
         source_requirement.assertion_scope
     )
@@ -1022,6 +1412,50 @@ def test_requirement_limitation_scope_projects_typed_binding_topology_per_block(
         ]
         == []
     )
+
+
+def test_requested_factor_publication_requires_fact_binding_to_its_claim() -> None:
+    authority = _authority_fixture()
+    projection = _prepared_projection(authority)
+    source = projection.publication_requirements[0]
+    claim_handle = source.claim_handles[0]
+    claim = next(
+        item for item in projection.claims if item.claim_handle == claim_handle
+    )
+    material = next(
+        item
+        for item in projection.evidence_materials
+        if item.material_handle in set(claim.material_handles)
+    )
+    fact_handle = material.facts[0].fact_handle
+    requirement = replace(source, required_fact_handles=(fact_handle,))
+    required_projection = replace(
+        projection,
+        publication_requirements=(requirement,),
+    )
+
+    assert not narrative_workflow_module._publication_requirements_covered(
+        material_projection=required_projection,
+        claim_handles=frozenset({claim_handle}),
+        fact_binding_pairs=frozenset(),
+        limitation_handles=frozenset(),
+    )
+    assert narrative_workflow_module._publication_requirements_covered(
+        material_projection=required_projection,
+        claim_handles=frozenset({claim_handle}),
+        fact_binding_pairs=frozenset({(claim_handle, fact_handle)}),
+        limitation_handles=frozenset(),
+    )
+    scope = narrative_workflow_module._requirement_limitation_scope(
+        material_projection=required_projection,
+        blocks=(),
+    )
+    assert scope[0]["required_fact_binding_options"] == [
+        {
+            "fact_handle": fact_handle,
+            "claim_handle_options": [claim_handle],
+        }
+    ]
 
 
 def test_focused_retry_preserves_or_repairs_user_required_coverage() -> None:
@@ -1076,9 +1510,10 @@ def test_focused_retry_preserves_or_repairs_user_required_coverage() -> None:
         material_projection=projection,
     ) == (
         {
-            "requirement_handle": requirement.requirement_handle,
-            "claim_handle_options": list(requirement.claim_handles),
-            "required_limitation_handles": [],
+                "requirement_handle": requirement.requirement_handle,
+                "claim_handle_options": list(requirement.claim_handles),
+                "required_fact_handles": [],
+                "required_limitation_handles": [],
         },
     )
 
@@ -1221,9 +1656,10 @@ def test_focused_retry_validates_requirement_coverage_across_merged_blocks() -> 
         material_projection=mixed_projection,
     ) == (
         {
-            "requirement_handle": mixed_requirement.requirement_handle,
-            "claim_handle_options": [],
-            "required_limitation_handles": [limitation_handle],
+                "requirement_handle": mixed_requirement.requirement_handle,
+                "claim_handle_options": [],
+                "required_fact_handles": [],
+                "required_limitation_handles": [limitation_handle],
         },
     )
     retry_plan = _focused_plan(
@@ -1803,7 +2239,9 @@ def test_focused_scoped_material_view_exposes_only_target_authority_and_pairs() 
         item["material_handle"] for item in view["evidence_materials"]
     } == material_handles
     facts_by_material = {
-        item["material_handle"]: {fact["fact_handle"] for fact in item["facts"]}
+        item["material_handle"]: {
+            fact["fact_handle"] for fact in _provider_material_facts(item)
+        }
         for item in view["evidence_materials"]
     }
     for allowed in view["allowed_claim_fact_pairs"]:
@@ -1826,6 +2264,48 @@ def test_focused_scoped_material_view_exposes_only_target_authority_and_pairs() 
             )
     assert "limitation_scope" in view
     assert all(item["boundary_allowed"] is True for item in view["limitation_scope"])
+
+
+def test_block_verifier_material_view_excludes_unreferenced_authority() -> None:
+    from tests.phase7 import test_narrative_material_projection as projection_contracts
+
+    projection = projection_contracts._derive(projection_contracts._fixture())
+    full = projection.to_writer_payload()
+    requirement = projection.publication_requirements[0]
+    block_payload = _claim_block(
+        full,
+        role="executive_answer",
+        text="The verifier only needs the authority closure used by this block.",
+        claim_handle=requirement.claim_handles[0],
+    )
+    block = narrative_workflow_module._block_from_output(
+        block_payload,
+        writer_attempt_id="writer-attempt:verifier-scope",
+        material_projection=projection,
+    )
+
+    scoped = narrative_workflow_module._verification_scoped_material_view(
+        material_projection=projection,
+        blocks=(block,),
+    )
+
+    scoped_claims = {item["claim_handle"] for item in scoped["claims"]}
+    assert set(requirement.claim_handles).issubset(scoped_claims)
+    assert len(scoped["claims"]) < len(full["claims"])
+    material_handles = {
+        handle for claim in scoped["claims"] for handle in claim["material_handles"]
+    }
+    assert {
+        item["material_handle"] for item in scoped["evidence_materials"]
+    } == material_handles
+    limitation_handles = {
+        handle
+        for claim in scoped["claims"]
+        for handle in claim["limitation_handles"]
+    }.union(requirement.limitation_handles)
+    assert limitation_handles.issubset(
+        {item["limitation_handle"] for item in scoped["limitations"]}
+    )
 
 
 def test_verifier_findings_are_advisory_and_do_not_trigger_automatic_rewrite() -> None:
@@ -1875,7 +2355,7 @@ def test_verifier_findings_are_advisory_and_do_not_trigger_automatic_rewrite() -
         "requirement_limitation_scope" in call["payload"] for call in client.calls
     )
     assert all(
-        call["prompt_version"] == "single-authority-phase05.v13"
+        call["prompt_version"] == "single-authority-phase05.v21"
         for call in client.calls
     )
     first_text = result.narratives[0].blocks[0].text
@@ -2053,7 +2533,7 @@ def test_locale_and_recommendation_direction_quality_is_audited_without_blocking
     assert "recommendation_subject_direction_mismatch" in verifier_prompt
     assert "recommendation_subject_direction_ambiguous" in verifier_prompt
     assert all(
-        call["prompt_version"] == "single-authority-phase05.v13"
+        call["prompt_version"] == "single-authority-phase05.v21"
         for call in client.calls
     )
 
@@ -2465,6 +2945,15 @@ def test_incomplete_writer_coverage_is_audited_without_blocking_publication() ->
             block["required"] = False
         return output
 
+    def unavailable_completion(
+        _task: str,
+        _payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        raise LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+
     result = run_narrative_workflow(
         authority_bundle=authority.bundle,
         claim_settlement=authority.settlement,
@@ -2474,7 +2963,13 @@ def test_incomplete_writer_coverage_is_audited_without_blocking_publication() ->
         visibility_policy=authority.policy,
         material_projection=_prepared_projection(authority),
         answer_context=_context(),
-        llm_client=_FakeNarrativeLLM((incomplete_writer, _accept_every_block)),
+        llm_client=_FakeNarrativeLLM(
+            (
+                incomplete_writer,
+                _accept_every_block,
+                unavailable_completion,
+            )
+        ),
         sensitive_output_inspector=_NoSensitiveOutput(),
     )
 
@@ -2483,6 +2978,8 @@ def test_incomplete_writer_coverage_is_audited_without_blocking_publication() ->
         "publication_requirement_coverage_incomplete",
     )
     assert result.publication_ready is True
+    assert result.completion_repair_status == "exhausted"
+    assert result.completion_repair_failure_kind == "provider_unavailable"
     assert result.final_accepted_narrative is result.narratives[-1]
     assert (
         result.replay(
@@ -2549,6 +3046,15 @@ def test_writer_contract_findings_publish_customer_safe_limit_warning() -> None:
             block["required"] = False
         return output
 
+    def unavailable_completion(
+        _task: str,
+        _payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        raise LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+
     narrative = run_narrative_workflow(
         authority_bundle=authority.bundle,
         claim_settlement=authority.settlement,
@@ -2558,7 +3064,13 @@ def test_writer_contract_findings_publish_customer_safe_limit_warning() -> None:
         visibility_policy=authority.policy,
         material_projection=_prepared_projection(authority),
         answer_context=_context(),
-        llm_client=_FakeNarrativeLLM((incomplete_writer, _accept_every_block)),
+        llm_client=_FakeNarrativeLLM(
+            (
+                incomplete_writer,
+                _accept_every_block,
+                unavailable_completion,
+            )
+        ),
         sensitive_output_inspector=_NoSensitiveOutput(),
     )
     flow = PublicationFlowResult.create(

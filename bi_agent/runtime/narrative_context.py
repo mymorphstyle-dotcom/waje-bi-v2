@@ -23,6 +23,70 @@ def _compact_json(value: Any) -> str:
     )
 
 
+def _accepted_intent_context(intent: IntentRevision) -> Mapping[str, Any]:
+    return {
+        "goal_bindings": intent.goal_bindings,
+        "target_metric_refs": intent.target_metric_refs,
+        "scope": intent.scope,
+        "time_spec": intent.time_spec,
+        "comparison_spec": intent.comparison_spec,
+        "direction_premise": intent.direction_premise,
+        "requested_analysis_axes": intent.requested_analysis_axes,
+        "requested_factor_refs": intent.requested_factor_refs,
+        "desired_decisions": intent.desired_decisions,
+    }
+
+
+def _accepted_plan_context(authority_inputs: AuthorityBundleInputs) -> Mapping[str, Any]:
+    plan = authority_inputs.execution_result.plan_revision
+    tasks_by_id = {item.task_id: item for item in plan.capability_tasks}
+    user_required_obligations = tuple(
+        {
+            "obligation_id": item.obligation_id,
+            "claim_kind": item.claim_kind,
+            "subject": item.subject,
+            "minimum_claim_strength": item.success_policy["minimum_claim_strength"],
+        }
+        for item in plan.claim_obligations
+        if item.role == "user_required"
+    )
+    analysis_axes = tuple(
+        {
+            "axis_id": item.axis_id,
+            "role": item.role,
+            "axis_kind": item.axis_kind,
+            "target_metric_refs": item.target_metric_refs,
+            "metric_refs": item.metric_refs,
+            "dimension_refs": item.dimension_refs,
+            "capability_refs": item.capability_refs,
+            "reconciliation_group": item.reconciliation_group,
+            "goal_refs": item.goal_refs,
+            "supports_obligation_ids": item.supports_obligation_ids,
+        }
+        for item in plan.analysis_axes
+    )
+    capability_route = tuple(
+        {
+            "capability_id": item.capability_id,
+            "execution_rank": item.execution_rank,
+            "supports_obligation_ids": item.supports_obligation_ids,
+            "depends_on_capability_ids": tuple(
+                tasks_by_id[dependency_id].capability_id
+                for dependency_id in item.dependency_task_ids
+            ),
+        }
+        for item in sorted(
+            plan.capability_tasks,
+            key=lambda task: (task.execution_rank, task.task_id),
+        )
+    )
+    return {
+        "user_required_obligations": user_required_obligations,
+        "analysis_axes": analysis_axes,
+        "capability_route": capability_route,
+    }
+
+
 def build_narrative_answer_context(
     *,
     authority_bundle: AuthorityBundle,
@@ -59,6 +123,8 @@ def build_narrative_answer_context(
         or intent != intent_revision
         or intent.intent_revision_id != inputs.intent_revision_id
         or intent.run_attempt_id != inputs.run_attempt_id
+        or inputs.execution_result.plan_revision.intent_revision_id
+        != intent.intent_revision_id
         or normalized_recommendations != inputs.recommendations
     ):
         raise NarrativeContextContractError("narrative_context_authority_invalid")
@@ -94,19 +160,16 @@ def build_narrative_answer_context(
                 "narrative_context_business_context_invalid"
             )
         context.append(item)
-    goal_ids = tuple(
-        str(item["goal_id"])
-        for item in intent.goal_bindings
-        if isinstance(item, Mapping) and item.get("goal_id")
-    )
     return NarrativeAnswerContext.create(
         user_question=intent.original_user_text,
         answer_goal=(
-            "Resolve the accepted analytical goals within the sealed claim and "
-            "evidence ceilings: " + ", ".join(goal_ids)
+            "Resolve the accepted business question using the accepted intent and "
+            "plan context within the sealed claim and evidence ceilings."
         ),
         locale=locale,
         business_context=context,
+        accepted_intent_context=_accepted_intent_context(intent),
+        accepted_plan_context=_accepted_plan_context(inputs),
     )
 
 

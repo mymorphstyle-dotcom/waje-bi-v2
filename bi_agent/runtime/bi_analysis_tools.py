@@ -14,6 +14,18 @@ from bi_agent.runtime.evidence_authority import canonical_digest, canonical_valu
 
 
 BI_ANALYSIS_TOOL_SCHEMA_VERSION = "bi-analysis-tool-submission.v1"
+MaterialRevisionPlanField = Literal[
+    "goal_bindings",
+    "desired_decisions",
+    "analysis_axes",
+    "target_metric_refs",
+    "baseline_refs",
+    "resolved_window_refs",
+    "time_spec",
+    "scope",
+    "filters",
+    "direction_premise",
+]
 
 
 class RunBiAnalysisInput(BaseModel):
@@ -36,7 +48,7 @@ class ContinueBiAnalysisInput(BaseModel):
 
     source_task_ref: str = Field(alias="sourceTaskRef", min_length=1)
     revision_request: str = Field(alias="revisionRequest", min_length=1)
-    superseded_plan_fields: list[str] = Field(
+    superseded_plan_fields: list[MaterialRevisionPlanField] = Field(
         alias="supersededPlanFields",
         min_length=1,
     )
@@ -534,7 +546,9 @@ def bi_analysis_tools(
             name="continue_bi_analysis",
             description=(
                 "Create a material revision of one published BI task. Provide the "
-                "new business request and the accepted PlanRevision fields it replaces."
+                "new business request and the accepted PlanRevision fields it replaces. "
+                "sourceTaskRef must be copied from conversationContext."
+                "publishedAnalysisTasks."
             ),
             input_model=ContinueBiAnalysisInput,
             handler=continue_analysis,

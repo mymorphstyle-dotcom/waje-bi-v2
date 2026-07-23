@@ -212,6 +212,7 @@ def _fixture(
             "slot_id": "comparison_baseline",
         },
         direction_premise="unknown",
+        requested_factor_refs=(),
         requested_analysis_axes=("change_validation",),
         desired_decisions=(
             {"decision_kind": "explain_change", "target_ref": "paid_amount"},
@@ -227,8 +228,8 @@ def _fixture(
             },
         ),
         source_spans=(),
-        schema_version="intent-revision.v1",
-        prompt_version="test.intent.v1",
+        schema_version="intent-revision.v2",
+        prompt_version="test.intent.v2",
         model_version="test-model",
     )
     decision = DecisionRecord.create(

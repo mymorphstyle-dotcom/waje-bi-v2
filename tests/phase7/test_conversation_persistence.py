@@ -42,7 +42,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         memory.create_thread("thread-personal", owner_id="user-42")
         self.assertEqual(memory.get_thread("thread-personal").owner_id, "user-42")
 
-        connection = FakeConnection()
+        connection = FakeConnection(rows=[("thread-personal", "user-42")])
         postgres = PostgresConversationStore(connection)
         thread = postgres.create_thread("thread-personal", owner_id="user-42")
 
@@ -54,6 +54,17 @@ class ConversationPersistenceTest(unittest.TestCase):
         )
         self.assertEqual(params["owner_id"], "user-42")
         self.assertNotIn("role", params)
+
+    def test_python_store_rejects_thread_owner_reassignment(self):
+        connection = FakeConnection(rows=[("thread-personal", "user-original")])
+        postgres = PostgresConversationStore(connection)
+
+        with self.assertRaisesRegex(ValueError, "thread_owner_immutable"):
+            postgres.create_thread("thread-personal", owner_id="user-attacker")
+
+        sql = "\n".join(statement for statement, _ in connection.statements)
+        self.assertIn("ON CONFLICT (thread_id) DO NOTHING", sql)
+        self.assertNotIn("SET owner_id = EXCLUDED.owner_id", sql)
 
     def test_in_memory_single_save_checks_release_membership_before_dataset_policy(
         self,
@@ -390,7 +401,10 @@ class ConversationPersistenceTest(unittest.TestCase):
     def test_in_memory_store_lists_dataset_snapshots_by_dataset(self):
         store = InMemoryConversationStore()
         first = _dataset_snapshot_payload("snapshot:paid_order:1", "legacy_paid_order")
-        second = _dataset_snapshot_payload("snapshot:attempt:1", "payment_attempt")
+        second = _dataset_snapshot_payload(
+            "snapshot:payment-final:1", "payment_final_outcome"
+        )
+        second["status"] = "staged"
 
         store.save_dataset_snapshot(first)
         store.save_dataset_snapshot(second)
@@ -465,7 +479,7 @@ class ConversationPersistenceTest(unittest.TestCase):
                 "physical_table": "paid_order_success_clean_20260705",
                 "watermark": "2026-07-05",
                 "schema_fingerprint": "schema-2",
-                "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.3",
+                "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.4",
             }
         )
 
@@ -670,7 +684,7 @@ class ConversationPersistenceTest(unittest.TestCase):
         )
 
     def test_store_writes_audit_events_for_state_changes(self):
-        connection = FakeConnection()
+        connection = FakeConnection(rows=[("thread-pg", "user-1")])
         store = PostgresConversationStore(connection)
 
         thread = store.create_thread("thread-pg", owner_id="user-1")

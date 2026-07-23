@@ -6,9 +6,10 @@ Scope: 2024-01-01 through 2026-07-04 payment details
 ## Outputs
 
 - Raw ClickHouse table: `paid_order_detail_raw_20240101_20260704`
-- Clean ClickHouse table: `paid_order_success_clean_20240101_20260704`
-- Daily summary table: `paid_order_success_daily_20240101_20260704`
-- Latest-key helper table: `paid_order_success_latest_key_20240101_20260704`
+- Clean ClickHouse table: `paid_order_success_clean_20240101_20260704_v2`
+- Daily summary table: `paid_order_success_daily_20240101_20260704_v2`
+- Latest-key helper table: `paid_order_success_latest_key_20240101_20260704_v2`
+- First-payment authority table: `paid_order_success_first_payment_20240101_20260704_v2`
 - Profile JSON: `artifacts/data-cleaning/payment_details_20240101_20260704_profile.json`
 
 ## Cleaning Rules
@@ -16,7 +17,11 @@ Scope: 2024-01-01 through 2026-07-04 payment details
 - Include `pay_success` rows for paid amount.
 - Exclude `order_success` from paid amount.
 - Deduplicate successful payment rows by `订单id`, keeping the latest `支付完成时间`.
+- Within source rows marked as first payment, keep one canonical first-payment order per user using the earliest `(payment_completed_ms, order_id)` tuple.
 - Use `支付完成时间` converted to `Africa/Lagos` as `business_date_lagos`.
+- Interpret `注册时间` wall-clock text as `Asia/Shanghai`, then store the instant in `Africa/Lagos`.
+- Interpret `首充时间` epoch milliseconds as UTC, then store the canonical first-payment instant in `Africa/Lagos`.
+- Mark residual negative registration-to-first-payment lags as source anomalies; exclude them from lag conclusions.
 - Preserve source dimension values; only empty string and `NULL` are converted to null.
 
 ## Summary
@@ -26,6 +31,10 @@ Scope: 2024-01-01 through 2026-07-04 payment details
 - Clean paid rows: 41,234,677
 - Clean paid amount: 88,881,490,051.00 NGN
 - Clean date range: 2024-01-01 through 2026-07-04
+- Source first-payment rows: 2,432,324
+- Canonical first-payment rows/users: 2,430,586 / 2,430,586
+- Canonical first-payment duplicate users: 0
+- Residual negative registration-to-first-payment rows: 67
 - Duplicate success rows removed: 1
 - Clean rows above latest-key count: 0
 - Invalid success rows excluded: 0
@@ -50,7 +59,8 @@ Scope: 2024-01-01 through 2026-07-04 payment details
 
 | Field | Missing Rows |
 |---|---:|
-| first_paid_at | 38,802,353 |
+| registered_to_first_paid_lag_seconds | 38,809,597 |
+| first_paid_at | 38,804,091 |
 | network_type | 9,626,012 |
 | device_brand | 2,347,968 |
 | device_model | 2,347,968 |

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from bi_agent.capabilities.event_evidence import event_evidence
@@ -81,7 +83,7 @@ def test_event_sentinel_does_not_create_candidate_mechanism() -> None:
 
     assert evidence.evidence_type == "insufficient_evidence"
     assert evidence.typed_payload["events"] == ()
-    assert evidence.limitations == ("no_event_contract_or_matches",)
+    assert evidence.limitations == ("no_event_matches",)
 
 
 def test_real_event_survives_alongside_no_event_sentinel() -> None:
@@ -96,6 +98,8 @@ def test_real_event_survives_alongside_no_event_sentinel() -> None:
                 "event_id": "campaign-june",
                 "event_count": 1,
                 "window_role": "target",
+                "event_type": "campaign",
+                "payload": '{"business_use":"candidate_context","raw_owner":"secret"}',
             },
         ),
     )
@@ -104,6 +108,60 @@ def test_real_event_survives_alongside_no_event_sentinel() -> None:
     assert tuple(item["event_id"] for item in evidence.typed_payload["events"]) == (
         "campaign-june",
     )
+    assert "payload" not in evidence.typed_payload["events"][0]
+    assert len(evidence.typed_payload["events"][0]["source_event_digest"]) == 64
+    assert evidence.typed_payload["event_summary"] == (
+        {
+            "window_role": "target",
+            "event_type": "campaign",
+            "event_count": 1,
+            "business_use": "candidate_context",
+        },
+    )
+    assert "payload" not in evidence.typed_payload["event_summary"][0]
+    assert "event_id" not in evidence.typed_payload["event_summary"][0]
+    assert evidence.typed_payload["synthesis_contract"] == {
+        "schema_version": "public-fact-projection.v1",
+        "public_fact_paths": (
+            "business_readout",
+            "claim_boundary",
+            "event_summary",
+        ),
+    }
+
+
+def test_dense_event_rows_keep_content_identity_with_bounded_evidence() -> None:
+    evidence = event_evidence(
+        tuple(
+            {
+                "event_id": f"external-event-{index}",
+                "event_count": 1,
+                "window_role": "target",
+                "event_type": "reviewed_context",
+                "payload": json.dumps(
+                    {
+                        "business_use": "candidate_context",
+                        "description": f"审阅事件 {index}",
+                        "raw_source_material": "x" * 4096,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            for index in range(60)
+        )
+    )
+
+    encoded = json.dumps(
+        evidence.typed_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(encoded) < 64 * 1024
+    assert len(evidence.typed_payload["events"]) == 60
+    assert all("payload" not in item for item in evidence.typed_payload["events"])
+    assert all("source_event_digest" in item for item in evidence.typed_payload["events"])
 
 
 def test_invalid_no_event_sentinel_is_rejected() -> None:

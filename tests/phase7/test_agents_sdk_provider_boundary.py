@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Mapping
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from agents.tracing import get_trace_provider
@@ -19,21 +21,44 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentTool,
 )
 from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
-from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
+from bi_agent.runtime.agents_sdk_adapter import (
+    WajeAgentsSdkAdapter,
+    _install_sdk_log_redaction,
+)
 from bi_agent.runtime.agents_sdk_trace import (
+    AgentTraceStorageError,
+    AgentTraceStoragePolicy,
     InMemoryAgentTraceSink,
     PostgresAgentTraceSink,
     WajeTraceProcessor,
 )
-from bi_agent.runtime.llm_client import LLMConfigurationError, LLMProviderError
+from bi_agent.runtime.llm_client import (
+    LLMConfigurationError,
+    LLMProviderError,
+    llm_provider_error_from_exception,
+)
 from bi_agent.runtime.mainland_model_provider import (
     MainlandModelCapabilities,
     MainlandModelProvider,
     MainlandModelSettings,
     MainlandProviderConfig,
+    PostgresProviderCircuit,
     ProviderCapabilityError,
 )
 from bi_agent.runtime.provider_capability_probe import ProviderCapabilityProbe
+
+
+def test_agents_sdk_error_logger_redacts_model_input(caplog: pytest.LogCaptureFixture) -> None:
+    _install_sdk_log_redaction()
+    caplog.set_level(logging.ERROR, logger="openai.agents")
+
+    logging.getLogger("openai.agents").error(
+        "Error getting response; filtered.input=%s",
+        [{"content": "customer-secret"}],
+    )
+
+    assert "model input redacted" in caplog.text
+    assert "customer-secret" not in caplog.text
 from bi_agent.runtime.thread_item_ledger import InMemoryThreadItemLedger
 
 
@@ -343,6 +368,142 @@ def test_postgres_trace_sink_routes_by_waje_trace_metadata() -> None:
     ]
 
 
+def test_postgres_trace_sink_enforces_payload_and_run_record_limits() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def add_audit_event(self, event_type: str, **kwargs: Any) -> None:
+            self.calls.append({"event_type": event_type, **kwargs})
+
+    store = Store()
+    sink = PostgresAgentTraceSink(
+        store,
+        policy=AgentTraceStoragePolicy(
+            max_record_bytes=300,
+            max_records_per_run=1,
+            retention_days=1,
+        ),
+    )
+    record = {
+        "id": "trace-limited",
+        "waje_trace_metadata": {
+            "waje_run_id": "run-limited",
+            "waje_thread_id": "thread-limited",
+        },
+    }
+    sink.write_trace_record(record)
+    with pytest.raises(
+        AgentTraceStorageError,
+        match="agent_trace_storage_run_record_limit_exceeded",
+    ):
+        sink.write_trace_record(record)
+
+    oversized = PostgresAgentTraceSink(
+        store,
+        policy=AgentTraceStoragePolicy(
+            max_record_bytes=80,
+            max_records_per_run=5,
+            retention_days=1,
+        ),
+    )
+    with pytest.raises(
+        AgentTraceStorageError,
+        match="agent_trace_storage_record_too_large",
+    ):
+        oversized.write_trace_record({**record, "span_data": {"input": "x" * 200}})
+
+    rejections = [
+        call for call in store.calls
+        if call["event_type"] == "agents_sdk_trace_record_rejected"
+    ]
+    assert [item["payload"]["error_code"] for item in rejections] == [
+        "agent_trace_storage_run_record_limit_exceeded",
+        "agent_trace_storage_record_too_large",
+    ]
+    assert all("span_data" not in item["payload"] for item in rejections)
+
+
+def test_repeated_adapters_share_one_processor_and_route_each_run_to_its_sink() -> None:
+    first_provider, first_adapter, first_sink = _adapter(
+        lambda _: _chat_response(content="first")
+    )
+    second_provider, second_adapter, second_sink = _adapter(
+        lambda _: _chat_response(content="second")
+    )
+    try:
+        asyncio.run(
+            first_adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-trace-first",
+                    agent_name="waje_general_agent",
+                    instructions="回答。",
+                    input_text="第一轮。",
+                )
+            )
+        )
+        asyncio.run(
+            second_adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-trace-second",
+                    agent_name="waje_general_agent",
+                    instructions="回答。",
+                    input_text="第二轮。",
+                )
+            )
+        )
+    finally:
+        asyncio.run(first_provider.close())
+        asyncio.run(second_provider.close())
+
+    processors = (
+        get_trace_provider().__dict__["_multi_processor"].__dict__["_processors"]
+    )
+    assert len(processors) == 1
+    assert isinstance(processors[0], WajeTraceProcessor)
+    assert {
+        record["waje_trace_metadata"]["waje_run_id"]
+        for record in first_sink.records
+    } == {"run-trace-first"}
+    assert {
+        record["waje_trace_metadata"]["waje_run_id"]
+        for record in second_sink.records
+    } == {"run-trace-second"}
+
+
+def test_trace_persistence_failure_is_a_typed_turn_failure() -> None:
+    class FailedSink:
+        def write_trace_record(self, record: Mapping[str, Any]) -> None:
+            raise ConnectionError("raw trace database endpoint")
+
+    provider = MainlandModelProvider(
+        _config(),
+        http_transport=httpx.MockTransport(
+            lambda _: _chat_response(content="model completed")
+        ),
+    )
+    adapter = WajeAgentsSdkAdapter(provider=provider, trace_sink=FailedSink())
+    try:
+        with pytest.raises(AgentSdkAdapterError) as captured:
+            asyncio.run(
+                adapter.run(
+                    WajeAgentRunRequest(
+                        run_id="run-trace-persistence-failure",
+                        agent_name="waje_general_agent",
+                        instructions="回答。",
+                        input_text="验证 trace 故障。",
+                    )
+                )
+            )
+    finally:
+        asyncio.run(provider.close())
+
+    assert captured.value.code == "agent_trace_persistence_failed"
+    assert captured.value.retryability == "retryable"
+    assert captured.value.trace_failure["error_type"] == "ConnectionError"
+    assert "database endpoint" not in str(captured.value)
+
+
 def test_runner_completes_one_function_tool_call() -> None:
     responses = iter(
         (
@@ -407,6 +568,7 @@ def test_required_suspending_tool_corrects_contract_error_inside_runner() -> Non
     invalid_arguments = json.dumps(
         {
             "materialDecision": "请选择比较基线。",
+            "materialDecisionTopics": ["baseline_or_counterfactual"],
             "options": [
                 {
                     "optionId": "month",
@@ -427,6 +589,7 @@ def test_required_suspending_tool_corrects_contract_error_inside_runner() -> Non
     valid_arguments = json.dumps(
         {
             "materialDecision": "请选择比较基线。",
+            "materialDecisionTopics": ["baseline_or_counterfactual"],
             "options": [
                 {
                     "optionId": "month",
@@ -735,6 +898,143 @@ def test_runner_returns_waje_mapping_for_strongly_typed_final_output() -> None:
     assert '"evidence_refs"' in requests[0]["messages"][0]["content"]
 
 
+def test_provider_retries_blank_structured_final_output_within_shared_budget() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return _chat_response(content=" " * 128)
+        return _chat_response(
+            content=json.dumps(
+                {"answer": "补全成功", "evidence_refs": ["evidence:retry"]},
+                ensure_ascii=False,
+            )
+        )
+
+    provider, adapter, _ = _adapter(
+        handler,
+        config=_config(max_attempts=2),
+    )
+    try:
+        result = asyncio.run(
+            adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-typed-output-retry",
+                    agent_name="waje_general_agent",
+                    instructions="按最终 schema 返回。",
+                    input_text="生成结构化回答。",
+                    output_type=_TypedAnswer,
+                )
+            )
+        )
+    finally:
+        asyncio.run(provider.close())
+
+    assert result.final_output == {
+        "answer": "补全成功",
+        "evidence_refs": ["evidence:retry"],
+    }
+    assert len(requests) == 2
+    assert all(
+        request["response_format"] == {"type": "json_object"}
+        for request in requests
+    )
+
+
+def test_provider_does_not_validate_intermediate_tool_call_as_final_output() -> None:
+    responses = iter(
+        (
+            _chat_response(
+                tool_name="increment",
+                arguments='{"value":2}',
+                call_id="call_typed_increment",
+            ),
+            _chat_response(
+                content=json.dumps(
+                    {"answer": "结果为 3", "evidence_refs": ["tool:increment"]},
+                    ensure_ascii=False,
+                )
+            ),
+        )
+    )
+    request_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return next(responses)
+
+    provider, adapter, _ = _adapter(
+        handler,
+        config=_config(max_attempts=2),
+    )
+    try:
+        result = asyncio.run(
+            adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-typed-tool-output",
+                    agent_name="waje_general_agent",
+                    instructions="先调用工具，再按最终 schema 返回。",
+                    input_text="将 2 加 1。",
+                    tools=(
+                        WajeAgentTool(
+                            name="increment",
+                            description="Increment one integer.",
+                            input_model=_NumberInput,
+                            handler=lambda arguments: {
+                                "value": arguments["value"] + 1
+                            },
+                        ),
+                    ),
+                    output_type=_TypedAnswer,
+                )
+            )
+        )
+    finally:
+        asyncio.run(provider.close())
+
+    assert result.final_output == {
+        "answer": "结果为 3",
+        "evidence_refs": ["tool:increment"],
+    }
+    assert request_count == 2
+
+
+def test_provider_maps_exhausted_structured_output_retry_to_typed_error() -> None:
+    request_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return _chat_response(content="\n\t ")
+
+    provider, adapter, _ = _adapter(
+        handler,
+        config=_config(max_attempts=2),
+    )
+    try:
+        with pytest.raises(LLMProviderError) as captured:
+            asyncio.run(
+                adapter.run(
+                    WajeAgentRunRequest(
+                        run_id="run-typed-output-exhausted",
+                        agent_name="waje_general_agent",
+                        instructions="按最终 schema 返回。",
+                        input_text="生成结构化回答。",
+                        output_type=_TypedAnswer,
+                    )
+                )
+            )
+    finally:
+        asyncio.run(provider.close())
+
+    assert captured.value.kind == "provider_output_invalid"
+    assert captured.value.retryability == "retryable"
+    assert captured.value.error_code == "structured_output_invalid"
+    assert request_count == 2
+
+
 def test_streaming_projects_text_and_tool_deltas_without_reasoning_content() -> None:
     responses = iter(
         (
@@ -818,6 +1118,70 @@ def test_provider_maps_http_error_and_opens_circuit_at_provider_boundary() -> No
     assert request_count == 2
 
 
+def test_postgres_circuit_preserves_failures_across_provider_instances() -> None:
+    class Rows:
+        def __init__(self, row: Any = None) -> None:
+            self.row = row
+
+        def fetchone(self) -> Any:
+            return self.row
+
+    class Connection:
+        def __init__(self) -> None:
+            self.events: list[str] = []
+            self.commits = 0
+            self.rollbacks = 0
+
+        def execute(self, statement: str, params: Mapping[str, Any] | None = None):
+            values = dict(params or {})
+            if "mainland_provider_circuit_state" in statement:
+                threshold = int(values["failure_threshold"])
+                recent = list(reversed(self.events[-threshold:]))
+                latest = recent[0] if recent else ""
+                reached = len(recent) == threshold and all(
+                    event == "mainland_provider_circuit_failure"
+                    for event in recent
+                )
+                return Rows(
+                    {
+                        "latest_event_type": latest,
+                        "failure_threshold_reached": reached,
+                        "recovery_window_open": bool(latest),
+                    }
+                )
+            if "INSERT INTO waje_runtime.audit_events" in statement:
+                self.events.append(str(values["event_type"]))
+            return Rows()
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    connection = Connection()
+    config = _config(circuit_failure_threshold=2)
+    first = PostgresProviderCircuit(connection, config)
+    second = PostgresProviderCircuit(connection, config)
+    retryable = LLMProviderError(
+        kind="provider_unavailable",
+        retryability="retryable",
+    )
+
+    first.record_failure(retryable)
+    second.record_failure(retryable)
+    with pytest.raises(LLMProviderError) as captured:
+        PostgresProviderCircuit(connection, config).before_request()
+
+    assert captured.value.error_code == "provider_circuit_open"
+    assert first.circuit_ref == second.circuit_ref
+    assert connection.events == [
+        "mainland_provider_circuit_failure",
+        "mainland_provider_circuit_failure",
+    ]
+    assert connection.rollbacks == 0
+
+
 def test_provider_maps_authentication_failure_to_waje_typed_error() -> None:
     provider, adapter, _ = _adapter(
         lambda _: _chat_response(status_code=401),
@@ -845,6 +1209,58 @@ def test_provider_maps_authentication_failure_to_waje_typed_error() -> None:
         "type": "authentication_error",
     }
     assert "private provider error" not in json.dumps(captured.value.provider_error)
+
+
+def test_provider_maps_raw_http_transport_failures_to_typed_errors() -> None:
+    timeout = llm_provider_error_from_exception(
+        httpx.ReadTimeout("raw timeout detail")
+    )
+    unavailable = llm_provider_error_from_exception(
+        httpx.ConnectError("raw host detail")
+    )
+
+    assert (timeout.kind, timeout.retryability) == (
+        "provider_timeout",
+        "retryable",
+    )
+    assert (unavailable.kind, unavailable.retryability) == (
+        "provider_unavailable",
+        "retryable",
+    )
+    assert "raw" not in str(timeout)
+    assert "raw" not in str(unavailable)
+
+
+def test_adapter_maps_unclassified_sdk_failure_to_stable_waje_error() -> None:
+    provider, adapter, _ = _adapter(lambda _: _chat_response(content="unused"))
+    try:
+        with (
+            patch(
+                "bi_agent.runtime.agents_sdk_adapter.Runner.run",
+                new=AsyncMock(
+                    side_effect=RuntimeError(
+                        "raw SDK detail and private provider payload"
+                    )
+                ),
+            ),
+            pytest.raises(AgentSdkAdapterError) as captured,
+        ):
+            asyncio.run(
+                adapter.run(
+                    WajeAgentRunRequest(
+                        run_id="run-sdk-unclassified",
+                        agent_name="waje_general_agent",
+                        instructions="回答。",
+                        input_text="触发未分类 SDK 故障。",
+                    )
+                )
+            )
+    finally:
+        asyncio.run(provider.close())
+
+    assert captured.value.code == "agents_sdk_runtime_failed"
+    assert captured.value.retryability == "retryable"
+    assert "private provider payload" not in str(captured.value)
 
 
 def test_provider_retry_is_centralized_in_explicit_openai_compatible_client() -> None:
@@ -932,6 +1348,12 @@ def test_capability_probe_covers_required_live_contract_and_declared_limits() ->
     assert report.context_window_tokens == 1_000_000
     assert report.max_output_tokens == 8_192
     assert report.thinking is True
+    assert report.observations["origins"] == ["https://api.deepseek.com"]
+    assert report.observations["paths"] == ["/v1/chat/completions"]
+    assert report.observations["models"] == ["deepseek-v4-flash"]
+    assert report.observations["requested_max_output_tokens"] == [512]
+    assert report.checks["context_budget_enforcement"] is True
+    assert report.checks["typed_error_mapping"] is True
     assert all(request["max_tokens"] == 512 for request in requests)
     tool_probe_requests = [
         request
@@ -969,6 +1391,16 @@ def test_provider_configuration_forbids_defaults_openai_endpoint_and_missing_cap
         MainlandProviderConfig(
             provider="deepseek",
             base_url="https://api.openai.com/v1",
+            api_key="key",
+            model="model",
+            model_settings=MainlandModelSettings(128, "disabled"),
+            capabilities=_capabilities(),
+        )
+
+    with pytest.raises(LLMConfigurationError, match="provider_https_required"):
+        MainlandProviderConfig(
+            provider="deepseek",
+            base_url="http://api.deepseek.com/v1",
             api_key="key",
             model="model",
             model_settings=MainlandModelSettings(128, "disabled"),
@@ -1069,3 +1501,51 @@ def test_sdk_imports_remain_inside_python_adapter_provider_and_trace_boundary() 
         "ModelProvider",
     ):
         assert sdk_type not in customer_sources
+
+
+def test_all_production_model_transports_use_mainland_provider_configuration() -> None:
+    runtime_root = ROOT / "bi_agent"
+    tool_root = ROOT / "tools"
+    provider_path = runtime_root / "runtime/mainland_model_provider.py"
+    structured_transport_path = runtime_root / "runtime/llm_client.py"
+    production_paths = tuple(runtime_root.rglob("*.py")) + tuple(tool_root.rglob("*.py"))
+
+    environment_keys = (
+        "WAJE_LLM_PROVIDER",
+        "WAJE_LLM_BASE_URL",
+        "WAJE_LLM_API_KEY",
+        "WAJE_LLM_MODEL",
+        "WAJE_LLM_CRITICAL_MODEL",
+    )
+    environment_readers = [
+        str(path.relative_to(ROOT))
+        for path in production_paths
+        if path != provider_path
+        and any(key in path.read_text(encoding="utf-8") for key in environment_keys)
+    ]
+    assert environment_readers == []
+
+    direct_structured_clients = [
+        str(path.relative_to(ROOT))
+        for path in production_paths
+        if path != provider_path
+        and "OpenAICompatibleLLMClient(" in path.read_text(encoding="utf-8")
+    ]
+    assert direct_structured_clients == []
+
+    openai_client_constructors = [
+        str(path.relative_to(ROOT))
+        for path in production_paths
+        if "OpenAI(" in path.read_text(encoding="utf-8")
+        or "AsyncOpenAI(" in path.read_text(encoding="utf-8")
+    ]
+    assert sorted(openai_client_constructors) == sorted(
+        [
+            str(provider_path.relative_to(ROOT)),
+            str(structured_transport_path.relative_to(ROOT)),
+        ]
+    )
+
+    assert "OpenAICompatibleLLMClient.from_env" not in "\n".join(
+        path.read_text(encoding="utf-8") for path in production_paths
+    )

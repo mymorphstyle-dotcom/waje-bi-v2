@@ -271,6 +271,59 @@ def test_materializes_typed_aggregate_facts_and_nested_records() -> None:
     )
 
 
+def test_reviewed_synthesis_contract_projects_writer_facts_without_losing_evidence() -> None:
+    authority = _authority(
+        (
+            {
+                "full_rows": (
+                    {"member": "A", "value": 10},
+                    {"member": "B", "value": 20},
+                ),
+                "decision_summary": {"member": "A", "value": 10},
+                "claim_boundary": "directional_only",
+                "synthesis_contract": {
+                    "schema_version": "public-fact-projection.v1",
+                    "public_fact_paths": (
+                        "decision_summary",
+                        "claim_boundary",
+                    ),
+                },
+            },
+        ),
+        seed="synthesis-projection",
+    )
+
+    result = _materialize(authority)
+
+    names = {item.public_name for item in result.public_facts}
+    assert any(name.endswith("decision_summary.member") for name in names)
+    assert any(name.endswith("decision_summary.value") for name in names)
+    assert any(name.endswith("claim_boundary") for name in names)
+    assert all("full_rows" not in name for name in names)
+    assert authority[1].observation_facts[0]["full_rows"][1]["value"] == 20
+
+
+def test_malformed_synthesis_contract_fails_closed() -> None:
+    authority = _authority(
+        (
+            {
+                "decision_summary": {"value": 10},
+                "synthesis_contract": {
+                    "schema_version": "public-fact-projection.v1",
+                    "public_fact_paths": ("missing_path",),
+                },
+            },
+        ),
+        seed="synthesis-projection-invalid",
+    )
+
+    with pytest.raises(
+        PublicFactMaterializationContractError,
+        match="public_fact_materialization_synthesis_contract_invalid",
+    ):
+        _materialize(authority)
+
+
 def test_claim_payload_values_are_never_promoted_without_evidence_material() -> None:
     authority = _authority(
         ({"name": "observed_amount", "value": 25},),

@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.runtime.langgraph_workflow import _understand_business_intent
-from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
+from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
 
 
 QUESTION = "2026年6月1日付费金额为什么上涨？主要由哪些指标变化导致？"
@@ -50,7 +50,7 @@ def run_intent_stability(count: int, artifact_root: Path) -> int:
     output_dir = _new_directory(artifact_root / acceptance_id)
     store = PostgresConversationStore.from_env()
     store.apply_schema()
-    client = OpenAICompatibleLLMClient.from_env()
+    client = MainlandModelProvider.structured_client_from_env()
     material_views: list[dict[str, Any]] = []
     try:
         for index in range(1, count + 1):

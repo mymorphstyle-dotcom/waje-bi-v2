@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 
 PROMPT_VERSION = "single-authority.conversation.2026-07-18.v1"
-SINGLE_AUTHORITY_PROMPT_VERSION = "single-authority.phase01.2026-07-21.v9"
+SINGLE_AUTHORITY_PROMPT_VERSION = "single-authority.phase01.2026-07-22.v10"
 SINGLE_AUTHORITY_PLAN_PROMPT_VERSION = "single-authority.phase02.2026-07-18.v1"
 CLAIM_COVERAGE_EXPANSION_PROMPT_VERSION = (
     "single-authority.phase03.claim-coverage.2026-07-18.v2"
@@ -198,7 +198,8 @@ def _task_rules(task: str) -> str:
             "Bind the user's complete business intent once. Return intent_binding as "
             "one object with exactly these keys: goal_bindings, target_metric_refs, "
             "scope, time_spec, comparison_spec, direction_premise, requested_analysis_axes, "
-            "desired_decisions, ambiguity_slots, source_spans. Use only catalog IDs "
+            "requested_factor_refs, desired_decisions, ambiguity_slots, source_spans. "
+            "Use only catalog IDs "
             "supplied in the input. goal_bindings contains exactly one primary goal "
             "and may contain supporting goals; each item is {goal_id, role}. scope is "
             "{scope_type, filters}; keep filters structured and use [] for full sample. "
@@ -230,7 +231,12 @@ def _task_rules(task: str) -> str:
             "an event_ref or physical event window. An explicit comparison and a "
             "comparison ambiguity slot cannot coexist. requested_analysis_axes must be a "
             "list of axis_id strings selected from analysis_axis_catalog; never copy "
-            "catalog objects or roles. direction_premise is one of "
+            "catalog objects or roles. requested_factor_refs must list, in customer "
+            "comparison order, every non-target metric explicitly named as a factor or "
+            "comparison operand by the user, using metric_id values from metric_catalog; "
+            "use [] when no factor is explicitly requested. Do not infer factors from a "
+            "keyword table or silently replace a requested composite metric with its leaf "
+            "components. direction_premise is one of "
             "user_hypothesis_positive, user_hypothesis_negative, unknown, "
             "no_direction_requested. desired_decisions contains {decision_kind, "
             "target_ref}; include every supplied desired_decision_catalog entry for the "

@@ -261,6 +261,31 @@ function RunOverview({ run }: { run: TraceRun }) {
           </div>
         </details>
       ) : null}
+      {run.technicalTrace ? (
+        <details className={styles.auditDetails}>
+          <summary>
+            SDK、模型、工具与错误 trace
+            <ChevronDown size={13} />
+          </summary>
+          <div className={styles.summaryCards}>
+            <SummaryTile card={{ label: "Runtime", value: run.technicalTrace.runtime }} />
+            <SummaryTile card={{ label: "Provider", value: run.technicalTrace.provider ?? "未记录" }} />
+            <SummaryTile card={{ label: "Model", value: run.technicalTrace.model ?? "未记录" }} />
+            <SummaryTile card={{ label: "Transport", value: run.technicalTrace.transport ?? "未记录" }} />
+            <SummaryTile card={{ label: "Trace records", value: String(run.technicalTrace.records.length) }} />
+          </div>
+          <pre>{JSON.stringify(run.technicalTrace.records, null, 2)}</pre>
+        </details>
+      ) : null}
+      {run.factorCoverage ? (
+        <details className={styles.auditDetails}>
+          <summary>
+            因素覆盖与调查分支
+            <ChevronDown size={13} />
+          </summary>
+          <pre>{JSON.stringify(run.factorCoverage, null, 2)}</pre>
+        </details>
+      ) : null}
       <p className={styles.runNarrative}>
         当前记录以{runModeLabel(run.runMode)}呈现；{lifecycleSummary(run)}。计划内能力任务：{graph}。
       </p>

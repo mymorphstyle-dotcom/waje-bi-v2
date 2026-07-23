@@ -29,6 +29,7 @@ from bi_agent.runtime.agent_turn_runtime import (
     AgentTurnError,
     AgentTurnRequest,
     AgentTurnRuntime,
+    _approval_bound_tool,
 )
 from bi_agent.runtime.analysis_artifacts import (
     ArtifactDescriptor,
@@ -347,6 +348,7 @@ def test_ask_user_checkpoint_is_customer_safe_and_typed_resolution_resumes() -> 
     )
     arguments = {
         "materialDecision": "请选择本次比较基线。",
+        "materialDecisionTopics": ["baseline_or_counterfactual"],
         "options": [
             {
                 "optionId": "previous_period",
@@ -398,7 +400,7 @@ def test_ask_user_checkpoint_is_customer_safe_and_typed_resolution_resumes() -> 
         actionRef=pending["actionRef"],
         decision="answered",
         selectedOptionId="previous_period",
-        answerText="采用上一周期。",
+        answerText="上一周期",
     )
     resumed = asyncio.run(
         runtime.run(
@@ -406,7 +408,7 @@ def test_ask_user_checkpoint_is_customer_safe_and_typed_resolution_resumes() -> 
                 operation_id="operation-resolution",
                 run_id="agent-run-resolution",
                 expected_state_version=waiting.thread_head.state_version,
-                user_message="采用上一周期。",
+                user_message="上一周期",
                 pending_action_resolution=resolution,
             )
         )
@@ -426,17 +428,87 @@ def test_ask_user_checkpoint_is_customer_safe_and_typed_resolution_resumes() -> 
         asyncio.run(runtime.run(_turn_request()))
 
 
-@pytest.mark.parametrize("decision", ["approved", "rejected"])
-def test_approval_checkpoint_accepts_only_typed_approval_resolution(
-    decision: str,
-) -> None:
-    _, request_approval = agent_interaction_tools(
+def test_selected_clarification_option_rejects_conflicting_free_text() -> None:
+    ask_user, _ = agent_interaction_tools(
         thread_id="thread-durable",
         operation_id="operation-durable",
     )
     arguments = {
+        "materialDecision": "请选择比较范围。",
+        "materialDecisionTopics": ["comparison_scope"],
+        "options": [
+            {
+                "optionId": "all",
+                "label": "全部渠道",
+                "description": "对比全部其他渠道。",
+                "recommended": True,
+            },
+            {
+                "optionId": "single",
+                "label": "单一渠道",
+                "description": "只对比一个指定渠道。",
+                "recommended": False,
+            },
+        ],
+    }
+    pending = ask_user.handler(arguments).output["pendingAction"]
+    adapter = DurableAdapter(
+        AdapterStep(
+            final_output={
+                "answerMarkdown": "等待选择。",
+                "materialRefs": [],
+                "limitationRefs": [],
+            },
+            tool_name="ask_user",
+            call_id="call-conflict",
+            arguments=arguments,
+            tool_result=ask_user.handler(arguments).model_dump(
+                mode="json", by_alias=True
+            ),
+        )
+    )
+    _, runtime = _runtime(adapter)
+    waiting = asyncio.run(runtime.run(_turn_request()))
+
+    with pytest.raises(
+        AgentTurnError,
+        match="pending_action_resolution_option_text_conflict",
+    ):
+        asyncio.run(
+            runtime.run(
+                _turn_request(
+                    operation_id="operation-conflicting-answer",
+                    run_id="agent-run-conflicting-answer",
+                    expected_state_version=waiting.thread_head.state_version,
+                    user_message="单一渠道",
+                    pending_action_resolution=PendingActionResolution(
+                        actionRef=pending["actionRef"],
+                        decision="answered",
+                        selectedOptionId="all",
+                        answerText="单一渠道",
+                    ),
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_approval_checkpoint_accepts_only_typed_approval_resolution(
+    decision: str,
+) -> None:
+    target_tool = _analysis_tool()
+    _, request_approval = agent_interaction_tools(
+        thread_id="thread-durable",
+        operation_id="operation-durable",
+        approvable_tools=(target_tool,),
+    )
+    arguments = {
         "actionSummary": "提交经过校验的分析发布。",
         "sideEffectScope": "写入当前 thread 的 publication 与 delivery 状态。",
+        "targetToolName": "run_bi_analysis",
+        "targetToolArguments": {
+            "business_question": "分析付费金额变化。",
+        },
     }
     tool_result = request_approval.handler(arguments)
     assert isinstance(tool_result, AgentToolResult)
@@ -453,12 +525,26 @@ def test_approval_checkpoint_accepts_only_typed_approval_resolution(
             arguments=arguments,
             tool_result=tool_result.model_dump(mode="json", by_alias=True),
         ),
-        AdapterStep(
-            final_output={
-                "answerMarkdown": f"审批决定已记录：{decision}。",
-                "materialRefs": [],
-                "limitationRefs": [],
-            }
+        (
+            AdapterStep(
+                final_output={
+                    "answerMarkdown": "已按批准参数提交分析。",
+                    "materialRefs": [],
+                    "limitationRefs": [],
+                },
+                tool_name="run_bi_analysis",
+                call_id="call-approved-analysis",
+                arguments={"business_question": "分析付费金额变化。"},
+                tool_result=_queued_tool_result(),
+            )
+            if decision == "approved"
+            else AdapterStep(
+                final_output={
+                    "answerMarkdown": "已记录拒绝决定，未执行操作。",
+                    "materialRefs": [],
+                    "limitationRefs": [],
+                }
+            )
         ),
     )
     _, runtime = _runtime(adapter)
@@ -481,13 +567,41 @@ def test_approval_checkpoint_accepts_only_typed_approval_resolution(
                 expected_state_version=waiting.thread_head.state_version,
                 user_message=resolution.answer_text,
                 pending_action_resolution=resolution,
+                tools=(target_tool,),
             )
         )
     )
 
-    assert resumed.status == "completed"
+    assert resumed.status == ("working" if decision == "approved" else "completed")
     assert resumed.thread_head.pending_action_ref is None
     assert adapter.calls[1].input_text == resolution.answer_text
+    assert adapter.calls[1].initial_tool_choice == (
+        "run_bi_analysis" if decision == "approved" else "none"
+    )
+    assert [tool.name for tool in adapter.calls[1].tools] == (
+        ["run_bi_analysis"] if decision == "approved" else []
+    )
+
+
+def test_approved_tool_wrapper_blocks_argument_change_and_repeat_before_effect() -> None:
+    calls: list[dict[str, Any]] = []
+    target = WajeAgentTool(
+        name="run_bi_analysis",
+        description="提交 BI 分析任务。",
+        input_model=_AnalysisToolInput,
+        handler=lambda arguments: calls.append(dict(arguments)),
+    )
+    bound = _approval_bound_tool(
+        target,
+        {"business_question": "分析付费金额变化。"},
+    )
+
+    with pytest.raises(AgentTurnError, match="approved_tool_arguments_mismatch"):
+        bound.handler({"business_question": "改成其他问题。"})
+    bound.handler({"business_question": "分析付费金额变化。"})
+    with pytest.raises(AgentTurnError, match="approved_tool_repeated_execution"):
+        bound.handler({"business_question": "分析付费金额变化。"})
+    assert calls == [{"business_question": "分析付费金额变化。"}]
 
 
 def test_pending_action_resolution_rejects_stale_or_wrong_typed_decision() -> None:
@@ -508,6 +622,7 @@ def test_pending_action_resolution_rejects_stale_or_wrong_typed_decision() -> No
                         "actionRef": "pending-action:one",
                         "actionType": "ask_user",
                         "prompt": "请选择基线。",
+                        "materialDecisionTopics": ["baseline_or_counterfactual"],
                         "options": [
                             {
                                 "optionId": "a",
@@ -571,7 +686,7 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
         ),
         AdapterStep(
             final_output={
-                "answerMarkdown": "分析已经完成，并形成可追溯发布材料。",
+                "answerMarkdown": "模型重新改写了已经验证的发布内容。",
                 "materialRefs": ["publication:completed"],
                 "limitationRefs": [],
             }
@@ -587,6 +702,10 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
         taskRef="run-bi-background",
         status="completed",
         customerSummary="分析已经完成。",
+        customerAnswerMarkdown=(
+            "根据已验证发布，付费金额提升主要由付费频次增加驱动。\n\n"
+            "付费人数增加贡献较小，单笔付费金额下降形成抵消。"
+        ),
         artifactRefs=["publication:completed"],
         materialRefs=[],
         limitationRefs=[],
@@ -619,12 +738,14 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
         turn.action_binding.selection_digest
     )
     assert completed.final_output == {
-        "answerMarkdown": "分析已经完成，并形成可追溯发布材料。",
+        "answerMarkdown": (
+            "根据已验证发布，付费金额提升主要由付费频次增加驱动。\n\n"
+            "付费人数增加贡献较小，单笔付费金额下降形成抵消。"
+        ),
         "materialRefs": ["publication:completed"],
         "limitationRefs": [],
     }
-    assert adapter.calls[1].input_text.startswith("WAJE_DURABLE_TASK_COMPLETION=")
-    assert "publication:completed" in adapter.calls[1].instructions
+    assert len(adapter.calls) == 1
     assert suspended.checkpoint_item is not None
     assert suspended.checkpoint_item.payload["checkpoint"][
         "actionBindingDigest"
@@ -639,7 +760,7 @@ def test_completed_task_resumes_runner_from_checkpoint_and_commits_one_terminal(
         )
     )
     assert replay.replayed is True
-    assert len(adapter.calls) == 2
+    assert len(adapter.calls) == 1
     assert completion_loader.calls == [
         {"thread_id": "thread-durable", "task_ref": "run-bi-background"},
         {"thread_id": "thread-durable", "task_ref": "run-bi-background"},
@@ -720,6 +841,7 @@ def test_task_resume_rejects_nested_durable_suspension_tools() -> None:
                 taskRef="run-bi-background",
                 status="completed",
                 customerSummary="分析已完成。",
+                customerAnswerMarkdown="分析已完成。",
                 artifactRefs=["publication:completed"],
                 materialRefs=[],
                 limitationRefs=[],
@@ -767,6 +889,7 @@ def test_ask_user_rejects_customer_language_drift_before_persistence() -> None:
         ask_user.handler(
             {
                 "materialDecision": "Choose a comparison baseline.",
+                "materialDecisionTopics": ["baseline_or_counterfactual"],
                 "options": [
                     {
                         "optionId": "one",
@@ -802,7 +925,11 @@ def test_authoritative_completion_loader_projects_only_task_publication() -> Non
         {
             "artifactType": "bi_publication",
             "artifactRef": "publication:task",
-            "publication": {"blocks": []},
+            "publication": {
+                "blocks": [
+                    {"role": "summary", "text": "旧版发布结论。"},
+                ]
+            },
             "materialRefs": ["claim:one"],
             "limitationRefs": ["limitation:one"],
         },
@@ -822,7 +949,12 @@ def test_authoritative_completion_loader_projects_only_task_publication() -> Non
         {
             "artifactType": "bi_publication",
             "artifactRef": "publication:task-latest",
-            "publication": {"blocks": []},
+            "publication": {
+                "blocks": [
+                    {"role": "summary", "text": "最新版发布结论。"},
+                    {"role": "detail", "text": "最新版发布依据。"},
+                ]
+            },
             "materialRefs": ["claim:two"],
             "limitationRefs": ["limitation:one"],
         },
@@ -859,6 +991,9 @@ def test_authoritative_completion_loader_projects_only_task_publication() -> Non
 
     assert completion is not None
     assert completion.status == "completed_with_limits"
+    assert completion.customer_answer_markdown == (
+        "最新版发布结论。\n\n最新版发布依据。"
+    )
     assert completion.artifact_refs == ["publication:task-latest"]
     assert completion.limitation_refs == ["limitation:one"]
     serialized = json.dumps(completion.to_contract(), ensure_ascii=False)
@@ -899,6 +1034,58 @@ def test_authoritative_completion_loader_waits_and_fails_closed() -> None:
     )
     with pytest.raises(AgentTaskRecoveryError, match="agent_task_publication_missing"):
         completed_without_publication.load_task_completion(
+            thread_id="thread-durable",
+            task_ref="run-bi-background",
+        )
+
+    for post_execution_status, publication_status in (
+        ("narrative_failed", "not_ready"),
+        ("publication_failed", "failed"),
+    ):
+        terminal_failure = AuthoritativeAgentTaskCompletionLoader(
+            store=TaskStateStore(
+                {
+                    "run_id": "run-bi-background",
+                    "thread_id": "thread-durable",
+                    "status": "completed",
+                    "request": {
+                        "post_execution_status": post_execution_status,
+                        "publication_status": publication_status,
+                    },
+                }
+            ),
+            artifact_registry=registry,
+        ).load_task_completion(
+            thread_id="thread-durable",
+            task_ref="run-bi-background",
+        )
+        assert terminal_failure is not None
+        assert terminal_failure.status == "failed"
+        assert terminal_failure.customer_summary == (
+            "本次分析未形成可发布回答，请稍后重试。"
+        )
+        assert terminal_failure.customer_answer_markdown is None
+        assert terminal_failure.artifact_refs == []
+
+    inconsistent_terminal = AuthoritativeAgentTaskCompletionLoader(
+        store=TaskStateStore(
+            {
+                "run_id": "run-bi-background",
+                "thread_id": "thread-durable",
+                "status": "completed",
+                "request": {
+                    "post_execution_status": "narrative_failed",
+                    "publication_status": "published",
+                },
+            }
+        ),
+        artifact_registry=registry,
+    )
+    with pytest.raises(
+        AgentTaskRecoveryError,
+        match="agent_task_terminal_failure_state_invalid",
+    ):
+        inconsistent_terminal.load_task_completion(
             thread_id="thread-durable",
             task_ref="run-bi-background",
         )

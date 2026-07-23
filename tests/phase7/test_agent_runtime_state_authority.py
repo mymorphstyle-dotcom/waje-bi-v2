@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from bi_agent.runtime.agent_context import (
     AgentContextAssembler,
@@ -14,10 +15,15 @@ from bi_agent.runtime.agent_context import (
     InMemoryArtifactIndex,
 )
 from bi_agent.runtime.agent_sdk_contracts import (
+    AgentToolResult,
+    AgentSessionError,
     WajeAgentRunRequest,
     WajeAgentRunResult,
+    WajeAgentTool,
 )
+from bi_agent.runtime.agent_tool_discovery import AgentTurnActionBinding
 from bi_agent.runtime.agent_turn_runtime import (
+    AgentTurnError,
     AgentTurnRequest,
     AgentTurnRuntime,
 )
@@ -52,6 +58,7 @@ class ThreadLedgerConnection:
         self.statements: list[tuple[str, Mapping[str, Any]]] = []
         self.commits = 0
         self.rollbacks = 0
+        self.operation_lease_available = True
 
     def execute(
         self,
@@ -59,6 +66,10 @@ class ThreadLedgerConnection:
         params: Mapping[str, Any],
     ) -> FakeResult:
         self.statements.append((statement, dict(params)))
+        if "pg_try_advisory_lock" in statement:
+            return FakeResult([(self.operation_lease_available,)])
+        if "pg_advisory_unlock" in statement:
+            return FakeResult([(True,)])
         if "FOR UPDATE" in statement:
             return FakeResult([("thread-pg", 4, None, "topic-pg", None, 7, "idle")])
         if "operation_key = ANY" in statement:
@@ -117,10 +128,12 @@ class SessionWritingAdapter:
         *,
         tool_events: tuple[tuple[str, str, Mapping[str, Any], Any], ...] = (),
         error: Exception | None = None,
+        post_tool_error: Exception | None = None,
     ) -> None:
         self.final_output = dict(final_output)
         self.tool_events = tool_events
         self.error = error
+        self.post_tool_error = post_tool_error
         self.calls: list[WajeAgentRunRequest] = []
         self.histories: list[list[dict[str, Any]]] = []
 
@@ -161,6 +174,8 @@ class SessionWritingAdapter:
                     },
                 ]
             )
+        if self.post_tool_error is not None:
+            raise self.post_tool_error
         persisted_sdk_items.append(
             {
                 "type": "message",
@@ -208,6 +223,10 @@ def _request(*, operation_id: str = "operation-1") -> AgentTurnRequest:
         expected_state_version=0,
         instructions="依据持久化材料回答。",
     )
+
+
+class _NoArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 def test_thread_item_ledger_is_atomic_versioned_and_idempotent() -> None:
@@ -340,6 +359,76 @@ def test_postgres_thread_item_ledger_types_nullable_replay_boundaries() -> None:
     }
 
 
+def test_postgres_thread_item_ledger_owns_operation_with_session_advisory_lease() -> (
+    None
+):
+    connection = ThreadLedgerConnection()
+    ledger = PostgresThreadItemLedger(connection)
+
+    assert ledger.try_acquire_operation_lease("thread-pg", "operation-pg") is True
+    ledger.release_operation_lease("thread-pg", "operation-pg")
+
+    sql = "\n".join(statement for statement, _ in connection.statements)
+    assert "pg_try_advisory_lock" in sql
+    assert "pg_advisory_unlock" in sql
+    assert connection.commits == 2
+
+
+def test_same_operation_has_one_model_tool_loop_and_replays_after_release() -> None:
+    async def scenario() -> tuple[int, str, bool]:
+        ledger = InMemoryThreadItemLedger()
+        ledger.create_thread("thread-runtime")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingAdapter:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
+                self.calls += 1
+                started.set()
+                await release.wait()
+                return WajeAgentRunResult(
+                    run_id=request.run_id,
+                    final_output={
+                        "answerMarkdown": "只执行一次。",
+                        "materialRefs": [],
+                        "limitationRefs": [],
+                    },
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                    model_turns=1,
+                )
+
+        adapter = BlockingAdapter()
+
+        def runtime() -> AgentTurnRuntime:
+            return AgentTurnRuntime(
+                ledger=ledger,
+                context_assembler=AgentContextAssembler(
+                    ledger=ledger,
+                    artifact_index=InMemoryArtifactIndex(),
+                ),
+                adapter=adapter,
+            )
+
+        request = _request()
+        first = asyncio.create_task(runtime().run(request))
+        await started.wait()
+        with pytest.raises(AgentTurnError, match="agent_turn_operation_in_progress"):
+            await runtime().run(request)
+        release.set()
+        completed = await first
+        replayed = await runtime().run(request)
+        return adapter.calls, completed.status, replayed.replayed
+
+    calls, status, replayed = asyncio.run(scenario())
+
+    assert calls == 1
+    assert status == "completed"
+    assert replayed is True
+
+
 def test_postgres_agent_session_replays_ledger_and_rejects_history_mutation() -> None:
     ledger = InMemoryThreadItemLedger()
     ledger.create_thread("thread-session")
@@ -355,6 +444,52 @@ def test_postgres_agent_session_replays_ledger_and_rejects_history_mutation() ->
                 customer_visible=True,
                 payload={
                     "sdk_item": {"role": "user", "content": "旧问题"},
+                    "sdk_replay": True,
+                },
+            ),
+            NewThreadItem(
+                item_id="tool-call-old",
+                item_type="tool_call",
+                role="tool",
+                text="",
+                operation_key="tool-call:old:call-1",
+                customer_visible=False,
+                payload={
+                    "sdk_item": {
+                        "type": "function_call",
+                        "name": "inspect_analysis_artifact",
+                        "call_id": "call-1",
+                        "arguments": "{}",
+                    },
+                    "sdk_replay": True,
+                },
+            ),
+            NewThreadItem(
+                item_id="tool-result-old",
+                item_type="tool_result",
+                role="tool",
+                text="",
+                operation_key="tool-result:old:call-1",
+                customer_visible=False,
+                payload={
+                    "sdk_item": {
+                        "type": "function_call_output",
+                        "name": "inspect_analysis_artifact",
+                        "call_id": "call-1",
+                        "output": "x" * 100_000,
+                    },
+                    "sdk_replay": True,
+                },
+            ),
+            NewThreadItem(
+                item_id="message-old-model-assistant",
+                item_type="assistant_message",
+                role="assistant",
+                text="旧回答",
+                operation_key="agent:old:model-assistant",
+                customer_visible=False,
+                payload={
+                    "sdk_item": {"role": "assistant", "content": "旧回答"},
                     "sdk_replay": True,
                 },
             ),
@@ -391,7 +526,10 @@ def test_postgres_agent_session_replays_ledger_and_rejects_history_mutation() ->
         replay_through_sequence=current.sequence - 1,
     )
 
-    assert asyncio.run(session.get_items()) == [{"role": "user", "content": "旧问题"}]
+    assert asyncio.run(session.get_items()) == [
+        {"role": "user", "content": "旧问题"},
+        {"role": "assistant", "content": "旧回答"},
+    ]
     asyncio.run(
         session.record_tool_call(
             tool_name="inspect_artifact",
@@ -409,9 +547,30 @@ def test_postgres_agent_session_replays_ledger_and_rejects_history_mutation() ->
     )
     items = ledger.list_items("thread-session")
     assert [item.item_type for item in items[-2:]] == ["tool_call", "tool_result"]
-    assert first.head.latest_item_sequence == 2
+    assert first.head.latest_item_sequence == 5
     with pytest.raises(RuntimeError, match="agent_session_append_only"):
         asyncio.run(session.clear_session())
+
+
+def test_agent_session_maps_storage_failures_to_typed_session_error() -> None:
+    class FailedLedger:
+        def list_items(self, *args: Any, **kwargs: Any):
+            raise ConnectionError("raw database endpoint must stay internal")
+
+    session = PostgresAgentSession(
+        ledger=FailedLedger(),  # type: ignore[arg-type]
+        thread_id="thread-session-failure",
+        operation_id="operation-session-failure",
+        input_item_id="message-session-failure",
+        input_text="读取历史。",
+        replay_through_sequence=0,
+    )
+
+    with pytest.raises(AgentSessionError) as captured:
+        asyncio.run(session.get_items())
+
+    assert captured.value.code == "agent_session_read_failed"
+    assert "database endpoint" not in str(captured.value)
 
 
 def test_agent_turn_runtime_persists_direct_response_and_replays_operation() -> None:
@@ -553,6 +712,67 @@ def test_agent_turn_runtime_persists_tool_call_before_result_and_closes_refs() -
     ]
 
 
+def test_current_operation_tool_refs_close_without_post_answer_compaction() -> None:
+    adapter = SessionWritingAdapter(
+        {
+            "answerMarkdown": "本轮工具材料已核对。",
+            "materialRefs": ["artifact:current-operation"],
+            "limitationRefs": [],
+        },
+        tool_events=(
+            (
+                "explain_claim",
+                "call-current-operation",
+                {"claim_ref": "claim:current"},
+                {"materialRefs": ["artifact:current-operation"]},
+            ),
+        ),
+    )
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-runtime")
+    ledger.append_items(
+        "thread-runtime",
+        [
+            NewThreadItem(
+                item_id=f"historical-message-{sequence}",
+                item_type="user_message",
+                role="user",
+                text=f"历史消息 {sequence}",
+                operation_key=f"user:historical-{sequence}",
+                customer_visible=True,
+            )
+            for sequence in range(1, 4)
+        ],
+    )
+    runtime = AgentTurnRuntime(
+        ledger=ledger,
+        context_assembler=AgentContextAssembler(
+            ledger=ledger,
+            artifact_index=InMemoryArtifactIndex(),
+            recent_item_limit=6,
+            compaction_retention=2,
+        ),
+        adapter=adapter,
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            replace(
+                _request(),
+                expected_state_version=1,
+            )
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.final_output == {
+        "answerMarkdown": "本轮工具材料已核对。",
+        "materialRefs": ["artifact:current-operation"],
+        "limitationRefs": [],
+    }
+    assert ledger.get_head("thread-runtime").latest_item_sequence > 6
+
+
 def test_agent_turn_runtime_rejects_unknown_material_ref_with_failed_terminal() -> None:
     adapter = SessionWritingAdapter(
         {
@@ -611,6 +831,209 @@ def test_agent_turn_runtime_maps_provider_failure_to_server_only_terminal_detail
     assert result.error_code == "provider_rate_limited"
     assert result.assistant_item.text == "当前请求暂时未能完成，请稍后重试。"
     assert "private-provider-code" not in json.dumps(result.customer_projection())
+
+
+def test_post_tool_model_failure_delivers_persisted_customer_safe_summary() -> None:
+    tool_result = AgentToolResult(
+        status="limited",
+        output={"schemaVersion": "waje-model-material.v1"},
+        artifactRefs=["artifact:publication-1"],
+        materialRefs=["claim:payment-outcome"],
+        limitationRefs=["limitation:process-evidence-unavailable"],
+        retryability="never",
+        customerSummary=(
+            "已发布材料显示支付成功率从58.75%升至63.23%；"
+            "现有终态快照不能解释失败环节、重试或耗时。"
+        ),
+        technicalDetailRef=None,
+    )
+    adapter = SessionWritingAdapter(
+        {},
+        tool_events=(
+            (
+                "inspect_analysis_artifact",
+                "call-inspect",
+                {},
+                tool_result.model_dump(mode="json", by_alias=True),
+            ),
+        ),
+        post_tool_error=LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+            status_code=503,
+            error_code="private-provider-code",
+        ),
+    )
+    ledger, runtime = _runtime(adapter)
+    tool = WajeAgentTool(
+        name="inspect_analysis_artifact",
+        description="Read one persisted customer-safe analysis artifact.",
+        input_model=_NoArguments,
+        handler=lambda _arguments: tool_result,
+        failure_recovery="customer_summary",
+    )
+    action_binding = AgentTurnActionBinding.create(
+        catalog_digest="catalog-digest",
+        input_digest="input-digest",
+        action_context_digest="context-digest",
+        selected_tools=[tool.name],
+        initial_action="call_tool",
+        required_tool_name=tool.name,
+        material_decision_topics=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            replace(
+                _request(),
+                tools=(tool,),
+                action_binding=action_binding,
+            )
+        )
+    )
+
+    assert result.status == "completed_with_limits"
+    assert result.error_code == "provider_unavailable"
+    assert result.assistant_item.text == tool_result.customer_summary
+    assert result.final_output == {
+        "answerMarkdown": tool_result.customer_summary,
+        "materialRefs": [
+            "artifact:publication-1",
+            "claim:payment-outcome",
+        ],
+        "limitationRefs": ["limitation:process-evidence-unavailable"],
+    }
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "tool_response"
+    assert result.terminal_admission.executed_tool_names == [
+        "inspect_analysis_artifact"
+    ]
+    assert result.thread_head.customer_state == "completed_with_limits"
+    assert "private-provider-code" not in json.dumps(result.customer_projection())
+    terminal = ledger.get_item_by_operation_key(
+        "thread-runtime",
+        "terminal:operation-1",
+    )
+    assert terminal is not None
+    assert terminal.payload["error_code"] == "provider_unavailable"
+
+
+def test_post_tool_model_failure_does_not_recover_an_unapproved_tool_result() -> None:
+    tool_result = AgentToolResult(
+        status="succeeded",
+        output={"schemaVersion": "internal-operation.v1"},
+        artifactRefs=[],
+        materialRefs=[],
+        limitationRefs=[],
+        retryability="never",
+        customerSummary="工具执行完成。",
+        technicalDetailRef=None,
+    )
+    adapter = SessionWritingAdapter(
+        {},
+        tool_events=(
+            (
+                "ordinary_tool",
+                "call-ordinary",
+                {},
+                tool_result.model_dump(mode="json", by_alias=True),
+            ),
+        ),
+        post_tool_error=LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        ),
+    )
+    _, runtime = _runtime(adapter)
+    tool = WajeAgentTool(
+        name="ordinary_tool",
+        description="Execute one ordinary operation.",
+        input_model=_NoArguments,
+        handler=lambda _arguments: tool_result,
+    )
+    action_binding = AgentTurnActionBinding.create(
+        catalog_digest="catalog-digest",
+        input_digest="input-digest",
+        action_context_digest="context-digest",
+        selected_tools=[tool.name],
+        initial_action="call_tool",
+        required_tool_name=tool.name,
+        material_decision_topics=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            replace(
+                _request(),
+                tools=(tool,),
+                action_binding=action_binding,
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "failed_turn"
+
+
+def test_post_tool_model_failure_rejects_an_unsafe_recovery_summary() -> None:
+    tool_result = AgentToolResult(
+        status="succeeded",
+        output={"schemaVersion": "waje-model-material.v1"},
+        artifactRefs=["artifact:publication-1"],
+        materialRefs=[],
+        limitationRefs=[],
+        retryability="never",
+        customerSummary=f"内部引用 sha256:{'a' * 64}",
+        technicalDetailRef=None,
+    )
+    adapter = SessionWritingAdapter(
+        {},
+        tool_events=(
+            (
+                "inspect_analysis_artifact",
+                "call-inspect",
+                {},
+                tool_result.model_dump(mode="json", by_alias=True),
+            ),
+        ),
+        post_tool_error=LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        ),
+    )
+    _, runtime = _runtime(adapter)
+    tool = WajeAgentTool(
+        name="inspect_analysis_artifact",
+        description="Read one persisted customer-safe analysis artifact.",
+        input_model=_NoArguments,
+        handler=lambda _arguments: tool_result,
+        failure_recovery="customer_summary",
+    )
+    action_binding = AgentTurnActionBinding.create(
+        catalog_digest="catalog-digest",
+        input_digest="input-digest",
+        action_context_digest="context-digest",
+        selected_tools=[tool.name],
+        initial_action="call_tool",
+        required_tool_name=tool.name,
+        material_decision_topics=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            replace(
+                _request(),
+                tools=(tool,),
+                action_binding=action_binding,
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.terminal_admission is not None
+    assert result.terminal_admission.completion_kind == "failed_turn"
+    assert "sha256:" not in result.assistant_item.text
 
 
 def test_context_assembler_restores_recent_items_and_customer_safe_artifact_index() -> (

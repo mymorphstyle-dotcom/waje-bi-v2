@@ -35,6 +35,7 @@ from bi_agent.runtime.dataset_catalog import (
     immutable_dataset_snapshot_projection,
     validate_dataset_snapshot_release_payloads,
 )
+from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 from bi_agent.runtime.plan_authority import (
     AuthorityContext,
     PlanRevision,
@@ -81,6 +82,11 @@ class PostgresConversationStore:
 
     def set_actor_id(self, actor_id: str) -> None:
         self._actor_id = actor_id or "system"
+        self.connection.execute(
+            "SELECT set_config('waje.actor_id', %(actor_id)s, false)",
+            {"actor_id": self._actor_id},
+        )
+        self.connection.commit()
 
     @classmethod
     def from_env(cls) -> "PostgresConversationStore":
@@ -95,7 +101,7 @@ class PostgresConversationStore:
             raise RuntimeError(
                 "psycopg is required for PostgresConversationStore"
             ) from exc
-        return cls(psycopg.connect(dsn))
+        return cls(psycopg.connect(dsn, options="-c waje.actor_id=system"))
 
     def apply_schema(self) -> None:
         self.connection.execute(CONVERSATION_SCHEMA_SQL)
@@ -112,18 +118,31 @@ class PostgresConversationStore:
             """
             INSERT INTO waje_runtime.investigation_threads(thread_id, owner_id)
             VALUES (%(thread_id)s, %(owner_id)s)
-            ON CONFLICT (thread_id) DO UPDATE
-            SET owner_id = EXCLUDED.owner_id, updated_at = now()
+            ON CONFLICT (thread_id) DO NOTHING
+            RETURNING thread_id, owner_id
             """,
             {"thread_id": thread_id, "owner_id": owner_id},
         )
+        row = self.connection.execute(
+            """
+            SELECT thread_id, owner_id
+            FROM waje_runtime.investigation_threads
+            WHERE thread_id = %(thread_id)s
+            """,
+            {"thread_id": thread_id},
+        ).fetchone()
+        if row is None:
+            raise EvidenceIntegrityError("thread_creation_not_visible")
+        persisted_owner = str(_field(row, "owner_id", 1))
+        if persisted_owner != owner_id:
+            raise EvidenceIntegrityError("thread_owner_immutable")
         self._audit(
             "thread_created",
             thread_id=thread_id,
             ref=thread_id,
             payload={"owner_id": owner_id},
         )
-        return ThreadState(thread_id=thread_id, owner_id=owner_id)
+        return ThreadState(thread_id=thread_id, owner_id=persisted_owner)
 
     def get_thread(self, thread_id: str) -> ThreadState:
         row = self._fetchone(
@@ -1697,11 +1716,18 @@ class PostgresConversationStore:
         self,
         *,
         limit: int = 100,
+        thread_id: str | None = None,
     ) -> tuple[dict[str, Any], ...]:
         from bi_agent.runtime.evidence_authority import canonical_value
 
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise ValueError("run_dispatch_sweep_limit_invalid")
+        if thread_id is not None and (
+            not isinstance(thread_id, str)
+            or not thread_id
+            or thread_id != thread_id.strip()
+        ):
+            raise ValueError("run_dispatch_sweep_thread_invalid")
         recovered: list[dict[str, Any]] = []
         try:
             rows = self._fetchall(
@@ -1717,11 +1743,15 @@ class PostgresConversationStore:
                   ON run.run_id = dispatch.run_id
                 WHERE dispatch.dispatch_state IN ('leased', 'running')
                   AND dispatch.lease_expires_at <= now()
+                  AND (
+                    %(thread_id)s::text IS NULL
+                    OR dispatch.thread_id = %(thread_id)s
+                  )
                 ORDER BY dispatch.lease_expires_at, dispatch.dispatch_id
                 LIMIT %(limit)s
                 FOR UPDATE OF dispatch, run SKIP LOCKED
                 """,
-                {"limit": limit},
+                {"limit": limit, "thread_id": thread_id},
             )
             for row in rows:
                 dispatch_id = str(_field(row, "dispatch_id", 0) or "")
@@ -1899,6 +1929,7 @@ class PostgresConversationStore:
         self,
         *,
         limit: int = 100,
+        thread_id: str | None = None,
     ) -> tuple[dict[str, Any], ...]:
         from bi_agent.runtime.evidence_authority import (
             EvidenceIntegrityError,
@@ -1907,6 +1938,12 @@ class PostgresConversationStore:
 
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise ValueError("run_dispatch_recovery_limit_invalid")
+        if thread_id is not None and (
+            not isinstance(thread_id, str)
+            or not thread_id
+            or thread_id != thread_id.strip()
+        ):
+            raise ValueError("run_dispatch_recovery_thread_invalid")
         leases: list[dict[str, Any]] = []
         try:
             rows = self._fetchall(
@@ -1940,6 +1977,10 @@ class PostgresConversationStore:
                       AND dispatch.lease_expires_at <= now()
                     )
                   )
+                  AND (
+                    %(thread_id)s::text IS NULL
+                    OR dispatch.thread_id = %(thread_id)s
+                  )
                 ORDER BY COALESCE(
                            dispatch.lease_expires_at,
                            dispatch.created_at
@@ -1948,7 +1989,7 @@ class PostgresConversationStore:
                 LIMIT %(limit)s
                 FOR UPDATE OF dispatch, run SKIP LOCKED
                 """,
-                {"limit": limit},
+                {"limit": limit, "thread_id": thread_id},
             )
             for row in rows:
                 dispatch_id = str(_field(row, "dispatch_id", 0) or "")
@@ -8795,9 +8836,11 @@ def _run_dispatch_lease_ms() -> int:
     raw = os.environ.get("WAJE_RUN_DISPATCH_LEASE_MS", "30000")
     try:
         value = int(raw)
-    except ValueError:
-        return 30000
-    return value if value > 0 else 30000
+    except ValueError as exc:
+        raise RuntimeError("run_dispatch_lease_configuration_invalid") from exc
+    if str(value) != raw or value < 1 or value > 86_400_000:
+        raise RuntimeError("run_dispatch_lease_configuration_invalid")
+    return value
 
 
 def _field(row: Any, key: str, index: int) -> Any:

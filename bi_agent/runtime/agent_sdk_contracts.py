@@ -78,6 +78,7 @@ class WajeAgentTool:
     input_model: type[BaseModel]
     handler: ToolHandler
     execution_mode: Literal["continue", "suspend_turn"] = "continue"
+    failure_recovery: Literal["none", "customer_summary"] = "none"
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.replace("_", "").isalnum():
@@ -91,6 +92,13 @@ class WajeAgentTool:
             raise TypeError("agent_tool_input_model_invalid")
         if self.execution_mode not in {"continue", "suspend_turn"}:
             raise ValueError("agent_tool_execution_mode_invalid")
+        if self.failure_recovery not in {"none", "customer_summary"}:
+            raise ValueError("agent_tool_failure_recovery_invalid")
+        if (
+            self.execution_mode == "suspend_turn"
+            and self.failure_recovery != "none"
+        ):
+            raise ValueError("agent_suspending_tool_failure_recovery_invalid")
 
 
 @dataclass(frozen=True)

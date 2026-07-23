@@ -23,6 +23,7 @@ question_families:
 capabilities:
   - pattern_scan
   - formula_decompose
+  - payment_outcome_compare
   - joint_attribution
   - event_evidence
   - outlier_scan
@@ -76,6 +77,26 @@ support_records:
       - payment_status_and_dedup_contract
     wording_limit_reason: Current paid-order snapshot supports paid users, paid order count, frequency, ticket size, and success rate; DAU-to-paid conversion and retention paths still need component semantics review.
     review_status: draft_pending_owner_review
+
+  - support_id: payment_outcome_paid_amount_change
+    factor_group_id: payment_status_latency_and_quality
+    question_family: paid_amount_change_explanation
+    capability: payment_outcome_compare
+    grain:
+      - day
+      - baseline_window
+      - payment_method
+      - channel
+    claim_type: final_payment_outcome_comparison
+    business_evidence_state: quantifiable
+    data_contract_state: contract_backed
+    evidence_type: observed_comparison
+    strength: medium
+    wording_limit: directional
+    backlog_refs:
+      - payment_process_event_contract
+    wording_limit_reason: The reviewed final-outcome source supports terminal-order and success-rate comparison by payment method and channel. It does not expose failure reason, failure stage, retry sequence, processing latency, or causal incident evidence.
+    review_status: contract_backed
 
   - support_id: segment_paid_amount_change_payment_method
     factor_group_id: payment_channel_and_method
@@ -170,9 +191,9 @@ support_records:
     strength: insufficient
     wording_limit: insufficient
     backlog_refs:
-      - payment_status_and_dedup_contract
+      - payment_process_event_contract
       - product_operation_event_contracts
-    wording_limit_reason: Exception review needs final-success enum, retry handling, latency checks, and incident links.
+    wording_limit_reason: Final-status comparison is available; process anomalies still need retry handling, latency checks, failure taxonomy, and incident links.
     review_status: draft_pending_owner_review
 
   - support_id: pattern_hourly_paid_amount_time_distribution
@@ -269,7 +290,7 @@ support_records:
     strength: insufficient
     wording_limit: insufficient
     backlog_refs:
-      - payment_status_and_dedup_contract
+      - payment_process_event_contract
       - product_operation_event_contracts
       - external_context_event_contracts
     wording_limit_reason: Payment-chain anomaly claims need quality, incident, and event-source contracts.

@@ -25,6 +25,15 @@ from bi_agent.runtime.evidence_authority import (
     canonical_value,
 )
 
+from bi_agent.runtime.factor_coverage import (
+    FactorCoveragePlan,
+    FactorCoverageResult,
+    build_investigation_branches,
+    compile_factor_coverage_plan,
+    settle_factor_coverage,
+    synthesize_factor_coverage,
+)
+
 from bi_agent.runtime.durable_call_journal import (
     DurableCallJournal,
     DurableCallJournalError,
@@ -216,6 +225,10 @@ class WorkflowState(TypedDict, total=False):
     exploration_stop_record: dict[str, Any]
     execution_result: dict[str, Any]
     authoritative_execution_result: AuthoritativeExecutionResult
+    factor_coverage_plan: dict[str, Any]
+    factor_coverage_result: dict[str, Any]
+    investigation_branches: list[dict[str, Any]]
+    investigation_synthesis: dict[str, Any]
     claim_coverage_evaluation: dict[str, Any]
     plan_expansion_decision: dict[str, Any]
     plan_patch: dict[str, Any] | None
@@ -232,6 +245,10 @@ class WorkflowRunResult:
     interaction_result: Optional[dict[str, Any]] = None
     plan_result: Optional[dict[str, Any]] = None
     execution_result: Optional[dict[str, Any]] = None
+    factor_coverage_plan: Optional[dict[str, Any]] = None
+    factor_coverage_result: Optional[dict[str, Any]] = None
+    investigation_branches: tuple[dict[str, Any], ...] = ()
+    investigation_synthesis: Optional[dict[str, Any]] = None
     post_execution_result: Optional[PostExecutionWorkflowResult] = None
     failure_reason: str = ""
     checkpoint_events: tuple[dict[str, Any], ...] = ()
@@ -449,6 +466,10 @@ def run_single_authority_workflow(
         interaction_result=output.get("interaction_result"),
         plan_result=output.get("plan_result"),
         execution_result=output.get("execution_result"),
+        factor_coverage_plan=output.get("factor_coverage_plan"),
+        factor_coverage_result=output.get("factor_coverage_result"),
+        investigation_branches=tuple(output.get("investigation_branches") or ()),
+        investigation_synthesis=output.get("investigation_synthesis"),
         post_execution_result=output.get("post_execution_result"),
         failure_reason=str(output.get("workflow_failure_reason") or ""),
         checkpoint_events=tuple(output["checkpoint_events"]),
@@ -977,7 +998,7 @@ def _validated_single_authority_intent_output(
             run_attempt_id=run_attempt_id,
             supersedes_intent_revision_id=supersedes_intent_revision_id,
             original_user_text=question,
-            schema_version="intent-revision.v1",
+            schema_version="intent-revision.v2",
             prompt_version=prompt_version,
             model_version=model_version,
             known_goal_ids=set(registry.analysis_goal_ids),
@@ -1085,7 +1106,7 @@ def _intent_revision_phase2_projection(
         goal_bindings=revision.goal_bindings,
         target_metric=revision.target_metric_refs[0],
         explicit_focus={
-            "component_ids": [],
+            "component_ids": list(revision.requested_factor_refs),
             "dimension_ids": [],
             "context_source_ids": [],
         },
@@ -1123,7 +1144,7 @@ def _intent_revision_phase2_projection(
                 for claim_type in claim_types
             )
         ),
-        "component_ids": [],
+        "component_ids": list(plan["explicit_focus"]["component_ids"]),
         "dimension_ids": [],
         "association_metric_ids": [],
         "context_sources": [],
@@ -2403,6 +2424,10 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
             analysis_runtime=analysis_runtime,
             attempt_journal=attempt_journal,
         )
+        if state.get("checkpoint_events"):
+            _current_event(state)["capability_substages"] = [
+                dict(item) for item in runtime_inputs.performance_observations
+            ]
         adapter = adapter_registry.bind(
             plan_revision,
             runtime_inputs,
@@ -2484,12 +2509,41 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
         capability_outcome_bundles=tuple(bundles),
         durable_transition=transition,
     )
+    try:
+        coverage_plan = compile_factor_coverage_plan(
+            plan_revision=plan_revision,
+            authority_context=authority_context,
+            runtime_registry=registry,
+        )
+        coverage_result = settle_factor_coverage(
+            plan=coverage_plan,
+            execution_result=execution_result,
+        )
+        investigation_branches = build_investigation_branches(
+            plan=coverage_plan,
+            authority_context=authority_context,
+        )
+        investigation_synthesis = synthesize_factor_coverage(
+            plan=coverage_plan,
+            coverage_result=coverage_result,
+        )
+    except (TypeError, ValueError) as exc:
+        raise WorkflowFailure(
+            "factor_coverage_settlement_invalid",
+            failure_type="contract",
+        ) from exc
     state["execution_snapshot"] = snapshot.to_dict()
     state["exploration_stop_record"] = stop_record.to_dict()
     state["durable_transition_id"] = transition.transition_id
     state["durable_checkpoint"] = transition.to_dict()
     state["execution_result"] = execution_result.to_dict()
     state["authoritative_execution_result"] = execution_result
+    state["factor_coverage_plan"] = coverage_plan.to_dict()
+    state["factor_coverage_result"] = coverage_result.to_dict()
+    state["investigation_branches"] = [
+        branch.to_dict() for branch in investigation_branches
+    ]
+    state["investigation_synthesis"] = investigation_synthesis.to_dict()
     state["workflow_status"] = "evidence_ready"
     return state
 
@@ -3097,6 +3151,13 @@ def _run_post_execution_stage(
         claim_coverage_checkpoint = state["claim_coverage_checkpoint"]
         if type(claim_coverage_checkpoint) is not ClaimCoverageCheckpoint:
             raise ValueError("claim_coverage_checkpoint_invalid")
+        factor_coverage_plan = FactorCoveragePlan.from_dict(
+            state["factor_coverage_plan"]
+        )
+        factor_coverage_result = FactorCoverageResult.from_dict(
+            state["factor_coverage_result"],
+            plan=factor_coverage_plan,
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise WorkflowFailure(
             "post_execution_authority_input_invalid",
@@ -3157,6 +3218,8 @@ def _run_post_execution_stage(
         },
         stop_after=stop_after,
         prior_result=prior_result,
+        factor_coverage_plan=factor_coverage_plan,
+        factor_coverage_result=factor_coverage_result,
     )
     if type(result) is not PostExecutionWorkflowResult:
         raise WorkflowFailure(
@@ -3164,6 +3227,11 @@ def _run_post_execution_stage(
             failure_type="contract",
         )
     state["post_execution_result"] = result
+    state["investigation_synthesis"] = synthesize_factor_coverage(
+        plan=factor_coverage_plan,
+        coverage_result=factor_coverage_result,
+        claim_settlement=result.semantic_authority_result.settlement,
+    ).to_dict()
     state["durable_transition_id"] = (
         result.compose_transition_id or result.authority_transition_id
     )

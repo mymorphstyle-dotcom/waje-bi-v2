@@ -54,14 +54,14 @@ def _audit(**overrides: object) -> dict[str, object]:
 def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     schema, tables = _schema_contract()
 
-    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v12"
+    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v13"
     assert SOURCE_MIGRATION_ID == "single-authority-workflow.v7"
     assert SOURCE_MIGRATION_DIGEST == (
         "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
     )
-    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v11"
+    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v12"
     assert IN_PLACE_SOURCE_MIGRATION_DIGEST == (
-        "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3"
+        "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3"
     )
     assert IN_PLACE_SOURCE_CONTRACTS == {
         (
@@ -81,9 +81,13 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
             "agent_generated_artifacts",
         },
         (
+            "single-authority-workflow.v11",
+            "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3",
+        ): {"agent_thread_summaries", "agent_generated_artifacts"},
+        (
             IN_PLACE_SOURCE_MIGRATION_ID,
             IN_PLACE_SOURCE_MIGRATION_DIGEST,
-        ): {"agent_thread_summaries", "agent_generated_artifacts"},
+        ): set(),
     }
     assert IN_PLACE_METADATA_BACKFILLS == {
         "conversation_messages",
@@ -442,7 +446,12 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
                 "agent_generated_artifacts",
             }
             if connection.target_present
-            else {"run_dispatches", "schema_migrations"}
+            else {
+                "run_dispatches",
+                "schema_migrations",
+                "agent_thread_summaries",
+                "agent_generated_artifacts",
+            }
         ),
     )
     monkeypatch.setattr(

@@ -35,7 +35,7 @@ from tests.phase7.test_single_authority_phase03_workflow_core import (
 )
 
 
-SELECTED_AXIS_ID = "market_context"
+SELECTED_AXIS_ID = "anomaly_validation"
 
 
 class _PatchLoopStore(_Phase03AuthorityStore):
@@ -138,7 +138,12 @@ def _authority_context_with_market(
             channel_snapshot_ref,
         ),
         dataset_coverage=(
-            *base.dataset_coverage,
+            *(
+                item
+                for item in base.dataset_coverage
+                if item["dataset_id"]
+                not in {"market_dashboard", "market_dashboard_channel"}
+            ),
             {
                 "dataset_id": "market_dashboard",
                 "availability": "claim_ready",
@@ -227,17 +232,17 @@ def _patch_planner_output(source_output: Mapping[str, Any]) -> dict[str, Any]:
     output = deepcopy(source_output)
     output["auxiliary_axes"].append(
         {
-            "proposal_item_id": "proposal-axis-market-context-patch",
+            "proposal_item_id": "proposal-axis-anomaly-validation-patch",
             "axis_id": SELECTED_AXIS_ID,
-            "rationale": "补充市场指标基准以关闭主结论的对照证据缺口。",
+            "rationale": "补充异常成立性验证以关闭主结论的稳健性证据缺口。",
             "supports_claim_kinds": ["comparative_change"],
         }
     )
     output["priority_proposals"].append(
         {
-            "proposal_item_id": "proposal-priority-market-context-patch",
+            "proposal_item_id": "proposal-priority-anomaly-validation-patch",
             "target_ref": SELECTED_AXIS_ID,
-            "rationale": "按覆盖决策只扩展已选中的市场对照轴。",
+            "rationale": "按覆盖决策只扩展已选中的异常验证轴。",
         }
     )
     return output
@@ -285,189 +290,26 @@ def test_plan_patch_provider_scope_is_bound_to_the_source_plan() -> None:
     assert spec.task_id is None
 
 
-def test_provider_selected_plan_patch_reexecutes_and_replays_without_provider(
+def test_full_factor_plan_has_no_unexplored_patch_route_and_skips_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wired = _execute_source_plan(monkeypatch)
+    provider = _PlannerLLM({}, allow_calls=False)
+    wired.state["llm_client"] = provider
 
-    scheduled_axis = wired.source_plan.analysis_axes[0].axis_id
-    invalid_provider = _PlannerLLM(
-        {"decision": "patch", "selected_axis_ids": [scheduled_axis]}
-    )
-    wired.state["llm_client"] = invalid_provider
-    with pytest.raises(
-        langgraph_workflow.WorkflowFailure,
-        match="plan_expansion_provider_output_invalid",
-    ):
-        langgraph_workflow._evaluate_claim_coverage(wired.state)
-    assert invalid_provider.calls
-    assert wired.store.claim_coverage_checkpoint is None
+    settled = langgraph_workflow._evaluate_claim_coverage(wired.state)
+    checkpoint = settled["claim_coverage_checkpoint"]
 
-    decision_output = {
-        "decision": "patch",
-        "selected_axis_ids": [SELECTED_AXIS_ID],
-    }
-    decision_provider = _PlannerLLM(decision_output)
-    wired.state["llm_client"] = decision_provider
-    wired.state = langgraph_workflow._evaluate_claim_coverage(wired.state)
-    checkpoint = wired.state["claim_coverage_checkpoint"]
-    decision = checkpoint.decision
-
-    assert tuple(
-        route.axis_id for route in checkpoint.evaluation.admissible_routes
-    ) == (SELECTED_AXIS_ID,)
-    assert set(checkpoint.evaluation.scheduled_axis_ids).isdisjoint(
-        route.axis_id for route in checkpoint.evaluation.admissible_routes
-    )
-    assert decision.decision == "patch"
-    assert decision.decision_authority == "provider"
-    assert decision.selected_axis_ids == (SELECTED_AXIS_ID,)
-    assert canonical_value(decision.structured_output) == decision_output
-    assert json.loads(decision.raw_response_content) == decision_output
-    assert checkpoint.plan_patch is not None
-    assert checkpoint.plan_patch.selected_axis_ids == (SELECTED_AXIS_ID,)
-    assert len(decision_provider.calls) == 1
-    coverage_attempt_refs = wired.store.attempt_journal.load_stage_attempt_refs(
-        run_attempt_id=wired.intent.run_attempt_id,
-        transition_attempt_id=checkpoint.transition.attempt_id,
-        stage_name="evaluate_claim_coverage",
-    )
-    assert len(coverage_attempt_refs) == 1
-
-    coverage_replay_provider = _PlannerLLM(
-        decision_output,
-        allow_calls=False,
-    )
-    wired.state["llm_client"] = coverage_replay_provider
-    llm_calls_before_replay = deepcopy(wired.state["llm_calls"])
-    replayed_coverage = langgraph_workflow._evaluate_claim_coverage(wired.state)
-    assert replayed_coverage["claim_coverage_checkpoint"] == checkpoint
-    assert replayed_coverage["llm_calls"] == llm_calls_before_replay
-    assert coverage_replay_provider.calls == []
-
-    patch_output = _patch_planner_output(wired.initial_output)
-    patch_provider = _PlannerLLM(patch_output)
-    wired.state["llm_client"] = patch_provider
-    wired.state = langgraph_workflow._compile_plan_patch(wired.state)
-    successor_plan = PlanRevision.from_dict(wired.state["plan_revision"])
-    successor_transition = DurableTransition.from_dict(
-        wired.state["durable_checkpoint"]
-    )
-
-    source_axis_ids = {axis.axis_id for axis in wired.source_plan.analysis_axes}
-    successor_axis_ids = {axis.axis_id for axis in successor_plan.analysis_axes}
-    assert successor_axis_ids - source_axis_ids == {SELECTED_AXIS_ID}
-    source_axes = {axis.axis_id: axis for axis in wired.source_plan.analysis_axes}
-    successor_axes = {axis.axis_id: axis for axis in successor_plan.analysis_axes}
-    assert all(
-        successor_axes[axis_id] == source_axis
-        for axis_id, source_axis in source_axes.items()
-    )
-    source_obligations = {
-        obligation.obligation_id: obligation
-        for obligation in wired.source_plan.claim_obligations
-    }
-    successor_obligations = {
-        obligation.obligation_id: obligation
-        for obligation in successor_plan.claim_obligations
-    }
-    assert set(source_obligations).issubset(successor_obligations)
-    assert all(
-        successor_obligations[obligation_id] == source_obligation
-        for obligation_id, source_obligation in source_obligations.items()
-    )
-    source_tasks = {task.task_key: task for task in wired.source_plan.capability_tasks}
-    successor_tasks = {task.task_key: task for task in successor_plan.capability_tasks}
-    assert set(source_tasks).issubset(successor_tasks)
-    assert all(
-        _task_contract_projection(source_task, plan=wired.source_plan)
-        == _task_contract_projection(
-            successor_tasks[task_key],
-            plan=successor_plan,
-        )
-        for task_key, source_task in source_tasks.items()
-    )
-    assert successor_plan.supersedes_plan_revision_id == (
-        wired.source_plan.plan_revision_id
-    )
-    assert successor_plan.authority_context_ref == (
-        wired.source_plan.authority_context_ref
-    )
-    assert successor_plan.decision_refs == wired.source_plan.decision_refs
-    assert successor_plan.resolved_window_refs == (
-        wired.source_plan.resolved_window_refs
-    )
-    assert successor_plan.budget_policy_ref == (wired.source_plan.budget_policy_ref)
-    assert successor_plan.contract_versions == (wired.source_plan.contract_versions)
-    assert successor_transition.node_name == "compile_plan_patch"
-    assert successor_transition.parent_transition_id == (checkpoint.transition_id)
-    assert successor_transition.next_transition == "phase03_plan_patch_bound"
-    assert len(patch_provider.calls) == 1
-    assert set(patch_provider.calls[0]["required_keys"]) == {
-        "issue_tree",
-        "auxiliary_axes",
-        "hypotheses",
-        "priority_proposals",
-        "assumption_proposals",
-    }
-    patch_audit = next(
-        item
-        for item in reversed(wired.state["llm_calls"])
-        if item["task"] == "single_authority_plan_patch_proposal"
-    )
-    assert canonical_value(patch_audit["structured_output"]) == (
-        canonical_value(patch_output)
-    )
-    patch_attempt_refs = wired.store.attempt_journal.load_stage_attempt_refs(
-        run_attempt_id=wired.intent.run_attempt_id,
-        transition_attempt_id=successor_transition.attempt_id,
-        stage_name="compile_plan_patch",
-    )
-    assert len(patch_attempt_refs) == 1
-
-    plan_replay_provider = _PlannerLLM(patch_output, allow_calls=False)
-    resumed = langgraph_workflow._compile_authoritative_plan(
-        _phase02_compile_state(
-            intent=wired.intent,
-            ledger=wired.ledger,
-            registry=wired.registry,
-            store=wired.store,
-            llm_client=plan_replay_provider,
-        )
-    )
-    assert resumed["plan_revision"] == successor_plan.to_dict()
-    assert plan_replay_provider.calls == []
-
-    executed_before_successor = tuple(wired.adapter_registry.executed_task_ids)
-    wired.state["llm_client"] = _PlannerLLM({}, allow_calls=False)
-    wired.state = langgraph_workflow._execute_capability_dag(wired.state)
-    successor_execution = AuthoritativeExecutionResult.from_dict(
-        wired.state["execution_result"]
-    )
-    assert successor_execution.plan_revision == successor_plan
-    assert successor_execution.durable_transition.parent_transition_id == (
-        successor_transition.transition_id
-    )
-    assert set(
-        wired.adapter_registry.executed_task_ids[len(executed_before_successor) :]
-    ) == {task.task_id for task in successor_plan.capability_tasks}
-
-    final_provider = _PlannerLLM({}, allow_calls=False)
-    wired.state["llm_client"] = final_provider
-    wired.state = langgraph_workflow._evaluate_claim_coverage(wired.state)
-    final_checkpoint = wired.state["claim_coverage_checkpoint"]
-    assert final_checkpoint.source_plan_revision_id == (successor_plan.plan_revision_id)
-    assert final_checkpoint.decision.decision == "seal"
-    assert final_checkpoint.decision.decision_authority == (
+    assert checkpoint.evaluation.admissible_routes == ()
+    assert checkpoint.decision.decision == "seal"
+    assert checkpoint.decision.decision_authority == (
         "deterministic_no_admissible_route"
     )
-    assert set(source_obligations).issubset(
-        final_checkpoint.evaluation.unresolved_obligation_ids
-    )
-    assert all(
-        coverage.status == "evidence_present"
-        for coverage in final_checkpoint.evaluation.obligation_coverages
-        if coverage.obligation_id in source_obligations
-    )
-    assert final_checkpoint.evaluation.admissible_routes == ()
-    assert final_provider.calls == []
+    assert checkpoint.plan_patch is None
+    assert provider.calls == []
+    assert {
+        ref.removeprefix("factor-domain:")
+        for task in wired.source_plan.capability_tasks
+        for ref in task.normalized_input_refs
+        if ref.startswith("factor-domain:")
+    } == set(wired.registry.factor_domain_ids)

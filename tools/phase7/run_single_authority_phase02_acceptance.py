@@ -414,11 +414,14 @@ def _review_planned_result(
                         "limitation_ref": state["limitation_ref"],
                     }
                 )
-    payment_attempt = coverage.get("payment_attempt")
+    payment_final_outcome = coverage.get("payment_final_outcome")
     payment_unavailable_is_bounded = bool(
-        payment_attempt is None
-        or payment_attempt["availability"] == "claim_ready"
-        or any(item["dataset_id"] == "payment_attempt" for item in task_boundaries)
+        payment_final_outcome is None
+        or payment_final_outcome["availability"] == "claim_ready"
+        or any(
+            item["dataset_id"] == "payment_final_outcome"
+            for item in task_boundaries
+        )
     )
     admission_counts = {
         status: sum(
@@ -454,7 +457,7 @@ def _review_planned_result(
         "snapshot_refs": snapshot_refs,
         "task_boundaries": task_boundaries,
         "all_task_inputs_use_pinned_authority_context": (input_state_consistent),
-        "payment_attempt_unavailability_is_plan_bounded": (
+        "payment_final_outcome_unavailability_is_plan_bounded": (
             payment_unavailable_is_bounded
         ),
     }

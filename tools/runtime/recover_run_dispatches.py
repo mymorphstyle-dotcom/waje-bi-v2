@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
+import signal
+import sys
+import threading
+import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -10,6 +16,9 @@ from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.runtime.agent_task_resume_outbox import (
     PostgresAgentTaskResumeOutbox,
     process_agent_task_resume_outbox,
+)
+from bi_agent.runtime.general_agent_turn_recovery import (
+    recover_general_agent_turns,
 )
 
 
@@ -127,9 +136,13 @@ def recover_pending_run_dispatches(
     store: Any,
     dispatch_runner: DispatchRunner = run_agent_core_dispatch,
     limit: int = 100,
+    thread_id: str | None = None,
 ) -> dict[str, list[Any]]:
-    swept = list(store.sweep_expired_run_dispatches(limit=limit))
-    leases = tuple(store.lease_recoverable_run_dispatches(limit=limit))
+    scope_kwargs = {} if thread_id is None else {"thread_id": thread_id}
+    swept = list(store.sweep_expired_run_dispatches(limit=limit, **scope_kwargs))
+    leases = tuple(
+        store.lease_recoverable_run_dispatches(limit=limit, **scope_kwargs)
+    )
     dispatched: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
     for lease in leases:
@@ -203,29 +216,138 @@ def recover_pending_run_dispatches(
     }
 
 
+def run_runtime_recovery_cycle(
+    *,
+    limit: int = 100,
+    worker_id: str,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("runtime_recovery_limit_invalid")
+    if not worker_id or worker_id != worker_id.strip():
+        raise ValueError("runtime_recovery_worker_id_invalid")
+    if thread_id is not None and (
+        not isinstance(thread_id, str)
+        or not thread_id
+        or thread_id != thread_id.strip()
+    ):
+        raise ValueError("runtime_recovery_thread_id_invalid")
+    scope_kwargs = {} if thread_id is None else {"thread_id": thread_id}
+    store = PostgresConversationStore.from_env()
+    try:
+        summary: dict[str, Any] = {
+            "run_dispatches": recover_pending_run_dispatches(
+                store=store,
+                limit=limit,
+                **scope_kwargs,
+            ),
+            "general_agent_turns": recover_general_agent_turns(
+                store=store,
+                limit=limit,
+                **scope_kwargs,
+            ),
+            "agent_task_resumes": process_agent_task_resume_outbox(
+                outbox=PostgresAgentTaskResumeOutbox(store.connection),
+                limit=limit,
+                worker_id=worker_id,
+                **scope_kwargs,
+            ),
+        }
+        return summary
+    finally:
+        store.connection.close()
+
+
+RecoveryCycleRunner = Callable[..., Mapping[str, Any]]
+
+
+def run_runtime_recovery_worker(
+    *,
+    limit: int = 100,
+    poll_interval_seconds: float = 2.0,
+    once: bool = False,
+    worker_id: str | None = None,
+    stop_event: threading.Event | None = None,
+    cycle_runner: RecoveryCycleRunner = run_runtime_recovery_cycle,
+    output: Any = None,
+) -> int:
+    if (
+        isinstance(poll_interval_seconds, bool)
+        or not math.isfinite(poll_interval_seconds)
+        or poll_interval_seconds <= 0
+    ):
+        raise ValueError("runtime_recovery_poll_interval_invalid")
+    resolved_worker_id = worker_id or (
+        f"runtime-recovery:{os.getpid()}:{uuid.uuid4().hex}"
+    )
+    if not resolved_worker_id or resolved_worker_id != resolved_worker_id.strip():
+        raise ValueError("runtime_recovery_worker_id_invalid")
+    stop = stop_event or threading.Event()
+    stream = output or sys.stdout
+    while not stop.is_set():
+        try:
+            summary = dict(
+                cycle_runner(
+                    limit=limit,
+                    worker_id=resolved_worker_id,
+                )
+            )
+            record: dict[str, Any] = {
+                "schemaVersion": "runtime-recovery-cycle.v1",
+                "status": "completed",
+                "workerId": resolved_worker_id,
+                "summary": summary,
+            }
+            exit_code = 0
+        except Exception as exc:
+            record = {
+                "schemaVersion": "runtime-recovery-cycle.v1",
+                "status": "failed",
+                "workerId": resolved_worker_id,
+                "errorCode": "runtime_recovery_cycle_failed",
+                "errorType": type(exc).__name__,
+            }
+            exit_code = 1
+        stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        stream.flush()
+        if once:
+            return exit_code
+        stop.wait(poll_interval_seconds)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Recover and execute committed WAJE run dispatches using "
-            "database-time owner leases."
+            "Continuously recover committed WAJE BI dispatches, General Agent "
+            "turns, and BI-to-Agent task resumes."
         ),
     )
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=float(os.getenv("WAJE_RUNTIME_WORKER_POLL_SECONDS", "2")),
+    )
     args = parser.parse_args()
-    store = PostgresConversationStore.from_env()
-    try:
-        summary = recover_pending_run_dispatches(
-            store=store,
-            limit=args.limit,
-        )
-        summary["agent_task_resumes"] = process_agent_task_resume_outbox(
-            outbox=PostgresAgentTaskResumeOutbox(store.connection),
-            limit=args.limit,
-        )
-        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-    finally:
-        store.connection.close()
-    return 0
+    stop = threading.Event()
+    if not args.once:
+        _install_shutdown_handlers(stop)
+    return run_runtime_recovery_worker(
+        limit=args.limit,
+        poll_interval_seconds=args.poll_interval_seconds,
+        once=args.once,
+        stop_event=stop,
+    )
+
+
+def _install_shutdown_handlers(stop: threading.Event) -> None:
+    def request_shutdown(_signum: int, _frame: Any) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
 
 
 def _required_string(values: Mapping[str, Any], key: str) -> str:

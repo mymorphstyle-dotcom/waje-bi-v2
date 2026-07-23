@@ -131,6 +131,7 @@ def _intent(
         time_spec=time_spec,
         comparison_spec={"kind": "decision_slot", "slot_id": slot_id},
         direction_premise="unknown",
+        requested_factor_refs=(),
         requested_analysis_axes=(),
         desired_decisions=(),
         ambiguity_slots=ambiguity_slots,
@@ -142,7 +143,7 @@ def _intent(
                 "text": original,
             },
         ),
-        schema_version="intent-revision.v1",
+        schema_version="intent-revision.v2",
         prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
         model_version="provider-test",
         known_ambiguity_value_refs={
@@ -627,7 +628,8 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         message["content"] for message in clarification.messages
     )
 
-    assert prompt.prompt_version.endswith(".v9")
+    assert prompt.prompt_version.endswith(".v10")
+    assert "requested_factor_refs" in prompt_text
     assert "quarter-to-quarter" in prompt_text
     assert "comparison_baseline for kind date" in prompt_text
     assert "comparison_window for kind date_range" in prompt_text

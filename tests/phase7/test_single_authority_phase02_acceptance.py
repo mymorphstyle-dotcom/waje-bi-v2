@@ -77,8 +77,8 @@ def test_phase02_acceptance_reviews_real_compiled_case_b_plan() -> None:
         "data_quality",
     } <= set(review["axis_ids"])
     assert any(
-        boundary["dataset_id"] == "payment_attempt"
-        and boundary["availability"] == "missing_contract"
+        boundary["dataset_id"] == "payment_final_outcome"
+        and boundary["availability"] == "unavailable"
         for boundary in review["task_boundaries"]
     )
 

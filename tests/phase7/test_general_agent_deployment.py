@@ -13,7 +13,10 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentStreamEvent,
     WajeAgentToolCall,
 )
-from bi_agent.runtime.agents_sdk_trace import InMemoryAgentTraceSink
+from bi_agent.runtime.agents_sdk_trace import (
+    InMemoryAgentTraceSink,
+    install_waje_trace_processor,
+)
 from bi_agent.runtime.general_agent_deployment import (
     DEPLOYMENT_CONTRACT_VERSION,
     DeploymentDatabaseAuditor,
@@ -28,6 +31,10 @@ from bi_agent.runtime.mainland_model_provider import (
     MainlandModelCapabilities,
     MainlandModelSettings,
     MainlandProviderConfig,
+)
+from bi_agent.runtime.llm_client import (
+    LLMConfigurationError,
+    provider_error_mapping_contract,
 )
 from tools.runtime.cutover_single_authority_schema import (
     SINGLE_AUTHORITY_MIGRATION_DIGEST,
@@ -52,9 +59,11 @@ class _DatabaseConnection:
         self,
         *,
         omit_trigger: bool = False,
+        omit_required_column: bool = False,
         migration_rows: list[object] | None = None,
     ) -> None:
         self.omit_trigger = omit_trigger
+        self.omit_required_column = omit_required_column
         self.migration_rows = migration_rows
         self.statements: list[str] = []
         self.rolled_back = False
@@ -78,9 +87,23 @@ class _DatabaseConnection:
                 [
                     ("agent_generated_artifacts",),
                     ("agent_thread_summaries",),
+                    ("audit_events",),
                     ("conversation_messages",),
                     ("investigation_threads",),
+                    ("publication_customer_payloads",),
                     ("schema_migrations",),
+                ]
+            )
+        if "FROM information_schema.columns" in statement:
+            if self.omit_required_column:
+                return _Rows([])
+            return _Rows(
+                [
+                    (
+                        "publication_customer_payloads",
+                        "customer_payload_digest",
+                        "NO",
+                    )
                 ]
             )
         if "FROM pg_trigger" in statement:
@@ -100,6 +123,17 @@ class _DatabaseConnection:
                     )
                 )
             return _Rows(rows)
+        if "audit_events_thread_id_fkey" in statement:
+            return _Rows(
+                [(
+                    False,
+                    "c",
+                    "FOREIGN KEY (thread_id) REFERENCES "
+                    "waje_runtime.investigation_threads(thread_id) ON DELETE CASCADE",
+                )]
+            )
+        if "FROM waje_runtime.audit_events event" in statement:
+            return _Rows([(3,)])
         if "FROM pg_constraint" in statement:
             return _Rows(
                 [
@@ -141,14 +175,36 @@ class _FakeProvider:
             ),
         )
         self.thinking_observed = True
+        self.probe_observations = {
+            "request_count": 5,
+            "origins": ["https://model.provider.example.cn"],
+            "paths": ["/v1/chat/completions"],
+            "methods": ["POST"],
+            "models": ["deployment-test-model"],
+            "requested_max_output_tokens": [512],
+            "thinking_observed": True,
+        }
 
     def reset_probe_observations(self) -> None:
         self.thinking_observed = True
+
+    def assert_token_budget(
+        self,
+        *,
+        estimated_input_tokens: int,
+        requested_output_tokens: int,
+    ) -> None:
+        if estimated_input_tokens + requested_output_tokens > 32_768:
+            raise LLMConfigurationError("provider_request_context_limit_exceeded")
+
+    def typed_error_mapping_observation(self):
+        return provider_error_mapping_contract()
 
 
 class _FakeLiveAdapter:
     def __init__(self, sink: InMemoryAgentTraceSink) -> None:
         self.sink = sink
+        install_waje_trace_processor(sink)
 
     async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
         self._trace(request.run_id)
@@ -302,13 +358,18 @@ def test_repository_deployment_contract_is_current_and_content_addressed() -> No
     assert all(item.status == "passed" for item in checks)
 
 
-def test_database_deployment_audit_is_read_only_and_closes_v12_contract() -> None:
+def test_database_deployment_audit_is_read_only_and_closes_v13_contract() -> None:
     connection = _DatabaseConnection()
 
     check = DeploymentDatabaseAuditor(connection).run()
 
     assert check.status == "passed"
     assert check.detail["migrationId"] == SINGLE_AUTHORITY_MIGRATION_ID
+    assert check.detail["auditEventThreadConstraintValidated"] is False
+    assert check.detail["historicalAuditEventOrphanCount"] == 3
+    assert check.detail["requiredColumns"] == [
+        "publication_customer_payloads.customer_payload_digest"
+    ]
     assert all(
         token not in statement.upper()
         for statement in connection.statements
@@ -322,6 +383,16 @@ def test_database_deployment_audit_rejects_missing_append_only_trigger() -> None
         match="deployment_database_append_only_trigger_invalid",
     ):
         DeploymentDatabaseAuditor(_DatabaseConnection(omit_trigger=True)).run()
+
+
+def test_database_deployment_audit_rejects_missing_required_column() -> None:
+    with pytest.raises(
+        DeploymentValidationError,
+        match="deployment_database_columns_invalid",
+    ):
+        DeploymentDatabaseAuditor(
+            _DatabaseConnection(omit_required_column=True)
+        ).run()
 
 
 def test_database_deployment_audit_rejects_superseded_migration_rows() -> None:
@@ -359,6 +430,16 @@ def test_live_deployment_probe_covers_provider_p2_and_waje_trace() -> None:
     assert trace.detail["openaiExporterUsed"] is False
     assert trace.detail["recordCount"] == 18
     assert trace.detail["traceCount"] == 9
+    mainland = next(
+        item for item in checks if item.name == "mainland_provider_capabilities"
+    )
+    assert mainland.detail["outboundOrigins"] == [
+        "https://model.provider.example.cn"
+    ]
+    assert mainland.detail["outboundPaths"] == ["/v1/chat/completions"]
+    assert mainland.detail["observedRequestCount"] == 5
+    assert mainland.detail["credentialSource"] == "explicit"
+    assert "openaiApiKeyUsed" not in mainland.detail
     p2 = next(item for item in checks if item.name == "p2_live_runtime")
     assert p2.detail["selectedTools"] == [
         "ask_user",
@@ -369,6 +450,37 @@ def test_live_deployment_probe_covers_provider_p2_and_waje_trace() -> None:
         "completionKind": "tool_response",
         "executedToolNames": ["list_available_capabilities"],
     }
+
+
+def test_live_summary_probe_maps_cross_source_contract_failure() -> None:
+    class InvalidSummaryAdapter:
+        async def run(self, request):
+            return WajeAgentRunResult(
+                run_id=request.run_id,
+                final_output={
+                    "statements": [{
+                        "statementId": "invalid-fact",
+                        "kind": "business_fact",
+                        "text": "用户消息被错误当作业务事实。",
+                        "sourceRefs": ["deployment-probe-message-1"],
+                    }],
+                },
+                usage={},
+                model_turns=1,
+            )
+
+    sink = InMemoryAgentTraceSink()
+    probe = GeneralAgentLiveDeploymentProbe(
+        provider=_FakeProvider(),
+        adapter=InvalidSummaryAdapter(),
+        trace_sink=sink,
+    )
+
+    with pytest.raises(
+        DeploymentValidationError,
+        match="deployment_live_summary_contract_invalid",
+    ):
+        asyncio.run(probe._summary_smoke())
 
 
 def test_deployment_report_maps_missing_live_config_without_secret_fallback() -> None:

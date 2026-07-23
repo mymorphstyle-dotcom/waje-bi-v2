@@ -99,11 +99,10 @@ _WINDOW_AGGREGATE_QUERY_INTENTS = frozenset(
         "component_driver_scan",
         "dimension_contribution_scan",
         "joint_candidate_scan",
-        "payment_success_scan",
     }
 )
 _WINDOW_AGGREGATE_NORMALIZED_METRIC_KINDS = frozenset(
-    {"sum", "distinct_count", "distinct_count_if"}
+    {"sum", "sum_if", "distinct_count", "distinct_count_if"}
 )
 
 
@@ -225,6 +224,7 @@ def _compile_clickhouse_query_with_registry(
             date_expression=date_expression,
             filter_sql=filter_sql,
             parameters=parameters,
+            registry=registry,
         )
     else:
         sql_text = _compile_grouped_query(
@@ -233,6 +233,7 @@ def _compile_clickhouse_query_with_registry(
             date_expression=date_expression,
             filter_sql=filter_sql,
             parameters=parameters,
+            registry=registry,
         )
 
     settings = {
@@ -303,11 +304,13 @@ def _compile_grouped_query(
     date_expression: str,
     filter_sql: tuple[str, ...],
     parameters: dict[str, Any],
+    registry: RuntimeContractRegistry,
 ) -> str:
     dimensions = _dimension_selects(
         contract,
         snapshot,
         parameters=parameters,
+        registry=registry,
     )
     metrics = _metric_selects(contract, snapshot)
     intent_selects, intent_groups = _intent_selects(
@@ -356,6 +359,7 @@ def _compile_window_aggregate_query(
     date_expression: str,
     filter_sql: tuple[str, ...],
     parameters: dict[str, Any],
+    registry: RuntimeContractRegistry,
 ) -> str:
     """Compile exact window-grain metrics while retaining complete-day audit.
 
@@ -382,6 +386,7 @@ def _compile_window_aggregate_query(
         contract,
         snapshot,
         parameters=parameters,
+        registry=registry,
     )
     metrics = _window_aggregate_metric_selects(contract)
     if not metrics:
@@ -1428,6 +1433,7 @@ def _dimension_selects(
     snapshot: DatasetSnapshot,
     *,
     parameters: dict[str, Any],
+    registry: RuntimeContractRegistry,
 ) -> tuple[tuple[str, str], ...]:
     selected = []
     seen: set[str] = set()
@@ -1439,6 +1445,46 @@ def _dimension_selects(
             raise ValueError(f"dimension_field_missing:{binding.source_field}")
         source = _quote_identifier(binding.source_field)
         alias = _quote_identifier(binding.dimension_id)
+        reviewed = registry.dimension(
+            binding.dimension_id,
+            dataset_id=binding.dataset_id,
+        )
+        transformation = reviewed.get("transformation")
+        if transformation is not None:
+            if not isinstance(transformation, Mapping) or transformation.get(
+                "kind"
+            ) != "numeric_bucket":
+                raise ValueError(
+                    f"dimension_transformation_unsupported:{binding.dimension_id}"
+                )
+            null_parameter = f"dimension_bucket_{index}_null_label"
+            overflow_parameter = f"dimension_bucket_{index}_overflow_label"
+            parameters[null_parameter] = transformation["null_or_negative_label"]
+            parameters[overflow_parameter] = transformation["overflow_label"]
+            clauses = [
+                f"isNull({source}) OR {source} < 0",
+                f"%({null_parameter})s",
+            ]
+            for bucket_index, bucket in enumerate(transformation["buckets"]):
+                upper_parameter = (
+                    f"dimension_bucket_{index}_upper_{bucket_index}"
+                )
+                label_parameter = (
+                    f"dimension_bucket_{index}_label_{bucket_index}"
+                )
+                parameters[upper_parameter] = bucket["max_inclusive"]
+                parameters[label_parameter] = bucket["label"]
+                clauses.extend(
+                    (
+                        f"{source} <= %({upper_parameter})s",
+                        f"%({label_parameter})s",
+                    )
+                )
+            clauses.append(f"%({overflow_parameter})s")
+            selected.append(
+                (f"multiIf({', '.join(clauses)}) AS {alias}", alias)
+            )
+            continue
         parameter_name = f"dimension_null_bucket_{index}"
         parameters[parameter_name] = binding.null_bucket
         normalized = (

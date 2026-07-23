@@ -183,6 +183,11 @@ def compile_analysis_contract(
         registry,
         dependencies.dataset_owners,
     )
+    dataset_stage_coverage_gaps = _snapshot_stage_coverage_gaps(
+        snapshots,
+        registry,
+        dependencies.dataset_owners,
+    )
     snapshot_evidence_gaps = _snapshot_evidence_gaps(
         snapshots,
         dependencies.dataset_owners,
@@ -262,6 +267,7 @@ def compile_analysis_contract(
             *dataset_contract_gaps,
             *source_gaps,
             *dataset_schema_gaps,
+            *dataset_stage_coverage_gaps,
             *snapshot_evidence_gaps,
             *dependencies.source_selection_gaps,
             *metric_gaps,
@@ -550,6 +556,19 @@ def _build_dependency_index(
                     ),
                 ),
             )
+        owner_set = set(dimension_owners[dimension_id])
+        compatible_metric_datasets = {
+            dataset_id
+            for metric_id, dataset_ids in metric_dataset_ids.items()
+            if owner_set.intersection(metric_owners.get(metric_id, ()))
+            for dataset_id in dataset_ids
+        }
+        if "analysis_contract" not in owner_set and compatible_metric_datasets:
+            selected = tuple(
+                dataset_id
+                for dataset_id in selected
+                if dataset_id in compatible_metric_datasets
+            )
         dimension_dataset_ids[dimension_id] = selected
         source_selection_gaps.extend(selection_gaps)
         for dataset_id in selected:
@@ -755,6 +774,48 @@ def _validate_snapshot_schemas(
             )
         )
     return tuple(accepted), tuple(gaps)
+
+
+def _snapshot_stage_coverage_gaps(
+    snapshots: tuple[DatasetSnapshot, ...],
+    registry: RuntimeContractRegistry,
+    dataset_owners: Mapping[str, tuple[str, ...]],
+) -> tuple[ContractGap, ...]:
+    gaps = []
+    for snapshot in snapshots:
+        dataset_contract = _registry_entry(registry.dataset, snapshot.dataset_id)
+        if dataset_contract is None:
+            continue
+        coverage = dataset_contract.get("current_stage_coverage")
+        if not isinstance(coverage, Mapping):
+            continue
+        complete_through = date.fromisoformat(str(coverage["complete_through"]))
+        watermark = date.fromisoformat(snapshot.watermark)
+        if watermark >= complete_through:
+            continue
+        gaps.append(
+            _contract_gap(
+                gap_type="contract_partial",
+                gap_id=(
+                    f"dataset:{snapshot.dataset_id}:current_stage_coverage:"
+                    f"required:{complete_through.isoformat()}:"
+                    f"watermark:{watermark.isoformat()}"
+                ),
+                dataset_id=snapshot.dataset_id,
+                affected_capabilities=dataset_owners.get(
+                    snapshot.dataset_id,
+                    ("analysis_contract",),
+                ),
+                owner="data_owner",
+                repair_options=("publish_current_stage_complete_snapshot",),
+                diagnostic_context={
+                    "current_stage_complete_through": complete_through.isoformat(),
+                    "snapshot_watermark": watermark.isoformat(),
+                    "claim_scope_explicit": True,
+                },
+            )
+        )
+    return tuple(gaps)
 
 
 def _snapshot_evidence_gaps(

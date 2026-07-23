@@ -29,6 +29,19 @@ class CustomerRunStateStreamTest(unittest.TestCase):
         self.assertNotIn("audit_events", self.route)
         self.assertNotIn("node_process", self.route)
 
+    def test_stream_has_connection_budget_ttl_and_lightweight_change_polling(self):
+        budget = (ROOT / "app" / "api" / "_sseBudget.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("acquireCustomerSseLease", self.route)
+        self.assertIn("loadCustomerStateVersion", self.route)
+        self.assertIn("version.eventCursor !== current.transport.eventCursor", self.route)
+        self.assertIn("lease!.expiresAt", self.route)
+        self.assertIn("lease?.release()", self.route)
+        self.assertIn("WAJE_SSE_MAX_CONNECTIONS", budget)
+        self.assertIn("WAJE_SSE_MAX_CONNECTIONS_PER_ACTOR", budget)
+        self.assertIn("WAJE_SSE_CONNECTION_TTL_MS", budget)
+
     def test_snapshot_keeps_state_version_separate_from_event_cursor(self):
         contract = (
             ROOT / "app" / "api" / "_customerAnalysisContract.ts"

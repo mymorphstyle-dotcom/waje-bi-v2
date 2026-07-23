@@ -142,6 +142,7 @@ class FormulaPath:
     residual_policy: str
     absolute_tolerance: float
     relative_tolerance: float
+    contribution_groupings: tuple[FormulaContributionGrouping, ...]
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,28 @@ class FormulaContribution:
 
 
 @dataclass(frozen=True)
+class FormulaFactorGroup:
+    factor_id: str
+    member_metric_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FormulaContributionGrouping:
+    grouping_id: str
+    method: Literal["grouped_shapley"]
+    groups: tuple[FormulaFactorGroup, ...]
+
+
+@dataclass(frozen=True)
+class FormulaGroupedDecomposition:
+    grouping_id: str
+    method: Literal["grouped_shapley"]
+    contributions: tuple[FormulaContribution, ...]
+    contribution_total: float
+    component_residual: float
+
+
+@dataclass(frozen=True)
 class FormulaChangeDecomposition:
     status: Literal[
         "reconciled",
@@ -194,6 +217,7 @@ class FormulaChangeDecomposition:
     delta: float | None = None
     observed_delta: float | None = None
     contributions: tuple[FormulaContribution, ...] = ()
+    grouped_decompositions: tuple[FormulaGroupedDecomposition, ...] = ()
     contribution_total: float | None = None
     component_residual: float | None = None
     baseline_residual: float | None = None
@@ -385,6 +409,16 @@ def load_formula_graph(contract_path: str | Path) -> FormulaGraph:
                 residual_policy=residual_policy,
                 absolute_tolerance=absolute_tolerance,
                 relative_tolerance=relative_tolerance,
+                contribution_groupings=_validated_contribution_groupings(
+                    raw_path.get("contribution_groupings") or (),
+                    factor_metric_ids=tuple(
+                        sorted(
+                            formula_metric_ids(_equation_expression(runtime_ast))
+                            if _equation_expression(runtime_ast) is not None
+                            else ()
+                        )
+                    ),
+                ),
             )
         )
     return FormulaGraph(
@@ -430,6 +464,9 @@ def decompose_formula_change(
     factor_metric_ids: Sequence[str],
     observed_baseline: Any,
     observed_target: Any,
+    factor_groupings: Sequence[
+        FormulaContributionGrouping | Mapping[str, Any]
+    ] = (),
     absolute_tolerance: float = 1e-9,
     relative_tolerance: float = 1e-9,
 ) -> FormulaChangeDecomposition:
@@ -499,6 +536,19 @@ def decompose_formula_change(
         factor_ids=factor_ids,
     )
     contribution_total = sum(exact_contributions.values(), Fraction(0))
+    groupings = _validated_contribution_groupings(
+        factor_groupings,
+        factor_metric_ids=factor_ids,
+    )
+    grouped_decompositions = tuple(
+        _grouped_decomposition(
+            grouping=grouping,
+            baseline_metrics=baseline_metrics,
+            target_metrics=target_metrics,
+            formula_delta=formula_delta,
+        )
+        for grouping in groupings
+    )
     component_residual = formula_delta - contribution_total
     baseline_residual = observed_baseline_exact - baseline.value
     target_residual = observed_target_exact - target.value
@@ -556,12 +606,26 @@ def decompose_formula_change(
         delta=_float(formula_delta),
         observed_delta=_float(observed_delta),
         contributions=contributions,
+        grouped_decompositions=grouped_decompositions,
         contribution_total=_float(contribution_total),
         component_residual=_float(component_residual),
         baseline_residual=_float(baseline_residual),
         target_residual=_float(target_residual),
         movement_residual=_float(movement_residual),
         tolerance=_float(tolerance),
+    )
+
+
+def validate_formula_contribution_groupings(
+    values: Sequence[FormulaContributionGrouping | Mapping[str, Any]],
+    *,
+    factor_metric_ids: Sequence[str],
+) -> tuple[FormulaContributionGrouping, ...]:
+    """Validate and normalize a contract-declared factor partition for reuse."""
+
+    return _validated_contribution_groupings(
+        values,
+        factor_metric_ids=factor_metric_ids,
     )
 
 
@@ -932,6 +996,152 @@ def _validated_factor_ids(values: Sequence[str]) -> tuple[str, ...]:
     if len(normalized) != len(set(normalized)):
         raise FormulaContractError("formula_factor_ids_duplicated")
     return normalized
+
+
+def _validated_contribution_groupings(
+    values: Sequence[FormulaContributionGrouping | Mapping[str, Any]],
+    *,
+    factor_metric_ids: Sequence[str],
+) -> tuple[FormulaContributionGrouping, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise FormulaContractError("formula_contribution_groupings_invalid")
+    if not values:
+        return ()
+    factor_ids = _validated_factor_ids(factor_metric_ids)
+    normalized: list[FormulaContributionGrouping] = []
+    for value in values:
+        if isinstance(value, FormulaContributionGrouping):
+            grouping = value
+        else:
+            if not isinstance(value, Mapping) or set(value) != {
+                "grouping_id",
+                "method",
+                "groups",
+            }:
+                raise FormulaContractError("formula_contribution_grouping_invalid")
+            raw_groups = value.get("groups")
+            if (
+                isinstance(raw_groups, (str, bytes))
+                or not isinstance(raw_groups, Sequence)
+            ):
+                raise FormulaContractError("formula_contribution_grouping_invalid")
+            groups: list[FormulaFactorGroup] = []
+            for raw_group in raw_groups:
+                if not isinstance(raw_group, Mapping) or set(raw_group) != {
+                    "factor_id",
+                    "member_metric_ids",
+                }:
+                    raise FormulaContractError(
+                        "formula_contribution_grouping_invalid"
+                    )
+                groups.append(
+                    FormulaFactorGroup(
+                        factor_id=_required_id(
+                            raw_group.get("factor_id"),
+                            "formula_contribution_grouping_invalid",
+                        ),
+                        member_metric_ids=_validated_factor_ids(
+                            raw_group.get("member_metric_ids")
+                        ),
+                    )
+                )
+            method = value.get("method")
+            if method != "grouped_shapley":
+                raise FormulaContractError("formula_contribution_grouping_invalid")
+            grouping = FormulaContributionGrouping(
+                grouping_id=_required_id(
+                    value.get("grouping_id"),
+                    "formula_contribution_grouping_invalid",
+                ),
+                method=method,
+                groups=tuple(groups),
+            )
+        if grouping.method != "grouped_shapley" or len(grouping.groups) < 2:
+            raise FormulaContractError("formula_contribution_grouping_invalid")
+        group_ids = tuple(group.factor_id for group in grouping.groups)
+        members = tuple(
+            metric_id
+            for group in grouping.groups
+            for metric_id in group.member_metric_ids
+        )
+        if (
+            len(group_ids) != len(set(group_ids))
+            or len(members) != len(set(members))
+            or set(members) != set(factor_ids)
+        ):
+            raise FormulaContractError("formula_contribution_grouping_partition_invalid")
+        normalized.append(grouping)
+    grouping_ids = tuple(item.grouping_id for item in normalized)
+    if len(grouping_ids) != len(set(grouping_ids)):
+        raise FormulaContractError("formula_contribution_grouping_duplicated")
+    return tuple(normalized)
+
+
+def _group_metric_value(
+    group: FormulaFactorGroup,
+    metrics: Mapping[str, Any],
+) -> Fraction:
+    product = Fraction(1)
+    for metric_id in group.member_metric_ids:
+        value = _number(metrics.get(metric_id))
+        if value is None:
+            raise FormulaContractError("formula_contribution_group_value_invalid")
+        product *= value
+    return product
+
+
+def _grouped_decomposition(
+    *,
+    grouping: FormulaContributionGrouping,
+    baseline_metrics: Mapping[str, Any],
+    target_metrics: Mapping[str, Any],
+    formula_delta: Fraction,
+) -> FormulaGroupedDecomposition:
+    baseline_groups = {
+        group.factor_id: _group_metric_value(group, baseline_metrics)
+        for group in grouping.groups
+    }
+    target_groups = {
+        group.factor_id: _group_metric_value(group, target_metrics)
+        for group in grouping.groups
+    }
+    group_ids = tuple(group.factor_id for group in grouping.groups)
+    grouped_expression = MultiplyNode(tuple(MetricNode(item) for item in group_ids))
+    exact_contributions = _shapley_contributions(
+        expression=grouped_expression,
+        baseline_metrics=baseline_groups,
+        target_metrics=target_groups,
+        factor_ids=group_ids,
+    )
+    contribution_total = sum(exact_contributions.values(), Fraction(0))
+    component_residual = formula_delta - contribution_total
+    if component_residual:
+        raise FormulaContractError(
+            "formula_contribution_grouping_expression_invalid"
+        )
+    return FormulaGroupedDecomposition(
+        grouping_id=grouping.grouping_id,
+        method=grouping.method,
+        contributions=tuple(
+            FormulaContribution(
+                metric_id=factor_id,
+                baseline_value=_float_required(baseline_groups[factor_id]),
+                target_value=_float_required(target_groups[factor_id]),
+                delta=_float_required(
+                    target_groups[factor_id] - baseline_groups[factor_id]
+                ),
+                contribution=_float_required(exact_contributions[factor_id]),
+                contribution_share=(
+                    _float(exact_contributions[factor_id] / contribution_total)
+                    if contribution_total
+                    else None
+                ),
+            )
+            for factor_id in group_ids
+        ),
+        contribution_total=_float_required(contribution_total),
+        component_residual=_float_required(component_residual),
+    )
 
 
 def _required_id(value: Any, error: str) -> str:

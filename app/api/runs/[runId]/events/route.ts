@@ -1,9 +1,16 @@
 import {
   customerJsonError,
   loadCustomerAnalysisSnapshot,
+  loadCustomerStateVersion,
   requireRun,
+  withCustomerActorScope,
 } from "../../../_conversationStore";
 import { resolveCustomerActor } from "../../../_customerActor";
+import {
+  acquireCustomerSseLease,
+  customerSsePollIntervalMs,
+  type CustomerSseLease,
+} from "../../../_sseBudget";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,14 +20,19 @@ type RouteContext = { params: Promise<{ runId: string }> };
 export async function GET(request: Request, context: RouteContext) {
   const { runId } = await context.params;
   let actorId: string | undefined;
+  let lease: CustomerSseLease | undefined;
   try {
     const resolvedActorId = resolveCustomerActor(request);
     actorId = resolvedActorId;
-    const run = await requireRun(runId, resolvedActorId);
-    const snapshot = await loadCustomerAnalysisSnapshot({
-      threadId: run.threadId,
-      actorId: resolvedActorId,
-      runId,
+    lease = acquireCustomerSseLease(resolvedActorId);
+    const { run, snapshot } = await withCustomerActorScope(resolvedActorId, async () => {
+      const scopedRun = await requireRun(runId, resolvedActorId);
+      const scopedSnapshot = await loadCustomerAnalysisSnapshot({
+        threadId: scopedRun.threadId,
+        actorId: resolvedActorId,
+        runId,
+      });
+      return { run: scopedRun, snapshot: scopedSnapshot };
     });
     const lastEventId = request.headers.get("last-event-id")?.trim();
     const encoder = new TextEncoder();
@@ -29,19 +41,21 @@ export async function GET(request: Request, context: RouteContext) {
       start(controller) {
         let closed = false;
         let current = snapshot;
-        let deliveredVersion = lastEventId ?? "";
+        let deliveredCursor = lastEventId ?? "";
         let lastHeartbeatAt = Date.now();
         const close = () => {
           if (closed) return;
           closed = true;
+          lease?.release();
           controller.close();
         };
         const send = (text: string) => controller.enqueue(encoder.encode(text));
         const sendSnapshot = () => {
-          if (current.stateVersion === deliveredVersion) return;
-          deliveredVersion = current.stateVersion;
+          const cursor = current.transport.eventCursor;
+          if (cursor === deliveredCursor) return;
+          deliveredCursor = cursor;
           send([
-            `id: ${current.stateVersion}`,
+            `id: ${cursor}`,
             "event: customer_state_changed",
             "retry: 3000",
             `data: ${JSON.stringify({ snapshot: current })}`,
@@ -59,14 +73,28 @@ export async function GET(request: Request, context: RouteContext) {
         void (async () => {
           try {
             while (!closed) {
-              await abortableDelay(1500, request.signal);
+              await abortableDelay(customerSsePollIntervalMs(), request.signal);
               if (closed) return;
-              current = await loadCustomerAnalysisSnapshot({
-                threadId: run.threadId,
-                actorId: resolvedActorId,
-                runId,
-              });
-              sendSnapshot();
+              if (Date.now() >= lease!.expiresAt) {
+                close();
+                return;
+              }
+              const version = await withCustomerActorScope(resolvedActorId, () =>
+                loadCustomerStateVersion({
+                  threadId: run.threadId,
+                  actorId: resolvedActorId,
+                })
+              );
+              if (version.eventCursor !== current.transport.eventCursor) {
+                current = await withCustomerActorScope(resolvedActorId, () =>
+                  loadCustomerAnalysisSnapshot({
+                    threadId: run.threadId,
+                    actorId: resolvedActorId,
+                    runId,
+                  })
+                );
+                sendSnapshot();
+              }
               if (terminal.has(current.state.status)) {
                 close();
                 return;
@@ -84,6 +112,7 @@ export async function GET(request: Request, context: RouteContext) {
               threadId: run.threadId,
             });
             closed = true;
+            lease?.release();
             controller.error(error);
           }
         })();
@@ -98,6 +127,7 @@ export async function GET(request: Request, context: RouteContext) {
       },
     });
   } catch (error) {
+    lease?.release();
     return customerJsonError(error, { actorId, runId });
   }
 }

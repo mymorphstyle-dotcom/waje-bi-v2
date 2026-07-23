@@ -1,0 +1,13 @@
+{
+  "artifactCount": 2,
+  "elapsedSeconds": 4.353,
+  "generatedAt": "2026-07-22T21:43:56Z",
+  "materialClosure": true,
+  "model": "deepseek-v4-flash",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "providerOrigin": "https://api.deepseek.com",
+  "schemaVersion": "waje-controlled-multi-agent-live-probe.v1",
+  "status": "passed",
+  "wajeTraceRecordCount": 12
+}

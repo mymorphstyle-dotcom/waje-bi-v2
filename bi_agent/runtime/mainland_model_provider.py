@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import os
 import threading
 from time import monotonic
-from typing import Any, AsyncIterator, Literal, Mapping, Optional
+from typing import Any, AsyncIterator, Literal, Mapping, Optional, Protocol
 from urllib.parse import urlparse
 
 import httpx
 from agents import ModelSettings
+from agents.exceptions import ModelBehaviorError
 from agents.models.interface import Model, ModelProvider
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI, OpenAIError
@@ -16,9 +18,12 @@ from openai import AsyncOpenAI, OpenAIError
 from bi_agent.runtime.llm_client import (
     LLMConfigurationError,
     LLMProviderError,
-    _llm_provider_error_from_openai,
+    LLMTimeoutError,
+    llm_provider_error_from_exception,
     _parse_timeout_seconds,
+    provider_error_mapping_contract,
 )
+from bi_agent.runtime.evidence_authority import canonical_digest
 
 
 REQUIRED_PROVIDER_CAPABILITIES = (
@@ -113,6 +118,8 @@ class MainlandProviderConfig:
     model: str
     model_settings: MainlandModelSettings
     capabilities: MainlandModelCapabilities
+    critical_model: str | None = None
+    credential_source: Literal["explicit", "waje", "deepseek"] = "explicit"
     timeout_seconds: float | None = None
     max_attempts: int = 3
     circuit_failure_threshold: int = 5
@@ -125,6 +132,10 @@ class MainlandProviderConfig:
             raise LLMConfigurationError("missing_llm_api_key")
         if not self.model.strip():
             raise LLMConfigurationError("missing_llm_model")
+        if self.critical_model is not None and not self.critical_model.strip():
+            raise LLMConfigurationError("invalid_llm_critical_model")
+        if self.credential_source not in {"explicit", "waje", "deepseek"}:
+            raise LLMConfigurationError("provider_credential_source_invalid")
         if (
             isinstance(self.max_attempts, bool)
             or not isinstance(self.max_attempts, int)
@@ -153,10 +164,15 @@ class MainlandProviderConfig:
         provider = env.get("WAJE_LLM_PROVIDER", "").strip()
         base_url = env.get("WAJE_LLM_BASE_URL", "").strip()
         model = env.get("WAJE_LLM_MODEL", "").strip()
-        api_key = (
-            env.get("WAJE_LLM_API_KEY") or env.get("DEEPSEEK_API_KEY") or ""
-        ).strip()
+        critical_model = env.get("WAJE_LLM_CRITICAL_MODEL", "").strip() or model
+        waje_api_key = (env.get("WAJE_LLM_API_KEY") or "").strip()
+        deepseek_api_key = (env.get("DEEPSEEK_API_KEY") or "").strip()
+        api_key = waje_api_key or deepseek_api_key
+        credential_source: Literal["waje", "deepseek"] = (
+            "waje" if waje_api_key else "deepseek"
+        )
         _validate_provider_identity(provider)
+        _validate_mainland_base_url(base_url)
         parsed = urlparse(base_url)
         hostname = (parsed.hostname or "").lower().rstrip(".")
         if hostname != "deepseek.com" and not hostname.endswith(".deepseek.com"):
@@ -192,6 +208,8 @@ class MainlandProviderConfig:
             base_url=base_url,
             api_key=api_key,
             model=model,
+            critical_model=critical_model,
+            credential_source=credential_source,
             model_settings=MainlandModelSettings(
                 max_output_tokens=max_output_tokens,
                 thinking=thinking,
@@ -248,6 +266,176 @@ class OutboundTargetGuard:
     async def on_request(self, request: httpx.Request) -> None:
         self.assert_allowed(request.url)
 
+    def on_sync_request(self, request: httpx.Request) -> None:
+        self.assert_allowed(request.url)
+
+
+class ProviderCircuit(Protocol):
+    def before_request(self) -> None: ...
+
+    def record_failure(self, error: Exception) -> None: ...
+
+    def record_success(self) -> None: ...
+
+
+class PostgresProviderCircuit:
+    """Cross-process Provider circuit backed by append-only WAJE audit events."""
+
+    _FAILURE_EVENT = "mainland_provider_circuit_failure"
+    _SUCCESS_EVENT = "mainland_provider_circuit_success"
+    _PROBE_EVENT = "mainland_provider_circuit_probe"
+
+    def __init__(self, connection: Any, config: MainlandProviderConfig) -> None:
+        self._connection = connection
+        self._failure_threshold = config.circuit_failure_threshold
+        self._recovery_seconds = config.circuit_recovery_seconds
+        parsed = urlparse(config.base_url)
+        self.circuit_ref = "provider-circuit:" + canonical_digest(
+            {
+                "schema_version": "mainland-provider-circuit.v1",
+                "provider": config.provider,
+                "origin": f"{parsed.scheme}://{parsed.netloc}",
+                "model": config.model,
+                "transport": MainlandModelProvider.transport,
+            }
+        )
+        self._event_payload = json.dumps(
+            {
+                "schemaVersion": "mainland-provider-circuit-event.v1",
+                "circuitRef": self.circuit_ref,
+                "provider": config.provider,
+                "model": config.model,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self._lock = threading.Lock()
+
+    def before_request(self) -> None:
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN")
+                self._lock_state()
+                row = self._connection.execute(
+                    """
+                    /* mainland_provider_circuit_state */
+                    WITH recent AS (
+                      SELECT event_type, created_at, audit_id
+                      FROM waje_runtime.audit_events
+                      WHERE ref = %(circuit_ref)s
+                        AND event_type IN (
+                          'mainland_provider_circuit_failure',
+                          'mainland_provider_circuit_success',
+                          'mainland_provider_circuit_probe'
+                        )
+                      ORDER BY audit_id DESC
+                      LIMIT %(failure_threshold)s
+                    ), latest AS (
+                      SELECT event_type, created_at
+                      FROM recent
+                      ORDER BY audit_id DESC
+                      LIMIT 1
+                    )
+                    SELECT
+                      (SELECT event_type FROM latest) AS latest_event_type,
+                      (
+                        (SELECT count(*) FROM recent) = %(failure_threshold)s
+                        AND NOT EXISTS (
+                          SELECT 1 FROM recent
+                          WHERE event_type != 'mainland_provider_circuit_failure'
+                        )
+                      ) AS failure_threshold_reached,
+                      COALESCE(
+                        (
+                          SELECT created_at
+                            + (%(recovery_seconds)s * interval '1 second') > now()
+                          FROM latest
+                        ),
+                        FALSE
+                      ) AS recovery_window_open
+                    """,
+                    {
+                        "circuit_ref": self.circuit_ref,
+                        "failure_threshold": self._failure_threshold,
+                        "recovery_seconds": self._recovery_seconds,
+                    },
+                ).fetchone()
+                latest = str(_field(row, "latest_event_type", 0) or "")
+                threshold_reached = bool(
+                    _field(row, "failure_threshold_reached", 1)
+                )
+                recovery_window_open = bool(
+                    _field(row, "recovery_window_open", 2)
+                )
+                blocked = (
+                    latest == self._PROBE_EVENT and recovery_window_open
+                ) or (threshold_reached and recovery_window_open)
+                if blocked:
+                    self._connection.commit()
+                    raise LLMProviderError(
+                        kind="provider_unavailable",
+                        retryability="retryable",
+                        error_code="provider_circuit_open",
+                    )
+                if latest == self._PROBE_EVENT or threshold_reached:
+                    self._insert_event(self._PROBE_EVENT)
+                self._connection.commit()
+            except LLMProviderError:
+                raise
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def record_failure(self, error: Exception) -> None:
+        if not (
+            isinstance(error, LLMTimeoutError)
+            or (
+                isinstance(error, LLMProviderError)
+                and error.retryability == "retryable"
+                and error.error_code != "provider_circuit_open"
+            )
+        ):
+            return
+        self._record_event(self._FAILURE_EVENT)
+
+    def record_success(self) -> None:
+        self._record_event(self._SUCCESS_EVENT)
+
+    def _record_event(self, event_type: str) -> None:
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN")
+                self._lock_state()
+                self._insert_event(event_type)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _lock_state(self) -> None:
+        self._connection.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+              hashtextextended(%(circuit_ref)s::text, 0)
+            )
+            """,
+            {"circuit_ref": self.circuit_ref},
+        )
+
+    def _insert_event(self, event_type: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO waje_runtime.audit_events(event_type, ref, payload)
+            VALUES (%(event_type)s, %(circuit_ref)s, %(payload)s::jsonb)
+            """,
+            {
+                "event_type": event_type,
+                "circuit_ref": self.circuit_ref,
+                "payload": self._event_payload,
+            },
+        )
+
 
 class MainlandModelProvider(ModelProvider):
     """Explicit Chat Completions-only model provider for mainland inference."""
@@ -259,16 +447,23 @@ class MainlandModelProvider(ModelProvider):
         config: MainlandProviderConfig,
         *,
         http_transport: httpx.AsyncBaseTransport | None = None,
+        circuit: ProviderCircuit | None = None,
     ) -> None:
         missing = config.capabilities.missing_required()
         if missing:
             raise ProviderCapabilityError(missing)
         self.config = config
         self.outbound_guard = OutboundTargetGuard(config.base_url)
+        self._observation = _ProviderObservation()
         self._http_client = httpx.AsyncClient(
             transport=http_transport,
             follow_redirects=False,
-            event_hooks={"request": [self.outbound_guard.on_request]},
+            event_hooks={
+                "request": [
+                    self.outbound_guard.on_request,
+                    self._observation.on_request,
+                ]
+            },
         )
         self._openai_client = AsyncOpenAI(
             api_key=config.api_key,
@@ -281,15 +476,15 @@ class MainlandModelProvider(ModelProvider):
             model=config.model,
             openai_client=self._openai_client,
         )
-        self._circuit = _ProviderCircuit(
+        self._circuit = circuit or _ProviderCircuit(
             failure_threshold=config.circuit_failure_threshold,
             recovery_seconds=config.circuit_recovery_seconds,
         )
-        self._observation = _ProviderObservation()
         self._model = _TypedMainlandChatCompletionsModel(
             delegate,
             self._circuit,
             self._observation,
+            max_attempts=config.max_attempts,
         )
 
     @classmethod
@@ -298,10 +493,47 @@ class MainlandModelProvider(ModelProvider):
         environ: Optional[Mapping[str, str]] = None,
         *,
         http_transport: httpx.AsyncBaseTransport | None = None,
+        circuit_connection: Any = None,
     ) -> "MainlandModelProvider":
+        config = MainlandProviderConfig.deepseek_from_env(environ)
         return cls(
-            MainlandProviderConfig.deepseek_from_env(environ),
+            config,
             http_transport=http_transport,
+            circuit=(
+                PostgresProviderCircuit(circuit_connection, config)
+                if circuit_connection is not None
+                else None
+            ),
+        )
+
+    @classmethod
+    def structured_client_from_env(
+        cls,
+        environ: Optional[Mapping[str, str]] = None,
+        *,
+        circuit_connection: Any = None,
+    ) -> Any:
+        config = MainlandProviderConfig.deepseek_from_env(environ)
+        return cls.structured_client(
+            config,
+            circuit=(
+                PostgresProviderCircuit(circuit_connection, config)
+                if circuit_connection is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def structured_client(
+        config: MainlandProviderConfig,
+        *,
+        circuit: ProviderCircuit | None = None,
+    ) -> Any:
+        from bi_agent.runtime.llm_client import OpenAICompatibleLLMClient
+
+        return OpenAICompatibleLLMClient.from_provider_config(
+            config,
+            circuit=circuit,
         )
 
     def get_model(self, model_name: str | None) -> Model:
@@ -343,6 +575,30 @@ class MainlandModelProvider(ModelProvider):
     def thinking_observed(self) -> bool:
         return self._observation.thinking_observed
 
+    @property
+    def probe_observations(self) -> Mapping[str, Any]:
+        return self._observation.snapshot()
+
+    def assert_token_budget(
+        self,
+        *,
+        estimated_input_tokens: int,
+        requested_output_tokens: int,
+    ) -> None:
+        for value in (estimated_input_tokens, requested_output_tokens):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise LLMConfigurationError("provider_token_budget_invalid")
+        if requested_output_tokens > self.config.model_settings.max_output_tokens:
+            raise LLMConfigurationError("provider_request_output_limit_exceeded")
+        if (
+            estimated_input_tokens + requested_output_tokens
+            > self.config.capabilities.context_window_tokens
+        ):
+            raise LLMConfigurationError("provider_request_context_limit_exceeded")
+
+    def typed_error_mapping_observation(self) -> Mapping[int, tuple[str, str]]:
+        return provider_error_mapping_contract()
+
     def reset_probe_observations(self) -> None:
         self._observation.reset()
 
@@ -356,21 +612,35 @@ class _TypedMainlandChatCompletionsModel(Model):
         delegate: OpenAIChatCompletionsModel,
         circuit: "_ProviderCircuit",
         observation: "_ProviderObservation",
+        *,
+        max_attempts: int,
     ) -> None:
         self._delegate = delegate
         self._circuit = circuit
         self._observation = observation
+        self._max_attempts = max_attempts
 
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
         _reject_provider_managed_state(kwargs)
-        self._circuit.before_request()
-        try:
-            response = await self._delegate.get_response(*args, **kwargs)
-        except OpenAIError as exc:
-            typed = _llm_provider_error_from_openai(exc)
-            self._circuit.record_failure(typed)
-            raise typed from exc
-        else:
+        output_schema = _sdk_output_schema(args, kwargs)
+        for attempt in range(1, self._max_attempts + 1):
+            self._circuit.before_request()
+            try:
+                response = await self._delegate.get_response(*args, **kwargs)
+            except (OpenAIError, httpx.TransportError) as exc:
+                typed = llm_provider_error_from_exception(exc)
+                self._circuit.record_failure(typed)
+                raise typed from exc
+            if not _structured_sdk_response_is_valid(response, output_schema):
+                typed = LLMProviderError(
+                    kind="provider_output_invalid",
+                    retryability="retryable",
+                    error_code="structured_output_invalid",
+                )
+                self._circuit.record_failure(typed)
+                if attempt < self._max_attempts:
+                    continue
+                raise typed
             self._circuit.record_success()
             if any(
                 getattr(item, "type", "") == "reasoning"
@@ -378,6 +648,7 @@ class _TypedMainlandChatCompletionsModel(Model):
             ):
                 self._observation.record_thinking()
             return response
+        raise AssertionError("provider_attempt_loop_unreachable")
 
     def stream_response(
         self,
@@ -395,14 +666,46 @@ class _TypedMainlandChatCompletionsModel(Model):
                     }:
                         self._observation.record_thinking()
                     yield event
-            except OpenAIError as exc:
-                typed = _llm_provider_error_from_openai(exc)
+            except (OpenAIError, httpx.TransportError) as exc:
+                typed = llm_provider_error_from_exception(exc)
                 self._circuit.record_failure(typed)
                 raise typed from exc
             else:
                 self._circuit.record_success()
 
         return guarded()
+
+
+def _sdk_output_schema(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> Any:
+    if "output_schema" in kwargs:
+        return kwargs["output_schema"]
+    return args[4] if len(args) > 4 else None
+
+
+def _structured_sdk_response_is_valid(
+    response: Any,
+    output_schema: Any,
+) -> bool:
+    if output_schema is None or output_schema.is_plain_text():
+        return True
+    output = tuple(getattr(response, "output", ()) or ())
+    if any(getattr(item, "type", "") == "function_call" for item in output):
+        return True
+    text_parts: list[str] = []
+    for item in output:
+        if getattr(item, "type", "") != "message":
+            continue
+        for content in getattr(item, "content", ()) or ():
+            if getattr(content, "type", "") == "output_text":
+                text_parts.append(str(getattr(content, "text", "") or ""))
+    candidate = "".join(text_parts)
+    if not candidate.strip():
+        return False
+    try:
+        output_schema.validate_json(candidate)
+    except ModelBehaviorError:
+        return False
+    return True
 
 
 class _ProviderCircuit:
@@ -442,6 +745,7 @@ class _ProviderCircuit:
 class _ProviderObservation:
     def __init__(self) -> None:
         self._thinking_observed = False
+        self._requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
     @property
@@ -453,9 +757,49 @@ class _ProviderObservation:
         with self._lock:
             self._thinking_observed = True
 
+    async def on_request(self, request: httpx.Request) -> None:
+        parsed = urlparse(str(request.url))
+        payload: Mapping[str, Any] = {}
+        try:
+            decoded = json.loads(request.content)
+            if isinstance(decoded, Mapping):
+                payload = decoded
+        except (TypeError, ValueError):
+            payload = {}
+        observation = {
+            "method": request.method.upper(),
+            "origin": f"{parsed.scheme}://{parsed.netloc}",
+            "path": parsed.path,
+            "model": str(payload.get("model") or ""),
+            "max_output_tokens": payload.get("max_tokens"),
+        }
+        with self._lock:
+            self._requests.append(observation)
+
+    def snapshot(self) -> Mapping[str, Any]:
+        with self._lock:
+            requests = [dict(item) for item in self._requests]
+            return {
+                "request_count": len(requests),
+                "origins": sorted({str(item["origin"]) for item in requests}),
+                "paths": sorted({str(item["path"]) for item in requests}),
+                "methods": sorted({str(item["method"]) for item in requests}),
+                "models": sorted({str(item["model"]) for item in requests}),
+                "requested_max_output_tokens": sorted(
+                    {
+                        int(item["max_output_tokens"])
+                        for item in requests
+                        if isinstance(item.get("max_output_tokens"), int)
+                        and not isinstance(item.get("max_output_tokens"), bool)
+                    }
+                ),
+                "thinking_observed": self._thinking_observed,
+            }
+
     def reset(self) -> None:
         with self._lock:
             self._thinking_observed = False
+            self._requests.clear()
 
 
 def _reject_provider_managed_state(kwargs: Mapping[str, Any]) -> None:
@@ -479,7 +823,9 @@ def _validate_mainland_base_url(base_url: str) -> None:
     if not base_url.strip():
         raise LLMConfigurationError("missing_llm_base_url")
     parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    if parsed.scheme != "https" or not parsed.hostname:
+        if parsed.scheme == "http" and parsed.hostname:
+            raise LLMConfigurationError("provider_https_required")
         raise LLMConfigurationError("invalid_llm_base_url")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise LLMConfigurationError("invalid_llm_base_url")
@@ -521,3 +867,9 @@ def _positive_int(raw: str, code: str) -> int:
     if value < 1:
         raise LLMConfigurationError(code)
     return value
+
+
+def _field(row: Any, name: str, index: int) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(name)
+    return row[index]

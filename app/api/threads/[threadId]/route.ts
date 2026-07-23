@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   customerJsonError,
   loadCustomerAnalysisSnapshot,
+  withCustomerActorScope,
 } from "../../_conversationStore";
 import { resolveCustomerActor } from "../../_customerActor";
 
@@ -16,9 +17,12 @@ export async function GET(request: Request, context: RouteContext) {
   let actorId: string | undefined;
   try {
     actorId = resolveCustomerActor(request);
-    return NextResponse.json({
-      snapshot: await loadCustomerAnalysisSnapshot({ threadId, actorId }),
-    });
+    return withCustomerActorScope(actorId, async () => NextResponse.json({
+      snapshot: await loadCustomerAnalysisSnapshot({
+        threadId,
+        actorId: actorId!,
+      }),
+    }));
   } catch (error) {
     return customerJsonError(error, { actorId, threadId });
   }

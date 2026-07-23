@@ -221,6 +221,7 @@ def test_completed_answer_round_trips_with_customer_safe_blocks() -> None:
             console.log(JSON.stringify({
               status: restored.state.status,
               kinds: restored.state.answer.blocks.map((block) => block.kind),
+              headings: restored.state.answer.blocks.map((block) => block.heading),
               hasFacts: "facts" in restored.state.answer,
               evidenceCount: restored.state.answer.evidenceCount,
               limitationCount: restored.state.answer.limitationCount,
@@ -231,6 +232,7 @@ def test_completed_answer_round_trips_with_customer_safe_blocks() -> None:
     assert result == {
         "status": "completed_with_limits",
         "kinds": ["summary", "limitation"],
+        "headings": ["核心结论", "证据边界"],
         "hasFacts": False,
         "evidenceCount": 1,
         "limitationCount": 1,
@@ -246,7 +248,11 @@ def test_direct_agent_response_uses_thread_terminal_without_bi_run() -> None:
               ...base,
               messages: [
                 ...base.messages,
-                { key: "assistant-1", role: "assistant", text: "这是直接回复。", createdAt: base.confirmedAt },
+                {
+                  key: "assistant-1", role: "assistant", text: "这是直接回复。",
+                  createdAt: base.confirmedAt, itemType: "assistant_message",
+                  operationKey: "assistant:operation-direct",
+                },
               ],
               run: null,
               agentHead: { status: "completed", activeTaskRef: null, pendingActionRef: null },
@@ -254,6 +260,9 @@ def test_direct_agent_response_uses_thread_terminal_without_bi_run() -> None:
                 status: "completed",
                 finalOutput: { answerMarkdown: "这是直接回复。", materialRefs: [], limitationRefs: [] },
                 errorCode: null,
+                completionKind: "direct_response",
+                durableTaskRef: null,
+                operationId: "operation-direct",
               },
               eventCursor: "2100",
               latestItemSequence: 3,
@@ -262,6 +271,7 @@ def test_direct_agent_response_uses_thread_terminal_without_bi_run() -> None:
             console.log(JSON.stringify({
               status: parsed.state.status,
               answer: parsed.state.answer.blocks[0].text,
+              heading: parsed.state.answer.blocks[0].heading,
               runHandle: parsed.transport.runHandle,
               eventsUrl: parsed.transport.eventsUrl,
               eventCursor: parsed.transport.eventCursor,
@@ -273,10 +283,131 @@ def test_direct_agent_response_uses_thread_terminal_without_bi_run() -> None:
     assert result == {
         "status": "completed",
         "answer": "这是直接回复。",
+        "heading": None,
         "runHandle": None,
         "eventsUrl": "/api/threads/thread-handle/events",
         "eventCursor": "2100",
         "latestItemSequence": 3,
+    }
+
+
+def test_agent_owned_progress_and_terminal_items_have_one_customer_surface() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              messages: [
+                ...base.messages,
+                {
+                  key: "progress-1", role: "assistant",
+                  text: "BI 分析任务已进入持久化执行队列。",
+                  createdAt: base.confirmedAt, itemType: "progress",
+                  operationKey: "assistant-suspension:operation-1",
+                },
+                {
+                  key: "assistant-1", role: "assistant", text: "这是直接回复。",
+                  createdAt: base.confirmedAt, itemType: "assistant_message",
+                  operationKey: "assistant:operation-2",
+                },
+              ],
+              run: null,
+              agentHead: { status: "completed", activeTaskRef: null, pendingActionRef: null },
+              agentTerminal: {
+                status: "completed",
+                finalOutput: { answerMarkdown: "这是直接回复。", materialRefs: [], limitationRefs: [] },
+                errorCode: null,
+                completionKind: "direct_response",
+                durableTaskRef: null,
+                operationId: "operation-2",
+              },
+            });
+            console.log(JSON.stringify({
+              messageKeys: snapshot.messages.map((message) => message.key),
+              answer: snapshot.state.answer.blocks.map((block) => block.text),
+              hasInternalItemType: JSON.stringify(snapshot).includes("itemType"),
+              hasOperationKey: JSON.stringify(snapshot).includes("operationKey"),
+            }));
+            """
+        )
+    )
+    assert result == {
+        "messageKeys": ["message-key"],
+        "answer": ["这是直接回复。"],
+        "hasInternalItemType": False,
+        "hasOperationKey": False,
+    }
+
+
+def test_analysis_terminal_restores_exact_publication_blocks_and_checks_task_binding() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const source = {
+              ...base,
+              messages: [
+                ...base.messages,
+                {
+                  key: "assistant-analysis", role: "assistant",
+                  text: "被持久化 publication 替代的扁平文本。",
+                  createdAt: base.confirmedAt, itemType: "assistant_message",
+                  operationKey: "assistant:operation-analysis",
+                },
+              ],
+              run: {
+                id: "run-bi", status: "completed", request: {},
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+              customerPublication: publication,
+              customerPublicationTaskRef: "run-bi",
+              agentHead: {
+                status: "completed_with_limits",
+                activeTaskRef: null,
+                pendingActionRef: null,
+              },
+              agentTerminal: {
+                status: "completed_with_limits",
+                finalOutput: {
+                  answerMarkdown: "被持久化 publication 替代的扁平文本。",
+                  materialRefs: ["publication-ref"],
+                  limitationRefs: ["limit-1"],
+                },
+                errorCode: null,
+                completionKind: "analysis_publication",
+                durableTaskRef: "run-bi",
+                operationId: "operation-analysis",
+              },
+            };
+            const snapshot = projectCustomerAnalysisSnapshot(source);
+            let mismatch = "accepted";
+            try {
+              projectCustomerAnalysisSnapshot({
+                ...source,
+                customerPublicationTaskRef: "run-other",
+              });
+            } catch (error) {
+              mismatch = error instanceof Error ? error.message : "unknown";
+            }
+            console.log(JSON.stringify({
+              status: snapshot.state.status,
+              kinds: snapshot.state.answer.blocks.map((block) => block.kind),
+              headings: snapshot.state.answer.blocks.map((block) => block.heading),
+              texts: snapshot.state.answer.blocks.map((block) => block.text),
+              messageKeys: snapshot.messages.map((message) => message.key),
+              mismatch,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "status": "completed_with_limits",
+        "kinds": ["summary", "limitation"],
+        "headings": ["核心结论", "证据边界"],
+        "texts": ["主要业务结论。", "结论仅适用于当前数据范围。"],
+        "messageKeys": ["message-key"],
+        "mismatch": "customer_agent_publication_binding_invalid",
     }
 
 
@@ -369,7 +500,12 @@ def test_recoverable_agent_failure_is_visible_while_thread_head_accepts_input() 
               ...base,
               messages: [
                 ...base.messages,
-                { key: "assistant-failed", role: "assistant", text: "当前请求暂时未能完成，请稍后重试。", createdAt: base.confirmedAt },
+                {
+                  key: "assistant-failed", role: "assistant",
+                  text: "当前请求暂时未能完成，请稍后重试。",
+                  createdAt: base.confirmedAt, itemType: "assistant_message",
+                  operationKey: "assistant:operation-failed",
+                },
               ],
               run: null,
               agentHead: {
@@ -381,6 +517,9 @@ def test_recoverable_agent_failure_is_visible_while_thread_head_accepts_input() 
                 status: "failed",
                 finalOutput: null,
                 errorCode: "provider_temporary_failure",
+                completionKind: "failed_turn",
+                durableTaskRef: null,
+                operationId: "operation-failed",
               },
             });
             const parsed = parseCustomerAnalysisSnapshot(snapshot);

@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import replace
 import inspect
 import json
+import logging
+import threading
 from typing import Any, Mapping, Sequence
 
 from agents import Agent, FunctionTool, RunConfig, Runner
@@ -30,6 +32,53 @@ from bi_agent.runtime.llm_client import LLMProviderError
 from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
 
 
+class _WajeSdkLogRedactionFilter(logging.Filter):
+    """Prevent the SDK run-loop error logger from copying model input to stderr."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "openai.agents" and "filtered.input" in str(record.msg):
+            record.msg = "Agents SDK model request failed; model input redacted"
+            record.args = ()
+        return True
+
+
+def _install_sdk_log_redaction() -> None:
+    global _SDK_LOG_REDACTION_FILTER
+    with _SDK_LOG_REDACTION_LOCK:
+        if _SDK_LOG_REDACTION_FILTER is not None:
+            return
+        installed = _WajeSdkLogRedactionFilter()
+        logging.getLogger("openai.agents").addFilter(installed)
+        _SDK_LOG_REDACTION_FILTER = installed
+
+
+_SDK_LOG_REDACTION_LOCK = threading.Lock()
+_SDK_LOG_REDACTION_FILTER: _WajeSdkLogRedactionFilter | None = None
+
+
+def _mapped_sdk_error(error: Exception) -> Exception:
+    if isinstance(error, AgentSessionError):
+        return AgentSdkAdapterError(
+            "agent_session_persistence_failed",
+            retryability="retryable",
+        )
+    if isinstance(error, LLMProviderError):
+        return error
+    if isinstance(error, MaxTurnsExceeded):
+        return AgentSdkAdapterError(
+            "agent_model_turn_limit_exceeded",
+            retryability="not_retryable",
+        )
+    if isinstance(error, (ModelBehaviorError, ValidationError)):
+        return AgentSdkAdapterError("agent_output_contract_invalid")
+    if isinstance(error, UserError):
+        return AgentSdkAdapterError("agents_sdk_contract_invalid")
+    return AgentSdkAdapterError(
+        "agents_sdk_runtime_failed",
+        retryability="retryable",
+    )
+
+
 class WajeAgentsSdkAdapter:
     """The only boundary allowed to translate WAJE contracts into SDK types."""
 
@@ -39,11 +88,14 @@ class WajeAgentsSdkAdapter:
         provider: MainlandModelProvider,
         trace_sink: AgentTraceSink,
     ) -> None:
+        _install_sdk_log_redaction()
         self._provider = provider
+        self._trace_sink = trace_sink
         self._trace_processor = install_waje_trace_processor(trace_sink)
 
     async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
         agent, run_config = self._build_sdk_run(request)
+        self._trace_processor.register_run(request.run_id, self._trace_sink)
         try:
             result = await Runner.run(
                 agent,
@@ -54,24 +106,19 @@ class WajeAgentsSdkAdapter:
                 conversation_id=None,
                 session=request.session,
             )
-        except AgentSessionError as exc:
-            raise AgentSdkAdapterError(
-                "agent_session_persistence_failed",
-                retryability="retryable",
-            ) from exc
-        except LLMProviderError:
+        except Exception as exc:
+            mapped = _mapped_sdk_error(exc)
+            self._finish_trace(request.run_id, cause=exc)
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        try:
+            projected = _project_result(request, result)
+            _validate_tool_choice_result(request, projected)
+        except Exception as exc:
+            self._finish_trace(request.run_id, cause=exc)
             raise
-        except MaxTurnsExceeded as exc:
-            raise AgentSdkAdapterError(
-                "agent_model_turn_limit_exceeded",
-                retryability="not_retryable",
-            ) from exc
-        except (ModelBehaviorError, ValidationError) as exc:
-            raise AgentSdkAdapterError("agent_output_contract_invalid") from exc
-        except UserError as exc:
-            raise AgentSdkAdapterError("agents_sdk_contract_invalid") from exc
-        projected = _project_result(request, result)
-        _validate_tool_choice_result(request, projected)
+        self._finish_trace(request.run_id)
         return projected
 
     def run_sync(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
@@ -86,44 +133,55 @@ class WajeAgentsSdkAdapter:
         request: WajeAgentRunRequest,
     ) -> WajeAgentRunResult:
         agent, run_config = self._build_sdk_run(request)
-        stream = Runner.run_streamed(
-            agent,
-            request.input_text,
-            max_turns=request.max_turns,
-            run_config=run_config,
-            previous_response_id=None,
-            conversation_id=None,
-            session=request.session,
-        )
+        self._trace_processor.register_run(request.run_id, self._trace_sink)
         projected_events: list[WajeAgentStreamEvent] = []
         try:
+            stream = Runner.run_streamed(
+                agent,
+                request.input_text,
+                max_turns=request.max_turns,
+                run_config=run_config,
+                previous_response_id=None,
+                conversation_id=None,
+                session=request.session,
+            )
             async for event in stream.stream_events():
                 projected = _project_stream_event(event)
                 if projected is not None:
                     projected_events.append(projected)
-        except AgentSessionError as exc:
-            raise AgentSdkAdapterError(
-                "agent_session_persistence_failed",
-                retryability="retryable",
-            ) from exc
-        except LLMProviderError:
+        except Exception as exc:
+            mapped = _mapped_sdk_error(exc)
+            self._finish_trace(request.run_id, cause=exc)
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        try:
+            projected = _project_result(
+                request,
+                stream,
+                stream_events=projected_events,
+            )
+            _validate_tool_choice_result(request, projected)
+        except Exception as exc:
+            self._finish_trace(request.run_id, cause=exc)
             raise
-        except MaxTurnsExceeded as exc:
-            raise AgentSdkAdapterError(
-                "agent_model_turn_limit_exceeded",
-                retryability="not_retryable",
-            ) from exc
-        except (ModelBehaviorError, ValidationError) as exc:
-            raise AgentSdkAdapterError("agent_output_contract_invalid") from exc
-        except UserError as exc:
-            raise AgentSdkAdapterError("agents_sdk_contract_invalid") from exc
-        projected = _project_result(
-            request,
-            stream,
-            stream_events=projected_events,
-        )
-        _validate_tool_choice_result(request, projected)
+        self._finish_trace(request.run_id)
         return projected
+
+    def _finish_trace(self, run_id: str, *, cause: Exception | None = None) -> None:
+        failure = self._trace_processor.finish_run(run_id)
+        if failure is None:
+            return
+        event_type, error_type = failure
+        error = AgentSdkAdapterError(
+            "agent_trace_persistence_failed",
+            retryability="retryable",
+        )
+        error.trace_failure = {
+            "event_type": event_type,
+            "error_type": error_type,
+        }
+        raise error from cause
 
     def _build_sdk_run(self, request: WajeAgentRunRequest) -> tuple[Any, RunConfig]:
         tools = [

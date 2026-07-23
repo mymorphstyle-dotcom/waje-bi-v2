@@ -200,6 +200,19 @@ def test_business_fact_must_close_to_artifact_or_material_authority() -> None:
         )
 
 
+def test_empty_summary_is_valid_when_sources_have_no_material_statement() -> None:
+    summary = VersionedThreadSummary.create(
+        thread_id="thread-summary",
+        summary_version=1,
+        source_items=[_source(1)],
+        authority_refs=[],
+        content=ThreadSummaryContent(statements=[]),
+    )
+
+    assert summary.content.statements == []
+    assert VersionedThreadSummary.model_validate(summary.to_contract()) == summary
+
+
 def test_summary_store_requires_contiguous_append_only_versions() -> None:
     store = InMemoryThreadSummaryStore()
     first = VersionedThreadSummary.create(
@@ -435,6 +448,66 @@ def test_compactor_generates_and_appends_one_contiguous_summary_version() -> Non
     assert [item.sequence for item in summary.source_items] == [1, 2, 3, 4]
     assert generator.inputs[0].source_items[0].payload["sdk_replay"] is True
     assert store.latest("thread-summary") == summary
+
+
+def test_compactor_admits_only_source_closed_generated_statements() -> None:
+    class SourceDriftGenerator:
+        async def generate(
+            self,
+            value: ThreadSummaryGenerationInput,
+        ) -> ThreadSummaryContent:
+            source_ref = value.source_items[0].item_id
+            return ThreadSummaryContent(
+                statements=[
+                    ThreadSummaryStatement(
+                        statementId="goal-with-extra-ref",
+                        kind="user_goal",
+                        text="延续当前线程的用户目标。",
+                        sourceRefs=[source_ref, "message:outside-compaction-window"],
+                    ),
+                    ThreadSummaryStatement(
+                        statementId="unsupported-business-fact",
+                        kind="business_fact",
+                        text="缺少权威材料的业务事实。",
+                        sourceRefs=[source_ref],
+                    ),
+                    ThreadSummaryStatement(
+                        statementId="unknown-only",
+                        kind="open_question",
+                        text="没有闭合来源的问题。",
+                        sourceRefs=["message:unknown"],
+                    ),
+                ]
+            )
+
+    ledger = _ledger_with_messages(6)
+    store = InMemoryThreadSummaryStore()
+    compactor = ThreadContextCompactor(
+        ledger=ledger,
+        summary_store=store,
+        artifact_index=InMemoryArtifactIndex(),
+        generator=SourceDriftGenerator(),
+    )
+
+    summary = asyncio.run(
+        compactor.compact(
+            thread_id="thread-summary",
+            compact_from_sequence=1,
+            compact_through_sequence=4,
+        )
+    )
+
+    assert [
+        statement.model_dump(mode="json", by_alias=True)
+        for statement in summary.content.statements
+    ] == [
+        {
+            "statementId": "goal-with-extra-ref",
+            "kind": "user_goal",
+            "text": "延续当前线程的用户目标。",
+            "sourceRefs": [summary.source_items[0].item_ref],
+        }
+    ]
 
 
 class CombinedAdapter:

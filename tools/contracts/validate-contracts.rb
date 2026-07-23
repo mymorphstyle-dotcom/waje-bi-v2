@@ -31,6 +31,7 @@ BUSINESS_STATES = %w[
 EVIDENCE_TYPES = %w[
   accounting_contribution
   dimension_localization
+  observed_comparison
   statistical_association
   candidate_mechanism
   causal_evidence
@@ -38,11 +39,12 @@ EVIDENCE_TYPES = %w[
 ].freeze
 
 STRENGTHS = %w[high medium low insufficient].freeze
-WORDING_LIMITS = %w[quantified stable_pattern candidate context insufficient blocked].freeze
+WORDING_LIMITS = %w[quantified directional stable_pattern candidate context insufficient blocked].freeze
 
 CAPABILITIES = %w[
   pattern_scan
   formula_decompose
+  payment_outcome_compare
   joint_attribution
   event_evidence
   outlier_scan

@@ -12,10 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ZIP = Path("/Users/luka/Downloads/dapan_pay_data.zip")
 DATABASE = "waje_bi"
 RAW_TABLE = "paid_order_detail_raw_20240101_20260704"
-CLEAN_TABLE = "paid_order_success_clean_20240101_20260704"
-DAILY_TABLE = "paid_order_success_daily_20240101_20260704"
-LATEST_TABLE = "paid_order_success_latest_key_20240101_20260704"
-METADATA_TABLE = "load_metadata_20240101_20260704"
+CLEAN_TABLE = "paid_order_success_clean_20240101_20260704_v2"
+DAILY_TABLE = "paid_order_success_daily_20240101_20260704_v2"
+LATEST_TABLE = "paid_order_success_latest_key_20240101_20260704_v2"
+FIRST_PAYMENT_TABLE = "paid_order_success_first_payment_20240101_20260704_v2"
+METADATA_TABLE = "load_metadata_20240101_20260704_v2"
 REPORT_PATH = ROOT / "docs/reviews/full-payment-data-cleaning-20240101-20260704.md"
 PROFILE_PATH = (
     ROOT / "artifacts/data-cleaning/payment_details_20240101_20260704_profile.json"
@@ -65,6 +66,7 @@ CLEAN_COLUMNS = """
     `currency` String,
     `is_new_user` String,
     `is_first_payment` String,
+    `is_first_payment_source` String,
     `channel` Nullable(String),
     `payment_method` String,
     `country` Nullable(String),
@@ -74,8 +76,10 @@ CLEAN_COLUMNS = """
     `device_model` Nullable(String),
     `os` Nullable(String),
     `network_type` Nullable(String),
-    `registered_at` Nullable(String),
-    `first_paid_at` Nullable(String),
+    `registered_at` Nullable(DateTime64(3, 'Africa/Lagos')),
+    `first_paid_at` Nullable(DateTime64(3, 'Africa/Lagos')),
+    `registered_to_first_paid_lag_seconds` Nullable(Int64),
+    `registered_to_first_paid_lag_quality` String,
     `payment_latency_seconds` Nullable(String),
     `raw_date` String
 """
@@ -93,7 +97,11 @@ def main() -> int:
     if not zip_path.exists():
         raise SystemExit(f"missing zip: {zip_path}")
 
-    create_tables(args.container, replace=args.replace)
+    create_tables(
+        args.container,
+        replace=args.replace,
+        preserve_raw=args.skip_load,
+    )
     if not args.skip_load:
         ensure_empty(args.container, RAW_TABLE)
         for member in CSV_MEMBERS:
@@ -128,9 +136,16 @@ def ch(container: str, query: str, *, fmt: str | None = None) -> str:
     return result.stdout.strip()
 
 
-def create_tables(container: str, *, replace: bool) -> None:
-    for table in (RAW_TABLE, CLEAN_TABLE, DAILY_TABLE, LATEST_TABLE, METADATA_TABLE):
-        if replace:
+def create_tables(container: str, *, replace: bool, preserve_raw: bool = False) -> None:
+    for table in (
+        RAW_TABLE,
+        CLEAN_TABLE,
+        DAILY_TABLE,
+        LATEST_TABLE,
+        FIRST_PAYMENT_TABLE,
+        METADATA_TABLE,
+    ):
+        if replace and not (preserve_raw and table == RAW_TABLE):
             ch(container, f"DROP TABLE IF EXISTS {table}")
 
     ch(
@@ -161,6 +176,19 @@ def create_tables(container: str, *, replace: bool) -> None:
         )
         ENGINE = MergeTree
         ORDER BY order_id
+        """,
+    )
+    ch(
+        container,
+        f"""
+        CREATE TABLE IF NOT EXISTS {FIRST_PAYMENT_TABLE}
+        (
+            `user_id` String,
+            `order_id` String,
+            `first_paid_at` DateTime64(3, 'Africa/Lagos')
+        )
+        ENGINE = MergeTree
+        ORDER BY user_id
         """,
     )
     ch(
@@ -230,8 +258,10 @@ def rebuild_clean_tables(container: str) -> None:
     ch(container, f"TRUNCATE TABLE {CLEAN_TABLE}")
     ch(container, f"TRUNCATE TABLE {DAILY_TABLE}")
     ch(container, f"TRUNCATE TABLE {LATEST_TABLE}")
+    ch(container, f"TRUNCATE TABLE {FIRST_PAYMENT_TABLE}")
     ch(container, f"TRUNCATE TABLE {METADATA_TABLE}")
     ch(container, latest_insert_sql())
+    ch(container, first_payment_insert_sql())
     ch(container, clean_insert_sql())
     ch(
         container,
@@ -252,6 +282,9 @@ def rebuild_clean_tables(container: str) -> None:
         "clean_paid_amount_ngn": f"SELECT toString(sum(paid_amount_ngn)) FROM {CLEAN_TABLE}",
         "business_date_basis": "SELECT 'payment_completed_ms converted to Africa/Lagos'",
         "dedup_rule": "SELECT 'keep latest pay_success per order_id'",
+        "first_payment_authority": "SELECT 'earliest successful source-first-payment per user ordered by payment_completed_ms,order_id'",
+        "registered_at_timezone": "SELECT 'source wall time interpreted as Asia/Shanghai and stored as Africa/Lagos'",
+        "first_paid_at_timezone": "SELECT 'source epoch milliseconds interpreted as UTC and stored as Africa/Lagos'",
     }
     values = []
     for key, query in metadata.items():
@@ -276,39 +309,121 @@ def latest_insert_sql() -> str:
         """
 
 
-def clean_insert_sql() -> str:
+def first_payment_insert_sql() -> str:
     return f"""
-        INSERT INTO {CLEAN_TABLE}
+        INSERT INTO {FIRST_PAYMENT_TABLE}
         SELECT
-            r.`订单id`,
-            r.`用户id`,
-            toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(r.`支付完成时间`)), 'Africa/Lagos')),
-            toInt64OrZero(r.`支付完成时间`),
-            nullIf(nullIf(r.`支付发起时间`, 'NULL'), ''),
-            toFloat64OrZero(r.`支付成功金额`),
-            r.`币种`,
-            r.`是否新用户`,
-            r.`是否首充`,
-            nullIf(nullIf(r.`分包渠道`, 'NULL'), ''),
-            r.`支付方式`,
-            nullIf(nullIf(r.`国家`, 'NULL'), ''),
-            nullIf(nullIf(r.`州/地区`, 'NULL'), ''),
-            nullIf(nullIf(r.`城市`, 'NULL'), ''),
-            nullIf(nullIf(r.`设备品牌`, 'NULL'), ''),
-            nullIf(nullIf(r.`设备型号`, 'NULL'), ''),
-            nullIf(nullIf(r.`操作系统`, 'NULL'), ''),
-            nullIf(nullIf(r.`网络类型`, 'NULL'), ''),
-            nullIf(nullIf(r.`注册时间`, 'NULL'), ''),
-            nullIf(nullIf(r.`首充时间`, 'NULL'), ''),
-            nullIf(nullIf(r.`支付耗时秒`, 'NULL'), ''),
-            r.`日期`
+            r.`用户id` AS user_id,
+            argMin(r.`订单id`, tuple(toInt64(r.`支付完成时间`), r.`订单id`)) AS order_id,
+            argMin(
+                toTimeZone(
+                    fromUnixTimestamp64Milli(toInt64(r.`支付完成时间`)),
+                    'Africa/Lagos'
+                ),
+                tuple(toInt64(r.`支付完成时间`), r.`订单id`)
+            ) AS first_paid_at
         FROM {RAW_TABLE} AS r
         INNER JOIN {LATEST_TABLE} AS latest
             ON r.`订单id` = latest.order_id
            AND toInt64OrZero(r.`支付完成时间`) = latest.payment_completed_ms
         WHERE r.`支付状态` = 'pay_success'
+          AND r.`是否首充` = '1'
+          AND nullIf(nullIf(r.`用户id`, 'NULL'), '') IS NOT NULL
           AND toInt64OrNull(r.`支付完成时间`) IS NOT NULL
           AND toFloat64OrNull(r.`支付成功金额`) IS NOT NULL
+        GROUP BY r.`用户id`
+        SETTINGS max_bytes_before_external_group_by = 1000000000
+        """
+
+
+def clean_insert_sql() -> str:
+    return f"""
+        INSERT INTO {CLEAN_TABLE}
+        SELECT
+            normalized.order_id,
+            normalized.user_id,
+            normalized.business_date_lagos,
+            normalized.payment_completed_ms,
+            normalized.payment_started_ms,
+            normalized.paid_amount_ngn,
+            normalized.currency,
+            normalized.is_new_user,
+            normalized.is_first_payment,
+            normalized.is_first_payment_source,
+            normalized.channel,
+            normalized.payment_method,
+            normalized.country,
+            normalized.region,
+            normalized.city,
+            normalized.device_brand,
+            normalized.device_model,
+            normalized.os,
+            normalized.network_type,
+            normalized.registered_at,
+            normalized.first_paid_at,
+            if(
+                normalized.is_first_payment = '1'
+                AND normalized.registered_at IS NOT NULL,
+                dateDiff('second', normalized.registered_at, normalized.first_paid_at),
+                NULL
+            ) AS registered_to_first_paid_lag_seconds,
+            multiIf(
+                normalized.is_first_payment != '1', 'not_first_payment',
+                normalized.registered_at IS NULL, 'missing_registered_at',
+                dateDiff('second', normalized.registered_at, normalized.first_paid_at) < 0,
+                'negative_source_anomaly',
+                'valid'
+            ) AS registered_to_first_paid_lag_quality,
+            normalized.payment_latency_seconds,
+            normalized.raw_date
+        FROM
+        (
+            SELECT
+                r.`订单id` AS order_id,
+                r.`用户id` AS user_id,
+                toDate(toTimeZone(fromUnixTimestamp64Milli(toInt64OrZero(r.`支付完成时间`)), 'Africa/Lagos')) AS business_date_lagos,
+                toInt64OrZero(r.`支付完成时间`) AS payment_completed_ms,
+                nullIf(nullIf(r.`支付发起时间`, 'NULL'), '') AS payment_started_ms,
+                toFloat64OrZero(r.`支付成功金额`) AS paid_amount_ngn,
+                r.`币种` AS currency,
+                r.`是否新用户` AS is_new_user,
+                if(first_payment.order_id != '', '1', '0') AS is_first_payment,
+                r.`是否首充` AS is_first_payment_source,
+                nullIf(nullIf(r.`分包渠道`, 'NULL'), '') AS channel,
+                r.`支付方式` AS payment_method,
+                nullIf(nullIf(r.`国家`, 'NULL'), '') AS country,
+                nullIf(nullIf(r.`州/地区`, 'NULL'), '') AS region,
+                nullIf(nullIf(r.`城市`, 'NULL'), '') AS city,
+                nullIf(nullIf(r.`设备品牌`, 'NULL'), '') AS device_brand,
+                nullIf(nullIf(r.`设备型号`, 'NULL'), '') AS device_model,
+                nullIf(nullIf(r.`操作系统`, 'NULL'), '') AS os,
+                nullIf(nullIf(r.`网络类型`, 'NULL'), '') AS network_type,
+                toTimeZone(
+                    parseDateTime64BestEffortOrNull(
+                        nullIf(nullIf(r.`注册时间`, 'NULL'), ''),
+                        3,
+                        'Asia/Shanghai'
+                    ),
+                    'Africa/Lagos'
+                ) AS registered_at,
+                if(
+                    first_payment.order_id != '',
+                    first_payment.first_paid_at,
+                    CAST(NULL AS Nullable(DateTime64(3, 'Africa/Lagos')))
+                ) AS first_paid_at,
+                nullIf(nullIf(r.`支付耗时秒`, 'NULL'), '') AS payment_latency_seconds,
+                r.`日期` AS raw_date
+            FROM {RAW_TABLE} AS r
+            INNER JOIN {LATEST_TABLE} AS latest
+                ON r.`订单id` = latest.order_id
+               AND toInt64OrZero(r.`支付完成时间`) = latest.payment_completed_ms
+            LEFT JOIN {FIRST_PAYMENT_TABLE} AS first_payment
+                ON r.`用户id` = first_payment.user_id
+               AND r.`订单id` = first_payment.order_id
+            WHERE r.`支付状态` = 'pay_success'
+              AND toInt64OrNull(r.`支付完成时间`) IS NOT NULL
+              AND toFloat64OrNull(r.`支付成功金额`) IS NOT NULL
+        ) AS normalized
         """
 
 
@@ -327,6 +442,7 @@ def collect_profile(container: str, zip_path: Path) -> dict:
         "clean_table": CLEAN_TABLE,
         "daily_table": DAILY_TABLE,
         "latest_table": LATEST_TABLE,
+        "first_payment_table": FIRST_PAYMENT_TABLE,
         "raw_rows": int(scalar(f"SELECT count() FROM {RAW_TABLE}")),
         "latest_key_rows": int(scalar(f"SELECT count() FROM {LATEST_TABLE}")),
         "clean_paid_rows": int(scalar(f"SELECT count() FROM {CLEAN_TABLE}")),
@@ -338,6 +454,44 @@ def collect_profile(container: str, zip_path: Path) -> dict:
         ),
         "clean_date_end": scalar(
             f"SELECT toString(max(business_date_lagos)) FROM {CLEAN_TABLE}"
+        ),
+        "source_first_payment_rows": int(
+            scalar(
+                f"SELECT countIf(is_first_payment_source = '1') FROM {CLEAN_TABLE}"
+            )
+        ),
+        "canonical_first_payment_rows": int(
+            scalar(f"SELECT countIf(is_first_payment = '1') FROM {CLEAN_TABLE}")
+        ),
+        "canonical_first_payment_users": int(
+            scalar(
+                f"SELECT uniqExactIf(user_id, is_first_payment = '1') FROM {CLEAN_TABLE}"
+            )
+        ),
+        "canonical_first_payment_duplicate_users": int(
+            scalar(
+                f"""
+                SELECT count()
+                FROM
+                (
+                    SELECT user_id
+                    FROM {CLEAN_TABLE}
+                    WHERE is_first_payment = '1'
+                    GROUP BY user_id
+                    HAVING count() > 1
+                )
+                """
+            )
+        ),
+        "negative_registration_to_first_payment_rows": int(
+            scalar(
+                f"""
+                SELECT countIf(
+                    registered_to_first_paid_lag_quality = 'negative_source_anomaly'
+                )
+                FROM {CLEAN_TABLE}
+                """
+            )
         ),
         "duplicate_success_rows_removed": int(
             scalar(
@@ -445,6 +599,7 @@ def collect_profile(container: str, zip_path: Path) -> dict:
                 UNION ALL SELECT 'network_type', countIf(isNull(network_type)) FROM {CLEAN_TABLE}
                 UNION ALL SELECT 'registered_at', countIf(isNull(registered_at)) FROM {CLEAN_TABLE}
                 UNION ALL SELECT 'first_paid_at', countIf(isNull(first_paid_at)) FROM {CLEAN_TABLE}
+                UNION ALL SELECT 'registered_to_first_paid_lag_seconds', countIf(isNull(registered_to_first_paid_lag_seconds)) FROM {CLEAN_TABLE}
                 UNION ALL SELECT 'payment_latency_seconds', countIf(isNull(payment_latency_seconds)) FROM {CLEAN_TABLE}
             )
             ORDER BY missing_rows DESC
@@ -502,6 +657,7 @@ def render_report(profile: dict) -> str:
         f"- Clean ClickHouse table: `{s['clean_table']}`",
         f"- Daily summary table: `{s['daily_table']}`",
         f"- Latest-key helper table: `{s['latest_table']}`",
+        f"- First-payment authority table: `{s['first_payment_table']}`",
         f"- Profile JSON: `{PROFILE_PATH.relative_to(ROOT)}`",
         "",
         "## Cleaning Rules",
@@ -509,7 +665,11 @@ def render_report(profile: dict) -> str:
         "- Include `pay_success` rows for paid amount.",
         "- Exclude `order_success` from paid amount.",
         "- Deduplicate successful payment rows by `订单id`, keeping the latest `支付完成时间`.",
+        "- Within source rows marked as first payment, keep one canonical first-payment order per user using the earliest `(payment_completed_ms, order_id)` tuple.",
         "- Use `支付完成时间` converted to `Africa/Lagos` as `business_date_lagos`.",
+        "- Interpret `注册时间` wall-clock text as `Asia/Shanghai`, then store the instant in `Africa/Lagos`.",
+        "- Interpret `首充时间` epoch milliseconds as UTC, then store the canonical first-payment instant in `Africa/Lagos`.",
+        "- Mark residual negative registration-to-first-payment lags as source anomalies; exclude them from lag conclusions.",
         "- Preserve source dimension values; only empty string and `NULL` are converted to null.",
         "",
         "## Summary",
@@ -519,6 +679,10 @@ def render_report(profile: dict) -> str:
         f"- Clean paid rows: {s['clean_paid_rows']:,}",
         f"- Clean paid amount: {s['clean_paid_amount_ngn']:,.2f} NGN",
         f"- Clean date range: {s['clean_date_start']} through {s['clean_date_end']}",
+        f"- Source first-payment rows: {s['source_first_payment_rows']:,}",
+        f"- Canonical first-payment rows/users: {s['canonical_first_payment_rows']:,} / {s['canonical_first_payment_users']:,}",
+        f"- Canonical first-payment duplicate users: {s['canonical_first_payment_duplicate_users']:,}",
+        f"- Residual negative registration-to-first-payment rows: {s['negative_registration_to_first_payment_rows']:,}",
         f"- Duplicate success rows removed: {s['duplicate_success_rows_removed']:,}",
         f"- Clean rows above latest-key count: {s['clean_rows_over_latest_key']:,}",
         f"- Invalid success rows excluded: {s['invalid_success_rows_excluded']:,}",

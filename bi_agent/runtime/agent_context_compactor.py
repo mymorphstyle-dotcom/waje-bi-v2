@@ -23,9 +23,12 @@ THREAD_SUMMARY_INSTRUCTIONS = """\
 Create a compact WAJE thread summary from only the supplied customer-safe sources.
 Return typed statements. Every statement must cite exact sourceRefs from the supplied item,
 artifact, material, or previous-summary refs. A business_fact must cite at least one supplied
-artifact or material authority ref. Preserve a prior statement only when it remains relevant;
-keep its original authority ref and cite the previous summary ref. Do not add facts, calculations,
-decisions, limitations, identities, or business meaning absent from the supplied sources.
+artifact or material ref listed in allowedAuthorityRefs. User and assistant messages can support
+user_goal, accepted_decision, limitation, or open_question only when their content explicitly
+establishes that class; they never establish a business_fact by themselves. Preserve a prior
+statement only when it remains relevant; keep its original authority ref and cite the previous
+summary ref. Return an empty statements list when no material statement is supported. Do not add
+facts, calculations, decisions, limitations, identities, or business meaning absent from the supplied sources.
 Do not include hidden reasoning, provider details, raw rows, SQL, credentials, or technical errors.
 """
 
@@ -179,7 +182,15 @@ class ThreadContextCompactor:
             source_items=source_items,
             artifacts=tuple(artifacts),
         )
-        content = await self._generator.generate(generation_input)
+        generated_content = await self._generator.generate(generation_input)
+        content = _admit_summary_content(
+            generated_content,
+            source_item_refs={item.item_id for item in source_items},
+            authority_refs=set(generation_input.authority_refs),
+            previous_summary_ref=(
+                previous.summary_ref if previous is not None else None
+            ),
+        )
         summary = VersionedThreadSummary.create(
             thread_id=thread_id,
             summary_version=(1 if previous is None else previous.summary_version + 1),
@@ -196,6 +207,33 @@ class ThreadContextCompactor:
             content=content,
         )
         return self._summary_store.append(summary)
+
+
+def _admit_summary_content(
+    content: ThreadSummaryContent,
+    *,
+    source_item_refs: set[str],
+    authority_refs: set[str],
+    previous_summary_ref: str | None,
+) -> ThreadSummaryContent:
+    """Keep only statements whose typed source closure survives admission."""
+
+    allowed_refs = source_item_refs | authority_refs
+    if previous_summary_ref is not None:
+        allowed_refs.add(previous_summary_ref)
+    admitted = []
+    for statement in content.statements:
+        source_refs = [
+            ref for ref in statement.source_refs if ref in allowed_refs
+        ]
+        if not source_refs:
+            continue
+        if statement.kind == "business_fact" and not (
+            set(source_refs) & authority_refs
+        ):
+            continue
+        admitted.append(statement.model_copy(update={"source_refs": source_refs}))
+    return ThreadSummaryContent(statements=admitted)
 
 
 __all__ = (

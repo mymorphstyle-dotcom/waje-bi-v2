@@ -36,8 +36,8 @@ from tools.data.source_loader_common import (
 
 SOURCE_CONTRACT_PATH = ROOT / "contracts" / "sources" / "paid-order-detail.source.yaml"
 DATASET_ID = "paid_order_success"
-CONTRACT_REF = "contracts/sources/paid-order-detail.source.yaml@0.3"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
+CONTRACT_REF = "contracts/sources/paid-order-detail.source.yaml@0.4"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@20"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -56,6 +56,7 @@ class ExistingPaidSuccessInspection:
     watermark: str
     rows_content_hash: str
     source_checksums: tuple[tuple[str, str], ...]
+    data_quality: tuple[tuple[str, int], ...]
     validation_errors: tuple[str, ...]
 
     @property
@@ -166,6 +167,16 @@ def inspect_existing_paid_success(
           countIf(empty(order_id) OR empty(user_id) OR isNull(business_date_lagos)) AS null_critical_fields,
           countIf(NOT isFinite(paid_amount_ngn) OR paid_amount_ngn <= 0) AS invalid_amount_rows,
           count() - uniqExact(order_id) AS duplicate_key_rows,
+          countIf(is_first_payment_source = '1') AS source_first_payment_rows,
+          uniqExactIf(user_id, is_first_payment_source = '1') AS source_first_payment_users,
+          countIf(is_first_payment = '1') AS canonical_first_payment_rows,
+          uniqExactIf(user_id, is_first_payment = '1') AS canonical_first_payment_users,
+          countIf(is_first_payment = '1') - uniqExactIf(user_id, is_first_payment = '1') AS canonical_first_payment_duplicate_rows,
+          countIf(is_first_payment = '1' AND isNull(first_paid_at)) AS canonical_first_payment_missing_timestamp_rows,
+          countIf(is_first_payment != '1' AND isNotNull(first_paid_at)) AS noncanonical_first_payment_timestamp_rows,
+          countIf(registered_to_first_paid_lag_quality = 'valid') AS valid_first_payment_lag_rows,
+          countIf(registered_to_first_paid_lag_quality = 'missing_registered_at') AS missing_registered_at_first_payment_rows,
+          countIf(registered_to_first_paid_lag_quality = 'negative_source_anomaly') AS negative_first_payment_lag_rows,
           groupBitXor(cityHash64(tuple({fingerprint_expression}))) AS content_hash_a,
           groupBitXor(cityHash64(tuple({fingerprint_expression}), 1)) AS content_hash_b
         FROM {_qualified_table_identifier(analytical_database, physical_table)}
@@ -198,6 +209,51 @@ def inspect_existing_paid_success(
         if count != 0:
             errors.append(f"{failure_type}:invalid_rows={count}")
 
+    quality_contract = _mapping(source_contract.get("first_payment_authority"))
+    lag_contract = _mapping(
+        _mapping(source_contract.get("timestamp_authority")).get(
+            "registered_to_first_paid_lag"
+        )
+    )
+    expected_quality = {
+        "source_first_payment_rows": _integer(
+            quality_contract.get("source_first_payment_rows"), default=-1
+        ),
+        "source_first_payment_users": _integer(
+            quality_contract.get("canonical_first_payment_users"), default=-1
+        ),
+        "canonical_first_payment_rows": _integer(
+            quality_contract.get("canonical_first_payment_rows"), default=-1
+        ),
+        "canonical_first_payment_users": _integer(
+            quality_contract.get("canonical_first_payment_users"), default=-1
+        ),
+        "canonical_first_payment_duplicate_rows": 0,
+        "canonical_first_payment_missing_timestamp_rows": 0,
+        "noncanonical_first_payment_timestamp_rows": 0,
+        "valid_first_payment_lag_rows": _integer(
+            lag_contract.get("canonical_rows_valid"), default=-1
+        ),
+        "missing_registered_at_first_payment_rows": _integer(
+            lag_contract.get("canonical_rows_missing_registered_at"), default=-1
+        ),
+        "negative_first_payment_lag_rows": _integer(
+            lag_contract.get("canonical_rows_negative_source_anomaly"), default=-1
+        ),
+    }
+    observed_quality = {
+        field: _integer(aggregate.get(field), default=-1)
+        for field in expected_quality
+    }
+    for field, expected in expected_quality.items():
+        actual = observed_quality[field]
+        if expected < 0:
+            errors.append(f"data_quality:{field}:reviewed_contract_value_missing")
+        elif actual != expected:
+            errors.append(
+                f"data_quality:{field}:expected={expected}:actual={actual}"
+            )
+
     rows_hash_payload = {
         "algorithm": "clickhouse-aggregate-cityhash64-xor-null-marker-v2",
         "schema": actual_schema,
@@ -219,6 +275,7 @@ def inspect_existing_paid_success(
             canonical_json_bytes(rows_hash_payload)
         ).hexdigest(),
         source_checksums=(("archive_sha256", archive_sha256),),
+        data_quality=tuple(sorted(observed_quality.items())),
         validation_errors=tuple(errors),
     )
     if errors:
@@ -393,6 +450,7 @@ def _inspection_metadata(inspection: ExistingPaidSuccessInspection) -> dict[str,
         "watermark": inspection.watermark,
         "rows_content_hash": inspection.rows_content_hash,
         "source_checksums": dict(inspection.source_checksums),
+        "data_quality": dict(inspection.data_quality),
         "validation_errors": inspection.validation_errors,
         "dataset_ids": (DATASET_ID,),
     }
@@ -443,6 +501,13 @@ def _fingerprint_column_expression(name: str, data_type: str) -> str:
         default = "''"
     elif nested == "Date":
         default = "toDate(0)"
+    elif nested.startswith("DateTime64"):
+        match = re.fullmatch(r"DateTime64\((\d+)(?:,\s*'([^']+)')?\)", nested)
+        if match is None:
+            raise PaidSuccessRegistrationError("schema:datetime64_type_invalid")
+        precision, timezone_name = match.groups()
+        timezone_sql = f", '{timezone_name}'" if timezone_name else ""
+        default = f"toDateTime64(0, {precision}{timezone_sql})"
     elif nested.startswith("DateTime"):
         default = "toDateTime(0)"
     else:

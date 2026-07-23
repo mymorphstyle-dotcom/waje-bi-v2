@@ -3,7 +3,7 @@
 ## 状态与范围
 
 本阶段已经建立可运行、可测试的 Agents SDK adapter boundary。2026-07-21 的
-`general-agent-runtime-live-eval.v2` 在真实 DeepSeek、隔离 PostgreSQL 和无
+`waje-standard-pack-run.v1` 在真实 DeepSeek、隔离 PostgreSQL 和无
 `OPENAI_API_KEY` 环境中 7/7 通过；必需工具执行、强类型终局、澄清恢复、持久化 checkpoint、
 客户语言和出站安全均进入应用级验收。连续对话、Session 和应用轮次持久化边界见
 [`p0-conversation-state-authority.md`](./p0-conversation-state-authority.md)。
@@ -36,11 +36,16 @@ Gateway、客户投影、BI 合同和 DOM 只消费 `agent_sdk_contracts.py` 中
 ## 模型请求路径
 
 ```text
-WajeAgentRunRequest
-  -> WajeAgentsSdkAdapter
-  -> Agents SDK Runner
-  -> MainlandModelProvider
-  -> explicit AsyncOpenAI client
+General Agent: WajeAgentRunRequest
+  -> WajeAgentsSdkAdapter -> Agents SDK Runner
+  -> MainlandModelProvider -> explicit AsyncOpenAI client
+
+BI LangGraph typed nodes
+  -> MainlandModelProvider.structured_client(...)
+  -> OpenAICompatibleLLMClient
+
+Both transports
+  -> exact configured HTTPS origin
   -> <WAJE_LLM_BASE_URL>/chat/completions
 ```
 
@@ -51,7 +56,10 @@ WajeAgentRunRequest
 - SDK `model=None` 和未配置 model 被拒绝；
 - `previous_response_id`、`conversation_id` 和 hosted prompt 被拒绝；
 - `OPENAI_API_KEY` 不参与新旧两条 WAJE Provider 配置；
-- `openai.com` 及其子域在构造时拒绝，每个 SDK HTTP 请求再次校验目标 origin；
+- BI typed client 与 Agents SDK client 共享同一 `MainlandProviderConfig` 配置工厂，业务层和
+  工具脚本不再单独解析 Provider 环境变量；
+- base URL 必须使用 HTTPS，`openai.com` 及其子域在构造时拒绝，两条传输链的每个 HTTP
+  请求都再次校验目标 origin；
 - HTTP redirect 关闭；
 - timeout、HTTP retry 和 circuit breaker 位于 Provider 层。
 
@@ -77,6 +85,12 @@ WAJE_LLM_THINKING=enabled|disabled
 `WAJE_LLM_TIMEOUT_SECONDS` 只有在配置正数时启用。`WAJE_LLM_MAX_ATTEMPTS` 缺省为 3；
 SDK Runner 和业务工具不得再包重试循环。
 
+General Agent 与 BI typed client 在生产接线时都使用 `PostgresProviderCircuit`。熔断事件按
+Provider、origin、model 和 transport 形成稳定 circuit identity，写入 WAJE audit ledger；
+不同 detached process 读取同一连续失败窗口。达到阈值后请求在出站前失败，恢复窗口结束只
+允许一个 probe claim 进入；Provider 成功或可重试失败继续写入对应状态事件。单元测试与无
+PostgreSQL 的隔离 capability probe 可以显式使用进程内 circuit。
+
 ## 结构化输出、工具和流
 
 DeepSeek Chat Completions 的 JSON Object mode 负责生成合法 JSON，Agents SDK 的
@@ -95,6 +109,13 @@ SDK 的全部默认 trace processors，因此 run、model turn、tool call 和�
 sink。生产接线使用 `PostgresAgentTraceSink` 复用现有 `audit_events`；单元测试使用隔离的
 `InMemoryAgentTraceSink`。客户投影没有 trace sink 或 SDK payload 字段。
 
+生产 trace 使用独立 PostgreSQL connection，不能和 SDK Session/ThreadItemLedger 并发复用
+同一 connection。单条记录上限 512 KiB、单个 Agent run 上限 256 条；超限会写入不含原始
+payload 的 `agents_sdk_trace_record_rejected` 并使当前 turn 以 typed trace persistence failure
+结束。完整记录保留 30 天，部署通过 `npm run prune:agent-traces` 清理过期和孤儿记录；删除
+thread 时数据库 trigger 同步删除该 thread 的 SDK trace。`/api/agent-runs` 是受内部访问控制
+保护的唯一完整技术 trace 读取面，客户 thread/message 投影不读取这些 payload。
+
 ## Capability probe
 
 `ProviderCapabilityProbe` 在同一个显式 Provider 和 SDK Runner 上执行：
@@ -104,11 +125,13 @@ sink。生产接线使用 `PostgresAgentTraceSink` 复用现有 `audit_events`�
 3. WAJE schema 强类型最终输出；
 4. 流式文本；
 5. 流式 tool call；
-6. 上下文与输出限制声明及请求限制；
+6. 上下文预算拒绝边界，以及真实请求中观测到的输出限制；
 7. thinking 配置；
-8. typed error mapping 合同。
+8. typed error mapping 合同，覆盖认证、权限、限流、超时、连接、服务端和请求拒绝。
 
-任一必需 capability 缺失或 live probe 不通过都会抛出
+probe 结果分别保存能力声明与请求观测。origin、path、model、`max_tokens` 和 thinking 必须
+来自真实 HTTP/模型事件；context limit 记录 WAJE 入站预算边界的正反例；typed error mapping
+运行当前 mapper 的分类矩阵，不能用配置布尔值代替。任一必需 capability 缺失或 live probe 不通过都会抛出
 `ProviderCapabilityError`。HTTP 认证、权限、限流、请求、timeout 和不可用错误映射为
 `LLMProviderError`，不触发模型或本地答案降级。部署使用 P3 gate 运行 probe，成功后才接受
 Agent turn；普通消息进程不会为每条请求重复执行完整 capability probe。

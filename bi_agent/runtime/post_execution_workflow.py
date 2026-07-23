@@ -23,6 +23,12 @@ from bi_agent.runtime.claim_coverage import (
     ClaimCoverageContractError,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+from bi_agent.runtime.factor_coverage import (
+    FactorCoveragePlan,
+    FactorCoverageResult,
+    narrative_factor_coverage_context,
+    synthesize_factor_coverage,
+)
 from bi_agent.runtime.durable_call_journal import (
     DurableCallJournal,
     DurableCallJournalError,
@@ -109,7 +115,7 @@ _PERSISTENCE_STATES = frozenset({"not_started", "inserted", "replayed"})
 _SEMANTIC_PROVIDER_REF = "waje-semantic-authority"
 _SEMANTIC_MODEL_REF = "single-authority-phase04.v1"
 _NARRATIVE_PROVIDER_REF = "waje-narrative-authority"
-_NARRATIVE_MODEL_REF = "single-authority-phase05.v13"
+_NARRATIVE_MODEL_REF = "single-authority-phase05.v21"
 
 
 class AcceptedTransitionStore(Protocol):
@@ -1914,6 +1920,8 @@ def run_post_execution_workflow(
     customer_term_labels: Mapping[str, str] | None = None,
     stop_after: str | None = None,
     prior_result: PostExecutionWorkflowResult | None = None,
+    factor_coverage_plan: FactorCoveragePlan | None = None,
+    factor_coverage_result: FactorCoverageResult | None = None,
 ) -> PostExecutionWorkflowResult:
     execution = _validated_execution(execution_result)
     coverage_checkpoint = _validated_claim_coverage_checkpoint(
@@ -1921,6 +1929,35 @@ def run_post_execution_workflow(
         execution=execution,
     )
     intent = _validated_intent(intent_revision, execution=execution)
+    coverage_plan: FactorCoveragePlan | None = None
+    coverage_result: FactorCoverageResult | None = None
+    if factor_coverage_plan is not None or factor_coverage_result is not None:
+        try:
+            if type(factor_coverage_plan) is not FactorCoveragePlan or type(
+                factor_coverage_result
+            ) is not FactorCoverageResult:
+                raise TypeError("factor_coverage")
+            coverage_plan = FactorCoveragePlan.from_dict(
+                factor_coverage_plan.to_dict()
+            )
+            coverage_result = FactorCoverageResult.from_dict(
+                factor_coverage_result.to_dict(),
+                plan=coverage_plan,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise PostExecutionWorkflowError(
+                "post_execution_factor_coverage_invalid"
+            ) from exc
+        if (
+            coverage_plan.run_attempt_id != execution.run_attempt_id
+            or coverage_plan.intent_revision_id != execution.intent_revision_id
+            or coverage_plan.plan_revision_id != execution.plan_revision_id
+            or coverage_result.execution_result_ref
+            != execution.authoritative_execution_result_ref
+        ):
+            raise PostExecutionWorkflowError(
+                "post_execution_factor_coverage_invalid"
+            )
     owner = _required_string(owner_ref, "post_execution_owner_ref_invalid")
     thread = _required_string(thread_ref, "post_execution_thread_ref_invalid")
     if not callable(getattr(authority_store, "load_accepted_transition", None)):
@@ -2151,6 +2188,20 @@ def run_post_execution_workflow(
         public_fact_materialization=public_facts,
         public_limitation_context_by_ref=limitation_contexts,
     )
+    coverage_business_context: tuple[str, ...] = ()
+    if coverage_plan is not None and coverage_result is not None:
+        final_synthesis = synthesize_factor_coverage(
+            plan=coverage_plan,
+            coverage_result=coverage_result,
+            claim_settlement=semantic.settlement,
+        )
+        coverage_business_context = (
+            narrative_factor_coverage_context(
+                plan=coverage_plan,
+                coverage_result=coverage_result,
+                synthesis=final_synthesis,
+            ),
+        )
     answer_context = build_narrative_answer_context(
         authority_bundle=bundle,
         authority_inputs=semantic.authority_bundle_inputs,
@@ -2158,6 +2209,7 @@ def run_post_execution_workflow(
         recommendations=semantic.recommendations,
         locale=_required_string(locale, "post_execution_locale_invalid"),
         customer_term_labels=customer_term_labels,
+        additional_business_context=coverage_business_context,
     )
     palette, material_projection = prepare_narrative_material_projection(
         authority_bundle=bundle,

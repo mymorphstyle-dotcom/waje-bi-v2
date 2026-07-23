@@ -1,0 +1,100 @@
+{
+  "adapterCounts": {
+    "pytest": 4
+  },
+  "caseCount": 4,
+  "cases": [
+    {
+      "adapter": "pytest",
+      "caseId": "p6_payment_final_authority_contract",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p6_payment_final_authority_contract",
+          "durationSeconds": 1.304,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "............                                                             [100%]\n12 passed in 0.89s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p6_payment_outcome_capability",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p6_payment_outcome_capability",
+          "durationSeconds": 0.355,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "...                                                                      [100%]\n3 passed in 0.01s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p6_mainland_provider_boundary",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p6_mainland_provider_boundary",
+          "durationSeconds": 0.908,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.48s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p6_sdk_type_boundary",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p6_sdk_type_boundary",
+          "durationSeconds": 0.834,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.43s\n"
+        }
+      ],
+      "riskTier": "critical"
+    }
+  ],
+  "generatedAt": "2026-07-23T03:10:37.163190+00:00",
+  "mode": "execution",
+  "model": "",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": null,
+  "passedCaseCount": 4,
+  "profile": "smoke",
+  "provider": "",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

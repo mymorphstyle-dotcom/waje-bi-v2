@@ -337,14 +337,14 @@ formula_components:
     ssot_node_id: 65aee0fc9a470f7c63c6dbe8c8c8185a
     business_definition: unique final successful paid orders divided by unique initiated order ids after accepted overlap and dedup rules.
     source_coverage:
-      current_paid_order_snapshot: contract_backed
+      payment_final_outcome_snapshot: contract_backed
     contract_state: contract_backed
     role: rate
   - component_id: initiated_payment_count
     business_name: 发起支付次数
     ssot_node_id: ceba4f72086e02d7902722f407a673b1
     source_coverage:
-      current_paid_order_snapshot: contract_backed
+      payment_final_outcome_snapshot: contract_backed
     contract_state: contract_backed
     role: count
   - component_id: paid_order_count
@@ -497,6 +497,14 @@ decomposition_paths:
     launch_status: available_with_paid_user_count_expression_for_current_paid_order_snapshot
     accepted_runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
     path_role: root
+    contribution_groupings:
+      - grouping_id: paid_users_vs_paid_amount_per_paid_user
+        method: grouped_shapley
+        groups:
+          - factor_id: paid_users
+            member_metric_ids: [paid_users]
+          - factor_id: paid_amount_per_paid_user
+            member_metric_ids: [paid_frequency, avg_order_amount]
     runtime_projection:
       target_metric: paid_amount
       runtime_expression: paid_amount = paid_user_count * payment_frequency_per_paid_user * avg_paid_amount_per_payment
@@ -644,7 +652,7 @@ decomposition_paths:
     reconciliation:
       required: true
       residual_policy: must_report
-    launch_status: needs_payment_attempt_runtime_source
+    launch_status: active_payment_final_outcome_runtime_source
     path_role: supporting
     target_component: paid_order_count
     runtime_projection:

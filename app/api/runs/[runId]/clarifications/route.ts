@@ -11,7 +11,12 @@ import {
   observeOwnedRunDispatchExit,
   requireRun,
   runDispatchRequestIdentity,
+  withCustomerActorScope,
 } from "../../../_conversationStore";
+import {
+  readBoundedCustomerJson,
+  requireCustomerMessageBudget,
+} from "../../../_requestBudget";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,47 +32,40 @@ type OwnedDispatch = {
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const { runId } = await context.params;
-  const body = await request.json().catch(() => ({}));
   let actorId: string | undefined;
-  if (
-    body === null
-    || typeof body !== "object"
-    || Array.isArray(body)
-    || Object.keys(body).length !== 3
-    || !Object.prototype.hasOwnProperty.call(body, "answer")
-    || !Object.prototype.hasOwnProperty.call(body, "selectedOptionId")
-    || !Object.prototype.hasOwnProperty.call(body, "requestIdentity")
-  ) {
-    return customerJsonError(gatewayError("clarification_request_invalid"), { runId });
-  }
-  const rawAnswer = body.answer;
-  if (typeof rawAnswer !== "string" || !rawAnswer.trim()) {
-    return customerJsonError(gatewayError("clarification_answer_required"), { runId });
-  }
-  const rawSelectedOptionId = body.selectedOptionId;
-  if (
-    rawSelectedOptionId !== undefined
-    && rawSelectedOptionId !== null
-    && (
-      typeof rawSelectedOptionId !== "string"
-      || !rawSelectedOptionId.trim()
-    )
-  ) {
-    return customerJsonError(
-      gatewayError("clarification_selected_option_invalid"),
-      { runId },
-    );
-  }
-  const answer = rawAnswer.trim();
-  const selectedOptionId = typeof rawSelectedOptionId === "string"
-    ? rawSelectedOptionId.trim()
-    : null;
   let ownedDispatch: OwnedDispatch | null = null;
 
   try {
     actorId = resolveCustomerActor(request);
+    const body = await readBoundedCustomerJson(
+      request,
+      "clarification_request_invalid",
+    );
+    if (
+      Object.keys(body).length !== 3
+      || !Object.prototype.hasOwnProperty.call(body, "answer")
+      || !Object.prototype.hasOwnProperty.call(body, "selectedOptionId")
+      || !Object.prototype.hasOwnProperty.call(body, "requestIdentity")
+    ) throw gatewayError("clarification_request_invalid");
+    const rawAnswer = body.answer;
+    if (typeof rawAnswer !== "string" || !rawAnswer.trim()) {
+      throw gatewayError("clarification_answer_required");
+    }
+    const rawSelectedOptionId = body.selectedOptionId;
+    if (
+      rawSelectedOptionId !== undefined
+      && rawSelectedOptionId !== null
+      && (
+        typeof rawSelectedOptionId !== "string"
+        || !rawSelectedOptionId.trim()
+      )
+    ) throw gatewayError("clarification_selected_option_invalid");
+    const answer = rawAnswer.trim();
+    requireCustomerMessageBudget(answer);
+    const selectedOptionId = typeof rawSelectedOptionId === "string"
+      ? rawSelectedOptionId.trim()
+      : null;
     const requestIdentity = runDispatchRequestIdentity(request, body);
-    const run = await requireRun(runId, actorId);
     const clarification = {
       sourceRunId: runId,
       resolutionId: `single-authority:${requestIdentity}`,
@@ -77,6 +75,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
       source: "user" as const,
       retryAttempt: false,
     };
+    const run = await withCustomerActorScope(actorId, () =>
+      requireRun(runId, actorId!)
+    );
     const claim = await claimRunDispatchRequest({
       producerKind: "clarification_resolution",
       scopeRef: runId,
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       threadId: run.threadId,
       runId,
       text: answer,
-      actorId,
+      actorId: actorId!,
       requestPayload: {
         message: answer,
         clarification,
@@ -97,11 +98,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (!dispatch.acquired || !dispatch.ownerId) {
       return NextResponse.json(
         {
-          snapshot: await loadCustomerAnalysisSnapshot({
-            threadId: run.threadId,
-            actorId,
-            runId,
-          }),
+          snapshot: await withCustomerActorScope(actorId, () =>
+            loadCustomerAnalysisSnapshot({
+              threadId: run.threadId,
+              actorId: actorId!,
+              runId,
+            })
+          ),
         },
         { status: 202 },
       );
@@ -140,11 +143,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json(
       {
-        snapshot: await loadCustomerAnalysisSnapshot({
-          threadId: run.threadId,
-          actorId,
-          runId,
-        }),
+        snapshot: await withCustomerActorScope(actorId, () =>
+          loadCustomerAnalysisSnapshot({
+            threadId: run.threadId,
+            actorId: actorId!,
+            runId,
+          })
+        ),
       },
       { status: 202 },
     );

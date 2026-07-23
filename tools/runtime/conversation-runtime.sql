@@ -292,12 +292,15 @@ CREATE TABLE IF NOT EXISTS waje_runtime.agent_task_resume_outbox (
   task_ref text NOT NULL
     REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE CASCADE,
   outbox_state text NOT NULL DEFAULT 'pending'
-    CHECK (outbox_state IN ('pending', 'processing', 'completed', 'failed')),
+    CHECK (outbox_state IN (
+      'pending', 'processing', 'completed', 'failed', 'exhausted'
+    )),
   attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   lease_owner_id text,
   lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
   lease_expires_at timestamptz,
   last_error_code text,
+  exhausted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(thread_id, task_ref)
@@ -306,7 +309,17 @@ CREATE TABLE IF NOT EXISTS waje_runtime.agent_task_resume_outbox (
 ALTER TABLE waje_runtime.agent_task_resume_outbox
   ADD COLUMN IF NOT EXISTS lease_owner_id text,
   ADD COLUMN IF NOT EXISTS lease_epoch bigint NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz;
+  ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS exhausted_at timestamptz;
+
+ALTER TABLE waje_runtime.agent_task_resume_outbox
+  DROP CONSTRAINT IF EXISTS agent_task_resume_outbox_outbox_state_check;
+
+ALTER TABLE waje_runtime.agent_task_resume_outbox
+  ADD CONSTRAINT agent_task_resume_outbox_outbox_state_check
+  CHECK (outbox_state IN (
+    'pending', 'processing', 'completed', 'failed', 'exhausted'
+  ));
 
 DROP INDEX IF EXISTS waje_runtime.idx_agent_task_resume_outbox_ready;
 CREATE INDEX idx_agent_task_resume_outbox_ready
@@ -465,13 +478,32 @@ CREATE TABLE IF NOT EXISTS waje_runtime.audit_events (
   audit_id bigserial PRIMARY KEY,
   event_type text NOT NULL,
   actor_id text NOT NULL DEFAULT '',
-  thread_id text,
+  thread_id text REFERENCES waje_runtime.investigation_threads(thread_id)
+    ON DELETE CASCADE,
   topic_id text,
   run_id text,
   ref text,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_general_agent_trace
+  ON waje_runtime.audit_events(run_id, created_at DESC, audit_id DESC)
+  WHERE event_type = 'agents_sdk_trace_recorded';
+
+DROP TRIGGER IF EXISTS investigation_threads_delete_agent_traces
+  ON waje_runtime.investigation_threads;
+DROP FUNCTION IF EXISTS waje_runtime.delete_agent_traces_for_thread();
+
+ALTER TABLE waje_runtime.audit_events
+  DROP CONSTRAINT IF EXISTS audit_events_thread_id_fkey;
+
+ALTER TABLE waje_runtime.audit_events
+  ADD CONSTRAINT audit_events_thread_id_fkey
+  FOREIGN KEY (thread_id)
+  REFERENCES waje_runtime.investigation_threads(thread_id)
+  ON DELETE CASCADE
+  NOT VALID;
 
 CREATE TABLE IF NOT EXISTS waje_runtime.dataset_snapshots (
   snapshot_ref text PRIMARY KEY,
@@ -2634,6 +2666,9 @@ CREATE TABLE IF NOT EXISTS waje_runtime.publication_customer_payloads (
   content_digest text NOT NULL CHECK (length(content_digest) = 64),
   customer_payload jsonb NOT NULL CHECK (jsonb_typeof(customer_payload) = 'object'),
   payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  customer_payload_digest text GENERATED ALWAYS AS (
+    payload->>'customer_payload_digest'
+  ) STORED,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(owner_ref, run_attempt_id, customer_payload_ref),
   UNIQUE(owner_ref, run_attempt_id, outbox_ref),
@@ -2655,6 +2690,22 @@ CREATE TABLE IF NOT EXISTS waje_runtime.publication_customer_payloads (
       owner_ref, run_attempt_id, policy_ref
     ) ON DELETE RESTRICT
 );
+
+ALTER TABLE waje_runtime.publication_customer_payloads
+  ADD COLUMN IF NOT EXISTS customer_payload_digest text GENERATED ALWAYS AS (
+    payload->>'customer_payload_digest'
+  ) STORED;
+
+ALTER TABLE waje_runtime.publication_customer_payloads
+  ALTER COLUMN customer_payload_digest SET NOT NULL,
+  DROP CONSTRAINT IF EXISTS publication_customer_payloads_customer_payload_digest_check;
+
+ALTER TABLE waje_runtime.publication_customer_payloads
+  ADD CONSTRAINT publication_customer_payloads_customer_payload_digest_check
+  CHECK (length(customer_payload_digest) = 64) NOT VALID;
+
+ALTER TABLE waje_runtime.publication_customer_payloads
+  VALIDATE CONSTRAINT publication_customer_payloads_customer_payload_digest_check;
 
 CREATE TABLE IF NOT EXISTS waje_runtime.delivery_attempts (
   attempt_ref text PRIMARY KEY,
@@ -3005,9 +3056,108 @@ CREATE INDEX IF NOT EXISTS idx_delivery_outbox_dispatch
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
   ON waje_runtime.delivery_attempts(run_attempt_id, outbox_ref, attempt_number);
 
+-- Tenant isolation is enforced with the authenticated actor stored in the
+-- PostgreSQL session. Internal workers explicitly use the reserved `system`
+-- scope; customer requests use a transaction-local actor scope.
+ALTER TABLE waje_runtime.investigation_threads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waje_runtime.investigation_threads FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS waje_tenant_isolation
+  ON waje_runtime.investigation_threads;
+CREATE POLICY waje_tenant_isolation
+  ON waje_runtime.investigation_threads
+  USING (
+    current_setting('waje.actor_id', true) = 'system'
+    OR owner_id = current_setting('waje.actor_id', true)
+  )
+  WITH CHECK (
+    current_setting('waje.actor_id', true) = 'system'
+    OR owner_id = current_setting('waje.actor_id', true)
+  );
+
+DO $$
+DECLARE
+  target record;
+  predicate text;
+BEGIN
+  FOR target IN
+    SELECT
+      columns.table_name,
+      bool_or(columns.column_name = 'thread_id') AS has_thread_id,
+      bool_or(columns.column_name = 'run_attempt_id') AS has_run_attempt_id,
+      bool_or(columns.column_name = 'run_id') AS has_run_id,
+      bool_or(columns.column_name = 'owner_id') AS has_owner_id
+    FROM information_schema.columns columns
+    WHERE columns.table_schema = 'waje_runtime'
+      AND columns.table_name <> 'investigation_threads'
+    GROUP BY columns.table_name
+    HAVING bool_or(columns.column_name IN (
+      'thread_id', 'run_attempt_id', 'run_id', 'owner_id'
+    ))
+  LOOP
+    IF target.has_thread_id THEN
+      predicate := format(
+        '(current_setting(''waje.actor_id'', true) = ''system'' OR EXISTS ('
+        'SELECT 1 FROM waje_runtime.investigation_threads tenant_thread '
+        'WHERE tenant_thread.thread_id = %I.thread_id '
+        'AND tenant_thread.owner_id = current_setting(''waje.actor_id'', true)))',
+        target.table_name
+      );
+    ELSIF target.has_run_attempt_id THEN
+      predicate := format(
+        '(current_setting(''waje.actor_id'', true) = ''system'' OR EXISTS ('
+        'SELECT 1 FROM waje_runtime.analysis_runs tenant_run '
+        'JOIN waje_runtime.investigation_threads tenant_thread '
+        'ON tenant_thread.thread_id = tenant_run.thread_id '
+        'WHERE tenant_run.run_attempt_id = %I.run_attempt_id '
+        'AND tenant_thread.owner_id = current_setting(''waje.actor_id'', true)))',
+        target.table_name
+      );
+    ELSIF target.has_run_id THEN
+      predicate := format(
+        '(current_setting(''waje.actor_id'', true) = ''system'' OR EXISTS ('
+        'SELECT 1 FROM waje_runtime.analysis_runs tenant_run '
+        'JOIN waje_runtime.investigation_threads tenant_thread '
+        'ON tenant_thread.thread_id = tenant_run.thread_id '
+        'WHERE tenant_run.run_id = %I.run_id '
+        'AND tenant_thread.owner_id = current_setting(''waje.actor_id'', true)))',
+        target.table_name
+      );
+    ELSIF target.has_owner_id AND target.table_name = 'memory_items' THEN
+      predicate := format(
+        '(current_setting(''waje.actor_id'', true) = ''system'' '
+        'OR %I.owner_id = current_setting(''waje.actor_id'', true))',
+        target.table_name
+      );
+    ELSE
+      CONTINUE;
+    END IF;
+
+    EXECUTE format(
+      'ALTER TABLE waje_runtime.%I ENABLE ROW LEVEL SECURITY',
+      target.table_name
+    );
+    EXECUTE format(
+      'ALTER TABLE waje_runtime.%I FORCE ROW LEVEL SECURITY',
+      target.table_name
+    );
+    EXECUTE format(
+      'DROP POLICY IF EXISTS waje_tenant_isolation ON waje_runtime.%I',
+      target.table_name
+    );
+    EXECUTE format(
+      'CREATE POLICY waje_tenant_isolation ON waje_runtime.%I '
+      'USING (%s) WITH CHECK (%s)',
+      target.table_name,
+      predicate,
+      predicate
+    );
+  END LOOP;
+END;
+$$;
+
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v12',
-  '0679a34a1de1b7662cc5508b2454d4c2197b630042e6539b27841452c53d12dd'
+  'single-authority-workflow.v13',
+  '9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af'
 )
 ON CONFLICT (migration_id) DO NOTHING;

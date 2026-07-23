@@ -1,0 +1,220 @@
+{
+  "adapterCounts": {
+    "pytest": 10
+  },
+  "caseCount": 10,
+  "cases": [
+    {
+      "adapter": "pytest",
+      "caseId": "p4_factor_registry_contract",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_factor_registry_contract",
+          "durationSeconds": 0.67,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.31s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_amount_bucket_reconciliation",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_amount_bucket_reconciliation",
+          "durationSeconds": 0.331,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.04s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_funnel_rate_contract",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_funnel_rate_contract",
+          "durationSeconds": 0.338,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.05s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_event_no_match_boundary",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_event_no_match_boundary",
+          "durationSeconds": 0.286,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.01s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_branch_failure_replay",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_branch_failure_replay",
+          "durationSeconds": 1.031,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.67s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_controlled_multi_agent_parallelism",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_controlled_multi_agent_parallelism",
+          "durationSeconds": 0.327,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.05s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_controlled_multi_agent_authority_boundary",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_controlled_multi_agent_authority_boundary",
+          "durationSeconds": 0.324,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.05s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_workbench_customer_boundary",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_workbench_customer_boundary",
+          "durationSeconds": 1.004,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.62s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_optional_recommendation_policy_rejection",
+      "category": "business",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_optional_recommendation_policy_rejection",
+          "durationSeconds": 0.607,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "..                                                                       [100%]\n2 passed in 0.27s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p4_mainland_provider_egress",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p4_mainland_provider_egress",
+          "durationSeconds": 1.379,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.83s\n"
+        }
+      ],
+      "riskTier": "critical"
+    }
+  ],
+  "generatedAt": "2026-07-22T22:02:19.456541+00:00",
+  "mode": "execution",
+  "model": "",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": null,
+  "passedCaseCount": 10,
+  "profile": "smoke",
+  "provider": "",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

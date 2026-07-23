@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.local/schemas/standard-eval-case.v1.json",
+  "title": "WAJE Standard Eval Case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "caseId",
+    "title",
+    "category",
+    "questionFamily",
+    "samplePool",
+    "riskTier",
+    "tags",
+    "profiles",
+    "execution",
+    "failureAttribution"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "waje-standard-eval-case.v1"},
+    "caseId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{2,79}$"},
+    "title": {"type": "string", "minLength": 1},
+    "category": {"enum": ["business", "runtime", "security", "experience"]},
+    "questionFamily": {"type": "string", "minLength": 1},
+    "samplePool": {"enum": ["real_user", "historical_failure", "matrix_generated"]},
+    "riskTier": {"enum": ["critical", "high", "medium"]},
+    "tags": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["smoke", "nightly", "release"]}
+    },
+    "execution": {"$ref": "#/$defs/execution"},
+    "fixture": {"$ref": "#/$defs/fixture"},
+    "turns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/turn"}
+    },
+    "advisoryReview": {"$ref": "#/$defs/advisoryReview"},
+    "failureAttribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["businessFailureType", "responsibilityPoint"],
+      "properties": {
+        "businessFailureType": {"type": "string", "minLength": 1},
+        "responsibilityPoint": {
+          "enum": [
+            "intent_plan",
+            "capability_contract",
+            "data_evidence",
+            "claim_publication",
+            "runtime_provider",
+            "persistence_recovery",
+            "customer_projection",
+            "browser_experience",
+            "eval_infrastructure"
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "execution": {
+            "properties": {"adapter": {"const": "agent_live"}},
+            "required": ["adapter"]
+          }
+        }
+      },
+      "then": {"required": ["fixture", "turns"]},
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["fixture"]},
+            {"required": ["turns"]}
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "riskTier": {"const": "critical"},
+          "execution": {
+            "properties": {"adapter": {"const": "agent_live"}},
+            "required": ["adapter"]
+          }
+        },
+        "required": ["riskTier", "execution"]
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {"releaseRepeats": {"const": 3}},
+            "required": ["releaseRepeats"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "releaseRepeats"],
+      "properties": {
+        "adapter": {"enum": ["agent_live", "pytest", "playwright"]},
+        "target": {"type": "string", "minLength": 1},
+        "awaitTerminal": {"type": "boolean"},
+        "terminalTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 7200},
+        "releaseRepeats": {"type": "integer", "minimum": 1, "maximum": 10}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"adapter": {"enum": ["pytest", "playwright"]}}},
+          "then": {"required": ["target"]}
+        }
+      ]
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadMode"],
+      "properties": {
+        "threadMode": {"enum": ["new", "completed_analysis"]},
+        "completedThreadKey": {"type": "string", "minLength": 1},
+        "datasetReleaseRef": {"type": "string", "minLength": 1},
+        "metricContractVersion": {"type": "string", "minLength": 1},
+        "capabilityContractVersion": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"threadMode": {"const": "completed_analysis"}}},
+          "then": {"required": ["completedThreadKey"]}
+        }
+      ]
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turnId", "expected"],
+      "properties": {
+        "turnId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{1,39}$"},
+        "message": {"type": "string", "minLength": 1},
+        "resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {"const": "recommended_option"}
+          }
+        },
+        "expected": {"type": "object", "minProperties": 1}
+      },
+      "oneOf": [
+        {"required": ["message"]},
+        {"required": ["resolution"]}
+      ]
+    },
+    "advisoryReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "turnIds", "dimensions", "decisionCase", "reviewNote"],
+      "properties": {
+        "mode": {"const": "human_advisory"},
+        "turnIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "conclusion_directness",
+              "analysis_completeness",
+              "mechanisms_offsets_alternatives",
+              "operational_meaning",
+              "evidence_boundaries",
+              "readability",
+              "actionability"
+            ]
+          }
+        },
+        "decisionCase": {"type": "boolean"},
+        "reviewNote": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

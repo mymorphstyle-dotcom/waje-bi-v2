@@ -13,6 +13,18 @@ from bi_agent.runtime.thread_item_ledger import ThreadItem, ThreadItemLedger
 
 AGENT_CHECKPOINT_SCHEMA_VERSION = "agent-checkpoint.v2"
 
+MaterialDecisionTopic = Literal[
+    "metric",
+    "comparison_scope",
+    "time_window",
+    "baseline_or_counterfactual",
+    "evidence_use",
+    "claim_strength",
+    "sensitive_output",
+    "data_access",
+    "execution_cost",
+]
+
 
 class PendingActionOption(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -39,15 +51,33 @@ class AgentPendingAction(BaseModel):
     )
     prompt: str = Field(min_length=1)
     options: list[PendingActionOption] = Field(default_factory=list)
+    material_decision_topics: list[MaterialDecisionTopic] = Field(
+        alias="materialDecisionTopics",
+        default_factory=list,
+    )
     action_summary: str | None = Field(alias="actionSummary", default=None)
     side_effect_scope: str | None = Field(alias="sideEffectScope", default=None)
+    target_tool_name: str | None = Field(alias="targetToolName", default=None)
+    target_tool_arguments: dict[str, Any] | None = Field(
+        alias="targetToolArguments",
+        default=None,
+    )
+    target_tool_arguments_digest: str | None = Field(
+        alias="targetToolArgumentsDigest",
+        default=None,
+    )
 
     @field_validator("action_ref", "prompt")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         return _exact_text(value, "pending_action_text_invalid")
 
-    @field_validator("action_summary", "side_effect_scope")
+    @field_validator(
+        "action_summary",
+        "side_effect_scope",
+        "target_tool_name",
+        "target_tool_arguments_digest",
+    )
     @classmethod
     def validate_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -60,14 +90,25 @@ class AgentPendingAction(BaseModel):
             if (
                 not 2 <= len(self.options) <= 3
                 or sum(option.recommended for option in self.options) != 1
+                or not self.material_decision_topics
+                or len(self.material_decision_topics)
+                != len(set(self.material_decision_topics))
                 or self.action_summary is not None
                 or self.side_effect_scope is not None
+                or self.target_tool_name is not None
+                or self.target_tool_arguments is not None
+                or self.target_tool_arguments_digest is not None
             ):
                 raise ValueError("pending_action_question_shape_invalid")
         elif (
             self.options
+            or self.material_decision_topics
             or self.action_summary is None
             or self.side_effect_scope is None
+            or self.target_tool_name is None
+            or self.target_tool_arguments is None
+            or self.target_tool_arguments_digest
+            != canonical_digest(self.target_tool_arguments)
         ):
             raise ValueError("pending_action_approval_shape_invalid")
         option_ids = [option.option_id for option in self.options]

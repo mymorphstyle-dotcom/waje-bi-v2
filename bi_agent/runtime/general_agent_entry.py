@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
@@ -12,12 +11,15 @@ from datetime import datetime
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.runtime.agent_context import (
     AgentContextAssembler,
     PostgresContextAuthorityReader,
+)
+from bi_agent.runtime.agent_runtime_admission import (
+    PostgresAgentRuntimeAdmissionLease,
 )
 from bi_agent.runtime.agent_context_compactor import (
     ThreadContextCompactor,
@@ -73,6 +75,10 @@ artifacts. The main Agent retains final synthesis and all customer-facing author
 Start run_bi_analysis only when the request requires new business-data evidence, and use
 continue_bi_analysis only for a material revision of a published analysis task.
 Do not invent data, artifact references, evidence, query results, or completed tool work.
+For an explanation of persisted evidence, copy numeric literals only from the tool's published
+customer summary. Do not expose lower-level precise fact values, recalculate, round, convert
+units, or introduce a new numeric rendering. Keep opaque artifact, claim, evidence, publication,
+and material references only in the typed materialRefs field; never print them in answerMarkdown.
 Use ask_user only when a material ambiguity can change the business conclusion, evidence use,
 fixed sensitive-output or data-access boundary, claim strength, or execution cost.
 Use request_approval before an external write, irreversible action, permission increase, or
@@ -81,6 +87,9 @@ Write customer-facing answers, questions, and option text in the language used b
 message unless the user explicitly asks for another language. Do not invent business metrics or
 data availability when proposing clarification options.
 """
+
+GENERAL_AGENT_COMMAND_MAX_BYTES = 64 * 1024
+GENERAL_AGENT_MESSAGE_MAX_BYTES = 16 * 1024
 
 
 class GeneralAgentTurnCommand(BaseModel):
@@ -103,6 +112,22 @@ class GeneralAgentTurnCommand(BaseModel):
         if not value or value != value.strip():
             raise ValueError("general_agent_command_text_invalid")
         return value
+
+    @field_validator("message")
+    @classmethod
+    def validate_message_budget(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > GENERAL_AGENT_MESSAGE_MAX_BYTES:
+            raise ValueError("general_agent_message_too_large")
+        return value
+
+    @model_validator(mode="after")
+    def validate_pending_action_message(self) -> "GeneralAgentTurnCommand":
+        if (
+            self.pending_action_resolution is not None
+            and self.pending_action_resolution.answer_text != self.message
+        ):
+            raise ValueError("general_agent_resolution_message_mismatch")
+        return self
 
     @property
     def agent_run_id(self) -> str:
@@ -131,10 +156,22 @@ class GeneralAgentRuntimeBindings:
     provider: MainlandModelProvider
     runtime: AgentTurnRuntime
     tools: Sequence[WajeAgentTool]
+    trace_store: PostgresConversationStore | None = None
+    admission_lease: PostgresAgentRuntimeAdmissionLease | None = None
 
     async def close(self) -> None:
-        await self.provider.close()
-        self.store.connection.close()
+        try:
+            await self.provider.close()
+        finally:
+            try:
+                if self.trace_store is not None:
+                    self.trace_store.connection.close()
+            finally:
+                try:
+                    if self.admission_lease is not None:
+                        self.admission_lease.release()
+                finally:
+                    self.store.connection.close()
 
 
 def build_general_agent_runtime(
@@ -144,17 +181,29 @@ def build_general_agent_runtime(
 ) -> GeneralAgentRuntimeBindings:
     env = os.environ if environ is None else environ
     store = PostgresConversationStore.from_env()
+    trace_store: PostgresConversationStore | None = None
+    admission_lease: PostgresAgentRuntimeAdmissionLease | None = None
     store.set_actor_id(command.actor_id)
     try:
+        trace_store = PostgresConversationStore.from_env()
+        trace_store.set_actor_id(command.actor_id)
         _require_thread_owner(store, command)
+        admission_lease = PostgresAgentRuntimeAdmissionLease.acquire(
+            connection=store.connection,
+            actor_id=command.actor_id,
+            environ=env,
+        )
         ledger = store.thread_item_ledger
         artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
         summary_store = PostgresThreadSummaryStore(store.connection)
-        provider = MainlandModelProvider.deepseek_from_env(env)
+        provider = MainlandModelProvider.deepseek_from_env(
+            env,
+            circuit_connection=store.connection,
+        )
         registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
         adapter = WajeAgentsSdkAdapter(
             provider=provider,
-            trace_sink=PostgresAgentTraceSink(store),
+            trace_sink=PostgresAgentTraceSink(trace_store),
         )
         context_assembler = AgentContextAssembler(
             ledger=ledger,
@@ -169,7 +218,7 @@ def build_general_agent_runtime(
             artifact_index=artifact_registry,
             generator=WajeThreadSummaryGenerator(adapter),
         )
-        tools = (
+        application_tools = (
             capability_catalog_tool(
                 registry
             ),
@@ -190,10 +239,14 @@ def build_general_agent_runtime(
                 source_message_id=command.user_item_id,
                 operation_id=command.operation_id,
             ),
+        )
+        tools = (
+            *application_tools,
             *agent_interaction_tools(
                 thread_id=command.thread_id,
                 operation_id=command.operation_id,
                 customer_language=_customer_language_contract(command.message),
+                approvable_tools=application_tools,
             ),
         )
         return GeneralAgentRuntimeBindings(
@@ -205,15 +258,31 @@ def build_general_agent_runtime(
                 adapter=adapter,
                 context_compactor=context_compactor,
                 tool_resolver=DynamicAgentToolResolver(
-                    generator=WajeToolSelectionGenerator(adapter),
+                    generator=WajeToolSelectionGenerator(
+                        adapter,
+                        trace_metadata={
+                            "waje_thread_id": command.thread_id,
+                            "waje_parent_run_id": command.agent_run_id,
+                        },
+                    ),
                     mandatory_tool_names=("ask_user", "request_approval"),
                 ),
                 business_clock=_business_clock(registry),
             ),
             tools=tools,
+            trace_store=trace_store,
+            admission_lease=admission_lease,
         )
     except Exception:
-        store.connection.close()
+        try:
+            if admission_lease is not None:
+                admission_lease.release()
+        finally:
+            try:
+                if trace_store is not None:
+                    trace_store.connection.close()
+            finally:
+                store.connection.close()
         raise
 
 
@@ -247,7 +316,6 @@ async def run_general_agent_turn(
                 tools=runtime_bindings.tools,
                 active_topic_ref=head.active_topic_ref,
                 permission_scope={
-                    "actor_ref": command.actor_id,
                     "analysis_access": "single_customer_analysis_access",
                 },
                 pending_action_resolution=command.pending_action_resolution,
@@ -266,7 +334,9 @@ async def resume_general_agent_task(
 ) -> AgentTurnResult | None:
     env = os.environ if environ is None else environ
     store = PostgresConversationStore.from_env()
+    trace_store: PostgresConversationStore | None = None
     provider: MainlandModelProvider | None = None
+    admission_lease: PostgresAgentRuntimeAdmissionLease | None = None
     try:
         row = store.connection.execute(
             """
@@ -280,13 +350,23 @@ async def resume_general_agent_task(
             raise RuntimeError("thread_not_found")
         actor_id = str(row.get("owner_id") if isinstance(row, Mapping) else row[0])
         store.set_actor_id(actor_id)
+        admission_lease = PostgresAgentRuntimeAdmissionLease.acquire(
+            connection=store.connection,
+            actor_id=actor_id,
+            environ=env,
+        )
+        trace_store = PostgresConversationStore.from_env()
+        trace_store.set_actor_id(actor_id)
         ledger = store.thread_item_ledger
         artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
         summary_store = PostgresThreadSummaryStore(store.connection)
-        provider = MainlandModelProvider.deepseek_from_env(env)
+        provider = MainlandModelProvider.deepseek_from_env(
+            env,
+            circuit_connection=store.connection,
+        )
         adapter = WajeAgentsSdkAdapter(
             provider=provider,
-            trace_sink=PostgresAgentTraceSink(store),
+            trace_sink=PostgresAgentTraceSink(trace_store),
         )
         runtime = AgentTurnRuntime(
             ledger=ledger,
@@ -318,14 +398,23 @@ async def resume_general_agent_task(
                 thread_id=thread_id,
             ),
             permission_scope={
-                "actor_ref": actor_id,
                 "analysis_access": "single_customer_analysis_access",
             },
         )
     finally:
-        if provider is not None:
-            await provider.close()
-        store.connection.close()
+        try:
+            if provider is not None:
+                await provider.close()
+        finally:
+            try:
+                if trace_store is not None:
+                    trace_store.connection.close()
+            finally:
+                try:
+                    if admission_lease is not None:
+                        admission_lease.release()
+                finally:
+                    store.connection.close()
 
 
 def _require_thread_owner(
@@ -440,6 +529,8 @@ def _startup_error_code(error: Exception) -> str:
 
 
 def _command_from_json(raw: str) -> GeneralAgentTurnCommand:
+    if len(raw.encode("utf-8")) > GENERAL_AGENT_COMMAND_MAX_BYTES:
+        raise ValueError("general_agent_command_too_large")
     try:
         value: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -474,12 +565,15 @@ async def _run_cli_turn(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--command-json", required=True)
-    args = parser.parse_args(argv)
+    resolved_argv = sys.argv[1:] if argv is None else argv
     command: GeneralAgentTurnCommand | None = None
     try:
-        command = _command_from_json(args.command_json)
+        if resolved_argv:
+            raise ValueError("general_agent_cli_arguments_forbidden")
+        raw = sys.stdin.buffer.read(GENERAL_AGENT_COMMAND_MAX_BYTES + 1)
+        if len(raw) > GENERAL_AGENT_COMMAND_MAX_BYTES:
+            raise ValueError("general_agent_command_too_large")
+        command = _command_from_json(raw.decode("utf-8"))
         bindings = build_general_agent_runtime(command)
     except Exception as exc:
         _emit_startup_failure(exc, command)

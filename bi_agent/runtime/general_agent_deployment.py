@@ -6,9 +6,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol
-from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifactIndex
 from bi_agent.runtime.agent_context_compactor import (
@@ -26,7 +25,10 @@ from bi_agent.runtime.agent_tool_discovery import (
 )
 from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
-from bi_agent.runtime.agents_sdk_trace import InMemoryAgentTraceSink
+from bi_agent.runtime.agents_sdk_trace import (
+    InMemoryAgentTraceSink,
+    waje_trace_installation_state,
+)
 from bi_agent.runtime.analysis_artifacts import (
     ArtifactDescriptor,
     InMemoryAnalysisArtifactRegistry,
@@ -68,9 +70,20 @@ REQUIRED_DEPLOYMENT_TABLES = frozenset(
     {
         "agent_thread_summaries",
         "agent_generated_artifacts",
+        "audit_events",
         "conversation_messages",
         "investigation_threads",
+        "publication_customer_payloads",
         "schema_migrations",
+    }
+)
+REQUIRED_DEPLOYMENT_COLUMNS = frozenset(
+    {
+        (
+            "publication_customer_payloads",
+            "customer_payload_digest",
+            "NO",
+        )
     }
 )
 REQUIRED_APPEND_ONLY_TABLES = frozenset(
@@ -115,8 +128,18 @@ class _LiveProvider(Protocol):
     config: Any
     transport: str
     thinking_observed: bool
+    probe_observations: Mapping[str, Any]
 
     def reset_probe_observations(self) -> None: ...
+
+    def assert_token_budget(
+        self,
+        *,
+        estimated_input_tokens: int,
+        requested_output_tokens: int,
+    ) -> None: ...
+
+    def typed_error_mapping_observation(self) -> Mapping[int, tuple[str, str]]: ...
 
 
 class _LiveAdapter(Protocol):
@@ -200,6 +223,31 @@ class DeploymentDatabaseAuditor:
         if present_tables != REQUIRED_DEPLOYMENT_TABLES:
             raise DeploymentValidationError("deployment_database_tables_missing")
 
+        column_rows = self.connection.execute(
+            """
+            SELECT table_name, column_name, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'waje_runtime'
+              AND (table_name || '.' || column_name) = ANY(%(column_refs)s)
+            """,
+            {
+                "column_refs": sorted(
+                    f"{table}.{column}"
+                    for table, column, _nullable in REQUIRED_DEPLOYMENT_COLUMNS
+                )
+            },
+        ).fetchall()
+        present_columns = {
+            (
+                str(_field(row, "table_name", 0)),
+                str(_field(row, "column_name", 1)),
+                str(_field(row, "is_nullable", 2)),
+            )
+            for row in column_rows
+        }
+        if present_columns != REQUIRED_DEPLOYMENT_COLUMNS:
+            raise DeploymentValidationError("deployment_database_columns_invalid")
+
         trigger_rows = self.connection.execute(
             """
             SELECT relation.relname AS table_name,
@@ -249,13 +297,68 @@ class DeploymentDatabaseAuditor:
             raise DeploymentValidationError(
                 "deployment_database_tool_selection_contract_invalid"
             )
+
+        audit_constraint_row = self.connection.execute(
+            """
+            SELECT constraint_record.convalidated,
+                   constraint_record.confdeltype,
+                   pg_get_constraintdef(constraint_record.oid) AS definition
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid =
+                  'waje_runtime.audit_events'::regclass
+              AND constraint_record.conname = 'audit_events_thread_id_fkey'
+            """
+        ).fetchone()
+        if audit_constraint_row is None:
+            raise DeploymentValidationError(
+                "deployment_database_audit_thread_constraint_missing"
+            )
+        audit_constraint_validated = bool(
+            _field(audit_constraint_row, "convalidated", 0)
+        )
+        audit_delete_action = str(_field(audit_constraint_row, "confdeltype", 1))
+        audit_constraint_definition = str(
+            _field(audit_constraint_row, "definition", 2)
+        )
+        if (
+            audit_delete_action != "c"
+            or "FOREIGN KEY (thread_id)" not in audit_constraint_definition
+            or "REFERENCES waje_runtime.investigation_threads(thread_id)" not in audit_constraint_definition
+            or "ON DELETE CASCADE" not in audit_constraint_definition
+        ):
+            raise DeploymentValidationError(
+                "deployment_database_audit_thread_constraint_invalid"
+            )
+        orphan_row = self.connection.execute(
+            """
+            SELECT count(*)
+            FROM waje_runtime.audit_events event
+            LEFT JOIN waje_runtime.investigation_threads thread
+              ON thread.thread_id = event.thread_id
+            WHERE event.thread_id IS NOT NULL
+              AND thread.thread_id IS NULL
+            """
+        ).fetchone()
+        audit_orphan_count = int(_field(orphan_row, "count", 0) or 0)
+        if audit_constraint_validated and audit_orphan_count:
+            raise DeploymentValidationError(
+                "deployment_database_audit_thread_constraint_conflict"
+            )
         return DeploymentCheckResult(
             name="postgres_runtime_authority",
             status="passed",
             detail={
                 "migrationId": SINGLE_AUTHORITY_MIGRATION_ID,
                 "requiredTables": sorted(REQUIRED_DEPLOYMENT_TABLES),
+                "requiredColumns": [
+                    f"{table}.{column}"
+                    for table, column, _nullable in sorted(
+                        REQUIRED_DEPLOYMENT_COLUMNS
+                    )
+                ],
                 "appendOnlyTables": sorted(REQUIRED_APPEND_ONLY_TABLES),
+                "auditEventThreadConstraintValidated": audit_constraint_validated,
+                "historicalAuditEventOrphanCount": audit_orphan_count,
                 "transactionMode": "repeatable_read_read_only",
             },
         )
@@ -285,7 +388,13 @@ class GeneralAgentLiveDeploymentProbe:
         application_action = await self._application_action_smoke()
         delegated_artifact = await self._controlled_delegation_smoke()
         trace_detail = self._validate_local_trace()
-        origin = urlparse(str(self._provider.config.base_url))
+        observations = dict(capability.observations)
+        origins = list(observations.get("origins") or ())
+        paths = list(observations.get("paths") or ())
+        if len(origins) != 1 or len(paths) != 1:
+            raise DeploymentValidationError(
+                "deployment_live_outbound_observation_invalid"
+            )
         return (
             DeploymentCheckResult(
                 name="mainland_provider_capabilities",
@@ -297,8 +406,10 @@ class GeneralAgentLiveDeploymentProbe:
                     "checks": dict(capability.checks),
                     "contextWindowTokens": capability.context_window_tokens,
                     "maxOutputTokens": capability.max_output_tokens,
-                    "outboundOrigin": f"{origin.scheme}://{origin.netloc}",
-                    "openaiApiKeyUsed": False,
+                    "outboundOrigins": origins,
+                    "outboundPaths": paths,
+                    "observedRequestCount": observations.get("request_count"),
+                    "credentialSource": self._provider.config.credential_source,
                 },
             ),
             DeploymentCheckResult(
@@ -353,20 +464,25 @@ class GeneralAgentLiveDeploymentProbe:
         content = await WajeThreadSummaryGenerator(self._adapter).generate(
             generation_input
         )
-        return VersionedThreadSummary.create(
-            thread_id="deployment-probe-thread",
-            summary_version=1,
-            source_items=[
-                ThreadSummarySourceItem(
-                    itemRef=item.item_id,
-                    sequence=item.sequence,
-                    itemDigest=item.item_digest,
-                )
-                for item in items
-            ],
-            authority_refs=generation_input.authority_refs,
-            content=content,
-        )
+        try:
+            return VersionedThreadSummary.create(
+                thread_id="deployment-probe-thread",
+                summary_version=1,
+                source_items=[
+                    ThreadSummarySourceItem(
+                        itemRef=item.item_id,
+                        sequence=item.sequence,
+                        itemDigest=item.item_digest,
+                    )
+                    for item in items
+                ],
+                authority_refs=generation_input.authority_refs,
+                content=content,
+            )
+        except (ValidationError, ValueError) as exc:
+            raise DeploymentValidationError(
+                "deployment_live_summary_contract_invalid"
+            ) from exc
 
     async def _tool_discovery_smoke(self) -> tuple[str, ...]:
         tools = (
@@ -554,12 +670,21 @@ class GeneralAgentLiveDeploymentProbe:
             or "" in started_trace_ids
         ):
             raise DeploymentValidationError("deployment_live_trace_closure_invalid")
+        installation = dict(waje_trace_installation_state())
+        if installation.get("exclusive_waje_processor") is not True:
+            raise DeploymentValidationError(
+                "deployment_live_trace_processor_not_exclusive"
+            )
         return {
             "sink": "waje_in_memory_audit",
             "recordCount": len(records),
             "traceCount": len(started_trace_ids),
             "eventTypes": event_types,
-            "openaiExporterUsed": False,
+            "traceProcessorTypes": installation["processor_types"],
+            "traceProcessorCount": installation["processor_count"],
+            "openaiExporterUsed": not bool(
+                installation["exclusive_waje_processor"]
+            ),
         }
 
 
@@ -678,7 +803,10 @@ def _connect_database(environ: Mapping[str, str] | None) -> Any:
         import psycopg
     except ImportError as exc:
         raise DeploymentValidationError("psycopg_required") from exc
-    return psycopg.connect(database_url)
+    return psycopg.connect(
+        database_url,
+        options="-c waje.actor_id=system",
+    )
 
 
 def write_deployment_report(

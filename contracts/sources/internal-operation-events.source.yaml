@@ -29,7 +29,7 @@ runtime_boundary:
   allowed_claim_types: [candidate_mechanism]
   blocked_claim_types: [causal, roi, paid_amount_attribution]
 runtime_binding:
-  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@15
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@20
   dataset_id: internal_operation_event
   physical_table_prefix: business_events__
   grain: [snapshot_id, load_revision, source_family, event_id]

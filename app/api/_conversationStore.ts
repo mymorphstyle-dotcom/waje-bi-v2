@@ -1,5 +1,6 @@
 import { Pool, type PoolClient } from "pg";
 import { createHash } from "crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
   parseCustomerPublication,
@@ -9,7 +10,6 @@ import {
   projectCustomerAnalysisSnapshot,
   type CustomerAnalysisSnapshot,
   type CustomerMainStatus,
-  type CustomerMessage,
   type CustomerPhase,
   type CustomerThreadSummary,
 } from "./_customerAnalysisContract";
@@ -59,6 +59,8 @@ const EXECUTION_RESULT_EVENT_STATUSES = new Set<RunStatus>([
   "narrative_ready",
   "completed",
 ]);
+
+const CUSTOMER_MESSAGE_PAGE_SIZE = 100;
 
 type RunRecord = {
   id: string;
@@ -263,6 +265,7 @@ export type PersistedPublicationRun = {
   acceptedGraph: Record<string, unknown>[];
   verifierStatus: Record<string, unknown>;
   humanReview: Record<string, unknown>;
+  factorCoverage?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };
@@ -274,10 +277,19 @@ export type PersistedRuntimeRun = {
   question: string;
   request: Record<string, unknown>;
   runNodes: Record<string, unknown>[];
-  workflowTransitions: Record<string, unknown>[];
-  stageTimings: Record<string, unknown>[];
-  evidenceRefs: Record<string, unknown>[];
-  acceptedGraph: Record<string, unknown>[];
+  workflowTransitions?: Record<string, unknown>[];
+  stageTimings?: Record<string, unknown>[];
+  evidenceRefs?: Record<string, unknown>[];
+  acceptedGraph?: Record<string, unknown>[];
+  factorCoverage?: Record<string, unknown>;
+  llmCallCount?: number;
+  technicalTrace?: {
+    runtime: "general_agent";
+    provider?: string;
+    model?: string;
+    transport?: string;
+    records: Record<string, unknown>[];
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -322,6 +334,42 @@ const globalStore = globalThis as typeof globalThis & {
   __wajeConversationMemoryStore?: MemoryStore;
   __wajeConversationPool?: Pool;
 };
+
+const customerDatabaseScope = new AsyncLocalStorage<{
+  actorId: string;
+  client: PoolClient;
+}>();
+
+export async function withCustomerActorScope<T>(
+  actorId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  actorId = normalizeActorId(actorId);
+  if (conversationStoreMode() !== "postgres") return operation();
+  const existing = customerDatabaseScope.getStore();
+  if (existing) {
+    if (existing.actorId !== actorId) {
+      throw gatewayError("customer_database_scope_conflict");
+    }
+    return operation();
+  }
+  const client = await databasePool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('waje.actor_id', $1, true)", [actorId]);
+    const result = await customerDatabaseScope.run(
+      { actorId, client },
+      operation,
+    );
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export function conversationStoreMode() {
   const databaseUrl = process.env.WAJE_RUNTIME_DATABASE_URL || process.env.DATABASE_URL;
@@ -456,40 +504,28 @@ export async function loadCustomerAnalysisSnapshot(input: {
   if (conversationStoreMode() === "postgres") {
     const [
       messagesResult,
-      publicationHistoryResult,
       runResult,
       versionResult,
       terminalResult,
     ] = await Promise.all([
       pool().query(
         `
-        SELECT message_id, role, text, item_sequence, item_type,
-               operation_key, payload, created_at
-        FROM waje_runtime.conversation_messages
-        WHERE thread_id = $1
-          AND role IN ('user', 'assistant')
-          AND customer_visible = true
-        ORDER BY item_sequence
-        `,
-        [thread.id],
-      ),
-      pool().query(
-        `
-        SELECT history.run_id, history.customer_payload, history.created_at
+        SELECT recent.message_id, recent.role, recent.text,
+               recent.item_sequence, recent.item_type,
+               recent.operation_key, recent.payload, recent.created_at
         FROM (
-          SELECT DISTINCT ON (customer.run_attempt_id)
-            customer.run_attempt_id AS run_id,
-            customer.customer_payload,
-            customer.created_at
-          FROM waje_runtime.publication_customer_payloads customer
-          JOIN waje_runtime.analysis_runs run
-            ON run.run_id = customer.run_attempt_id
-          WHERE run.thread_id = $1
-          ORDER BY customer.run_attempt_id, customer.created_at DESC
-        ) history
-        ORDER BY history.created_at, history.run_id
+          SELECT message_id, role, text, item_sequence, item_type,
+                 operation_key, payload, created_at
+          FROM waje_runtime.conversation_messages
+          WHERE thread_id = $1
+            AND role IN ('user', 'assistant')
+            AND customer_visible = true
+          ORDER BY item_sequence DESC
+          LIMIT $2
+        ) recent
+        ORDER BY recent.item_sequence DESC
         `,
-        [thread.id],
+        [thread.id, CUSTOMER_MESSAGE_PAGE_SIZE + 1],
       ),
       input.runId
         ? pool().query(
@@ -514,7 +550,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
       customerStateVersion(thread.id),
       pool().query(
         `
-        SELECT payload
+        SELECT payload, operation_key
         FROM waje_runtime.conversation_messages
         WHERE thread_id = $1 AND item_type = 'task_terminal'
         ORDER BY item_sequence DESC
@@ -524,41 +560,46 @@ export async function loadCustomerAnalysisSnapshot(input: {
       ),
     ]);
     const row = runResult.rows[0];
-    const persistedMessages: CustomerMessage[] = messagesResult.rows.map((message) => ({
+    const hasMoreMessages = messagesResult.rows.length > CUSTOMER_MESSAGE_PAGE_SIZE;
+    const messageRows = messagesResult.rows
+      .slice(0, CUSTOMER_MESSAGE_PAGE_SIZE)
+      .reverse();
+    const persistedMessages = messageRows.map((message) => ({
       key: String(message.message_id),
-      role: message.role === "assistant" ? "assistant" : "user",
+      role: (message.role === "assistant" ? "assistant" : "user") as
+        | "assistant"
+        | "user",
       text: String(message.text),
       createdAt: new Date(message.created_at).toISOString(),
+      itemType: String(message.item_type),
+      operationKey: typeof message.operation_key === "string"
+        ? String(message.operation_key)
+        : null,
     }));
-    const acceptedAgentOperationIds = messagesResult.rows.flatMap((message) => {
+    const acceptedAgentOperationIds = messageRows.flatMap((message) => {
       const operationKey = String(message.operation_key ?? "");
       return message.role === "user" && operationKey.startsWith("user:")
         ? [operationKey.slice("user:".length)]
         : [];
     });
-    const latestAssistantPayload = [...messagesResult.rows]
+    const latestAssistantPayload = [...messageRows]
       .reverse()
       .find((message) => message.role === "assistant")?.payload;
     const pendingAction = isGatewayRecord(latestAssistantPayload?.pending_action)
       ? latestAssistantPayload.pending_action
       : null;
     const terminalPayload = terminalResult.rows[0]?.payload;
-    const agentTerminal = agentTerminalFromPayload(terminalPayload);
-    const historicalAnswers: CustomerMessage[] = publicationHistoryResult.rows
-      .filter((publicationRow) => !row || publicationRow.run_id !== row.run_id)
-      .map((publicationRow) => {
-        const publication = requireCustomerPublication(
-          publicationRow.customer_payload,
-        );
-        return {
-          key: `publication:${String(publicationRow.run_id)}`,
-          role: "assistant" as const,
-          text: publication.blocks.map((block) => block.text).join("\n\n"),
-          createdAt: new Date(publicationRow.created_at).toISOString(),
-        };
-      });
-    const messages = [...persistedMessages, ...historicalAnswers]
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const agentTerminal = agentTerminalFromPayload(
+      terminalPayload,
+      terminalResult.rows[0]?.operation_key,
+    );
+    const messages = persistedMessages;
+    const messageHistory = {
+      hasMore: hasMoreMessages,
+      beforeCursor: hasMoreMessages && messageRows[0]
+        ? String(messageRows[0].item_sequence)
+        : null,
+    };
     if (!row) {
       const version = versionResult.rows[0];
       return projectCustomerAnalysisSnapshot({
@@ -577,6 +618,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
         stateVersion: String(version.state_version),
         eventCursor: String(version.event_cursor),
         latestItemSequence: Number(version.latest_item_sequence),
+        messageHistory,
       });
     }
     const runId = String(row.run_id);
@@ -666,6 +708,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
         request.interaction_result,
       ),
       customerPublication: publication?.customerPublication ?? null,
+      customerPublicationTaskRef: publication ? runId : null,
       acceptedOperationIds: [
         ...acceptedAgentOperationIds,
         ...dispatchResult.rows.map((dispatch) => String(dispatch.request_identity)),
@@ -678,6 +721,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
       stateVersion: String(version.state_version),
       eventCursor: String(version.event_cursor),
       latestItemSequence: Number(version.latest_item_sequence),
+      messageHistory,
     });
   }
 
@@ -687,7 +731,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
     : [...store.runs.values()]
       .filter((candidate) => candidate.threadId === thread.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
-  const messages = thread.messages
+  const allMessages = thread.messages
     .filter((message) => message.role !== "system")
     .map((message) => ({
       key: message.id,
@@ -695,6 +739,7 @@ export async function loadCustomerAnalysisSnapshot(input: {
       text: message.text,
       createdAt: message.createdAt,
     }));
+  const messages = allMessages.slice(-CUSTOMER_MESSAGE_PAGE_SIZE);
   const currentClarification = run
     ? [...store.auditEvents].reverse().find((event) =>
         event.runId === run.id
@@ -730,7 +775,11 @@ export async function loadCustomerAnalysisSnapshot(input: {
     confirmedAt,
     stateVersion: String(Date.parse(confirmedAt)),
     eventCursor: String(Date.parse(confirmedAt)),
-    latestItemSequence: messages.length,
+    latestItemSequence: allMessages.length,
+    messageHistory: {
+      hasMore: allMessages.length > messages.length,
+      beforeCursor: allMessages.length > messages.length ? messages[0]?.key ?? null : null,
+    },
   });
 }
 
@@ -778,6 +827,32 @@ async function customerStateVersion(threadId: string) {
   );
 }
 
+export async function loadCustomerStateVersion(input: {
+  threadId: string;
+  actorId: string;
+}) {
+  const thread = await requireThread(input.threadId, input.actorId);
+  if (conversationStoreMode() === "postgres") {
+    const result = await customerStateVersion(thread.id);
+    const row = result.rows[0];
+    if (!row) throw gatewayError("thread_not_found");
+    return {
+      stateVersion: String(row.state_version),
+      eventCursor: String(row.event_cursor),
+    };
+  }
+  const store = memoryStore();
+  const confirmedAt = [
+    thread.createdAt,
+    ...thread.messages.map((message) => message.createdAt),
+    ...[...store.runs.values()]
+      .filter((run) => run.threadId === thread.id)
+      .map((run) => run.createdAt),
+  ].sort().at(-1) ?? thread.createdAt;
+  const cursor = String(Date.parse(confirmedAt));
+  return { stateVersion: cursor, eventCursor: cursor };
+}
+
 function agentHeadFromVersionRow(row: Record<string, unknown>) {
   const status = String(row.customer_state ?? "idle");
   if (![
@@ -801,20 +876,86 @@ function agentHeadFromVersionRow(row: Record<string, unknown>) {
   };
 }
 
-function agentTerminalFromPayload(value: unknown): {
+function agentTerminalFromPayload(value: unknown, operationKeyValue: unknown): {
   status: "completed" | "completed_with_limits" | "failed";
   finalOutput: Record<string, unknown> | null;
   errorCode: string | null;
+  completionKind:
+    | "direct_response"
+    | "context_response"
+    | "tool_response"
+    | "analysis_publication"
+    | "failed_turn";
+  durableTaskRef: string | null;
+  operationId: string;
 } | null {
   if (!isGatewayRecord(value)) return null;
   const status = String(value.status ?? "");
   if (!["completed", "completed_with_limits", "failed"].includes(status)) {
     return null;
   }
+  const operationKey = operationKeyValue;
+  if (
+    typeof operationKey !== "string"
+    || !operationKey.startsWith("terminal:")
+    || operationKey.length === "terminal:".length
+  ) {
+    throw gatewayError("agent_terminal_admission_invalid");
+  }
+  const admission = isGatewayRecord(value.terminal_admission)
+    ? value.terminal_admission
+    : null;
+  const completionKind = String(admission?.completionKind ?? "");
+  const executedToolNames = admission?.executedToolNames;
+  const authorityRefs = admission?.authorityRefs;
+  const durableTaskRef = admission?.durableTaskRef;
+  if (
+    admission?.schemaVersion !== "agent-terminal-admission.v1"
+    || ![
+      "direct_response",
+      "context_response",
+      "tool_response",
+      "analysis_publication",
+      "failed_turn",
+    ].includes(completionKind)
+    || !isUniqueGatewayStringArray(executedToolNames)
+    || !isUniqueGatewayStringArray(authorityRefs)
+    || (durableTaskRef !== null && !isNonEmptyGatewayString(durableTaskRef))
+  ) {
+    throw gatewayError("agent_terminal_admission_invalid");
+  }
+  const failedTurn = completionKind === "failed_turn";
+  const validShape = failedTurn
+    ? status === "failed"
+      && executedToolNames.length === 0
+      && authorityRefs.length === 0
+      && durableTaskRef === null
+    : status !== "failed" && (
+      completionKind === "direct_response"
+        ? executedToolNames.length === 0
+          && authorityRefs.length === 0
+          && durableTaskRef === null
+        : completionKind === "context_response"
+          ? executedToolNames.length === 0
+            && authorityRefs.length > 0
+            && durableTaskRef === null
+          : completionKind === "tool_response"
+            ? executedToolNames.length > 0 && durableTaskRef === null
+            : authorityRefs.length > 0 && isNonEmptyGatewayString(durableTaskRef)
+    );
+  if (!validShape) throw gatewayError("agent_terminal_admission_invalid");
   return {
     status: status as "completed" | "completed_with_limits" | "failed",
     finalOutput: isGatewayRecord(value.final_output) ? value.final_output : null,
     errorCode: typeof value.error_code === "string" ? value.error_code : null,
+    completionKind: completionKind as
+      | "direct_response"
+      | "context_response"
+      | "tool_response"
+      | "analysis_publication"
+      | "failed_turn",
+    durableTaskRef: durableTaskRef as string | null,
+    operationId: operationKey.slice("terminal:".length),
   };
 }
 
@@ -932,7 +1073,7 @@ export async function claimInitialThreadRequest(
     .slice(0, 32)}`;
 
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       const inserted = await client.query(
@@ -1069,7 +1210,7 @@ export async function claimRunDispatchRequest(
   const normalized = normalizeRunDispatchInput(input);
   const requestDigest = runDispatchRequestDigest(normalized);
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       await client.query(
@@ -1394,7 +1535,7 @@ export async function acquireRunDispatchLease(input: {
   const ownerId = `gateway-dispatch-${crypto.randomUUID()}`;
   const leaseMs = runDispatchLeaseMs();
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       const dispatchResult = await client.query(
@@ -1490,7 +1631,7 @@ export async function failOwnedRunDispatch(input: {
   failureReason: string;
 }): Promise<RunRecord> {
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       const dispatchResult = await client.query(
@@ -1632,7 +1773,7 @@ export async function observeOwnedRunDispatchExit(input: {
   failureReason?: string;
 }): Promise<RunRecord> {
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       const result = await client.query(
@@ -1747,7 +1888,7 @@ export async function completeOwnedRunDispatch(input: {
   runStatus: "interaction_completed" | "waiting_for_clarification" | "planned" | "evidence_ready" | "authority_sealed" | "narrative_ready" | "completed" | "failed";
 }): Promise<RunRecord> {
   if (conversationStoreMode() === "postgres") {
-    const client = await pool().connect();
+    const client = await isolatedTransactionPool().connect();
     try {
       await client.query("BEGIN");
       const dispatchResult = await client.query(
@@ -3003,7 +3144,7 @@ export async function listPersistedAgentRunCandidates(
   if (conversationStoreMode() !== "postgres") {
     return { publicationRuns: [], runtimeRuns: [] };
   }
-  const client = await pool().connect();
+  const client = await isolatedTransactionPool().connect();
   let transactionOpen = false;
   try {
     await client.query(
@@ -3011,7 +3152,10 @@ export async function listPersistedAgentRunCandidates(
     );
     transactionOpen = true;
     const publicationRuns = await listPersistedPublicationRuns(limit, client);
-    const runtimeRuns = await listPersistedRuntimeRuns(limit, client);
+    const runtimeRuns = [
+      ...await listPersistedRuntimeRuns(limit, client),
+      ...await listPersistedGeneralAgentRuns(limit, client),
+    ];
     await client.query("COMMIT");
     transactionOpen = false;
     return { publicationRuns, runtimeRuns };
@@ -3064,6 +3208,7 @@ export async function listPersistedPublicationRuns(
         AS claim_evidence_links,
       plan_trace.accepted_graph,
       verifier.verifier_status,
+      factor_coverage.factor_coverage,
       COALESCE(human_review.review_state, jsonb_build_object(
         'status', 'pending',
         'evaluationCount', 0
@@ -3471,6 +3616,14 @@ export async function listPersistedPublicationRuns(
       ) AS verifier_status
     ) verifier ON true
     LEFT JOIN LATERAL (
+      SELECT event.payload AS factor_coverage
+      FROM waje_runtime.audit_events event
+      WHERE event.run_id = r.run_id
+        AND event.event_type = 'factor_coverage_settled'
+      ORDER BY event.audit_id DESC
+      LIMIT 1
+    ) factor_coverage ON true
+    LEFT JOIN LATERAL (
       SELECT jsonb_build_object(
         'status', CASE
           WHEN latest.result = 'request_independent_narrative_attempt'
@@ -3559,6 +3712,9 @@ export async function listPersistedPublicationRuns(
       humanReview: isGatewayRecord(row.human_review)
         ? row.human_review
         : { status: "pending", evaluationCount: 0 },
+      ...(isGatewayRecord(row.factor_coverage)
+        ? { factorCoverage: row.factor_coverage }
+        : {}),
       createdAt: row.run_created_at,
       updatedAt: row.run_updated_at,
     } satisfies PersistedPublicationRun;
@@ -3645,7 +3801,8 @@ export async function listPersistedRuntimeRuns(
         AS workflow_transitions,
       COALESCE(stage_timing.stage_timings, '[]'::jsonb) AS stage_timings,
       COALESCE(evidence.evidence_refs, '[]'::jsonb) AS evidence_refs,
-      plan_trace.accepted_graph
+      plan_trace.accepted_graph,
+      factor_coverage.factor_coverage
     FROM waje_runtime.analysis_runs r
     LEFT JOIN LATERAL (
       SELECT jsonb_agg(
@@ -3949,6 +4106,14 @@ export async function listPersistedRuntimeRuns(
       ) evidence_task ON true
       WHERE entry.run_attempt_id = r.run_attempt_id
     ) evidence ON true
+    LEFT JOIN LATERAL (
+      SELECT event.payload AS factor_coverage
+      FROM waje_runtime.audit_events event
+      WHERE event.run_id = r.run_id
+        AND event.event_type = 'factor_coverage_settled'
+      ORDER BY event.audit_id DESC
+      LIMIT 1
+    ) factor_coverage ON true
     ORDER BY r.created_at DESC
     LIMIT $1
     `,
@@ -3971,10 +4136,207 @@ export async function listPersistedRuntimeRuns(
       acceptedGraph: Array.isArray(row.accepted_graph)
         ? row.accepted_graph.map(requiredAcceptedGraphRecord)
         : [],
+      ...(isGatewayRecord(row.factor_coverage)
+        ? { factorCoverage: row.factor_coverage }
+        : {}),
       createdAt: row.run_created_at,
       updatedAt: row.run_updated_at,
     } satisfies PersistedRuntimeRun;
   });
+}
+
+export async function listPersistedGeneralAgentRuns(
+  limit = 20,
+  readClient: ReadQueryClient = pool(),
+): Promise<PersistedRuntimeRun[]> {
+  if (conversationStoreMode() !== "postgres") return [];
+  const { rows } = await readClient.query(
+    `
+    WITH candidate_runs AS (
+      SELECT trace.run_id, max(trace.created_at) AS updated_at
+      FROM waje_runtime.audit_events trace
+      WHERE trace.event_type = 'agents_sdk_trace_recorded'
+        AND trace.run_id LIKE 'agent-run-%'
+      GROUP BY trace.run_id
+      ORDER BY max(trace.created_at) DESC, trace.run_id DESC
+      LIMIT $1
+    )
+    SELECT
+      candidate.run_id,
+      trace_group.thread_id,
+      COALESCE(terminal.payload ->> 'status', thread.customer_state, 'unknown')
+        AS run_status,
+      input.text AS question,
+      jsonb_strip_nulls(jsonb_build_object(
+        'runtime_kind', 'general_agent',
+        'provider', first_trace.metadata ->> 'provider',
+        'model', first_trace.metadata ->> 'model',
+        'transport', first_trace.metadata ->> 'transport',
+        'error_code', terminal.payload ->> 'error_code',
+        'interaction_result', CASE
+          WHEN assistant.text IS NULL THEN NULL
+          ELSE jsonb_build_object('response_text', assistant.text)
+        END
+      )) AS request,
+      trace_group.trace_records,
+      trace_group.created_at AS run_created_at,
+      trace_group.updated_at AS run_updated_at
+    FROM candidate_runs candidate
+    JOIN LATERAL (
+      SELECT
+        min(trace.thread_id) AS thread_id,
+        min(trace.created_at) AS created_at,
+        max(trace.created_at) AS updated_at,
+        jsonb_agg(trace.payload ORDER BY trace.audit_id) AS trace_records
+      FROM waje_runtime.audit_events trace
+      WHERE trace.event_type = 'agents_sdk_trace_recorded'
+        AND trace.run_id = candidate.run_id
+    ) trace_group ON true
+    JOIN waje_runtime.investigation_threads thread
+      ON thread.thread_id = trace_group.thread_id
+    LEFT JOIN LATERAL (
+      SELECT trace.payload -> 'waje_trace_metadata' AS metadata
+      FROM waje_runtime.audit_events trace
+      WHERE trace.event_type = 'agents_sdk_trace_recorded'
+        AND trace.run_id = candidate.run_id
+      ORDER BY trace.audit_id
+      LIMIT 1
+    ) first_trace ON true
+    LEFT JOIN LATERAL (
+      SELECT message.text
+      FROM waje_runtime.conversation_messages message
+      WHERE message.thread_id = trace_group.thread_id
+        AND message.role = 'user'
+        AND message.operation_key LIKE 'user:%'
+        AND message.payload ->> 'run_id' = candidate.run_id
+      ORDER BY message.item_sequence
+      LIMIT 1
+    ) input ON true
+    LEFT JOIN LATERAL (
+      SELECT message.text
+      FROM waje_runtime.conversation_messages message
+      WHERE message.thread_id = trace_group.thread_id
+        AND message.role = 'assistant'
+        AND message.payload ->> 'run_id' = candidate.run_id
+      ORDER BY message.item_sequence DESC
+      LIMIT 1
+    ) assistant ON true
+    LEFT JOIN LATERAL (
+      SELECT message.payload
+      FROM waje_runtime.conversation_messages message
+      WHERE message.thread_id = trace_group.thread_id
+        AND message.item_type = 'task_terminal'
+        AND message.payload ->> 'run_id' = candidate.run_id
+      ORDER BY message.item_sequence DESC
+      LIMIT 1
+    ) terminal ON true
+    ORDER BY candidate.updated_at DESC, candidate.run_id DESC
+    `,
+    [limit],
+  );
+  return rows.map((row) => {
+    const request = isGatewayRecord(row.request) ? row.request : {};
+    const traceRecords = Array.isArray(row.trace_records)
+      ? row.trace_records.filter(isGatewayRecord)
+      : [];
+    const metadata = {
+      provider: optionalGatewayString(request.provider),
+      model: optionalGatewayString(request.model),
+      transport: optionalGatewayString(request.transport),
+    };
+    const runNodes = generalAgentTraceNodes(traceRecords);
+    return {
+      runId: String(row.run_id),
+      threadId: String(row.thread_id),
+      runStatus: String(row.run_status),
+      question: String(row.question ?? ""),
+      request,
+      runNodes,
+      llmCallCount: runNodes.filter(
+        (node) => node.node_name === "general_agent_model_turn",
+      ).length,
+      technicalTrace: {
+        runtime: "general_agent",
+        ...(metadata.provider ? { provider: metadata.provider } : {}),
+        ...(metadata.model ? { model: metadata.model } : {}),
+        ...(metadata.transport ? { transport: metadata.transport } : {}),
+        records: traceRecords,
+      },
+      createdAt: new Date(row.run_created_at).toISOString(),
+      updatedAt: new Date(row.run_updated_at).toISOString(),
+    } satisfies PersistedRuntimeRun;
+  });
+}
+
+function generalAgentTraceNodes(records: Record<string, unknown>[]) {
+  return records.flatMap((record) => {
+    if (record.event_type !== "span_finished" || !isGatewayRecord(record.span_data)) {
+      return [];
+    }
+    const span = record.span_data;
+    const spanType = optionalGatewayString(span.type) ?? "unknown";
+    const error = isGatewayRecord(record.error) ? record.error : undefined;
+    const startedAt = optionalGatewayString(record.started_at);
+    const finishedAt = optionalGatewayString(record.ended_at);
+    const name = optionalGatewayString(span.name);
+    const model = optionalGatewayString(span.model);
+    const projection = generalAgentSpanProjection(spanType, { name, model });
+    return [{
+      node_name: projection.nodeName,
+      label: projection.label,
+      summary: projection.summary,
+      owner: projection.owner,
+      status: error ? "failed" : "completed",
+      ...(startedAt ? { started_at: startedAt } : {}),
+      ...(finishedAt ? { finished_at: finishedAt } : {}),
+    }];
+  });
+}
+
+function generalAgentSpanProjection(
+  spanType: string,
+  detail: { name?: string; model?: string },
+) {
+  if (spanType === "generation") {
+    return {
+      nodeName: "general_agent_model_turn",
+      label: "大陆模型推理",
+      summary: detail.model
+        ? `模型 ${detail.model} 完成一次 Runner 推理。`
+        : "大陆模型完成一次 Runner 推理。",
+      owner: "LLM",
+    };
+  }
+  if (spanType === "function") {
+    return {
+      nodeName: "general_agent_tool_call",
+      label: detail.name ? `工具调用 · ${detail.name}` : "工具调用",
+      summary: detail.name
+        ? `Runner 调用并接收工具 ${detail.name} 的结果。`
+        : "Runner 调用并接收一次工具结果。",
+      owner: "本地系统",
+    };
+  }
+  if (spanType === "agent") {
+    return {
+      nodeName: "general_agent_runner",
+      label: "Agents SDK Runner",
+      summary: detail.name
+        ? `Runner 执行 Agent ${detail.name}。`
+        : "Runner 执行本轮 Agent loop。",
+      owner: "混合",
+    };
+  }
+  return {
+    nodeName: `general_agent_${spanType}`,
+    label: `SDK span · ${spanType}`,
+    summary: "Runner 已记录该 SDK span。",
+    owner: "未知",
+  };
+}
+
+function optionalGatewayString(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export async function addUserMessage(
@@ -4172,7 +4534,12 @@ export async function customerJsonError(
 }
 
 function customerErrorProjection(code: string) {
-  if (code === "customer_identity_required" || code === "customer_identity_invalid") {
+  if (
+    code === "customer_identity_required"
+    || code === "customer_identity_invalid"
+    || code === "customer_identity_untrusted"
+    || code === "customer_identity_expired"
+  ) {
     return {
       code: "sign_in_required" as const,
       title: "需要重新登录",
@@ -4208,6 +4575,27 @@ function customerErrorProjection(code: string) {
       httpStatus: 409,
     };
   }
+  if (
+    code === "customer_request_body_too_large"
+    || code === "customer_message_too_large"
+  ) {
+    return {
+      code: "request_too_large" as const,
+      title: "提交内容过长",
+      message: "请缩短本次输入后再次提交。",
+      recovery: "retry" as const,
+      httpStatus: 413,
+    };
+  }
+  if (code === "customer_stream_capacity_exceeded") {
+    return {
+      code: "service_busy" as const,
+      title: "实时连接暂时繁忙",
+      message: "请关闭其他分析页面或稍后重新连接。",
+      recovery: "retry" as const,
+      httpStatus: 429,
+    };
+  }
   if (CUSTOMER_INPUT_ERROR_CODES.has(code)) {
     return {
       code: "request_invalid" as const,
@@ -4231,6 +4619,7 @@ const CUSTOMER_INPUT_ERROR_CODES = new Set([
   "thread_owner_input_forbidden",
   "message_request_invalid",
   "message_required",
+  "candidate_run_id_required",
   "pending_action_resolution_invalid",
   "clarification_request_invalid",
   "clarification_answer_required",
@@ -4254,8 +4643,17 @@ function errorHttpStatus(code: string) {
 }
 
 function gatewayHttpStatus(code: string) {
-  if (code === "customer_identity_required") return 401;
+  if (
+    code === "customer_identity_required"
+    || code === "customer_identity_untrusted"
+    || code === "customer_identity_expired"
+  ) return 401;
   if (code === "internal_route_unavailable") return 404;
+  if (
+    code === "customer_request_body_too_large"
+    || code === "customer_message_too_large"
+  ) return 413;
+  if (code === "customer_stream_capacity_exceeded") return 429;
   if (code.endsWith("_not_found")) {
     return 404;
   }
@@ -4524,8 +4922,15 @@ function runDispatchClaimFromRow(
 }
 
 function runDispatchLeaseMs() {
-  const configured = Number(process.env.WAJE_RUN_DISPATCH_LEASE_MS ?? "30000");
-  return Number.isFinite(configured) && configured > 0 ? configured : 30000;
+  const raw = process.env.WAJE_RUN_DISPATCH_LEASE_MS ?? "30000";
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw gatewayError("run_dispatch_lease_configuration_invalid");
+  }
+  const configured = Number(raw);
+  if (!Number.isSafeInteger(configured) || configured > 86_400_000) {
+    throw gatewayError("run_dispatch_lease_configuration_invalid");
+  }
+  return configured;
 }
 
 
@@ -4635,10 +5040,24 @@ function memoryStore() {
 }
 
 function pool() {
+  return customerDatabaseScope.getStore()?.client ?? databasePool();
+}
+
+function databasePool() {
   const connectionString = process.env.WAJE_RUNTIME_DATABASE_URL || process.env.DATABASE_URL;
   if (!connectionString) throw new Error("WAJE_RUNTIME_DATABASE_URL or DATABASE_URL is required");
-  globalStore.__wajeConversationPool ??= new Pool({ connectionString });
+  globalStore.__wajeConversationPool ??= new Pool({
+    connectionString,
+    options: "-c waje.actor_id=system",
+  });
   return globalStore.__wajeConversationPool;
+}
+
+function isolatedTransactionPool() {
+  if (customerDatabaseScope.getStore()) {
+    throw gatewayError("customer_database_nested_transaction_forbidden");
+  }
+  return databasePool();
 }
 
 async function publicationBoundaryRows(limit: number) {

@@ -7,6 +7,9 @@ export const metadata: Metadata = {
   description: "SQL-first BI Agent investigation workspace",
 };
 
+// Per-request CSP nonces cannot be attached to statically generated script tags.
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({
   children,
 }: Readonly<{

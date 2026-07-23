@@ -33,29 +33,31 @@ type GeneralAgentStartupControl = {
   technicalDetailRef?: string;
 };
 
+const GENERAL_AGENT_STARTUP_MAX_BYTES = 16 * 1024;
+const GENERAL_AGENT_OUTPUT_MAX_BYTES = 1024 * 1024;
+
 export async function runGeneralAgentTurn(
   input: GeneralAgentTurnInput,
   options: { forceInline?: boolean } = {},
 ): Promise<GeneralAgentTurnProcessResult> {
-  const args = [
-    "-m",
-    "bi_agent.runtime.general_agent_entry",
-    "--command-json",
-    JSON.stringify(input),
-  ];
+  const args = ["-m", "bi_agent.runtime.general_agent_entry"];
+  const commandJson = JSON.stringify(input);
   if (options.forceInline || process.env.WAJE_GENERAL_AGENT_INLINE === "1") {
-    return runInline(args);
+    return runInline(args, commandJson);
   }
-  return runDetached(args);
+  return runDetached(args, commandJson);
 }
 
-function runDetached(args: string[]): Promise<GeneralAgentTurnProcessResult> {
+function runDetached(
+  args: string[],
+  commandJson: string,
+): Promise<GeneralAgentTurnProcessResult> {
   return new Promise((resolve) => {
     const invocation = wajePythonInvocation(args);
     const child = spawn(invocation.command, invocation.args, {
       cwd: process.cwd(),
       detached: true,
-      stdio: ["ignore", "ignore", "ignore", "pipe"],
+      stdio: ["pipe", "ignore", "ignore", "pipe"],
       env: { ...process.env, WAJE_GENERAL_AGENT_STARTUP_ACK_FD: "3" },
     });
     let settled = false;
@@ -77,8 +79,22 @@ function runDetached(args: string[]): Promise<GeneralAgentTurnProcessResult> {
       resolve(result);
     };
     child.once("error", () => settle(generalAgentFailure("general_agent_spawn_failed")));
+    const commandInput = child.stdin;
+    if (!commandInput) {
+      settle(generalAgentFailure("general_agent_command_write_failed"));
+    } else {
+      commandInput.on("error", () => {
+        if (!settled) settle(generalAgentFailure("general_agent_command_write_failed"));
+      });
+      commandInput.end(commandJson);
+    }
     startupPipe?.on("data", (chunk) => {
       acknowledgment += chunk.toString();
+      if (Buffer.byteLength(acknowledgment, "utf8") > GENERAL_AGENT_STARTUP_MAX_BYTES) {
+        child.kill();
+        settle(generalAgentFailure("general_agent_startup_output_too_large"));
+        return;
+      }
       while (acknowledgment.includes("\n")) {
         const newline = acknowledgment.indexOf("\n");
         const line = acknowledgment.slice(0, newline).trim();
@@ -105,7 +121,10 @@ function runDetached(args: string[]): Promise<GeneralAgentTurnProcessResult> {
   });
 }
 
-function runInline(args: string[]): Promise<GeneralAgentTurnProcessResult> {
+function runInline(
+  args: string[],
+  commandJson: string,
+): Promise<GeneralAgentTurnProcessResult> {
   return new Promise((resolve) => {
     const invocation = wajePythonInvocation(args);
     const child = spawn(invocation.command, invocation.args, {
@@ -113,11 +132,30 @@ function runInline(args: string[]): Promise<GeneralAgentTurnProcessResult> {
       env: process.env,
     });
     let stdout = "";
+    let outputExceeded = false;
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
+      if (Buffer.byteLength(stdout, "utf8") > GENERAL_AGENT_OUTPUT_MAX_BYTES) {
+        outputExceeded = true;
+        child.kill();
+      }
     });
+    const commandInput = child.stdin;
+    if (!commandInput) {
+      outputExceeded = true;
+      child.kill();
+    } else {
+      commandInput.on("error", () => {
+        if (!outputExceeded) outputExceeded = true;
+      });
+      commandInput.end(commandJson);
+    }
     child.once("error", () => resolve(generalAgentFailure("general_agent_spawn_failed")));
     child.once("close", (code) => {
+      if (outputExceeded) {
+        resolve(generalAgentFailure("general_agent_output_too_large"));
+        return;
+      }
       if (code !== 0) {
         resolve(generalAgentFailure("general_agent_process_failed"));
         return;

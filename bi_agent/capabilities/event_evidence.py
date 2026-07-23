@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, Mapping
 
 from bi_agent.capabilities import make_evidence_envelope
+from bi_agent.runtime.evidence_authority import canonical_digest
 
 
 EVENT_PRESENCE_EVIDENCE_CONTRACT = "event-presence.v1"
@@ -26,7 +28,8 @@ def event_evidence(
         or temporal_authority_ref != temporal_authority_ref.strip()
     ):
         raise ValueError("event_evidence_temporal_identity_invalid")
-    events = _real_events(events, event_ref=event_ref)
+    source_events = _real_events(events, event_ref=event_ref)
+    events = tuple(_audited_event(item) for item in source_events)
     authority_payload = (
         {
             "evidence_contract": EVENT_PRESENCE_EVIDENCE_CONTRACT,
@@ -45,15 +48,77 @@ def event_evidence(
         typed_payload={
             **authority_payload,
             "events": events,
+            "event_summary": tuple(_public_event(item) for item in source_events),
             "business_readout": "活动窗口证据仅作为候选机制检查。",
             "claim_boundary": "活动窗口重合只能作为候选机制，不能直接写成因果结论。",
+            "synthesis_contract": {
+                "schema_version": "public-fact-projection.v1",
+                "public_fact_paths": (
+                    "business_readout",
+                    "claim_boundary",
+                    "event_summary",
+                ),
+            },
         },
-        limitations=() if events else ("no_event_contract_or_matches",),
+        limitations=() if events else ("no_event_matches",),
         result_refs=result_refs,
     )
 
 
 collect_event_evidence = event_evidence
+
+
+def _audited_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    audited = {
+        key: event[key]
+        for key in (
+            "event_id",
+            "source_family",
+            "window_role",
+            "event_type",
+            "event_start_date",
+            "event_end_date",
+            "affected_scope",
+            "authority",
+            "evidence_level",
+            "wording_limit",
+            "event_count",
+        )
+        if key in event
+    }
+    audited["source_event_digest"] = canonical_digest(event)
+    return audited
+
+
+def _public_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    summary = {
+        key: event[key]
+        for key in (
+            "source_family",
+            "window_role",
+            "event_type",
+            "event_start_date",
+            "event_end_date",
+            "affected_scope",
+            "authority",
+            "evidence_level",
+            "wording_limit",
+            "event_count",
+        )
+        if key in event
+    }
+    raw_payload = event.get("payload")
+    if isinstance(raw_payload, str):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, Mapping):
+            for key in ("business_use", "description"):
+                value = payload.get(key)
+                if isinstance(value, str) and value and value == value.strip():
+                    summary[key] = value
+    return summary
 
 
 def _real_events(

@@ -264,6 +264,19 @@ def test_run_tool_preserves_open_business_text_and_returns_shared_contract() -> 
 
 
 def test_continue_tool_requires_explicit_current_plan_revision_fields() -> None:
+    schema = ContinueBiAnalysisInput.model_json_schema(by_alias=True)
+    assert schema["properties"]["supersededPlanFields"]["items"]["enum"] == [
+        "goal_bindings",
+        "desired_decisions",
+        "analysis_axes",
+        "target_metric_refs",
+        "baseline_refs",
+        "resolved_window_refs",
+        "time_spec",
+        "scope",
+        "filters",
+        "direction_premise",
+    ]
     with pytest.raises(ValidationError):
         ContinueBiAnalysisInput.model_validate(
             {

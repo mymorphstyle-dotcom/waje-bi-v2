@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,6 +15,7 @@ from bi_agent.runtime.mainland_model_provider import (
     MainlandModelProvider,
     ProviderCapabilityError,
 )
+from bi_agent.runtime.llm_client import LLMConfigurationError
 
 
 class _ProbeToolInput(BaseModel):
@@ -38,6 +40,7 @@ class ProviderCapabilityProbeResult:
     context_window_tokens: int
     max_output_tokens: int
     thinking: bool
+    observations: Mapping[str, Any]
 
 
 class ProviderCapabilityProbe:
@@ -154,6 +157,12 @@ class ProviderCapabilityProbe:
         if "WAJE_STREAM_PROBE_OK" not in text_deltas:
             raise ProviderCapabilityError(("streaming_text",))
 
+        observations = dict(self._provider.probe_observations)
+        expected = urlparse(self._provider.config.base_url)
+        expected_origin = f"{expected.scheme}://{expected.netloc}"
+        expected_path = expected.path.rstrip("/") + "/chat/completions"
+        mapping = self._provider.typed_error_mapping_observation()
+        context_budget_enforced = _context_budget_is_enforced(self._provider)
         checks = {
             "text_generation": True,
             "function_calling": True,
@@ -161,18 +170,31 @@ class ProviderCapabilityProbe:
             "structured_output": True,
             "streaming_text": True,
             "streaming_tool_calls": True,
-            "context_window_limit": capabilities.context_window_tokens > 0,
-            "output_limit": (
-                0
-                < self._provider.config.model_settings.max_output_tokens
-                <= capabilities.max_output_tokens
-            ),
+            "request_origin": observations.get("origins") == [expected_origin],
+            "chat_completions_path": observations.get("paths") == [expected_path],
+            "configured_model": observations.get("models")
+            == [self._provider.config.model],
+            "context_budget_enforcement": context_budget_enforced,
+            "output_limit_observed": observations.get(
+                "requested_max_output_tokens"
+            )
+            == [self._provider.config.model_settings.max_output_tokens],
             "thinking": (
                 capabilities.thinking and self._provider.thinking_observed
                 if self._provider.config.model_settings.thinking == "enabled"
                 else True
             ),
-            "typed_error_mapping": capabilities.typed_error_mapping,
+            "typed_error_mapping": capabilities.typed_error_mapping
+            and mapping
+            == {
+                400: ("provider_request_rejected", "not_retryable"),
+                401: ("provider_authentication_failed", "not_retryable"),
+                403: ("provider_permission_denied", "not_retryable"),
+                408: ("provider_unavailable", "retryable"),
+                409: ("provider_unavailable", "retryable"),
+                429: ("provider_rate_limited", "retryable"),
+                500: ("provider_unavailable", "retryable"),
+            },
         }
         failed = tuple(name for name, passed in checks.items() if not passed)
         if failed:
@@ -185,9 +207,27 @@ class ProviderCapabilityProbe:
             context_window_tokens=capabilities.context_window_tokens,
             max_output_tokens=capabilities.max_output_tokens,
             thinking=capabilities.thinking,
+            observations=observations,
         )
 
 
 def _require_marker(output: Any, marker: str, capability: str) -> None:
     if not isinstance(output, str) or marker not in output:
         raise ProviderCapabilityError((capability,))
+
+
+def _context_budget_is_enforced(provider: MainlandModelProvider) -> bool:
+    configured_output = provider.config.model_settings.max_output_tokens
+    context_window = provider.config.capabilities.context_window_tokens
+    provider.assert_token_budget(
+        estimated_input_tokens=context_window - configured_output,
+        requested_output_tokens=configured_output,
+    )
+    try:
+        provider.assert_token_budget(
+            estimated_input_tokens=context_window - configured_output + 1,
+            requested_output_tokens=configured_output,
+        )
+    except LLMConfigurationError as exc:
+        return str(exc) == "provider_request_context_limit_exceeded"
+    return False

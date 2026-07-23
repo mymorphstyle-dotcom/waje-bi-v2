@@ -11,7 +11,12 @@ import {
   loadCustomerAnalysisSnapshot,
   requireThread,
   agentTurnRequestIdentity,
+  withCustomerActorScope,
 } from "../../../_conversationStore";
+import {
+  readBoundedCustomerJson,
+  requireCustomerMessageBudget,
+} from "../../../_requestBudget";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,17 +25,18 @@ type RouteContext = { params: Promise<{ threadId: string }> };
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const { threadId } = await context.params;
-  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const text = typeof body.message === "string" ? body.message : "";
-  const message = text.trim();
-  if (!message) {
-    return customerJsonError(gatewayError("message_required"), { threadId });
-  }
   let actorId: string | undefined;
   try {
+    const body = await readBoundedCustomerJson(request, "message_request_invalid");
+    const text = typeof body.message === "string" ? body.message : "";
+    const message = text.trim();
+    if (!message) throw gatewayError("message_required");
+    requireCustomerMessageBudget(message);
     validateMessageBodyShape(body);
     actorId = resolveCustomerActor(request);
-    await requireThread(threadId, actorId);
+    await withCustomerActorScope(actorId, async () => {
+      await requireThread(threadId, actorId!);
+    });
     const operationId = agentTurnRequestIdentity(request, body);
     const pendingActionResolution = pendingActionResolutionFrom(
       body.pendingActionResolution,
@@ -46,7 +52,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (agent.error) throw gatewayError(agent.error, agent.technicalDetailRef);
     return NextResponse.json(
       {
-        snapshot: await loadCustomerAnalysisSnapshot({ threadId, actorId }),
+        snapshot: await withCustomerActorScope(actorId, () =>
+          loadCustomerAnalysisSnapshot({ threadId, actorId: actorId! })
+        ),
       },
       { status: 202 },
     );

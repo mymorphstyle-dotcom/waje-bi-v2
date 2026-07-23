@@ -55,6 +55,7 @@ class AuthoritativeAgentTaskCompletionLoader:
                 taskRef=task_ref,
                 status="failed",
                 customerSummary="本次分析任务未能完成，请稍后重试。",
+                customerAnswerMarkdown=None,
                 artifactRefs=[],
                 materialRefs=[],
                 limitationRefs=[],
@@ -83,6 +84,18 @@ class AuthoritativeAgentTaskCompletionLoader:
             if item.descriptor.artifact_type == "bi_publication"
         )
         if not publications:
+            terminal_failure = _terminal_non_publication_failure(state)
+            if terminal_failure is not None:
+                return AgentTaskCompletion(
+                    taskRef=task_ref,
+                    status="failed",
+                    customerSummary=terminal_failure,
+                    customerAnswerMarkdown=None,
+                    artifactRefs=[],
+                    materialRefs=[],
+                    limitationRefs=[],
+                    relevantMaterials=[],
+                )
             raise AgentTaskRecoveryError("agent_task_publication_missing")
         publications = (max(publications, key=_publication_order),)
 
@@ -119,6 +132,9 @@ class AuthoritativeAgentTaskCompletionLoader:
             for item in publications
             if item.descriptor.customer_summary
         ]
+        customer_answer_markdown = _publication_answer_markdown(
+            relevant_materials[0]
+        )
         return AgentTaskCompletion(
             taskRef=task_ref,
             status=(
@@ -129,6 +145,7 @@ class AuthoritativeAgentTaskCompletionLoader:
                 if summaries
                 else "BI 分析任务已完成并形成可追溯发布材料。"
             ),
+            customerAnswerMarkdown=customer_answer_markdown,
             artifactRefs=[
                 item.descriptor.artifact_ref for item in publications
             ],
@@ -144,6 +161,23 @@ def _exact_text(value: Any, code: str) -> str:
     return value
 
 
+def _terminal_non_publication_failure(state: Mapping[str, Any]) -> str | None:
+    request = state.get("request")
+    if not isinstance(request, Mapping):
+        return None
+    post_execution_status = str(request.get("post_execution_status") or "")
+    publication_status = str(request.get("publication_status") or "")
+    expected_publication_status = {
+        "narrative_failed": "not_ready",
+        "publication_failed": "failed",
+    }.get(post_execution_status)
+    if expected_publication_status is None:
+        return None
+    if publication_status != expected_publication_status:
+        raise AgentTaskRecoveryError("agent_task_terminal_failure_state_invalid")
+    return "本次分析未形成可发布回答，请稍后重试。"
+
+
 def _publication_order(value: Any) -> tuple[float, str]:
     created_at = value.descriptor.created_at
     try:
@@ -155,3 +189,28 @@ def _publication_order(value: Any) -> tuple[float, str]:
     if parsed.tzinfo is None:
         raise AgentTaskRecoveryError("agent_task_publication_timestamp_invalid")
     return parsed.timestamp(), value.descriptor.artifact_ref
+
+
+def _publication_answer_markdown(material: Mapping[str, Any]) -> str:
+    detail = material.get("detail")
+    if not isinstance(detail, Mapping):
+        raise AgentTaskRecoveryError("agent_task_publication_invalid")
+    publication = detail.get("publication")
+    if not isinstance(publication, Mapping):
+        raise AgentTaskRecoveryError("agent_task_publication_invalid")
+    blocks = publication.get("blocks")
+    if (
+        isinstance(blocks, (str, bytes))
+        or not isinstance(blocks, list)
+        or not blocks
+    ):
+        raise AgentTaskRecoveryError("agent_task_publication_blocks_invalid")
+    texts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            raise AgentTaskRecoveryError("agent_task_publication_blocks_invalid")
+        text = block.get("text")
+        if not isinstance(text, str) or not text or text != text.strip():
+            raise AgentTaskRecoveryError("agent_task_publication_blocks_invalid")
+        texts.append(text)
+    return "\n\n".join(texts)

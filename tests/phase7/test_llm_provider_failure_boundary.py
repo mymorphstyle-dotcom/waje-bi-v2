@@ -19,6 +19,7 @@ from bi_agent.runtime.llm_client import (
     _llm_provider_error_from_openai,
     _request_openai_json_in_subprocess,
 )
+from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
 
 
 def _retryable_provider_worker(*_: Any) -> dict[str, Any]:
@@ -381,11 +382,11 @@ def test_shared_langgraph_client_requires_explicit_mainland_endpoint_and_key() -
         "WAJE_LLM_BASE_URL": "https://api.deepseek.com/v1",
     }
     with pytest.raises(LLMConfigurationError, match="^missing_llm_api_key$"):
-        OpenAICompatibleLLMClient.from_env(
+        MainlandModelProvider.structured_client_from_env(
             {**base, "OPENAI_API_KEY": "must-not-be-used"}
         )
     with pytest.raises(LLMConfigurationError, match="^missing_llm_base_url$"):
-        OpenAICompatibleLLMClient.from_env(
+        MainlandModelProvider.structured_client_from_env(
             {
                 "WAJE_LLM_PROVIDER": "deepseek",
                 "WAJE_LLM_MODEL": "deepseek-v4-flash",
@@ -393,7 +394,7 @@ def test_shared_langgraph_client_requires_explicit_mainland_endpoint_and_key() -
             }
         )
     with pytest.raises(LLMConfigurationError, match="^openai_endpoint_forbidden$"):
-        OpenAICompatibleLLMClient.from_env(
+        MainlandModelProvider.structured_client_from_env(
             {
                 "WAJE_LLM_PROVIDER": "deepseek",
                 "WAJE_LLM_MODEL": "deepseek-v4-flash",

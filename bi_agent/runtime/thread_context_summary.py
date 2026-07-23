@@ -46,9 +46,23 @@ class ThreadSummaryStatement(BaseModel):
         "business_fact",
         "limitation",
         "open_question",
-    ]
+    ] = Field(
+        description=(
+            "Evidence class: user_goal is a requested outcome; accepted_decision is "
+            "an explicit settled choice; business_fact is an externally evidenced fact; "
+            "limitation is an explicit evidence boundary; open_question is unresolved."
+        )
+    )
     text: str = Field(min_length=1)
-    source_refs: list[str] = Field(alias="sourceRefs", min_length=1)
+    source_refs: list[str] = Field(
+        alias="sourceRefs",
+        min_length=1,
+        description=(
+            "Exact supplied refs supporting this statement. A business_fact must include "
+            "an artifact or material ref from allowedAuthorityRefs; a user or assistant "
+            "message alone cannot support a business_fact."
+        ),
+    )
 
     @field_validator("statement_id", "text")
     @classmethod
@@ -70,7 +84,7 @@ class ThreadSummaryStatement(BaseModel):
 class ThreadSummaryContent(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    statements: list[ThreadSummaryStatement] = Field(min_length=1)
+    statements: list[ThreadSummaryStatement] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_statement_identity(self) -> "ThreadSummaryContent":

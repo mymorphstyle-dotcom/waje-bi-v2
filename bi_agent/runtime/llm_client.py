@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from contextlib import contextmanager
 import hashlib
+import httpx
 import json
 import multiprocessing
-import os
-import signal
 import threading
 from time import perf_counter
-from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from openai import (
@@ -83,6 +81,7 @@ class LLMProviderError(RuntimeError):
             "provider_permission_denied",
             "provider_rate_limited",
             "provider_request_rejected",
+            "provider_output_invalid",
             "provider_timeout",
             "provider_unavailable",
         }:
@@ -131,6 +130,9 @@ class OpenAICompatibleLLMClient:
         base_url: str,
         timeout_seconds: float | None = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        circuit: Any = None,
+        circuit_failure_threshold: int = 5,
+        circuit_recovery_seconds: float = 30.0,
     ):
         _validate_mainland_provider_identity(provider)
         _validate_mainland_base_url(base_url)
@@ -150,48 +152,37 @@ class OpenAICompatibleLLMClient:
         ):
             raise LLMConfigurationError("invalid_llm_max_attempts")
         self.durable_max_attempts = max_attempts
+        self._circuit = circuit or _StructuredClientCircuit(
+            failure_threshold=circuit_failure_threshold,
+            recovery_seconds=circuit_recovery_seconds,
+        )
         self._api_key = api_key
         self._request_worker: (
             Callable[[dict[str, Any], Sequence[Mapping[str, str]]], dict[str, Any]]
             | None
         ) = None
-        self._client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout_seconds,
-            max_retries=0,
-        )
-
     @classmethod
-    def from_env(
+    def from_provider_config(
         cls,
-        environ: Optional[Mapping[str, str]] = None,
+        config: Any,
+        *,
+        circuit: Any = None,
     ) -> "OpenAICompatibleLLMClient":
-        env = os.environ if environ is None else environ
-        provider = env.get("WAJE_LLM_PROVIDER", "").strip()
-        model = env.get("WAJE_LLM_MODEL", "").strip()
-        critical_model = env.get("WAJE_LLM_CRITICAL_MODEL", "").strip()
-        api_key = (
-            env.get("WAJE_LLM_API_KEY")
-            or env.get("DEEPSEEK_API_KEY")
-            or ""
-        ).strip()
-        base_url = env.get("WAJE_LLM_BASE_URL", "").strip()
-        timeout_seconds = _parse_timeout_seconds(env.get("WAJE_LLM_TIMEOUT_SECONDS"))
+        from bi_agent.runtime.mainland_model_provider import MainlandProviderConfig
 
-        _validate_mainland_provider_identity(provider)
-        _validate_mainland_base_url(base_url)
-        if not model:
-            raise LLMConfigurationError("missing_llm_model")
-        if not api_key:
-            raise LLMConfigurationError("missing_llm_api_key")
+        if not isinstance(config, MainlandProviderConfig):
+            raise TypeError("mainland_provider_config_required")
         return cls(
-            provider=provider,
-            model=model,
-            critical_model=critical_model,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_seconds=timeout_seconds,
+            provider=config.provider,
+            model=config.model,
+            critical_model=config.critical_model or config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout_seconds=config.timeout_seconds,
+            max_attempts=config.max_attempts,
+            circuit=circuit,
+            circuit_failure_threshold=config.circuit_failure_threshold,
+            circuit_recovery_seconds=config.circuit_recovery_seconds,
         )
 
     def invoke_json(
@@ -217,12 +208,14 @@ class OpenAICompatibleLLMClient:
         actual_model = self.critical_model if model_tier == "critical" else self.model
         parsed_output: dict[str, Any] | None = None
         try:
+            self._circuit.before_request()
             response_payload = self._request_json_once(
                 messages_payload,
                 attempt=1,
                 model=actual_model,
                 thinking=thinking,
             )
+            self._circuit.record_success()
             content = response_payload["content"]
             parsed_output = _parse_json_object(content)
             output = parsed_output
@@ -237,6 +230,11 @@ class OpenAICompatibleLLMClient:
                         str(exc).strip() or "llm_output_contract_invalid"
                     ) from exc
         except Exception as exc:
+            if isinstance(exc, LLMTimeoutError) or (
+                isinstance(exc, LLMProviderError)
+                and exc.error_code != "provider_circuit_open"
+            ):
+                self._circuit.record_failure(exc)
             failure_code = llm_failure_code(exc)
             attempt_failure = {
                 "attempt": 1,
@@ -314,6 +312,9 @@ class OpenAICompatibleLLMClient:
             "output_hash": _hash_json(output),
             "base_url_hash": _hash_text(self.base_url) if self.base_url else "",
             "usage": dict(response_payload.get("usage") or {}),
+            "finish_reason": str(response_payload.get("finish_reason") or ""),
+            "input_bytes": _json_byte_count(messages),
+            "output_bytes": len(content.encode("utf-8")),
             "structured_output": output,
         }
         return LLMResult(output=output, audit=audit)
@@ -327,41 +328,58 @@ class OpenAICompatibleLLMClient:
         thinking: str | None = None,
     ) -> dict[str, Any]:
         actual_model = model or self.model
-        if isinstance(self._client, OpenAI):
-            return _request_openai_json_in_subprocess(
-                {
-                    "api_key": self._api_key,
-                    "base_url": self.base_url,
-                    "timeout_seconds": self.timeout_seconds,
-                    "model": actual_model,
-                    "thinking": thinking,
-                    "deepseek_endpoint": _is_deepseek_endpoint(self.base_url),
-                    "attempt": attempt,
-                },
-                [dict(message) for message in messages],
-                self.timeout_seconds,
-                request_worker=self._request_worker or _request_openai_json_once,
-            )
-        try:
-            with _wall_clock_timeout(self.timeout_seconds):
-                request = _chat_completion_request(
-                    model=actual_model,
-                    messages=messages,
-                    thinking=thinking,
-                    deepseek_endpoint=_is_deepseek_endpoint(self.base_url),
+        return _request_openai_json_in_subprocess(
+            {
+                "api_key": self._api_key,
+                "base_url": self.base_url,
+                "timeout_seconds": self.timeout_seconds,
+                "model": actual_model,
+                "thinking": thinking,
+                "deepseek_endpoint": _is_deepseek_endpoint(self.base_url),
+                "attempt": attempt,
+            },
+            [dict(message) for message in messages],
+            self.timeout_seconds,
+            request_worker=self._request_worker or _request_openai_json_once,
+        )
+
+
+class _StructuredClientCircuit:
+    def __init__(self, *, failure_threshold: int, recovery_seconds: float) -> None:
+        self._failure_threshold = failure_threshold
+        self._recovery_seconds = recovery_seconds
+        self._failures = 0
+        self._open_until = 0.0
+        self._lock = threading.Lock()
+
+    def before_request(self) -> None:
+        with self._lock:
+            if self._open_until > perf_counter():
+                raise LLMProviderError(
+                    kind="provider_unavailable",
+                    retryability="retryable",
+                    error_code="provider_circuit_open",
                 )
-                response = self._client.chat.completions.create(**request)
-        except OpenAIError as exc:
-            raise _llm_provider_error_from_openai(exc) from exc
-        message = response.choices[0].message
-        return {
-            "response_id": getattr(response, "id", ""),
-            "content": message.content or "",
-            "usage": _usage_dict(getattr(response, "usage", None)),
-            "reasoning_content_present": bool(
-                getattr(message, "reasoning_content", None)
-            ),
-        }
+            if self._open_until:
+                self._failures = 0
+                self._open_until = 0.0
+
+    def record_failure(self, error: Exception) -> None:
+        retryable = isinstance(error, LLMTimeoutError) or (
+            isinstance(error, LLMProviderError)
+            and error.retryability == "retryable"
+        )
+        if not retryable:
+            return
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._failure_threshold:
+                self._open_until = perf_counter() + self._recovery_seconds
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._open_until = 0.0
 
 
 def llm_failure_code(exc: Exception) -> str:
@@ -588,8 +606,8 @@ def _openai_request_child(
             )
         except BaseException:
             pass
-    except OpenAIError as exc:
-        provider_error = _llm_provider_error_from_openai(exc)
+    except (OpenAIError, httpx.TransportError) as exc:
+        provider_error = llm_provider_error_from_exception(exc)
         try:
             output_connection.send(
                 {
@@ -621,34 +639,45 @@ def _request_openai_json_once(
     config: dict[str, Any],
     messages: Sequence[Mapping[str, str]],
 ) -> dict[str, Any]:
-    client = OpenAI(
-        api_key=config["api_key"],
-        base_url=_validated_config_base_url(config),
-        timeout=config["timeout_seconds"],
-        max_retries=0,
-    )
-    response = client.chat.completions.create(
-        **_chat_completion_request(
-            model=str(config["model"]),
-            messages=messages,
-            thinking=(
-                str(config["thinking"])
-                if config.get("thinking") in {"enabled", "disabled"}
-                else None
-            ),
-            deepseek_endpoint=bool(
-                config.get(
-                    "deepseek_endpoint",
-                    _is_deepseek_endpoint(str(config.get("base_url") or "")),
-                )
-            ),
+    base_url = _validated_config_base_url(config)
+    from bi_agent.runtime.mainland_model_provider import OutboundTargetGuard
+
+    guard = OutboundTargetGuard(base_url)
+    with httpx.Client(
+        follow_redirects=False,
+        event_hooks={"request": [guard.on_sync_request]},
+    ) as http_client:
+        client = OpenAI(
+            api_key=config["api_key"],
+            base_url=base_url,
+            timeout=config["timeout_seconds"],
+            max_retries=0,
+            http_client=http_client,
         )
-    )
-    message = response.choices[0].message
+        response = client.chat.completions.create(
+            **_chat_completion_request(
+                model=str(config["model"]),
+                messages=messages,
+                thinking=(
+                    str(config["thinking"])
+                    if config.get("thinking") in {"enabled", "disabled"}
+                    else None
+                ),
+                deepseek_endpoint=bool(
+                    config.get(
+                        "deepseek_endpoint",
+                        _is_deepseek_endpoint(str(config.get("base_url") or "")),
+                    )
+                ),
+            )
+        )
+    choice = response.choices[0]
+    message = choice.message
     return {
         "response_id": getattr(response, "id", ""),
         "content": message.content or "",
         "usage": _usage_dict(getattr(response, "usage", None)),
+        "finish_reason": str(getattr(choice, "finish_reason", "") or ""),
         "reasoning_content_present": bool(getattr(message, "reasoning_content", None)),
     }
 
@@ -674,31 +703,77 @@ def _llm_provider_error_from_openai(exc: OpenAIError) -> LLMProviderError:
             **diagnostics,
         )
     status_code = getattr(exc, "status_code", None)
+    return _llm_provider_error_from_status(
+        status_code=status_code,
+        diagnostics=diagnostics,
+    )
+
+
+def llm_provider_error_from_exception(exc: Exception) -> LLMProviderError:
+    if isinstance(exc, LLMProviderError):
+        return exc
+    if isinstance(exc, OpenAIError):
+        return _llm_provider_error_from_openai(exc)
+    if isinstance(exc, httpx.TimeoutException):
+        return LLMProviderError(
+            kind="provider_timeout",
+            retryability="retryable",
+        )
+    if isinstance(exc, httpx.TransportError):
+        return LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+    raise TypeError("unsupported_provider_exception")
+
+
+def _llm_provider_error_from_status(
+    *,
+    status_code: int | None,
+    diagnostics: Mapping[str, Any] | None = None,
+) -> LLMProviderError:
+    details = dict(diagnostics or {})
     if status_code == 401:
         return LLMProviderError(
             kind="provider_authentication_failed",
             retryability="not_retryable",
-            **diagnostics,
+            **details,
         )
     if status_code == 403:
         return LLMProviderError(
             kind="provider_permission_denied",
             retryability="not_retryable",
-            **diagnostics,
+            **details,
         )
-    if status_code in {408, 409, 429} or (
+    if status_code == 429:
+        return LLMProviderError(
+            kind="provider_rate_limited",
+            retryability="retryable",
+            **details,
+        )
+    if status_code in {408, 409} or (
         isinstance(status_code, int) and status_code >= 500
     ):
         return LLMProviderError(
             kind="provider_unavailable",
             retryability="retryable",
-            **diagnostics,
+            **details,
         )
     return LLMProviderError(
         kind="provider_request_rejected",
         retryability="not_retryable",
-        **diagnostics,
+        **details,
     )
+
+
+def provider_error_mapping_contract() -> dict[int, tuple[str, str]]:
+    return {
+        status_code: (error.kind, error.retryability)
+        for status_code in (400, 401, 403, 408, 409, 429, 500)
+        for error in (
+            _llm_provider_error_from_status(status_code=status_code),
+        )
+    }
 
 
 def _openai_provider_error_diagnostics(exc: OpenAIError) -> dict[str, Any]:
@@ -766,7 +841,9 @@ def _validate_mainland_base_url(base_url: str) -> None:
     if not base_url.strip():
         raise LLMConfigurationError("missing_llm_base_url")
     parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    if parsed.scheme != "https" or not parsed.hostname:
+        if parsed.scheme == "http" and parsed.hostname:
+            raise LLMConfigurationError("provider_https_required")
         raise LLMConfigurationError("invalid_llm_base_url")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise LLMConfigurationError("invalid_llm_base_url")
@@ -779,28 +856,6 @@ def _validated_config_base_url(config: Mapping[str, Any]) -> str:
     base_url = str(config.get("base_url") or "")
     _validate_mainland_base_url(base_url)
     return base_url
-
-
-@contextmanager
-def _wall_clock_timeout(seconds: float | None) -> Iterator[None]:
-    if seconds is None or threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def _raise_timeout(signum, frame):
-        raise LLMTimeoutError(f"llm_request_timeout:{seconds:g}s")
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    previous_timer = signal.getitimer(signal.ITIMER_REAL)
-    signal.signal(signal.SIGALRM, _raise_timeout)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0] > 0:
-            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def _parse_timeout_seconds(timeout_text: str | None) -> float | None:

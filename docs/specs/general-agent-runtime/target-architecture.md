@@ -4,10 +4,20 @@
 
 框架决策已接受。2026-07-21 完成结构修复后，真实 DeepSeek 应用链评测 7/7 通过，覆盖直答、
 能力目录、明确 BI 分析、描述性比较澄清、因果基线澄清及恢复、异常敏感性分析和已发布证据
-追问。隔离 PostgreSQL v9→v12 升级、`REPEATABLE READ READ ONLY` 审计和完整部署门禁通过。
+追问。隔离 PostgreSQL v9→v12 升级及当前目标 v12→v13 升级、`REPEATABLE READ READ ONLY`
+审计和完整部署门禁通过。
 所有验收均显式清除 `OPENAI_API_KEY`，模型出站目标为 `https://api.deepseek.com`，OpenAI
 托管请求与默认 trace exporter 使用计数均为 0。P0 框架与 Provider 边界达到当前交付合同；
 完整 Conversation 切换、Case B 和多 Agent 不属于本轮验收结论。
+
+2026-07-23 起，`WAJE Standard Pack v1` 接管通用 Agent Runtime 的评测合同，旧 10-case
+shape 和 `general-agent-runtime-live-eval.v2` runner 已退出。当前 catalog 含 48 个 scenario：
+business 24、runtime 12、security 4、experience 8；30 个 deterministic case 和 8 个浏览器
+case 已完整通过。真实 DeepSeek 已通过 direct 两轮连续回答的 release 3/3、能力目录工具调用
+1/1、公式分析 publication 1/1。公式分析历时 1067.5 秒，作为 latency observation 保留；
+hard correctness 与人工答案质量审核继续分别记录。所有 live 运行均清除 `OPENAI_API_KEY`，
+出站 origin 为 `https://api.deepseek.com`。完整合同见
+[WAJE Standard Pack v1](./standard-pack-v1.md)。
 
 本文定义 WAJE BI v2 下一阶段的产品与运行时目标。完成实施与验收后，本文将接管
 对话入口、连续追问、长任务恢复和客户对话投影的架构权威。现有
@@ -120,6 +130,16 @@ LLM 可以自由组织解释、重点、比较、洞察和建议。数值、公�
 
 本地代码不通过关键词字典解释开放业务语义，不生成本地高价值答案模板，也不使用
 无证据 fallback 填补业务结论。
+
+Writer 的业务语义输入来自 accepted `IntentRevision` 与 `PlanRevision` 的类型化投影，
+包括目标指标、时间和比较关系、用户指定因子、分析轴、能力路线及用户要求的结论义务。
+原始客户文本与固定敏感标识不进入模型 payload。公式类材料同时携带指标合同声明的
+层级分组；叶子因子和复合因子的贡献只能在同一分组层级比较，分组贡献由声明式
+grouped Shapley 重新计算，不能跨层相加。
+
+这些输入完整性合同用于让正常执行产生完整业务参考。它们不把表达质量转成发布门禁。
+表达完整性、解释深度和潜在幻觉发现继续在交付后进入 Workbench 与人工审核，不自动
+重试 writer，也不修改首次交付。
 
 ### 4. 每个已接受请求都有可见终局
 
@@ -609,10 +629,12 @@ Workbench 展示完整 trace、run、node、tool call、claim、evidence、ref�
 
 ### 大陆模型 Provider 合同
 
-`MainlandModelProvider` 实现 Agents SDK `ModelProvider`，或返回使用显式
-`AsyncOpenAI(base_url=...)` 的 `OpenAIChatCompletionsModel`。生产代码必须显式传入
-provider、base URL、API key、model 和 model settings，不能读取 SDK 默认模型作为
-回退。
+`MainlandModelProvider` 是 General Agent 与 BI LangGraph typed LLM 节点的统一配置和
+传输工厂。Agents SDK 路径由它实现 `ModelProvider` 并返回使用显式
+`AsyncOpenAI(base_url=...)` 的 `OpenAIChatCompletionsModel`；BI 节点通过同一个
+`MainlandProviderConfig` 创建结构化 Chat Completions client。生产代码必须显式传入
+provider、HTTPS base URL、API key、model 和 model settings，不能读取 SDK 默认模型作为
+回退。两个 HTTP client 都关闭 redirect，并在每次请求前校验目标与配置 origin 完全一致。
 
 首个生产合同要求：
 
@@ -780,21 +802,100 @@ SDK 升级必须通过 Provider、Session、工具幂等、interruption 恢复�
    customer-safe artifacts。子结果通过引用闭包验证后保存为结构化 artifact，不能修改
    ThreadHead、客户对话或 BI 权威。
 
-### P3：部署与真实环境验收（仓库门禁已完成）
+### P3：部署与真实环境验收（目标环境验收已完成）
 
 1. 修正 v11→v12 in-place upgrade：只允许新增 `agent_thread_summaries` 和
    `agent_generated_artifacts`，保留全部既有业务表行数，新表必须为空。
 2. repository gate 校验 SDK 依赖锁、schema migration digest 和 release manifest。
 3. PostgreSQL gate 在 `REPEATABLE READ READ ONLY` 事务中校验 v12 migration、必需表、
    append-only trigger 和 `tool_selection` item 合同。
-4. live Provider gate 清除 `OPENAI_API_KEY` 后运行九项 capability probe，并真实执行 P2
+4. live Provider gate 清除 `OPENAI_API_KEY` 后运行十三项 capability check，并真实执行 P2
    summary、动态工具选择、选择重放和受控子任务 artifact 闭包。
 5. live trace 只接受 `waje-agent-trace.v1`，验证 trace 起止事件且拒绝
    `api.openai.com` 出站痕迹。
 6. 输出 `general-agent-deployment.v1` typed JSON report；任一 gate 失败时退出码非零。
+7. v13 在已发布客户 payload 上增加持久化 digest，数据库门禁校验该列，使恢复与读取可以
+   验证客户投影没有发生持久化漂移。
 
-仓库门禁已通过。数据库 cutover、数据库只读审计和 live Provider gate 需要部署环境变量，
-不会在缺少目标环境时伪造通过状态。
+### P4：全因子调查与受控编排（已完成）
+
+1. 运行时 registry 以十个业务因素域声明调查覆盖：支付公式链、拉新注册首充、充值档位与
+   用户价值、支付渠道与方式、增长运营、玩法与投注、日历发薪、产品运营事件、外部事件、
+   数据质量与证据。
+2. `FactorCoveragePlan` 从 accepted `PlanRevision`、版本化 registry 和 capability DAG 编译；
+   每个因素域均结算为 `analyzed`、`screened_no_signal`、`unavailable_data`、
+   `missing_contract`、`unsupported_grain`、`not_applicable`、`deferred_by_budget` 或
+   `failed`，能力缺失和数据缺口显式进入限制，不能推断为“没有影响”。
+3. 拉新漏斗按分析窗口重算新增、注册、首充和新增首日付费的逐级转化率；充值档位同时结算
+   金额、人数、订单、频次、单笔金额与 mix 偏移，并且只允许在同一 reconciliation group
+   内对账。
+4. 内部活动、外部事件和业务指标通过时间轴与 reviewed join contract 形成候选关联；覆盖状态
+   只描述证据可用性，不能直接用于影响排序，也不能升级为因果结论。
+5. 调查分支是只读、引用闭包受控的执行单元。单分支失败只降低相关因素域；精确恢复重放
+   persisted plan、outcome、evidence 和 branch refs，不重复查询或模型判断。
+6. `InvestigationSynthesis` 在 claim settlement 后绑定 verified claim refs，再把业务化覆盖摘要提供
+   给 narrative writer。客户投影只包含已发布回答和安全材料；完整因素拓扑、模型、工具、
+   LangGraph 与错误 trace 只进入 Workbench。
+7. P4 标准包覆盖真实全因素调查、漏斗、充值档位、事件无匹配、分支失败隔离、恢复回放、
+   客户安全投影和大陆 Provider 出站边界。回答质量继续采用交付后的人工 advisory review，
+   不增加自动拦截、自动重写或撤回。
+8. 推荐仍受 claim publication ceiling 约束。可选建议越界时，运行时在 Workbench 审计中记录
+   policy rejection 并丢弃该建议；已经闭合的事实、证据和 claim 继续进入 narrative 与发布，
+   不把建议拒绝升级成整条分析失败。
+
+P4 的执行与验收细节见
+[P4 full-factor investigation and orchestration plan](../../superpowers/plans/2026-07-23-p4-full-factor-investigation-orchestration.md)
+和 [P4 full-factor delivery report](../../reviews/2026-07-23-p4-full-factor-delivery.md)。
+
+### P5：数据覆盖与执行性能（已完成）
+
+1. 支付、market dashboard、玩法和关联数据按当前 release/snapshot 权威解析，完整日截止
+   2026-06-02 的问题使用同一冻结边界。
+2. first-payment 去重与 Lagos/GMT/北京时间基准修复在数据准备层完成，修复前的注册到首充耗时
+   结论不进入 publication。
+3. query、capability 与 material projection 使用显式行数、字节数和时间预算；大规模 public facts
+   采用无损列式传输，不把 raw rows 交给模型。
+4. 数据覆盖和性能缺口进入 Workbench 与局部 limitation，不改变单权威链。
+
+### P6：生产链路验收（已完成）
+
+1. 标准包统一调度 pytest、真实 Agent Runtime 与 Playwright，覆盖业务、runtime、安全和浏览器
+   体验。
+2. 真实支付终态数据只表达最终成功或截至快照未成功；没有失败尝试明细时，不发布失败原因、
+   失败阶段、重试或处理耗时结论。
+3. 无 `OPENAI_API_KEY` 的验收只允许 DeepSeek Chat Completions 出站，OpenAI hosted request
+   count 必须为零。
+4. 回答质量由人工 advisory review 评价，不改变硬合同和首次 publication。
+
+### P7：回答完整性补全（已实现）
+
+1. typed requested factors 编译为独立 user-required obligations，并保留对应 axis 和
+   contract-declared dimensions。
+2. claim coverage 的数据缺口继续走有界 `PlanPatch` 补查；无可用 route 时形成局部 explicit
+   boundary，可靠结论继续发布。
+3. `AnswerCompletenessAssessment` 检查 required blocks 中的 claim handles、显式请求 factor 的
+   required public fact handles 和 limitation handles。
+4. narrative 遗漏最多触发一次 additive completion revision；补全失败保留首稿，以
+   `completed_with_limits`、安全 warning 和已知边界交付。
+5. payment final-outcome capability 对账全样本 totals，并为 payment method/channel 生成同成员
+   跨窗口的代表性终态 summary。typed interpretation contract 禁止把终态变化扩写成效率、
+   失败环节、延迟、重试、事故或因果机制。
+6. 逐块 verifier 的主观质量发现仍只进入人工审核，不触发自动补全、撤回或 publication veto。
+7. 已发布材料追问使用 typed 工具恢复能力：客户安全只读工具成功持久化后，最终模型失败可以
+   直接交付工具摘要并标记 `completed_with_limits`；普通工具、挂起工具、失败结果、来源闭包或
+   审计持久化失败不进入恢复路径。
+8. 动态工具选择的模型步骤失败时，若线程已有客户安全 `bi_publication`，runtime 保全最近一次
+   完整发布并标记 `completed_with_limits`，同时明确本轮新增解释未完成。该路径不生成新业务
+   判断；无 publication、selection 合同错误及来源闭包错误继续 fail closed。
+
+P7 的执行与验收细节见
+[P7 answer-completeness repair plan](../../superpowers/plans/2026-07-23-p7-answer-completeness-repair.md)
+和 [P7 answer-completeness repair report](../../reviews/2026-07-23-p7-answer-completeness-repair.md)。
+
+2026-07-22 已在仓库 `.env` 指向的目标环境完成快照一致备份、v9→v12 原位升级、数据库只读
+审计、真实 DeepSeek gate、运行进程验证和完整回归；随后完成 v12→v13 原位升级与当前门禁。
+后续每个部署目标都要重新生成自己的
+`general-agent-deployment.v1` 报告；缺少目标环境时不会伪造通过状态。
 
 ## 验收场景
 

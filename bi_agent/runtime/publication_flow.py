@@ -36,7 +36,7 @@ def _customer_warnings(
     warnings: Sequence[str],
 ) -> tuple[str, ...]:
     combined = list(warnings)
-    if narrative_workflow.writer_contract_findings:
+    if narrative_workflow.completion_repair_status == "exhausted":
         combined.append(_WRITER_CONTRACT_CUSTOMER_WARNING)
     return tuple(dict.fromkeys(combined))
 

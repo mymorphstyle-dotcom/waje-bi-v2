@@ -33,6 +33,18 @@ export type CustomerMessage = {
   createdAt: string;
 };
 
+type CustomerSnapshotMessage = CustomerMessage & {
+  itemType?: string;
+  operationKey?: string | null;
+};
+
+type AgentCompletionKind =
+  | "direct_response"
+  | "context_response"
+  | "tool_response"
+  | "analysis_publication"
+  | "failed_turn";
+
 export type CustomerInputOption = {
   optionKey: string;
   label: string;
@@ -52,6 +64,7 @@ export type CustomerInputRequest = {
 export type CustomerAnswerBlock = {
   key: string;
   kind: "summary" | "finding" | "context" | "limitation" | "recommendation";
+  heading: string | null;
   text: string;
 };
 
@@ -100,6 +113,10 @@ export type CustomerAnalysisTransport = {
   eventsUrl: string | null;
   eventCursor: string;
   latestItemSequence: number;
+  messageHistory: {
+    hasMore: boolean;
+    beforeCursor: string | null;
+  };
   acceptedOperationIds: string[];
   technicalDetailRef: string | null;
 };
@@ -130,6 +147,8 @@ export type CustomerApiError = {
       | "sign_in_required"
       | "analysis_not_found"
       | "request_invalid"
+      | "request_too_large"
+      | "service_busy"
       | "action_in_progress"
       | "action_no_longer_available"
       | "analysis_unavailable";
@@ -145,7 +164,7 @@ export type CustomerSnapshotSource = {
     id: string;
     createdAt: string;
   };
-  messages: CustomerMessage[];
+  messages: CustomerSnapshotMessage[];
   run: null | {
     id: string;
     status: string;
@@ -161,6 +180,7 @@ export type CustomerSnapshotSource = {
   currentClarification: unknown;
   interactionResult: unknown;
   customerPublication: CustomerPublication | null;
+  customerPublicationTaskRef?: string | null;
   acceptedOperationIds: string[];
   progressPhase?: CustomerPhase | null;
   agentHead?: {
@@ -172,12 +192,19 @@ export type CustomerSnapshotSource = {
     status: "completed" | "completed_with_limits" | "failed";
     finalOutput: Record<string, unknown> | null;
     errorCode: string | null;
+    completionKind: AgentCompletionKind;
+    durableTaskRef: string | null;
+    operationId: string;
   } | null;
   pendingAction?: Record<string, unknown> | null;
   confirmedAt: string;
   stateVersion: string;
   eventCursor?: string;
   latestItemSequence?: number;
+  messageHistory?: {
+    hasMore: boolean;
+    beforeCursor: string | null;
+  };
 };
 
 const PHASE_INDEX = new Map(
@@ -239,16 +266,20 @@ const SUMMARY_BLOCK_ROLES = new Set(["executive_answer", "executive_summary"]);
 export function projectCustomerAnalysisSnapshot(
   source: CustomerSnapshotSource,
 ): CustomerAnalysisSnapshot {
-  const title = conversationTitle(source.messages);
+  const agentState = stateFromAgentHead(source);
+  const messages = customerConversationMessages(
+    source.messages,
+    agentState?.ownedMessageKey ?? null,
+  );
+  const title = conversationTitle(messages);
   const base = {
     schemaVersion: CUSTOMER_ANALYSIS_SCHEMA_VERSION,
     stateVersion: source.stateVersion,
     confirmedAt: source.confirmedAt,
     thread: { title, createdAt: source.thread.createdAt },
-    messages: source.messages,
+    messages,
   } as const;
 
-  const agentState = stateFromAgentHead(source);
   if (agentState) {
     return {
       ...base,
@@ -425,6 +456,8 @@ export function parseCustomerApiError(value: unknown): CustomerApiError {
     "sign_in_required",
     "analysis_not_found",
     "request_invalid",
+    "request_too_large",
+    "service_busy",
     "action_in_progress",
     "action_no_longer_available",
     "analysis_unavailable",
@@ -554,7 +587,7 @@ function completedInteractionState(text: string, confirmedAt: string): CustomerA
       confirmedAt,
     }],
     answer: {
-      blocks: [{ key: "interaction-response", kind: "summary", text }],
+      blocks: [{ key: "interaction-response", kind: "summary", heading: null, text }],
       warnings: [],
       evidenceCount: 0,
       limitationCount: 0,
@@ -590,17 +623,52 @@ function failedState(
 }
 
 function answerFromPublication(publication: CustomerPublication): CustomerAnswer {
-  const blocks = publication.blocks.map((block, index) => ({
-    key: `answer-${index}`,
-    kind: answerBlockKind(block.role, block.statement_role, index),
-    text: block.text,
-  }));
+  const blocks = publication.blocks.map((block, index) => {
+    const kind = answerBlockKind(block.role, block.statement_role, index);
+    return {
+      key: `answer-${index}`,
+      kind,
+      heading: answerBlockHeading(block.role, block.statement_role, kind, index),
+      text: block.text,
+    };
+  });
   return {
     blocks,
     warnings: [...new Set(publication.warnings)],
     evidenceCount: publication.claim_refs.length,
     limitationCount: publication.limitation_refs.length,
   };
+}
+
+const CUSTOMER_BLOCK_HEADINGS: Readonly<Record<string, string>> = {
+  executive_answer: "核心结论",
+  executive_summary: "核心结论",
+  direction: "变化方向",
+  accounting_drivers: "驱动机制",
+  dimension_localization: "重点定位",
+  contextual_pattern: "补充观察",
+  context: "补充观察",
+  boundary: "证据边界",
+  limitation: "证据边界",
+  limitations: "证据边界",
+  next_action: "运营建议",
+  recommendation: "运营建议",
+};
+
+function answerBlockHeading(
+  role: string,
+  statementRole: string,
+  kind: CustomerAnswerBlock["kind"],
+  index: number,
+): string {
+  const declaredHeading = CUSTOMER_BLOCK_HEADINGS[role]
+    ?? CUSTOMER_BLOCK_HEADINGS[statementRole];
+  if (declaredHeading) return declaredHeading;
+  if (kind === "summary" || index === 0) return "核心结论";
+  if (kind === "context") return "补充观察";
+  if (kind === "limitation") return "证据边界";
+  if (kind === "recommendation") return "运营建议";
+  return "深入分析";
 }
 
 function answerBlockKind(
@@ -717,6 +785,10 @@ function transportFrom(
     eventsUrl: `/api/threads/${encodeURIComponent(source.thread.id)}/events`,
     eventCursor: source.eventCursor ?? source.stateVersion,
     latestItemSequence: source.latestItemSequence ?? source.messages.length,
+    messageHistory: source.messageHistory ?? {
+      hasMore: false,
+      beforeCursor: null,
+    },
     acceptedOperationIds: [...new Set(source.acceptedOperationIds)],
     technicalDetailRef: stringValue(operationalFailure?.failure_ref) || null,
   };
@@ -726,23 +798,31 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
   state: CustomerAnalysisState;
   runHandle: string | null;
   actionHandle: string | null;
+  ownedMessageKey: string | null;
 } | null {
   const head = source.agentHead;
   if (!head) return null;
   const terminal = source.agentTerminal;
-  const lastAssistant = [...source.messages]
-    .reverse()
-    .find((message) => message.role === "assistant");
+  const terminalAssistant = terminal
+    ? source.messages.find((message) =>
+        message.role === "assistant"
+        && message.itemType === "assistant_message"
+        && message.operationKey === `assistant:${terminal.operationId}`
+      )
+    : undefined;
   if (
     (head.status === "idle" || head.status === "failed")
     && terminal?.status === "failed"
   ) {
+    if (!terminalAssistant || terminal.completionKind !== "failed_turn") {
+      throw new Error("customer_agent_terminal_message_missing");
+    }
     return {
       state: {
         status: "failed",
         phase: "understanding",
         title: "当前请求未完成",
-        description: lastAssistant?.text || "当前请求遇到故障，技术详情已进入服务端审计。",
+        description: terminalAssistant.text,
         updates: [{
           key: "understanding",
           text: "请求未完成，可以继续输入",
@@ -753,6 +833,7 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
       },
       runHandle: null,
       actionHandle: null,
+      ownedMessageKey: terminalAssistant.key,
     };
   }
   if (head.status === "idle") return null;
@@ -760,18 +841,45 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
     (head.status === "completed" || head.status === "completed_with_limits")
     && terminal
     && terminal.status === head.status
-    && lastAssistant
   ) {
+    if (!terminalAssistant || terminal.completionKind === "failed_turn") {
+      throw new Error("customer_agent_terminal_message_missing");
+    }
     const finalOutput = terminal.finalOutput;
     const materialRefs = stringArray(finalOutput?.materialRefs);
     const limitationRefs = stringArray(finalOutput?.limitationRefs);
+    const analysisPublication = terminal.completionKind === "analysis_publication";
+    if (analysisPublication && (
+      !terminal.durableTaskRef
+      || terminal.durableTaskRef !== source.customerPublicationTaskRef
+      || !source.customerPublication
+    )) {
+      throw new Error("customer_agent_publication_binding_invalid");
+    }
+    const answer = analysisPublication
+      ? answerFromPublication(source.customerPublication as CustomerPublication)
+      : {
+          blocks: [{
+            key: "agent-response",
+            kind: "summary" as const,
+            heading: null,
+            text: terminalAssistant.text,
+          }],
+          warnings: limitationRefs,
+          evidenceCount: materialRefs.length,
+          limitationCount: limitationRefs.length,
+        };
     return {
       state: {
         status: head.status,
         phase: "delivering",
-        title: head.status === "completed_with_limits"
-          ? "回复已生成，内容有适用边界"
-          : "回复已生成",
+        title: analysisPublication
+          ? head.status === "completed_with_limits"
+            ? "业务参考已生成，结论有适用边界"
+            : "业务参考已生成"
+          : head.status === "completed_with_limits"
+            ? "回复已生成，内容有适用边界"
+            : "回复已生成",
         description: head.status === "completed_with_limits"
           ? "请结合回复中列出的材料和限制进行业务判断。"
           : "当前回复已持久化，可继续追问。",
@@ -781,15 +889,11 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
           status: "completed",
           confirmedAt: source.confirmedAt,
         }],
-        answer: {
-          blocks: [{ key: "agent-response", kind: "summary", text: lastAssistant.text }],
-          warnings: limitationRefs,
-          evidenceCount: materialRefs.length,
-          limitationCount: limitationRefs.length,
-        },
+        answer,
       },
       runHandle: null,
       actionHandle: null,
+      ownedMessageKey: terminalAssistant.key,
     };
   }
   if (head.status === "needs_input") {
@@ -813,6 +917,7 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
       },
       runHandle: null,
       actionHandle: head.pendingActionRef,
+      ownedMessageKey: null,
     };
   }
   if (
@@ -835,9 +940,34 @@ function stateFromAgentHead(source: CustomerSnapshotSource): {
       },
       runHandle: head.activeTaskRef,
       actionHandle: null,
+      ownedMessageKey: null,
     };
   }
   return null;
+}
+
+const STATE_OWNED_ITEM_TYPES = new Set([
+  "progress",
+  "clarification",
+  "approval_request",
+]);
+
+function customerConversationMessages(
+  messages: CustomerSnapshotMessage[],
+  ownedMessageKey: string | null,
+): CustomerMessage[] {
+  return messages.flatMap((message) => {
+    if (
+      message.key === ownedMessageKey
+      || (message.itemType && STATE_OWNED_ITEM_TYPES.has(message.itemType))
+    ) return [];
+    return [{
+      key: message.key,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+    }];
+  });
 }
 
 function inputFromPendingAction(
@@ -993,9 +1123,10 @@ function validateAnswer(value: unknown) {
   }
   answer.blocks.forEach((block) => {
     const item = requiredObject(block, "customer_snapshot_invalid");
-    assertExactKeys(item, ["key", "kind", "text"], "customer_snapshot_invalid");
+    assertExactKeys(item, ["key", "kind", "heading", "text"], "customer_snapshot_invalid");
     requiredString(item.key, "customer_snapshot_invalid");
     requiredString(item.text, "customer_snapshot_invalid");
+    if (item.heading !== null) requiredString(item.heading, "customer_snapshot_invalid");
     if (!["summary", "finding", "context", "limitation", "recommendation"].includes(
       String(item.kind),
     )) throw new Error("customer_snapshot_invalid");
@@ -1016,6 +1147,7 @@ function validateTransport(value: unknown) {
     "eventsUrl",
     "eventCursor",
     "latestItemSequence",
+    "messageHistory",
     "acceptedOperationIds",
     "technicalDetailRef",
   ], "customer_snapshot_invalid");
@@ -1032,6 +1164,21 @@ function validateTransport(value: unknown) {
     || Number(transport.latestItemSequence) < 0) {
     throw new Error("customer_snapshot_invalid");
   }
+  const messageHistory = requiredObject(
+    transport.messageHistory,
+    "customer_snapshot_invalid",
+  );
+  assertExactKeys(
+    messageHistory,
+    ["hasMore", "beforeCursor"],
+    "customer_snapshot_invalid",
+  );
+  if (
+    typeof messageHistory.hasMore !== "boolean"
+    || (messageHistory.beforeCursor !== null
+      && (typeof messageHistory.beforeCursor !== "string"
+        || !messageHistory.beforeCursor))
+  ) throw new Error("customer_snapshot_invalid");
   if (!Array.isArray(transport.acceptedOperationIds)
     || transport.acceptedOperationIds.some((item) => typeof item !== "string" || !item)) {
     throw new Error("customer_snapshot_invalid");

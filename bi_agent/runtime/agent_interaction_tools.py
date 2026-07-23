@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from bi_agent.runtime.agent_sdk_contracts import AgentToolResult, WajeAgentTool
 from bi_agent.runtime.durable_tool_bridge import (
     AgentPendingAction,
+    MaterialDecisionTopic,
     PendingActionOption,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest
@@ -18,6 +19,10 @@ class AskUserInput(BaseModel):
 
     material_decision: str = Field(alias="materialDecision", min_length=1)
     options: list[PendingActionOption] = Field(min_length=2, max_length=3)
+    material_decision_topics: list[MaterialDecisionTopic] = Field(
+        alias="materialDecisionTopics",
+        min_length=1,
+    )
 
     @field_validator("material_decision")
     @classmethod
@@ -30,8 +35,10 @@ class RequestApprovalInput(BaseModel):
 
     action_summary: str = Field(alias="actionSummary", min_length=1)
     side_effect_scope: str = Field(alias="sideEffectScope", min_length=1)
+    target_tool_name: str = Field(alias="targetToolName", min_length=1)
+    target_tool_arguments: dict[str, Any] = Field(alias="targetToolArguments")
 
-    @field_validator("action_summary", "side_effect_scope")
+    @field_validator("action_summary", "side_effect_scope", "target_tool_name")
     @classmethod
     def validate_text(cls, value: str) -> str:
         return _exact_text(value, "approval_request_text_invalid")
@@ -44,6 +51,7 @@ def agent_interaction_tools(
     customer_language: Literal["zh-Hans", "en", "match-input-script"] = (
         "match-input-script"
     ),
+    approvable_tools: tuple[WajeAgentTool, ...] = (),
 ) -> tuple[WajeAgentTool, WajeAgentTool]:
     """Build typed human-interruption tools for one application turn."""
 
@@ -51,6 +59,9 @@ def agent_interaction_tools(
     _exact_text(operation_id, "agent_interaction_operation_id_invalid")
     if customer_language not in {"zh-Hans", "en", "match-input-script"}:
         raise ValueError("agent_interaction_customer_language_invalid")
+    approvable_by_name = {tool.name: tool for tool in approvable_tools}
+    if len(approvable_by_name) != len(approvable_tools):
+        raise ValueError("approval_target_tool_duplicate")
 
     def ask_user(arguments: Mapping[str, Any]) -> AgentToolResult:
         request = AskUserInput.model_validate(arguments)
@@ -75,6 +86,7 @@ def agent_interaction_tools(
             actionType="ask_user",
             prompt=request.material_decision,
             options=request.options,
+            materialDecisionTopics=request.material_decision_topics,
         )
         return AgentToolResult(
             status="needs_input",
@@ -89,6 +101,12 @@ def agent_interaction_tools(
 
     def request_approval(arguments: Mapping[str, Any]) -> AgentToolResult:
         request = RequestApprovalInput.model_validate(arguments)
+        target = approvable_by_name.get(request.target_tool_name)
+        if target is None:
+            raise ValueError("approval_target_tool_unknown")
+        target_arguments = target.input_model.model_validate(
+            request.target_tool_arguments
+        ).model_dump(mode="json")
         _validate_customer_language(
             (request.action_summary, request.side_effect_scope),
             customer_language=customer_language,
@@ -105,6 +123,9 @@ def agent_interaction_tools(
             options=[],
             actionSummary=request.action_summary,
             sideEffectScope=request.side_effect_scope,
+            targetToolName=target.name,
+            targetToolArguments=target_arguments,
+            targetToolArgumentsDigest=canonical_digest(target_arguments),
         )
         return AgentToolResult(
             status="needs_input",
@@ -124,6 +145,8 @@ def agent_interaction_tools(
                 "Pause the current turn for one material business decision. "
                 "Provide two or three customer-readable options and mark exactly "
                 "one recommended option. "
+                "Copy materialDecisionTopics exactly from the authoritative "
+                "WAJE action binding. "
                 + _language_instruction(customer_language)
             ),
             input_model=AskUserInput,
@@ -135,6 +158,8 @@ def agent_interaction_tools(
             description=(
                 "Pause before an external write, irreversible action, permission "
                 "increase, or material cost. Describe the action and side-effect scope. "
+                "Bind the exact targetToolName and targetToolArguments that will execute "
+                "if the customer approves. "
                 + _language_instruction(customer_language)
             ),
             input_model=RequestApprovalInput,

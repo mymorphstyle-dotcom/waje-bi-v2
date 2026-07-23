@@ -42,6 +42,9 @@ type AgentCoreOptions = {
   forceInline?: boolean;
 };
 
+const AGENT_CORE_STARTUP_MAX_BYTES = 16 * 1024;
+const AGENT_CORE_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
+
 export async function runAgentCore(
   threadId: string,
   runId: string,
@@ -49,56 +52,37 @@ export async function runAgentCore(
   actorId: string,
   options: AgentCoreOptions = {},
 ): Promise<AgentCoreResult> {
-  const args = [
-    "-m",
-    "bi_agent.conversation.agent_core",
-    "--thread-id",
+  const args = ["-m", "bi_agent.conversation.agent_core"];
+  const commandJson = JSON.stringify({
     threadId,
-    "--run-id",
     runId,
-    "--message",
     message,
-    "--user-id",
-    actorId,
-  ];
-  if (options.clarification) {
-    args.push("--clarification", JSON.stringify(options.clarification));
-  }
-  if (options.topicSelection) {
-    args.push("--topic-selection", JSON.stringify(options.topicSelection));
-  }
-  if (options.topicChoiceAnswer) {
-    args.push(
-      "--topic-choice-answer",
-      JSON.stringify(options.topicChoiceAnswer),
-    );
-  }
-  if (options.runDispatch) {
-    args.push(
-      "--dispatch-id",
-      options.runDispatch.dispatchId,
-      "--dispatch-owner-id",
-      options.runDispatch.ownerId,
-      "--dispatch-lease-epoch",
-      String(options.runDispatch.leaseEpoch),
-    );
-  }
-  if (options.intentRevisionContext) {
-    args.push(
-      "--intent-revision-context",
-      JSON.stringify(options.intentRevisionContext),
-    );
-  }
+    userId: actorId,
+    ...(options.clarification ? { clarification: options.clarification } : {}),
+    ...(options.topicSelection ? { topicSelection: options.topicSelection } : {}),
+    ...(options.topicChoiceAnswer
+      ? { topicChoiceAnswer: options.topicChoiceAnswer }
+      : {}),
+    ...(options.runDispatch ? { runDispatch: options.runDispatch } : {}),
+    ...(options.intentRevisionContext
+      ? { intentRevisionContext: options.intentRevisionContext }
+      : {}),
+  });
 
   if (options.forceInline || process.env.WAJE_AGENT_CORE_INLINE === "1") {
-    return await runAgentCoreInline(args);
+    return await runAgentCoreInline(args, commandJson);
   }
 
-  return await runAgentCoreDetached(args, options.onDetachedWorkerExit);
+  return await runAgentCoreDetached(
+    args,
+    commandJson,
+    options.onDetachedWorkerExit,
+  );
 }
 
 function runAgentCoreDetached(
   args: string[],
+  commandJson: string,
   onWorkerExit?: () => void | Promise<void>,
 ): Promise<AgentCoreResult> {
   return new Promise((resolve) => {
@@ -106,7 +90,7 @@ function runAgentCoreDetached(
     const child = spawn(invocation.command, invocation.args, {
       cwd: process.cwd(),
       detached: true,
-      stdio: ["ignore", "ignore", "ignore", "pipe"],
+      stdio: ["pipe", "ignore", "ignore", "pipe"],
       env: { ...process.env, WAJE_AGENT_CORE_STARTUP_ACK_FD: "3" },
     });
     let settled = false;
@@ -131,8 +115,30 @@ function runAgentCoreDetached(
       clearTimeout(startupTimer);
       resolve(agentCoreSpawnFailure());
     });
+    const commandInput = child.stdin;
+    if (!commandInput) {
+      settled = true;
+      clearTimeout(startupTimer);
+      resolve(agentCoreCommandWriteFailure());
+    } else {
+      commandInput.on("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(startupTimer);
+        resolve(agentCoreCommandWriteFailure());
+      });
+      commandInput.end(commandJson);
+    }
     startupPipe?.on("data", (chunk) => {
       acknowledgment += chunk.toString();
+      if (Buffer.byteLength(acknowledgment, "utf8") > AGENT_CORE_STARTUP_MAX_BYTES) {
+        child.kill();
+        if (settled) return;
+        settled = true;
+        clearTimeout(startupTimer);
+        resolve(agentCoreStartupFailure());
+        return;
+      }
       if (!acknowledgment.includes("WAJE_AGENT_CORE_RUNNING\n")) return;
       if (settled) return;
       settled = true;
@@ -159,7 +165,10 @@ function runAgentCoreDetached(
   });
 }
 
-function runAgentCoreInline(args: string[]): Promise<AgentCoreResult> {
+function runAgentCoreInline(
+  args: string[],
+  commandJson: string,
+): Promise<AgentCoreResult> {
   return new Promise((resolve) => {
     const invocation = wajePythonInvocation(args);
     const child = spawn(invocation.command, invocation.args, {
@@ -167,17 +176,35 @@ function runAgentCoreInline(args: string[]): Promise<AgentCoreResult> {
       env: process.env,
     });
     let stdout = "";
-    let stderr = "";
+    let outputExceeded = false;
     let settled = false;
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
+      if (Buffer.byteLength(stdout, "utf8") > AGENT_CORE_OUTPUT_MAX_BYTES) {
+        outputExceeded = true;
+        child.kill();
+      }
     });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
+    child.stderr.resume();
+    const commandInput = child.stdin;
+    if (!commandInput) {
+      settled = true;
+      resolve(agentCoreCommandWriteFailure());
+    } else {
+      commandInput.on("error", () => {
+        if (settled) return;
+        settled = true;
+        resolve(agentCoreCommandWriteFailure());
+      });
+      commandInput.end(commandJson);
+    }
     child.once("error", () => {
       if (settled) return;
       settled = true;
+      if (outputExceeded) {
+        resolve(agentCoreOutputTooLargeFailure());
+        return;
+      }
       resolve(agentCoreSpawnFailure());
     });
     child.on("close", (code) => {
@@ -224,6 +251,26 @@ function agentCoreSpawnFailure(): AgentCoreResult {
     output: "",
     result: null,
     error: "agent_core_spawn_failed",
+  };
+}
+
+function agentCoreCommandWriteFailure(): AgentCoreResult {
+  return {
+    status: "failed",
+    command: "bi_agent.conversation.agent_core",
+    output: "",
+    result: null,
+    error: "agent_core_command_write_failed",
+  };
+}
+
+function agentCoreOutputTooLargeFailure(): AgentCoreResult {
+  return {
+    status: "failed",
+    command: "bi_agent.conversation.agent_core",
+    output: "",
+    result: null,
+    error: "agent_core_output_too_large",
   };
 }
 

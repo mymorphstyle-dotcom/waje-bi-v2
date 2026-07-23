@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable, Optional
@@ -29,6 +28,12 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
+from bi_agent.runtime.factor_coverage import (
+    FactorCoveragePlan,
+    FactorCoverageResult,
+    InvestigationBranch,
+    InvestigationSynthesis,
+)
 from bi_agent.runtime.durable_call_journal import (
     DurableCallJournal,
     DurableCallJournalError,
@@ -42,6 +47,7 @@ from bi_agent.runtime.authoritative_execution_result import (
     AuthoritativeExecutionResult,
     SCHEMA_VERSION as AUTHORITATIVE_EXECUTION_RESULT_SCHEMA_VERSION,
 )
+from bi_agent.runtime.analysis_performance import build_analysis_performance_profile
 from bi_agent.runtime.capability_scheduler import (
     capability_execution_transition_input,
 )
@@ -68,6 +74,9 @@ from bi_agent.runtime.single_authority import (
 )
 from bi_agent.runtime.temporal_comparison import (
     normalize_temporal_decision_value,
+)
+from bi_agent.runtime.agent_runtime_admission import (
+    PostgresAgentRuntimeAdmissionLease,
 )
 
 
@@ -108,6 +117,58 @@ def _emit_agent_core_startup_ack() -> None:
         os.close(fd)
     except (OSError, ValueError) as exc:
         raise RuntimeError("agent_core_startup_ack_failed") from exc
+
+
+def _record_analysis_performance_profile(
+    *,
+    store: Any,
+    registry: RuntimeContractRegistry | None,
+    run_id: str,
+    thread_id: str,
+    topic_id: str,
+    checkpoint_events: Sequence[Mapping[str, Any]],
+) -> None:
+    if registry is None:
+        return
+    capability_substages = tuple(
+        dict(item)
+        for event in checkpoint_events
+        if isinstance(event, Mapping)
+        for item in (event.get("capability_substages") or ())
+        if isinstance(item, Mapping)
+    )
+    try:
+        profile = build_analysis_performance_profile(
+            run_id=run_id,
+            checkpoint_events=checkpoint_events,
+            policy=registry.analysis_performance_policy,
+            capability_substages=capability_substages,
+        )
+        store.add_audit_event(
+            "analysis_performance_profile_recorded",
+            thread_id=thread_id,
+            topic_id=topic_id,
+            run_id=run_id,
+            ref=profile.profile_ref,
+            payload=profile.to_dict(),
+        )
+    except Exception as exc:
+        try:
+            store.add_audit_event(
+                "analysis_performance_profile_failed",
+                thread_id=thread_id,
+                topic_id=topic_id,
+                run_id=run_id,
+                payload={
+                    "schema_version": "analysis-performance-profile-error.v1",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "breach_action": "record_and_continue",
+                },
+            )
+        except Exception:
+            # Performance telemetry is audit-only and may not alter business execution.
+            return
 
 
 class ConversationAgentCore:
@@ -395,6 +456,14 @@ class ConversationAgentCore:
             dict(call) for call in result.llm_calls if isinstance(call, Mapping)
         )
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
+        _record_analysis_performance_profile(
+            store=self.store,
+            registry=self.runtime_registry,
+            run_id=run_id,
+            thread_id=thread_id,
+            topic_id=turn.topic_id or "",
+            checkpoint_events=tuple(result.checkpoint_events),
+        )
         if result.status == "waiting_for_clarification" and result.interaction_result:
             if result.interaction_result.get("schema_version") != (
                 "single-authority-phase01.v1"
@@ -432,6 +501,10 @@ class ConversationAgentCore:
                 store=self.store,
                 plan_result=result.plan_result,
                 execution_result=result.execution_result,
+                factor_coverage_plan=result.factor_coverage_plan,
+                factor_coverage_result=result.factor_coverage_result,
+                investigation_branches=result.investigation_branches,
+                investigation_synthesis=result.investigation_synthesis,
                 run_id=run_id,
                 thread_id=thread_id,
                 turn_id=turn.turn_id,
@@ -698,6 +771,14 @@ class ConversationAgentCore:
             dict(call) for call in result.llm_calls if isinstance(call, Mapping)
         )
         self.store.record_run_nodes(run_id, tuple(result.checkpoint_events))
+        _record_analysis_performance_profile(
+            store=self.store,
+            registry=self.runtime_registry,
+            run_id=run_id,
+            thread_id=thread_id,
+            topic_id=topic_id,
+            checkpoint_events=tuple(result.checkpoint_events),
+        )
         if result.status == "waiting_for_clarification":
             if (
                 not isinstance(result.interaction_result, Mapping)
@@ -738,6 +819,10 @@ class ConversationAgentCore:
                 store=self.store,
                 plan_result=result.plan_result,
                 execution_result=result.execution_result,
+                factor_coverage_plan=result.factor_coverage_plan,
+                factor_coverage_result=result.factor_coverage_result,
+                investigation_branches=result.investigation_branches,
+                investigation_synthesis=result.investigation_synthesis,
                 run_id=run_id,
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -800,7 +885,9 @@ class ConversationAgentCore:
     @classmethod
     def from_environment(cls) -> "ConversationAgentCore":
         store = PostgresConversationStore.from_env()
-        conversation_llm_client = _conversation_llm_from_env()
+        conversation_llm_client = _conversation_llm_from_env(
+            circuit_connection=store.connection,
+        )
         from bi_agent.runtime.analysis_runtime import AnalysisRuntime
 
         analysis_runtime = AnalysisRuntime.from_environment(store)
@@ -963,6 +1050,16 @@ def _finalize_workflow_terminal(
         checkpoint_digest=post_execution.claim_coverage_checkpoint_digest,
         transition_id=post_execution.claim_coverage_transition_id,
     )
+    factor_audit, factor_coverage_refs = _validated_factor_coverage_audit(
+        plan_payload=getattr(result, "factor_coverage_plan", None),
+        result_payload=getattr(result, "factor_coverage_result", None),
+        branch_payloads=getattr(result, "investigation_branches", ()),
+        synthesis_payload=getattr(result, "investigation_synthesis", None),
+        execution=(
+            post_execution.semantic_authority_result.authority_bundle_inputs.execution_result
+        ),
+        authority_context=store.load_authority_context(run_id),
+    )
 
     publication_refs = _safe_post_execution_refs(post_execution)
     analysis_status = (
@@ -990,6 +1087,7 @@ def _finalize_workflow_terminal(
             if key != "operational_failure"
         },
         "claim_coverage_refs": coverage_refs,
+        "factor_coverage_refs": factor_coverage_refs,
         "post_execution_status": post_execution.status,
         "analysis_status": analysis_status,
         "publication_status": publication_status,
@@ -1008,6 +1106,14 @@ def _finalize_workflow_terminal(
         topic_id=topic_id,
         status=run_status,
         request=persisted_request,
+    )
+    store.add_audit_event(
+        "factor_coverage_settled",
+        thread_id=thread_id,
+        topic_id=topic_id,
+        run_id=run_id,
+        ref=factor_coverage_refs["coverage_result_ref"],
+        payload=factor_audit,
     )
 
     response = {
@@ -1044,6 +1150,81 @@ def _validated_internal_post_execution_result(
         return validate_typed_post_execution_workflow_result(result)
     except (AttributeError, TypeError, ValueError) as exc:
         raise EvidenceIntegrityError("post_execution_workflow_result_invalid") from exc
+
+
+def _validated_factor_coverage_audit(
+    *,
+    plan_payload: Mapping[str, Any] | None,
+    result_payload: Mapping[str, Any] | None,
+    branch_payloads: Sequence[Mapping[str, Any]],
+    synthesis_payload: Mapping[str, Any] | None,
+    execution: AuthoritativeExecutionResult,
+    authority_context: Any,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        if (
+            not isinstance(plan_payload, Mapping)
+            or not isinstance(result_payload, Mapping)
+            or isinstance(branch_payloads, (str, bytes))
+            or not isinstance(branch_payloads, Sequence)
+            or not isinstance(synthesis_payload, Mapping)
+        ):
+            raise TypeError("factor_coverage_shape")
+        plan = FactorCoveragePlan.from_dict(plan_payload)
+        result = FactorCoverageResult.from_dict(result_payload, plan=plan)
+        item_by_ref = {
+            item.coverage_item_ref: item for item in plan.coverage_items
+        }
+        branches = tuple(
+            InvestigationBranch.from_dict(
+                payload,
+                item=item_by_ref[str(payload.get("coverage_item_ref") or "")],
+            )
+            for payload in branch_payloads
+        )
+        synthesis = InvestigationSynthesis.from_dict(
+            synthesis_payload,
+            plan=plan,
+            coverage_result=result,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError("factor_coverage_audit_invalid") from exc
+    branch_by_item = {item.coverage_item_ref: item for item in branches}
+    if (
+        plan.run_attempt_id != execution.run_attempt_id
+        or plan.intent_revision_id != execution.intent_revision_id
+        or plan.plan_revision_id != execution.plan_revision_id
+        or plan.authority_context_ref != execution.authority_context_ref
+        or result.execution_result_ref
+        != execution.authoritative_execution_result_ref
+        or set(branch_by_item) != set(item_by_ref)
+        or len(branches) != len(item_by_ref)
+        or getattr(authority_context, "authority_context_ref", None)
+        != plan.authority_context_ref
+        or any(
+            branch.snapshot_refs != authority_context.snapshot_refs
+            or branch.release_refs != authority_context.release_refs
+            for branch in branches
+        )
+    ):
+        raise EvidenceIntegrityError("factor_coverage_audit_invalid")
+    audit_payload = {
+        "schema_version": "factor-coverage-audit.v1",
+        "coverage_plan": plan.to_dict(),
+        "coverage_result": result.to_dict(),
+        "investigation_branches": [item.to_dict() for item in branches],
+        "investigation_synthesis": synthesis.to_dict(),
+    }
+    refs = {
+        "schema_version": "factor-coverage-audit.v1",
+        "coverage_plan_ref": plan.coverage_plan_ref,
+        "coverage_plan_digest": plan.content_digest,
+        "coverage_result_ref": result.coverage_result_ref,
+        "coverage_result_digest": result.content_digest,
+        "investigation_synthesis_ref": synthesis.synthesis_ref,
+        "investigation_synthesis_digest": synthesis.content_digest,
+    }
+    return audit_payload, refs
 
 
 def _safe_post_execution_refs(
@@ -1210,6 +1391,10 @@ def _finalize_capability_execution(
     store: Any,
     plan_result: Mapping[str, Any] | None,
     execution_result: Mapping[str, Any] | None,
+    factor_coverage_plan: Mapping[str, Any] | None,
+    factor_coverage_result: Mapping[str, Any] | None,
+    investigation_branches: Sequence[Mapping[str, Any]],
+    investigation_synthesis: Mapping[str, Any] | None,
     run_id: str,
     thread_id: str,
     turn_id: str,
@@ -1242,6 +1427,14 @@ def _finalize_capability_execution(
     )
     if parsed_execution.plan_revision != parsed_plan.plan_revision:
         raise EvidenceIntegrityError("authoritative_execution_plan_mismatch")
+    factor_audit, factor_coverage_refs = _validated_factor_coverage_audit(
+        plan_payload=factor_coverage_plan,
+        result_payload=factor_coverage_result,
+        branch_payloads=investigation_branches,
+        synthesis_payload=investigation_synthesis,
+        execution=parsed_execution,
+        authority_context=parsed_plan.authority_context,
+    )
 
     persisted_snapshot = store.load_execution_snapshot(
         parsed_execution.plan_revision_id
@@ -1330,6 +1523,7 @@ def _finalize_capability_execution(
             "plan_result_refs": plan_result_refs,
             "execution_result_refs": execution_result_refs,
             "claim_coverage_refs": coverage_refs,
+            "factor_coverage_refs": factor_coverage_refs,
         },
     )
     for index, audit in enumerate(llm_calls, start=1):
@@ -1364,6 +1558,14 @@ def _finalize_capability_execution(
         run_id=run_id,
         ref=parsed_execution.execution_snapshot_ref,
         payload=execution_result_refs,
+    )
+    store.add_audit_event(
+        "factor_coverage_settled",
+        thread_id=thread_id,
+        topic_id=topic_id,
+        run_id=run_id,
+        ref=factor_coverage_refs["coverage_result_ref"],
+        payload=factor_audit,
     )
     return {
         "status": "evidence_ready",
@@ -2357,14 +2559,14 @@ def _record_workflow_failure_llm_audits(
         )
 
 
-def _conversation_llm_from_env() -> Any:
-    from bi_agent.runtime.llm_client import (
-        LLMConfigurationError,
-        OpenAICompatibleLLMClient,
-    )
+def _conversation_llm_from_env(*, circuit_connection: Any = None) -> Any:
+    from bi_agent.runtime.llm_client import LLMConfigurationError
+    from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
 
     try:
-        return OpenAICompatibleLLMClient.from_env()
+        return MainlandModelProvider.structured_client_from_env(
+            circuit_connection=circuit_connection,
+        )
     except LLMConfigurationError:
         raise
     except Exception as exc:
@@ -2505,74 +2707,134 @@ def _runtime_object_descriptor(value: Any) -> dict[str, str]:
     }
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--thread-id", required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--message", required=True)
-    parser.add_argument("--user-id", required=True)
-    parser.add_argument("--artifact-root", default="artifacts/phase-7")
-    parser.add_argument("--clarification")
-    parser.add_argument("--dispatch-id")
-    parser.add_argument("--dispatch-owner-id")
-    parser.add_argument("--dispatch-lease-epoch", type=int)
-    parser.add_argument("--as-of")
-    parser.add_argument("--intent-revision-context")
-    parser.add_argument("--topic-selection")
-    parser.add_argument("--topic-choice-answer")
-    parser.add_argument(
-        "--stop-after-phase",
-        choices=("phase02", "phase03", "phase04", "phase05"),
-    )
-    args = parser.parse_args(argv)
-    clarification = json.loads(args.clarification) if args.clarification else None
-    intent_revision_context = (
-        json.loads(args.intent_revision_context)
-        if args.intent_revision_context
-        else None
-    )
-    topic_selection = _parse_external_topic_selection(args.topic_selection)
-    topic_choice_answer = _parse_external_topic_choice_answer(args.topic_choice_answer)
-    if topic_selection is not None and topic_choice_answer is not None:
-        parser.error("topic selection and topic choice answer are mutually exclusive")
-    if (
-        len(
-            {
-                bool(args.dispatch_id),
-                bool(args.dispatch_owner_id),
-                bool(args.dispatch_lease_epoch),
-            }
-        )
-        != 1
+AGENT_CORE_COMMAND_MAX_BYTES = 128 * 1024
+AGENT_CORE_MESSAGE_MAX_BYTES = 16 * 1024
+
+
+def _agent_core_command(raw: bytes) -> Mapping[str, Any]:
+    if len(raw) > AGENT_CORE_COMMAND_MAX_BYTES:
+        raise ValueError("agent_core_command_too_large")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("agent_core_command_malformed_json") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("agent_core_command_shape_invalid")
+    required = {"threadId", "runId", "message", "userId"}
+    allowed = required | {
+        "artifactRoot",
+        "clarification",
+        "runDispatch",
+        "asOf",
+        "intentRevisionContext",
+        "topicSelection",
+        "topicChoiceAnswer",
+        "stopAfterPhase",
+    }
+    if set(value) - allowed or not required.issubset(value):
+        raise ValueError("agent_core_command_shape_invalid")
+    for field in required:
+        field_value = value.get(field)
+        if (
+            not isinstance(field_value, str)
+            or not field_value
+            or field_value != field_value.strip()
+        ):
+            raise ValueError("agent_core_command_text_invalid")
+    if len(str(value["message"]).encode("utf-8")) > AGENT_CORE_MESSAGE_MAX_BYTES:
+        raise ValueError("agent_core_message_too_large")
+    for field in (
+        "clarification",
+        "runDispatch",
+        "intentRevisionContext",
+        "topicSelection",
+        "topicChoiceAnswer",
     ):
-        parser.error(
-            "dispatch id, owner id, and positive lease epoch must be provided together"
-        )
-    run_dispatch = (
-        {
-            "dispatch_id": args.dispatch_id,
-            "dispatch_owner_id": args.dispatch_owner_id,
-            "lease_epoch": args.dispatch_lease_epoch,
-        }
-        if args.dispatch_owner_id
+        if field in value and not isinstance(value[field], Mapping):
+            raise ValueError("agent_core_command_shape_invalid")
+    stop_after_phase = value.get("stopAfterPhase")
+    if stop_after_phase is not None and stop_after_phase not in {
+        "phase02",
+        "phase03",
+        "phase04",
+        "phase05",
+    }:
+        raise ValueError("agent_core_stop_phase_invalid")
+    return value
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    resolved_argv = sys.argv[1:] if argv is None else argv
+    if resolved_argv:
+        raise ValueError("agent_core_cli_arguments_forbidden")
+    command = _agent_core_command(
+        sys.stdin.buffer.read(AGENT_CORE_COMMAND_MAX_BYTES + 1)
+    )
+    clarification = command.get("clarification")
+    intent_revision_context = command.get("intentRevisionContext")
+    topic_selection = _parse_external_topic_selection(
+        json.dumps(command["topicSelection"])
+        if command.get("topicSelection") is not None
         else None
     )
+    topic_choice_answer = _parse_external_topic_choice_answer(
+        json.dumps(command["topicChoiceAnswer"])
+        if command.get("topicChoiceAnswer") is not None
+        else None
+    )
+    if topic_selection is not None and topic_choice_answer is not None:
+        raise ValueError("agent_core_topic_inputs_conflict")
+    raw_dispatch = command.get("runDispatch")
+    run_dispatch = None
+    if raw_dispatch is not None:
+        if (
+            not isinstance(raw_dispatch, Mapping)
+            or set(raw_dispatch) != {"dispatchId", "ownerId", "leaseEpoch"}
+            or not isinstance(raw_dispatch.get("dispatchId"), str)
+            or not str(raw_dispatch["dispatchId"]).strip()
+            or not isinstance(raw_dispatch.get("ownerId"), str)
+            or not str(raw_dispatch["ownerId"]).strip()
+            or isinstance(raw_dispatch.get("leaseEpoch"), bool)
+            or not isinstance(raw_dispatch.get("leaseEpoch"), int)
+            or int(raw_dispatch["leaseEpoch"]) < 1
+        ):
+            raise ValueError("agent_core_dispatch_invalid")
+        run_dispatch = {
+            "dispatch_id": raw_dispatch["dispatchId"],
+            "dispatch_owner_id": raw_dispatch["ownerId"],
+            "lease_epoch": raw_dispatch["leaseEpoch"],
+        }
 
     core = ConversationAgentCore.from_environment()
-    result = core.run_message(
-        thread_id=args.thread_id,
-        run_id=args.run_id,
-        user_message=args.message,
-        user_id=args.user_id,
-        artifact_root=args.artifact_root,
-        clarification=clarification,
-        run_dispatch=run_dispatch,
-        analysis_context={"as_of": args.as_of} if args.as_of else None,
-        intent_revision_context=intent_revision_context,
-        topic_selection=topic_selection,
-        topic_choice_answer=topic_choice_answer,
-        stop_after_phase=args.stop_after_phase,
-    )
+    admission_lease = None
+    try:
+        admission_lease = PostgresAgentRuntimeAdmissionLease.acquire(
+            connection=core.store.connection,
+            actor_id=str(command["userId"]),
+            environ=os.environ,
+        )
+        result = core.run_message(
+            thread_id=str(command["threadId"]),
+            run_id=str(command["runId"]),
+            user_message=str(command["message"]),
+            user_id=str(command["userId"]),
+            artifact_root=str(command.get("artifactRoot") or "artifacts/phase-7"),
+            clarification=clarification,
+            run_dispatch=run_dispatch,
+            analysis_context=(
+                {"as_of": command["asOf"]} if command.get("asOf") else None
+            ),
+            intent_revision_context=intent_revision_context,
+            topic_selection=topic_selection,
+            topic_choice_answer=topic_choice_answer,
+            stop_after_phase=command.get("stopAfterPhase"),
+        )
+    finally:
+        try:
+            if admission_lease is not None:
+                admission_lease.release()
+        finally:
+            core.store.connection.close()
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")
     return (

@@ -48,7 +48,7 @@ INTERNAL_CONTRACT_PATH = (
     ROOT / "contracts" / "sources" / "internal-operation-events.source.yaml"
 )
 DDL_PATH = ROOT / "tools" / "data" / "clickhouse-analysis-sources.sql"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@20"
 GAMEPLAY_CONTRACT_REF = "contracts/sources/gameplay.source.yaml@0.1"
 EXTERNAL_CONTRACT_REF = "contracts/sources/external-events.source.yaml@0.1"
 INTERNAL_CONTRACT_REF = "contracts/sources/internal-operation-events.source.yaml@0.1"

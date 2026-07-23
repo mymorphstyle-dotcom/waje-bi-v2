@@ -1,8 +1,9 @@
-langgraph==0.6.11
+langgraph==1.2.9
+langgraph-checkpoint==4.1.1
 clickhouse-connect==0.15.1
 PyYAML==6.0.3
 openai==2.44.0
 openai-agents==0.8.4
 eval-type-backport==0.4.0
-psycopg[binary]>=3.2,<4
+psycopg[binary]==3.3.4
 openpyxl==3.1.5

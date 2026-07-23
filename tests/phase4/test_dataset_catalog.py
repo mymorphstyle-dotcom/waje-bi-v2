@@ -55,8 +55,8 @@ class DatasetCatalogTest(unittest.TestCase):
                 ),
                 DatasetSnapshot(
                     "s2",
-                    "payment_attempt",
-                    "attempt",
+                    "secondary_metric_source",
+                    "secondary_metric",
                     "2026-06-02",
                     "b",
                     (),
@@ -68,7 +68,7 @@ class DatasetCatalogTest(unittest.TestCase):
             release_resolver=_PAID_RELEASE_RESOLVER,
         )
         self.assertEqual(
-            catalog.common_watermark(("paid_order_success", "payment_attempt")),
+            catalog.common_watermark(("paid_order_success", "secondary_metric_source")),
             date(2026, 6, 2),
         )
 

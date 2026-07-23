@@ -6,25 +6,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class HealthChecksTest(unittest.TestCase):
-    def test_health_route_checks_launch_dependencies_without_starting_analysis(self):
+    def test_public_liveness_is_constant_cost_and_readiness_is_bounded(self):
         route_path = ROOT / "app" / "api" / "health" / "route.ts"
         self.assertTrue(route_path.exists())
 
         route = route_path.read_text(encoding="utf-8")
-        runtime = (ROOT / "app" / "api" / "_pythonRuntime.ts").read_text(
-            encoding="utf-8"
-        )
-        for check in (
-            "frontend_gateway",
-            "python_bi_agent_core",
-            "postgres_runtime_store",
-            "llm_access",
-            "clickhouse_access",
-            "langgraph_adapter",
-        ):
-            with self.subTest(check=check):
-                self.assertIn(check, route)
-
+        self.assertIn('mode === "liveness"', route)
+        self.assertIn('mode !== "readiness"', route)
+        self.assertIn("WAJE_HEALTH_READINESS_TOKEN", route)
+        self.assertIn("timingSafeEqual", route)
+        self.assertIn("POSTGRES_TIMEOUT_MS", route)
+        self.assertIn("WAJE_PYTHON_EXECUTABLE", route)
+        self.assertIn("constants.X_OK", route)
+        self.assertIn("postgres_runtime_store", route)
+        self.assertIn("runtime_configuration", route)
         self.assertIn("SELECT 1", route)
         self.assertIn("WAJE_LLM_PROVIDER", route)
         self.assertIn("WAJE_LLM_BASE_URL", route)
@@ -32,17 +27,11 @@ class HealthChecksTest(unittest.TestCase):
         self.assertIn("WAJE_LLM_API_KEY", route)
         self.assertIn("DEEPSEEK_API_KEY", route)
         self.assertNotIn("OPENAI_API_KEY", route)
-        self.assertIn("ClickHouseRuntime.from_env", route)
-        self.assertIn("build_single_authority_graph", route)
-        self.assertNotIn("build_pattern_graph", route)
-        self.assertNotIn("run_pattern_workflow", route)
-        self.assertNotIn("runAgentCore", route)
-        self.assertIn("wajePythonInvocation", route)
-        self.assertIn('"uv"', runtime)
-        self.assertIn('"3.12"', runtime)
-        self.assertIn('"--with-requirements"', runtime)
-        self.assertIn('"requirements.txt"', runtime)
-        self.assertNotIn('spawn("python3"', route)
+        self.assertNotIn("OPENAI_API_KEY", route)
+        self.assertNotIn("spawn", route)
+        self.assertNotIn("stderr", route)
+        self.assertNotIn("ClickHouseRuntime.from_env", route)
+        self.assertNotIn("build_single_authority_graph", route)
 
 
 if __name__ == "__main__":

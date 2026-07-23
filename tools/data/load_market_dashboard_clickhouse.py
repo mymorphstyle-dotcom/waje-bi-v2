@@ -53,7 +53,7 @@ CHANNEL_TABLE = "market_dashboard_channel_daily"
 OVERALL_DATASET_ID = "market_dashboard"
 CHANNEL_DATASET_ID = "market_dashboard_channel"
 CONTRACT_REF = "contracts/sources/market-dashboard.source.yaml@0.1"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@15"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@20"
 CHANNEL_FILENAME_PATTERN = re.compile(
     r"^(?P<channel>.+)_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$"
 )
