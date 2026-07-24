@@ -99,6 +99,27 @@ def test_provider_adapter_preserves_conflicting_fixed_window_target_for_rejectio
         )
 
 
+def test_provider_adapter_removes_target_metric_from_requested_factor_refs() -> None:
+    binding = {
+        "target_metric_refs": ["paid_amount"],
+        "requested_factor_refs": [
+            "paid_amount",
+            "paid_users",
+            "paid_amount_per_paid_user",
+        ],
+        "time_spec": {"kind": "date", "target": "2026-05-20"},
+        "comparison_spec": {"kind": "none"},
+    }
+
+    normalized = langgraph_workflow._normalize_provider_intent_binding(binding)
+
+    assert normalized["requested_factor_refs"] == [
+        "paid_users",
+        "paid_amount_per_paid_user",
+    ]
+    assert binding["requested_factor_refs"][0] == "paid_amount"
+
+
 def _intent(
     *,
     time_spec: dict[str, object],
@@ -628,7 +649,8 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         message["content"] for message in clarification.messages
     )
 
-    assert prompt.prompt_version.endswith(".v10")
+    assert prompt.prompt_version.endswith(".v13")
+    assert "return exactly one scalar value" in prompt_text
     assert "requested_factor_refs" in prompt_text
     assert "quarter-to-quarter" in prompt_text
     assert "comparison_baseline for kind date" in prompt_text

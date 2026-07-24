@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 from unittest.mock import AsyncMock, patch
 
@@ -17,13 +18,16 @@ from bi_agent.runtime.agent_context import AgentContextAssembler, InMemoryArtifa
 from bi_agent.runtime.agent_interaction_tools import agent_interaction_tools
 from bi_agent.runtime.agent_sdk_contracts import (
     AgentSdkAdapterError,
+    AgentToolResult,
     WajeAgentRunRequest,
     WajeAgentTool,
+    WajePreboundToolCall,
 )
 from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import (
     WajeAgentsSdkAdapter,
     _install_sdk_log_redaction,
+    _to_sdk_tool,
 )
 from bi_agent.runtime.agents_sdk_trace import (
     AgentTraceStorageError,
@@ -76,6 +80,83 @@ class _TypedAnswer(BaseModel):
 
     answer: str
     evidence_refs: list[str]
+
+
+def test_customer_summary_tool_failure_stops_after_persisting_one_result() -> None:
+    class EventSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+            self.results: list[tuple[str, str, bool, Any]] = []
+
+        async def record_tool_call(self, **kwargs: Any) -> None:
+            self.calls.append((kwargs["tool_name"], kwargs["call_id"]))
+
+        async def record_tool_result(self, **kwargs: Any) -> None:
+            self.results.append(
+                (
+                    kwargs["tool_name"],
+                    kwargs["call_id"],
+                    kwargs["succeeded"],
+                    kwargs["result"],
+                )
+            )
+
+    sink = EventSink()
+    result = AgentToolResult(
+        status="failed",
+        output=None,
+        artifactRefs=[],
+        materialRefs=[],
+        limitationRefs=[],
+        retryability="replan_required",
+        customerSummary="当前线程中没有找到可用于解释的已发布材料。",
+        technicalDetailRef=None,
+    )
+    sdk_tool = _to_sdk_tool(
+        WajeAgentTool(
+            name="inspect_analysis_artifact",
+            description="Read one persisted customer-safe analysis artifact.",
+            input_model=_NumberInput,
+            handler=lambda _arguments: result,
+            failure_recovery="customer_summary",
+        ),
+        event_sink=sink,
+    )
+
+    with pytest.raises(AgentSdkAdapterError) as captured:
+        asyncio.run(
+            sdk_tool.on_invoke_tool(
+                SimpleNamespace(tool_call_id="call-missing-artifact"),
+                '{"value":1}',
+            )
+        )
+
+    assert captured.value.code == "agent_tool_terminal_failure"
+    assert sink.calls == [
+        ("inspect_analysis_artifact", "call-missing-artifact")
+    ]
+    assert len(sink.results) == 1
+    assert sink.results[0][:3] == (
+        "inspect_analysis_artifact",
+        "call-missing-artifact",
+        False,
+    )
+    assert sink.results[0][3]["customerSummary"] == result.customer_summary
+
+
+def test_sdk_wrapper_preserves_nested_waje_terminal_tool_failure() -> None:
+    from bi_agent.runtime.agents_sdk_adapter import _mapped_sdk_error
+
+    typed = AgentSdkAdapterError("agent_tool_terminal_failure")
+    try:
+        raise typed
+    except AgentSdkAdapterError as cause:
+        try:
+            raise RuntimeError("sdk tool wrapper") from cause
+        except RuntimeError as wrapper:
+            mapped = _mapped_sdk_error(wrapper)
+
+    assert mapped is typed
 
 
 def _capabilities(**overrides: Any) -> MainlandModelCapabilities:
@@ -562,6 +643,112 @@ def test_runner_completes_one_function_tool_call() -> None:
         "type": "function",
         "function": {"name": "increment"},
     }
+
+
+def test_prebound_read_only_tool_uses_one_real_provider_request() -> None:
+    requests: list[dict[str, Any]] = []
+    tool_inputs: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return _chat_response(
+            content=json.dumps(
+                {
+                    "answer": "已读取持久化材料。",
+                    "evidence_refs": ["evidence:one"],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    def inspect(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        tool_inputs.append(dict(arguments))
+        return {"value": arguments["value"] + 1}
+
+    provider, adapter, sink = _adapter(handler)
+    tool = WajeAgentTool(
+        name="inspect",
+        description="Read one persisted value.",
+        input_model=_NumberInput,
+        handler=inspect,
+        prebinding_policy="read_only",
+    )
+    try:
+        result = asyncio.run(
+            adapter.run(
+                WajeAgentRunRequest(
+                    run_id="run-prebound-read",
+                    agent_name="waje_general_agent",
+                    instructions="读取工具材料后回答。",
+                    input_text="解释已发布材料。",
+                    tools=(tool,),
+                    output_type=_TypedAnswer,
+                    initial_tool_choice="inspect",
+                    required_tool_name="inspect",
+                    prebound_tool_call=WajePreboundToolCall(
+                        tool_name="inspect",
+                        call_id="call_waje_prebound_read",
+                        arguments={"value": 1},
+                    ),
+                )
+            )
+        )
+    finally:
+        asyncio.run(provider.close())
+
+    assert tool_inputs == [{"value": 1}]
+    assert len(requests) == 1
+    assert result.model_turns == 2
+    assert result.usage["requests"] == 1
+    assert result.final_output == {
+        "answer": "已读取持久化材料。",
+        "evidence_refs": ["evidence:one"],
+    }
+    assert [(call.tool_name, call.call_id) for call in result.tool_calls] == [
+        ("inspect", "call_waje_prebound_read")
+    ]
+    synthetic_call = next(
+        tool_call
+        for message in requests[0]["messages"]
+        for tool_call in message.get("tool_calls", [])
+    )
+    assert synthetic_call == {
+        "id": "call_waje_prebound_read",
+        "type": "function",
+        "function": {"name": "inspect", "arguments": '{"value":1}'},
+    }
+    assert "tools" not in requests[0]
+    assert "tool_choice" not in requests[0]
+    assert any(
+        record["waje_trace_metadata"]["provider_request_plan"]
+        == "prebound_read_then_provider"
+        for record in sink.records
+    )
+
+
+def test_prebound_tool_requires_explicit_read_only_policy() -> None:
+    tool = WajeAgentTool(
+        name="inspect",
+        description="Read one value.",
+        input_model=_NumberInput,
+        handler=lambda arguments: arguments,
+    )
+
+    with pytest.raises(ValueError, match="agent_prebound_tool_policy_forbidden"):
+        WajeAgentRunRequest(
+            run_id="run-prebound-policy",
+            agent_name="waje_general_agent",
+            instructions="读取。",
+            input_text="读取。",
+            tools=(tool,),
+            initial_tool_choice="inspect",
+            required_tool_name="inspect",
+            prebound_tool_call=WajePreboundToolCall(
+                tool_name="inspect",
+                call_id="call_waje_prebound_policy",
+                arguments={"value": 1},
+            ),
+        )
 
 
 def test_required_suspending_tool_corrects_contract_error_inside_runner() -> None:
@@ -1474,6 +1661,35 @@ def test_deepseek_factory_resolves_explicit_v4_model_settings_for_current_config
                 "WAJE_LLM_API_KEY": "deepseek-key",
             }
         )
+
+
+def test_sdk_node_can_disable_thinking_without_changing_provider_default() -> None:
+    config = MainlandProviderConfig.deepseek_from_env(
+        {
+            "WAJE_LLM_PROVIDER": "current-deepseek-adapter",
+            "WAJE_LLM_BASE_URL": "https://api.deepseek.com/v1",
+            "WAJE_LLM_MODEL": "deepseek-v4-flash",
+            "WAJE_LLM_API_KEY": "deepseek-key",
+        }
+    )
+    provider = MainlandModelProvider(
+        config,
+        http_transport=httpx.MockTransport(
+            lambda _: _chat_response(content='{"ok":true}')
+        ),
+    )
+    try:
+        disabled = provider.sdk_model_settings(
+            structured_output=True,
+            thinking="disabled",
+        )
+        defaulted = provider.sdk_model_settings(structured_output=True)
+    finally:
+        asyncio.run(provider.close())
+
+    assert disabled.extra_body["thinking"] == {"type": "disabled"}
+    assert defaulted.extra_body["thinking"] == {"type": "enabled"}
+    assert config.model_settings.thinking == "enabled"
 
 
 def test_sdk_imports_remain_inside_python_adapter_provider_and_trace_boundary() -> None:

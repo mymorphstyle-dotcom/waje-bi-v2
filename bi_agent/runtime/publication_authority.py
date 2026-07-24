@@ -21,7 +21,6 @@ from bi_agent.runtime.insight_quality_rubric import (
 )
 from bi_agent.runtime.narrative_authority import (
     BlockLocalValidationReport,
-    BlockVerifierReport,
     NarrativeDocument,
     NarrativeFactBinding,
     NarrativeAuthorityContractError,
@@ -264,12 +263,10 @@ def _replay_projection_sources(
     material_projection: NarrativeMaterialProjection,
     narrative: NarrativeDocument,
     local_report: BlockLocalValidationReport,
-    verifier_report: BlockVerifierReport,
     visibility_policy: PublicationFieldVisibilityPolicy,
 ) -> tuple[
     NarrativeDocument,
     BlockLocalValidationReport,
-    BlockVerifierReport,
     PublicationFieldVisibilityPolicy,
 ]:
     _assert_authority_bundle_integrity(
@@ -280,7 +277,6 @@ def _replay_projection_sources(
         type(material_projection) is not NarrativeMaterialProjection
         or type(narrative) is not NarrativeDocument
         or type(local_report) is not BlockLocalValidationReport
-        or type(verifier_report) is not BlockVerifierReport
         or type(visibility_policy) is not PublicationFieldVisibilityPolicy
     ):
         raise PublicationAuthorityContractError("publication_projection_source_invalid")
@@ -294,13 +290,6 @@ def _replay_projection_sources(
             material_projection=material_projection,
             visibility_policy=policy,
         )
-        replayed_verifier = BlockVerifierReport.from_dict(
-            verifier_report.to_dict(),
-            narrative=replayed_narrative,
-            material_projection=material_projection,
-            visibility_policy=policy,
-            local_report=replayed_local,
-        )
     except (
         NarrativeAuthorityContractError,
         NarrativeMaterialProjectionContractError,
@@ -308,7 +297,7 @@ def _replay_projection_sources(
         raise PublicationAuthorityContractError(
             "publication_projection_source_integrity_invalid"
         ) from exc
-    return replayed_narrative, replayed_local, replayed_verifier, policy
+    return replayed_narrative, replayed_local, policy
 
 
 def _projection_authority_indexes(
@@ -386,8 +375,6 @@ class PublicationProjection:
     narrative_digest: str
     local_report_ref: str
     local_report_digest: str
-    block_verifier_report_ref: str
-    block_verifier_report_digest: str
     field_visibility_policy_ref: str
     field_visibility_policy_digest: str
     published_block_ids: tuple[str, ...]
@@ -409,20 +396,18 @@ class PublicationProjection:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         visibility_policy: PublicationFieldVisibilityPolicy,
         display_order: Sequence[str],
         customer_term_labels: Mapping[str, str] | None = None,
         visualization_refs: Sequence[str],
         warnings: Sequence[str],
     ) -> "PublicationProjection":
-        narrative, local_report, verifier_report, visibility_policy = (
+        narrative, local_report, visibility_policy = (
             _replay_projection_sources(
                 authority_bundle=authority_bundle,
                 material_projection=material_projection,
                 narrative=narrative,
                 local_report=local_report,
-                verifier_report=verifier_report,
                 visibility_policy=visibility_policy,
             )
         )
@@ -454,9 +439,8 @@ class PublicationProjection:
                 "publication_projection_authority_closure_invalid"
             )
         if (
-            verifier_report.narrative_id != narrative.narrative_id
-            or verifier_report.local_report_ref != local_report.local_report_ref
-            or verifier_report.local_report_digest != local_report.content_digest
+            local_report.narrative_id != narrative.narrative_id
+            or local_report.narrative_digest != narrative.content_digest
             or local_report.material_projection_ref
             != material_projection.projection_ref
             or local_report.material_projection_digest
@@ -557,8 +541,6 @@ class PublicationProjection:
             "narrative_digest": narrative.content_digest,
             "local_report_ref": local_report.local_report_ref,
             "local_report_digest": local_report.content_digest,
-            "block_verifier_report_ref": verifier_report.verifier_report_ref,
-            "block_verifier_report_digest": verifier_report.content_digest,
             "field_visibility_policy_ref": visibility_policy.policy_ref,
             "field_visibility_policy_digest": visibility_policy.content_digest,
             "published_block_ids": published,
@@ -595,7 +577,6 @@ class PublicationProjection:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         visibility_policy: PublicationFieldVisibilityPolicy,
     ) -> "PublicationProjection":
         payload = _strict_shape(
@@ -608,7 +589,6 @@ class PublicationProjection:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=visibility_policy,
             display_order=payload["display_order"],
             customer_term_labels=payload["customer_term_labels"],
@@ -631,7 +611,6 @@ class PublicationProjection:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         visibility_policy: PublicationFieldVisibilityPolicy,
     ) -> dict[str, Any]:
         replayed = PublicationProjection.from_dict(
@@ -640,7 +619,6 @@ class PublicationProjection:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=visibility_policy,
         )
         if replayed != self:
@@ -743,8 +721,6 @@ class PublicationRevision:
     narrative_attempt_id: str
     local_report_ref: str
     local_report_digest: str
-    block_verifier_report_ref: str
-    block_verifier_report_digest: str
     projection_id: str
     projection_digest: str
     publication_digest: str
@@ -758,7 +734,6 @@ class PublicationRevision:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         projection: PublicationProjection,
         visibility_policy: PublicationFieldVisibilityPolicy,
         revision: int,
@@ -775,7 +750,6 @@ class PublicationRevision:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=visibility_policy,
         )
         normalized_revision = _integer(
@@ -814,16 +788,12 @@ class PublicationRevision:
             supersedes = supersedes_publication.publication_ref
         if (
             narrative.authority_bundle_ref != authority_bundle.bundle_ref
-            or verifier_report.narrative_id != narrative.narrative_id
             or projection.authority_bundle_ref != authority_bundle.bundle_ref
             or projection.authority_bundle_digest != authority_bundle.bundle_digest
             or projection.narrative_id != narrative.narrative_id
             or projection.narrative_digest != narrative.content_digest
             or projection.local_report_ref != local_report.local_report_ref
             or projection.local_report_digest != local_report.content_digest
-            or projection.block_verifier_report_ref
-            != verifier_report.verifier_report_ref
-            or projection.block_verifier_report_digest != verifier_report.content_digest
         ):
             raise PublicationAuthorityContractError(
                 "publication_revision_source_closure_invalid"
@@ -839,8 +809,6 @@ class PublicationRevision:
             "narrative_attempt_id": narrative.writer_attempt_id,
             "local_report_ref": local_report.local_report_ref,
             "local_report_digest": local_report.content_digest,
-            "block_verifier_report_ref": verifier_report.verifier_report_ref,
-            "block_verifier_report_digest": verifier_report.content_digest,
             "projection_id": projection.projection_id,
             "projection_digest": projection.projection_digest,
         }
@@ -863,7 +831,6 @@ class PublicationRevision:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         projection: PublicationProjection,
         visibility_policy: PublicationFieldVisibilityPolicy,
         supersedes_publication: PublicationRevision | None,
@@ -874,7 +841,6 @@ class PublicationRevision:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             projection=projection,
             visibility_policy=visibility_policy,
             revision=payload["revision"],
@@ -914,7 +880,6 @@ class DeliveryOutboxRecord:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         visibility_policy: PublicationFieldVisibilityPolicy,
         supersedes_publication: PublicationRevision | None,
         publication: PublicationRevision,
@@ -932,7 +897,6 @@ class DeliveryOutboxRecord:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             projection=projection,
             visibility_policy=visibility_policy,
             supersedes_publication=supersedes_publication,
@@ -984,7 +948,6 @@ class DeliveryOutboxRecord:
         material_projection: NarrativeMaterialProjection,
         narrative: NarrativeDocument,
         local_report: BlockLocalValidationReport,
-        verifier_report: BlockVerifierReport,
         visibility_policy: PublicationFieldVisibilityPolicy,
         supersedes_publication: PublicationRevision | None,
     ) -> "DeliveryOutboxRecord":
@@ -996,7 +959,6 @@ class DeliveryOutboxRecord:
             material_projection=material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=visibility_policy,
             supersedes_publication=supersedes_publication,
             destination_ref=payload["destination_ref"],
@@ -1156,8 +1118,6 @@ def validate_publication_lifecycle(
     authority_bundle: AuthorityBundle | None,
     publication: PublicationRevision | None,
     outbox: DeliveryOutboxRecord | None,
-    narrative: NarrativeDocument | None = None,
-    verifier_report: BlockVerifierReport | None = None,
 ) -> None:
     if type(lifecycle) is not LifecycleState:
         raise PublicationAuthorityContractError("publication_lifecycle_state_invalid")
@@ -1167,28 +1127,6 @@ def validate_publication_lifecycle(
         raise PublicationAuthorityContractError(
             "publication_lifecycle_state_integrity_invalid"
         ) from exc
-    if (narrative is None) != (verifier_report is None):
-        raise PublicationAuthorityContractError(
-            "publication_lifecycle_narrative_closure_invalid"
-        )
-    if narrative is not None and verifier_report is not None:
-        narrative = NarrativeDocument.from_dict(narrative.to_dict())
-        _assert_content_addressed_record(
-            verifier_report,
-            ref_field="verifier_report_ref",
-            digest_field="content_digest",
-            prefix="block-verifier-report:sha256:",
-            error="publication_lifecycle_verifier_integrity_invalid",
-        )
-        if (
-            verifier_report.narrative_id != narrative.narrative_id
-            or verifier_report.narrative_digest != narrative.content_digest
-            or verifier_report.evaluated_block_ids
-            != tuple(sorted(block.block_id for block in narrative.blocks))
-        ):
-            raise PublicationAuthorityContractError(
-                "publication_lifecycle_narrative_closure_invalid"
-            )
     if authority_bundle is not None:
         _assert_authority_bundle_integrity(
             authority_bundle,

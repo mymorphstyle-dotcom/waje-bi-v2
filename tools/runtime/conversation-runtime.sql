@@ -2490,15 +2490,53 @@ CREATE TABLE IF NOT EXISTS waje_runtime.block_verification_reports (
   verifier_report_ref text PRIMARY KEY,
   owner_ref text NOT NULL,
   run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
-  verification_attempt_ref text NOT NULL,
-  verification_attempt_digest text NOT NULL CHECK (length(verification_attempt_digest) = 64),
+  audit_status text NOT NULL CHECK (
+    audit_status IN ('pending', 'completed', 'unavailable')
+  ),
+  verification_attempt_ref text,
+  verification_attempt_digest text CHECK (
+    verification_attempt_digest IS NULL OR length(verification_attempt_digest) = 64
+  ),
   narrative_id text NOT NULL,
   narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
   local_report_ref text NOT NULL,
   local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
+  failure_kind text,
+  retryability text CHECK (
+    retryability IS NULL OR retryability IN ('retryable', 'not_retryable')
+  ),
+  technical_detail_ref text,
   content_digest text NOT NULL CHECK (length(content_digest) = 64),
   payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
   created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (
+    (
+      audit_status = 'pending'
+      AND verification_attempt_ref IS NULL
+      AND verification_attempt_digest IS NULL
+      AND failure_kind IS NULL
+      AND retryability IS NULL
+      AND technical_detail_ref IS NULL
+    )
+    OR
+    (
+      audit_status = 'completed'
+      AND verification_attempt_ref IS NOT NULL
+      AND verification_attempt_digest IS NOT NULL
+      AND failure_kind IS NULL
+      AND retryability IS NULL
+      AND technical_detail_ref IS NULL
+    )
+    OR
+    (
+      audit_status = 'unavailable'
+      AND verification_attempt_ref IS NULL
+      AND verification_attempt_digest IS NULL
+      AND failure_kind IS NOT NULL
+      AND retryability IS NOT NULL
+      AND technical_detail_ref IS NOT NULL
+    )
+  ),
   UNIQUE(owner_ref, run_attempt_id, verifier_report_ref),
   UNIQUE(owner_ref, run_attempt_id, content_digest),
   UNIQUE(owner_ref, run_attempt_id, verification_attempt_ref),
@@ -2515,6 +2553,103 @@ CREATE TABLE IF NOT EXISTS waje_runtime.block_verification_reports (
     ) ON DELETE RESTRICT
 );
 
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD COLUMN IF NOT EXISTS audit_status text;
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD COLUMN IF NOT EXISTS failure_kind text;
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD COLUMN IF NOT EXISTS retryability text;
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD COLUMN IF NOT EXISTS technical_detail_ref text;
+ALTER TABLE waje_runtime.block_verification_reports
+  ALTER COLUMN verification_attempt_ref DROP NOT NULL;
+ALTER TABLE waje_runtime.block_verification_reports
+  ALTER COLUMN verification_attempt_digest DROP NOT NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgrelid = 'waje_runtime.block_verification_reports'::regclass
+      AND tgname = 'block_verification_reports_append_only'
+      AND NOT tgisinternal
+  ) THEN
+    ALTER TABLE waje_runtime.block_verification_reports
+      DISABLE TRIGGER block_verification_reports_append_only;
+  END IF;
+END
+$$;
+UPDATE waje_runtime.block_verification_reports
+SET audit_status = 'completed'
+WHERE audit_status IS NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgrelid = 'waje_runtime.block_verification_reports'::regclass
+      AND tgname = 'block_verification_reports_append_only'
+      AND NOT tgisinternal
+  ) THEN
+    ALTER TABLE waje_runtime.block_verification_reports
+      ENABLE TRIGGER block_verification_reports_append_only;
+  END IF;
+END
+$$;
+ALTER TABLE waje_runtime.block_verification_reports
+  ALTER COLUMN audit_status SET NOT NULL;
+DO $$
+DECLARE existing_check record;
+BEGIN
+  FOR existing_check IN
+    SELECT constraint_record.conname AS constraint_name
+    FROM pg_constraint constraint_record
+    WHERE constraint_record.conrelid =
+      'waje_runtime.block_verification_reports'::regclass
+      AND constraint_record.contype = 'c'
+      AND pg_get_constraintdef(constraint_record.oid) LIKE '%audit_status%'
+  LOOP
+    EXECUTE format(
+      'ALTER TABLE waje_runtime.block_verification_reports DROP CONSTRAINT %I',
+      existing_check.constraint_name
+    );
+  END LOOP;
+END
+$$;
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD CONSTRAINT block_verification_reports_audit_status_check
+  CHECK (audit_status IN ('pending', 'completed', 'unavailable'));
+ALTER TABLE waje_runtime.block_verification_reports
+  ADD CONSTRAINT block_verification_reports_audit_shape_check
+  CHECK (
+    (
+      audit_status = 'pending'
+      AND verification_attempt_ref IS NULL
+      AND verification_attempt_digest IS NULL
+      AND failure_kind IS NULL
+      AND retryability IS NULL
+      AND technical_detail_ref IS NULL
+    )
+    OR
+    (
+      audit_status = 'completed'
+      AND verification_attempt_ref IS NOT NULL
+      AND verification_attempt_digest IS NOT NULL
+      AND failure_kind IS NULL
+      AND retryability IS NULL
+      AND technical_detail_ref IS NULL
+    )
+    OR
+    (
+      audit_status = 'unavailable'
+      AND verification_attempt_ref IS NULL
+      AND verification_attempt_digest IS NULL
+      AND failure_kind IS NOT NULL
+      AND retryability IN ('retryable', 'not_retryable')
+      AND technical_detail_ref IS NOT NULL
+    )
+  );
+
 CREATE TABLE IF NOT EXISTS waje_runtime.publication_projections (
   projection_id text PRIMARY KEY,
   owner_ref text NOT NULL,
@@ -2527,8 +2662,11 @@ CREATE TABLE IF NOT EXISTS waje_runtime.publication_projections (
   narrative_digest text NOT NULL CHECK (length(narrative_digest) = 64),
   local_report_ref text NOT NULL,
   local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
-  block_verifier_report_ref text NOT NULL,
-  block_verifier_report_digest text NOT NULL CHECK (length(block_verifier_report_digest) = 64),
+  block_verifier_report_ref text,
+  block_verifier_report_digest text CHECK (
+    block_verifier_report_digest IS NULL
+    OR length(block_verifier_report_digest) = 64
+  ),
   field_visibility_policy_ref text NOT NULL,
   field_visibility_policy_digest text NOT NULL CHECK (length(field_visibility_policy_digest) = 64),
   recommendation_refs jsonb NOT NULL CHECK (jsonb_typeof(recommendation_refs) = 'array'),
@@ -2575,8 +2713,11 @@ CREATE TABLE IF NOT EXISTS waje_runtime.publication_revisions (
   narrative_attempt_id text NOT NULL,
   local_report_ref text NOT NULL,
   local_report_digest text NOT NULL CHECK (length(local_report_digest) = 64),
-  block_verifier_report_ref text NOT NULL,
-  block_verifier_report_digest text NOT NULL CHECK (length(block_verifier_report_digest) = 64),
+  block_verifier_report_ref text,
+  block_verifier_report_digest text CHECK (
+    block_verifier_report_digest IS NULL
+    OR length(block_verifier_report_digest) = 64
+  ),
   projection_id text NOT NULL,
   projection_digest text NOT NULL CHECK (length(projection_digest) = 64),
   publication_digest text NOT NULL CHECK (length(publication_digest) = 64),
@@ -2619,6 +2760,14 @@ CREATE TABLE IF NOT EXISTS waje_runtime.publication_revisions (
       owner_ref, run_attempt_id, projection_id
     ) ON DELETE RESTRICT
 );
+
+ALTER TABLE waje_runtime.publication_projections
+  ALTER COLUMN block_verifier_report_ref DROP NOT NULL,
+  ALTER COLUMN block_verifier_report_digest DROP NOT NULL;
+
+ALTER TABLE waje_runtime.publication_revisions
+  ALTER COLUMN block_verifier_report_ref DROP NOT NULL,
+  ALTER COLUMN block_verifier_report_digest DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS waje_runtime.delivery_outbox_records (
   outbox_ref text PRIMARY KEY,
@@ -2813,6 +2962,36 @@ CREATE TABLE IF NOT EXISTS waje_runtime.customer_publications (
   FOREIGN KEY (owner_ref, run_attempt_id, projection_id)
     REFERENCES waje_runtime.publication_projections(
       owner_ref, run_attempt_id, projection_id
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.narrative_quality_audit_results (
+  audit_result_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  run_attempt_id text NOT NULL REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  source_customer_publication_ref text NOT NULL,
+  narrative_workflow_ref text NOT NULL,
+  narrative_workflow_digest text NOT NULL CHECK (length(narrative_workflow_digest) = 64),
+  call_input_ref text NOT NULL,
+  call_input_digest text NOT NULL CHECK (length(call_input_digest) = 64),
+  verifier_report_ref text NOT NULL,
+  verifier_report_digest text NOT NULL CHECK (length(verifier_report_digest) = 64),
+  audit_status text NOT NULL CHECK (
+    audit_status IN ('completed', 'unavailable')
+  ),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_ref, run_attempt_id, audit_result_ref),
+  UNIQUE(owner_ref, run_attempt_id, content_digest),
+  UNIQUE(owner_ref, run_attempt_id, source_customer_publication_ref, call_input_ref),
+  FOREIGN KEY (owner_ref, run_attempt_id, source_customer_publication_ref)
+    REFERENCES waje_runtime.customer_publications(
+      owner_ref, run_attempt_id, customer_publication_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, verifier_report_ref)
+    REFERENCES waje_runtime.block_verification_reports(
+      owner_ref, run_attempt_id, verifier_report_ref
     ) ON DELETE RESTRICT
 );
 
@@ -3024,6 +3203,7 @@ BEGIN
     'publication_customer_payloads',
     'delivery_attempts',
     'customer_publications',
+    'narrative_quality_audit_results',
     'narrative_attempt_requests',
     'insight_quality_evaluations',
     'guardrail_promotion_records',
@@ -3157,7 +3337,7 @@ $$;
 
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v13',
-  '9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af'
+  'single-authority-workflow.v15',
+  '8bac54f39a1573aead3b1d2be4aaac4f88102c0952d664113f44e8fcf023e305'
 )
 ON CONFLICT (migration_id) DO NOTHING;

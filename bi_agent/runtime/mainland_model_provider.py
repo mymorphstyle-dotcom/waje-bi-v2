@@ -548,18 +548,21 @@ class MainlandModelProvider(ModelProvider):
         *,
         structured_output: bool,
         initial_tool_choice: str = "auto",
+        thinking: str | None = None,
     ) -> ModelSettings:
         configured = self.config.model_settings
         extra_body = dict(configured.extra_body)
-        thinking = configured.thinking
+        effective_thinking = configured.thinking if thinking is None else thinking
+        if effective_thinking not in {"enabled", "disabled"}:
+            raise LLMConfigurationError("invalid_llm_thinking_mode")
         if (
             initial_tool_choice != "auto"
             and self.config.capabilities.deterministic_tool_choice_thinking
             == "disabled"
         ):
-            thinking = "disabled"
+            effective_thinking = "disabled"
         if _is_deepseek_endpoint(self.config.base_url):
-            extra_body["thinking"] = {"type": thinking}
+            extra_body["thinking"] = {"type": effective_thinking}
         if structured_output:
             mode = self.config.capabilities.structured_output_mode
             if mode == "json_object_with_waje_schema":

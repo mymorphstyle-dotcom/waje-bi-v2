@@ -16,28 +16,25 @@ from bi_agent.runtime.durable_call_journal import (
 )
 from bi_agent.runtime.evidence_authority import canonical_digest
 from bi_agent.runtime.narrative_workflow import (
+    NarrativeQualityAuditResult,
     NarrativeWorkflowResult,
     prepare_narrative_material_projection,
+    run_narrative_quality_audit,
     run_narrative_workflow,
 )
 from bi_agent.runtime.publication_flow import PublicationFlowResult
 from bi_agent.runtime.publication_persistence import (
     DeliveryTransportResult,
+    NarrativeQualityAuditPersistenceResult,
     PublicationPersistenceError,
     deliver_persisted_outbox,
     narrative_publication_transition_payloads,
+    persist_narrative_quality_audit,
     persist_publication,
 )
 from bi_agent.runtime.single_authority import DurableTransition, LifecycleState
 from tests.phase7.test_narrative_workflow import (
-    _FakeNarrativeLLM,
-    _NoSensitiveOutput,
-    _authority_fixture,
-    _context,
-    _focused_result,
-    _focused_writer,
-    _initial_writer,
-    _veto_role,
+    _result_fixture,
 )
 
 
@@ -47,6 +44,7 @@ class _Fixture:
     bundle: Any
     settlement: Any
     recommendations: tuple[Any, ...]
+    narrative_client: Any
     workflow: NarrativeWorkflowResult
     flow: PublicationFlowResult | None
     parent_transition: DurableTransition
@@ -58,52 +56,18 @@ class _Fixture:
 
 def _fixture(*, withheld: bool = False) -> _Fixture:
     if withheld:
-        authority = _authority_fixture()
-        _, material_projection = prepare_narrative_material_projection(
-            authority_bundle=authority.bundle,
-            claim_settlement=authority.settlement,
-            evidence_entries=authority.evidence_entries,
-            recommendations=authority.recommendations,
-            public_materialization=authority.materialization,
-            visibility_policy=authority.policy,
-        )
-        client = _FakeNarrativeLLM(
-            (
-                _initial_writer,
-                _veto_role("dimension_localization"),
-                _focused_writer,
-                _veto_role("dimension_localization"),
-            ),
-            retry_audit_calls=(0, 2),
-        )
-        workflow = run_narrative_workflow(
-            authority_bundle=authority.bundle,
-            claim_settlement=authority.settlement,
-            evidence_entries=authority.evidence_entries,
-            recommendations=authority.recommendations,
-            public_materialization=authority.materialization,
-            visibility_policy=authority.policy,
-            material_projection=material_projection,
-            answer_context=_context(),
-            llm_client=client,
-            sensitive_output_inspector=_NoSensitiveOutput(),
-        )
-    else:
-        authority, _, workflow = _focused_result()
-    flow = (
-        None
-        if withheld
-        else PublicationFlowResult.create(
-            authority_inputs=authority.authority_inputs,
-            authority_bundle=authority.bundle,
-            claim_settlement=authority.settlement,
-            recommendations=authority.recommendations,
-            narrative_workflow=workflow,
-            supersedes_publication=None,
-            destination_ref="conversation:phase6-tests",
-            channel="conversation",
-            published_at="2026-07-18T12:30:00Z",
-        )
+        raise AssertionError("withheld_publication_contract_removed")
+    authority, narrative_client, workflow = _result_fixture()
+    flow = PublicationFlowResult.create(
+        authority_inputs=authority.authority_inputs,
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        recommendations=authority.recommendations,
+        narrative_workflow=workflow,
+        supersedes_publication=None,
+        destination_ref="conversation:phase6-tests",
+        channel="conversation",
+        published_at="2026-07-18T12:30:00Z",
     )
     parent_input = {
         "authoritative_execution_result_ref": authority.bundle.execution_result_ref,
@@ -177,6 +141,7 @@ def _fixture(*, withheld: bool = False) -> _Fixture:
         bundle=authority.bundle,
         settlement=authority.settlement,
         recommendations=authority.recommendations,
+        narrative_client=narrative_client,
         workflow=workflow,
         flow=flow,
         parent_transition=parent,
@@ -698,13 +663,13 @@ def test_transaction_persists_single_generation_and_background_review_chain() ->
             stage_name="compose_claim_aware_narrative",
         )
     ) == len(fixture.workflow.provider_responses)
-    assert len(connection.tables["restricted_provider_responses"]) == 3
+    assert len(connection.tables["restricted_provider_responses"]) == 2
     assert len(connection.tables["narrative_writer_attempts"]) == 1
     assert len(connection.tables["narrative_documents"]) == 1
     assert len(connection.tables["narrative_blocks"]) == 2
     assert len(connection.tables["block_local_validation_reports"]) == 1
-    assert len(connection.tables["block_verification_attempts"]) == 1
-    assert len(connection.tables["block_verification_reports"]) == 1
+    assert "block_verification_attempts" not in connection.tables
+    assert "block_verification_reports" not in connection.tables
     assert all(
         row["raw_response_content"]
         for row in connection.tables["restricted_provider_responses"]
@@ -751,14 +716,13 @@ def test_transaction_persists_single_generation_and_background_review_chain() ->
     assert fixture.flow is not None
     publication = connection.tables["publication_revisions"][0]
     assert publication["narrative_id"] == (
-        fixture.workflow.final_accepted_narrative.narrative_id
+        fixture.workflow.delivery_narrative.narrative_id
     )
     assert publication["local_report_ref"] == (
         fixture.workflow.final_local_report.local_report_ref
     )
-    assert publication["block_verifier_report_ref"] == (
-        fixture.workflow.projection_ready_verifier_report.verifier_report_ref
-    )
+    assert "block_verifier_report_ref" not in publication
+    assert "block_verifier_report_digest" not in publication
     transition = connection.tables["workflow_transition_attempts"][0]
     assert transition["node_name"] == "compose_claim_aware_narrative"
     assert transition["parent_transition_id"] == fixture.parent_transition.transition_id
@@ -818,7 +782,7 @@ def test_raw_provider_response_tamper_rolls_back_replay() -> None:
 
 def test_mid_transaction_failure_rolls_back_every_attempt_and_transition() -> None:
     fixture = _fixture()
-    connection = _Connection(fixture, fail_on_table="block_verification_reports")
+    connection = _Connection(fixture, fail_on_table="publication_projections")
 
     with pytest.raises(RuntimeError, match="injected_insert_failure"):
         _persist(connection)
@@ -886,7 +850,7 @@ def _obsolete_withheld_path_persists_full_attempt_chain_without_publication_arti
     assert result.customer_payload_ref is None
     assert len(connection.tables["restricted_provider_responses"]) == 6
     assert len(connection.tables["narrative_documents"]) == 2
-    assert len(connection.tables["block_verification_reports"]) == 2
+    assert len(connection.tables["block_verification_reports"]) == 1
     assert "publication_projections" not in connection.tables
     assert "publication_revisions" not in connection.tables
     assert "delivery_outbox_records" not in connection.tables
@@ -1021,6 +985,106 @@ def test_retryable_delivery_failure_preserves_publication_then_retries(
     )
     assert replayed.replayed is True
     assert replayed.attempt_ref == published.attempt_ref
+
+
+def test_quality_audit_persists_only_after_customer_publication() -> None:
+    fixture = _fixture()
+    connection = _Connection(fixture)
+    _persist(connection)
+    assert fixture.flow is not None
+    delivered = deliver_persisted_outbox(
+        connection,
+        outbox_ref=fixture.flow.outbox.outbox_ref,
+        transport=lambda _message: DeliveryTransportResult.published(
+            "transport-receipt:quality-audit"
+        ),
+    )
+    assert delivered.customer_publication_ref is not None
+    quality_audit = run_narrative_quality_audit(
+        source_customer_publication_ref=delivered.customer_publication_ref,
+        authority_bundle=fixture.bundle,
+        claim_settlement=fixture.settlement,
+        evidence_entries=fixture.authority_inputs.material_projection_evidence_entries(),
+        recommendations=fixture.recommendations,
+        narrative_workflow=fixture.workflow,
+        llm_client=fixture.narrative_client,
+    )
+
+    persisted = persist_narrative_quality_audit(
+        connection,
+        owner_ref=connection.owner_ref,
+        run_attempt_id=fixture.bundle.run_attempt_id,
+        narrative_workflow=fixture.workflow,
+        quality_audit=quality_audit,
+    )
+    replayed = persist_narrative_quality_audit(
+        connection,
+        owner_ref=connection.owner_ref,
+        run_attempt_id=fixture.bundle.run_attempt_id,
+        narrative_workflow=fixture.workflow,
+        quality_audit=quality_audit,
+    )
+
+    assert type(persisted) is NarrativeQualityAuditPersistenceResult
+    assert replayed == persisted
+    assert persisted.audit_status == "completed"
+    assert len(connection.tables["narrative_quality_audit_results"]) == 1
+    assert len(connection.tables["block_verification_reports"]) == 1
+    assert {
+        row["audit_status"]
+        for row in connection.tables["block_verification_reports"]
+    } == {"completed"}
+    assert len(connection.tables["block_verification_attempts"]) == 1
+    assert len(connection.tables["restricted_provider_responses"]) == 3
+
+
+def test_quality_audit_persistence_failure_cannot_change_delivered_publication() -> (
+    None
+):
+    fixture = _fixture()
+    connection = _Connection(fixture)
+    _persist(connection)
+    assert fixture.flow is not None
+    delivered = deliver_persisted_outbox(
+        connection,
+        outbox_ref=fixture.flow.outbox.outbox_ref,
+        transport=lambda _message: DeliveryTransportResult.published(
+            "transport-receipt:quality-audit-failure"
+        ),
+    )
+    assert delivered.customer_publication_ref is not None
+    quality_audit = run_narrative_quality_audit(
+        source_customer_publication_ref=delivered.customer_publication_ref,
+        authority_bundle=fixture.bundle,
+        claim_settlement=fixture.settlement,
+        evidence_entries=fixture.authority_inputs.material_projection_evidence_entries(),
+        recommendations=fixture.recommendations,
+        narrative_workflow=fixture.workflow,
+        llm_client=fixture.narrative_client,
+    )
+    publication_rows = deepcopy(connection.tables["publication_revisions"])
+    customer_rows = deepcopy(connection.tables["customer_publications"])
+    lifecycle = connection.lifecycle
+    connection.fail_on_table = "restricted_provider_responses"
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected_insert_failure:restricted_provider_responses",
+    ):
+        persist_narrative_quality_audit(
+            connection,
+            owner_ref=connection.owner_ref,
+            run_attempt_id=fixture.bundle.run_attempt_id,
+            narrative_workflow=fixture.workflow,
+            quality_audit=quality_audit,
+        )
+
+    assert connection.tables["publication_revisions"] == publication_rows
+    assert connection.tables["customer_publications"] == customer_rows
+    assert connection.lifecycle == lifecycle
+    assert lifecycle.publication_state == "published"
+    assert lifecycle.delivery_state == "published"
+    assert "narrative_quality_audit_results" not in connection.tables
 
 
 def test_delivery_entrypoint_has_only_persisted_outbox_and_transport_boundary() -> None:

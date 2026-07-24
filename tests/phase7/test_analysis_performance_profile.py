@@ -67,9 +67,43 @@ def test_profile_maps_workflow_nodes_to_business_stages_and_ranks_bottlenecks():
                 "input_bytes": 2048,
             },
         ),
+        provider_call_audits=(
+            {
+                "stage": "narrative",
+                "audit": {
+                    "task": "single_authority_narrative_writer",
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "model_tier": "critical",
+                    "thinking": "enabled",
+                    "duration_ms": 120_000,
+                    "attempt_count": 2,
+                    "input_bytes": 200_000,
+                    "output_bytes": 8_000,
+                    "usage": {
+                        "prompt_tokens": 60_000,
+                        "completion_tokens": 8_000,
+                    },
+                    "reasoning_content_present": True,
+                    "attempt_failures": (
+                        {
+                            "attempt": 1,
+                            "failure_code": "provider_output_invalid",
+                            "duration_ms": 100_000,
+                            "raw_response_bytes": 7_000,
+                            "usage": {
+                                "prompt_tokens": 60_000,
+                                "completion_tokens": 7_000,
+                            },
+                            "reasoning_content_present": True,
+                        },
+                    ),
+                },
+            },
+        ),
     )
 
-    assert profile.schema_version == "analysis-performance-profile.v1"
+    assert profile.schema_version == "analysis-performance-profile.v2"
     assert profile.enforcement == "audit_only"
     assert profile.total_observed_duration_ms == 755_000
     assert profile.budget_status == "breached"
@@ -77,6 +111,18 @@ def test_profile_maps_workflow_nodes_to_business_stages_and_ranks_bottlenecks():
     assert profile.bottlenecks[0].stage == "narrative"
     assert profile.bottlenecks[1].stage == "claim_authority"
     assert profile.capability_substages[0].input_bytes == 2048
+    assert profile.provider_totals.call_count == 1
+    assert profile.provider_totals.attempt_count == 2
+    assert profile.provider_totals.retry_count == 1
+    assert profile.provider_totals.total_duration_ms == 220_000
+    assert profile.provider_totals.retry_duration_ms == 100_000
+    assert profile.provider_totals.total_input_bytes == 400_000
+    assert profile.provider_totals.total_output_bytes == 15_000
+    assert profile.provider_totals.prompt_tokens == 120_000
+    assert profile.provider_totals.completion_tokens == 15_000
+    assert profile.provider_calls[0].failure_codes == (
+        "provider_output_invalid",
+    )
     assert profile.profile_ref.startswith("analysis-performance-profile:sha256:")
 
 
@@ -133,6 +179,25 @@ def test_profile_rejects_malformed_checkpoint_or_substage_events():
                 {"stage": "query_execution", "operation": "q", "duration_ms": 1},
             ),
         )
+    with pytest.raises(
+        AnalysisPerformanceContractError,
+        match="provider_call_audit_invalid",
+    ):
+        build_analysis_performance_profile(
+            run_id="run-1",
+            checkpoint_events=(event("execute_capability_dag", 1),),
+            policy=policy,
+            provider_call_audits=(
+                {
+                    "stage": "narrative",
+                    "audit": {
+                        "task": "writer",
+                        "provider": "deepseek",
+                        "model": "model",
+                    },
+                },
+            ),
+        )
 
 
 def test_profile_is_written_only_to_waje_audit():
@@ -164,6 +229,7 @@ def test_profile_is_written_only_to_waje_audit():
     assert recorded["event_type"] == "analysis_performance_profile_recorded"
     assert recorded["payload"]["enforcement"] == "audit_only"
     assert recorded["payload"]["capability_substages"][0]["input_bytes"] == 100
+    assert recorded["payload"]["provider_totals"]["call_count"] == 0
     assert "customer_payload" not in recorded["payload"]
     assert store.runs == {}
 

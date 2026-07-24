@@ -3937,6 +3937,18 @@ class PostgresConversationStore:
             ):
                 raise EvidenceIntegrityError("plan_revision_immutable_conflict")
 
+            transition_status = self._save_transition_attempt_locked(
+                transition=transition,
+                input_payload=input_payload,
+                output_payload=output_payload,
+            )
+            self.attempt_journal.bind_stage(
+                run_attempt_id=run_attempt_id,
+                transition_attempt_id=transition.attempt_id,
+                stage_name=transition.node_name,
+                attempt_refs=normalized_attempt_refs,
+                commit=False,
+            )
             if parent_plan_id:
                 supersession_body = canonical_value(
                     {
@@ -4012,19 +4024,6 @@ class PostgresConversationStore:
                     != supersession_digest
                 ):
                     raise EvidenceIntegrityError("plan_revision_supersession_conflict")
-
-            transition_status = self._save_transition_attempt_locked(
-                transition=transition,
-                input_payload=input_payload,
-                output_payload=output_payload,
-            )
-            self.attempt_journal.bind_stage(
-                run_attempt_id=run_attempt_id,
-                transition_attempt_id=transition.attempt_id,
-                stage_name=transition.node_name,
-                attempt_refs=normalized_attempt_refs,
-                commit=False,
-            )
             previous_plan_result_refs = None
             if parent_plan_id and previous_active_plan is not None:
                 previous_transition = self.load_plan_revision_transition(

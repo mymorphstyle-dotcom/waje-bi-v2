@@ -501,7 +501,6 @@ def _context(
         material_projection=material_projection,
         narrative=narrative,
         local_report=local_report,
-        verifier_report=verifier_report,
         visibility_policy=policy,
         display_order=tuple(block.block_id for block in narrative.blocks),
         customer_term_labels=customer_term_labels,
@@ -513,7 +512,6 @@ def _context(
         material_projection=material_projection,
         narrative=narrative,
         local_report=local_report,
-        verifier_report=verifier_report,
         projection=projection,
         visibility_policy=policy,
         revision=revision,
@@ -549,7 +547,6 @@ def test_customer_projection_replaces_fixed_metric_ids_and_preserves_audit_text(
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=context.verifier_report,
         visibility_policy=context.policy,
     )
     rendered = payload["blocks"][0]["text"]
@@ -566,7 +563,6 @@ def test_customer_projection_replaces_fixed_metric_ids_and_preserves_audit_text(
             material_projection=context.material_projection,
             narrative=context.narrative,
             local_report=context.local_report,
-            verifier_report=context.verifier_report,
             visibility_policy=context.policy,
         )
         == context.projection
@@ -579,7 +575,6 @@ def _outbox(context: _Context) -> DeliveryOutboxRecord:
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=context.verifier_report,
         visibility_policy=context.policy,
         supersedes_publication=context.supersedes_publication,
         publication=context.publication,
@@ -597,7 +592,6 @@ def test_projection_replays_full_authority_and_emits_one_safe_customer_shape() -
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=context.verifier_report,
         visibility_policy=context.policy,
     )
     rendered = json.dumps(payload, sort_keys=True)
@@ -627,7 +621,6 @@ def test_projection_replays_full_authority_and_emits_one_safe_customer_shape() -
             material_projection=context.material_projection,
             narrative=context.narrative,
             local_report=context.local_report,
-            verifier_report=context.verifier_report,
             visibility_policy=context.policy,
         )
         == context.projection
@@ -679,7 +672,6 @@ def test_visibility_policy_rejects_unknown_or_forbidden_fields_recursively() -> 
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=context.verifier_report,
         visibility_policy=context.policy,
     )
     payload["blocks"][0]["internal_debug"] = "secret"
@@ -691,12 +683,11 @@ def test_visibility_policy_rejects_unknown_or_forbidden_fields_recursively() -> 
         context.policy.validate_customer_payload(payload)
 
 
-@pytest.mark.parametrize("source", ("block", "material_projection", "verifier"))
+@pytest.mark.parametrize("source", ("block", "material_projection"))
 def test_projection_rejects_children_modified_with_old_digest(source: str) -> None:
     context = _context()
     narrative = context.narrative
     material_projection = context.material_projection
-    verifier = context.verifier_report
     if source == "block":
         narrative = replace(
             narrative,
@@ -716,9 +707,6 @@ def test_projection_rejects_children_modified_with_old_digest(source: str) -> No
                 ),
             ),
         )
-    else:
-        verifier = replace(verifier, accepted_block_ids=())
-
     with pytest.raises(
         PublicationAuthorityContractError,
         match="publication_projection_source_integrity_invalid",
@@ -728,7 +716,6 @@ def test_projection_rejects_children_modified_with_old_digest(source: str) -> No
             material_projection=material_projection,
             narrative=narrative,
             local_report=context.local_report,
-            verifier_report=verifier,
             visibility_policy=context.policy,
             display_order=tuple(block.block_id for block in context.narrative.blocks),
             visualization_refs=(),
@@ -774,7 +761,6 @@ def test_required_block_rejection_is_published_and_kept_for_background_review() 
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=rejected,
         visibility_policy=context.policy,
         display_order=tuple(block.block_id for block in context.narrative.blocks),
         visualization_refs=(),
@@ -785,7 +771,6 @@ def test_required_block_rejection_is_published_and_kept_for_background_review() 
         material_projection=context.material_projection,
         narrative=context.narrative,
         local_report=context.local_report,
-        verifier_report=rejected,
         visibility_policy=context.policy,
     )
     assert projection.published_block_ids == tuple(
@@ -796,40 +781,6 @@ def test_required_block_rejection_is_published_and_kept_for_background_review() 
         block.text for block in context.narrative.blocks
     ]
     assert rejected.rejected_block_ids
-    return
-
-    withheld = LifecycleState.create(
-        run_attempt_id=context.bundle.run_attempt_id,
-        execution_state="complete",
-        evidence_state="complete",
-        publication_state="withheld",
-        delivery_state="pending",
-    )
-    validate_publication_lifecycle(
-        lifecycle=withheld,
-        authority_bundle=context.bundle,
-        publication=None,
-        outbox=None,
-        narrative=context.narrative,
-        verifier_report=rejected,
-    )
-
-    verified = withheld.transition(
-        publication_state="verified",
-        delivery_state="persisted",
-    )
-    with pytest.raises(
-        PublicationAuthorityContractError,
-        match="publication_lifecycle_required_block_disposition_invalid",
-    ):
-        validate_publication_lifecycle(
-            lifecycle=verified,
-            authority_bundle=context.bundle,
-            publication=context.publication,
-            outbox=_outbox(context),
-            narrative=context.narrative,
-            verifier_report=rejected,
-        )
 
 
 def test_ready_lifecycle_requires_matching_outbox_on_existing_ssot() -> None:
@@ -888,7 +839,6 @@ def test_narrative_revision_keeps_the_sealed_bundle_and_replays_all_children() -
             material_projection=second.material_projection,
             narrative=second.narrative,
             local_report=second.local_report,
-            verifier_report=second.verifier_report,
             projection=second.projection,
             visibility_policy=second.policy,
             supersedes_publication=first.publication,
@@ -948,7 +898,6 @@ def test_outbox_and_delivery_attempt_reject_modified_children() -> None:
                 ),
             ),
             local_report=context.local_report,
-            verifier_report=context.verifier_report,
             visibility_policy=context.policy,
             supersedes_publication=None,
             publication=context.publication,

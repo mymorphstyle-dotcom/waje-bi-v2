@@ -157,6 +157,33 @@ def test_value_error_from_typed_validator_is_audited_as_invalid_llm_output() -> 
     assert '{"items":[]}' not in serialized
 
 
+def test_non_retryable_output_contract_failure_keeps_retryability() -> None:
+    client = _OutputClient()
+
+    def reject(_: Any) -> None:
+        raise LLMOutputError(
+            "narrative_output_contract_invalid",
+            retryable=False,
+        )
+
+    with pytest.raises(
+        LLMOutputError,
+        match="^narrative_output_contract_invalid$",
+    ) as captured:
+        client.invoke_json(
+            task="provider_boundary_test",
+            prompt_version="test.v1",
+            messages=({"role": "user", "content": "{}"},),
+            required_keys=("items",),
+            output_validator=reject,
+        )
+
+    assert captured.value.retryable is False
+    assert captured.value.audit["failure_code"] == (
+        "narrative_output_contract_invalid"
+    )
+
+
 def test_success_audit_keeps_full_input_and_output_replay_provenance() -> None:
     result = _OutputClient().invoke_json(
         task="provider_boundary_test",
@@ -249,6 +276,8 @@ def test_provider_failure_audit_exposes_safe_diagnostics_without_raw_error() -> 
             "attempt": 1,
             "failure_code": "provider_request_rejected",
             "response_id": "",
+            "finish_reason": "",
+            "output_bytes": 0,
             "reasoning_content_present": False,
             "provider_error": expected,
         }
@@ -262,6 +291,8 @@ def test_provider_failure_audit_exposes_safe_diagnostics_without_raw_error() -> 
     assert captured.value.audit["attempt_count"] == 1
     assert captured.value.audit["duration_ms"] >= 0
     assert captured.value.audit["usage"] == {}
+    assert captured.value.audit["finish_reason"] == ""
+    assert captured.value.audit["output_bytes"] == 0
     assert captured.value.audit["input_message_count"] == 1
     assert captured.value.audit["input_bytes"] > 0
     assert len(captured.value.audit["input_hash"]) == 64

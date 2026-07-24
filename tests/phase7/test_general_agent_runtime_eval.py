@@ -221,6 +221,43 @@ def test_decision_review_requires_actionability_and_stays_advisory() -> None:
         inspection={"selection": {}, "toolCalls": [], "tasks": []},
         tasks_before=0,
     ) == []
+    assert _evaluate(
+        expected={"maximumDurationSeconds": 20},
+        result=result,
+        inspection={"selection": {}, "toolCalls": [], "tasks": []},
+        tasks_before=0,
+        duration_seconds=20.001,
+    ) == ["latency_target_exceeded"]
+    assert _evaluate(
+        expected={"maximumDurationSeconds": 20},
+        result=result,
+        inspection={"selection": {}, "toolCalls": [], "tasks": []},
+        tasks_before=0,
+        duration_seconds=20,
+    ) == []
+    assert _evaluate(
+        expected={"maximumToolCallCount": 1},
+        result=result,
+        inspection={
+            "selection": {},
+            "toolCalls": [
+                "inspect_analysis_artifact",
+                "inspect_analysis_artifact",
+            ],
+            "tasks": [],
+        },
+        tasks_before=0,
+    ) == ["tool_call_count_exceeded"]
+
+
+def test_p8_live_follow_ups_require_one_bound_artifact_read() -> None:
+    cases = _load_cases(Path("evals/general_agent_runtime/p8-cases.jsonl"))
+    live = next(
+        case for case in cases if case["execution"]["adapter"] == "agent_live"
+    )
+
+    for turn in live["turns"][1:]:
+        assert turn["expected"]["maximumToolCallCount"] == 1
 
 
 def test_standard_pack_rejects_critical_live_repeat_drift() -> None:

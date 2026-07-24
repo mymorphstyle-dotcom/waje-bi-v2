@@ -171,6 +171,7 @@ def _analysis_action_binding() -> AgentTurnActionBinding:
         selected_tools=("run_bi_analysis",),
         initial_action="call_tool",
         required_tool_name="run_bi_analysis",
+        required_tool_arguments={"business_question": "分析付费金额变化。"},
         material_decision_topics=(),
     )
 

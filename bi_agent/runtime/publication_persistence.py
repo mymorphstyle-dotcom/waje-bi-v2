@@ -16,6 +16,7 @@ from bi_agent.runtime.narrative_authority import (
     RestrictedProviderResponse,
 )
 from bi_agent.runtime.narrative_workflow import (
+    NarrativeQualityAuditResult,
     NarrativeWorkflowResult,
 )
 from bi_agent.runtime.narrative_material_projection import (
@@ -77,6 +78,14 @@ class PublicationPersistenceResult:
     publication_state: str
     status: str
     lifecycle_state_digest: str
+
+
+@dataclass(frozen=True)
+class NarrativeQualityAuditPersistenceResult:
+    audit_result_ref: str
+    verifier_report_ref: str
+    audit_status: str
+    status: str
 
 
 @dataclass(frozen=True)
@@ -1018,12 +1027,10 @@ def _publication_records(
             content_digest=replayed.content_digest,
         )
 
-    for writer, narrative, local_report, attempt, verifier_report in zip(
+    for writer, narrative, local_report in zip(
         narrative_workflow.writer_attempts,
         narrative_workflow.narratives,
         narrative_workflow.local_reports,
-        narrative_workflow.verification_attempts,
-        narrative_workflow.verifier_reports,
         strict=True,
     ):
         record(
@@ -1123,51 +1130,6 @@ def _publication_records(
                 content_digest=issue.content_digest,
             )
             scoped_conflict("local_report_ref", "issue_ref")
-        record(
-            "block_verification_attempts",
-            "verification_attempt_ref",
-            attempt.verification_attempt_ref,
-            attempt.to_dict(),
-            narrative_id=attempt.narrative_id,
-            narrative_digest=attempt.narrative_digest,
-            local_report_ref=attempt.local_report_ref,
-            local_report_digest=attempt.local_report_digest,
-            attempt_id=attempt.attempt_id,
-            input_ref=attempt.input_ref,
-            input_digest=attempt.input_digest,
-            provider_ref=attempt.provider_ref,
-            model_ref=attempt.model_ref,
-            attempt_number=attempt.attempt_number,
-            provider_response_ref=attempt.provider_response_ref,
-            provider_response_digest=attempt.provider_response_digest,
-            content_digest=attempt.content_digest,
-        )
-        for veto in verifier_report.vetoes:
-            record(
-                "block_vetoes",
-                "veto_ref",
-                veto.veto_ref,
-                veto.to_dict(),
-                verification_attempt_ref=attempt.verification_attempt_ref,
-                narrative_id=veto.narrative_id,
-                block_id=veto.block_id,
-                reason_code=veto.reason_code,
-                content_digest=veto.content_digest,
-            )
-        record(
-            "block_verification_reports",
-            "verifier_report_ref",
-            verifier_report.verifier_report_ref,
-            verifier_report.to_dict(),
-            verification_attempt_ref=verifier_report.verification_attempt_ref,
-            verification_attempt_digest=(verifier_report.verification_attempt_digest),
-            narrative_id=verifier_report.narrative_id,
-            narrative_digest=verifier_report.narrative_digest,
-            local_report_ref=verifier_report.local_report_ref,
-            local_report_digest=verifier_report.local_report_digest,
-            content_digest=verifier_report.content_digest,
-        )
-
     if publication_flow is not None:
         projection = publication_flow.projection
         publication = publication_flow.publication
@@ -1185,8 +1147,6 @@ def _publication_records(
             narrative_digest=projection.narrative_digest,
             local_report_ref=projection.local_report_ref,
             local_report_digest=projection.local_report_digest,
-            block_verifier_report_ref=projection.block_verifier_report_ref,
-            block_verifier_report_digest=(projection.block_verifier_report_digest),
             field_visibility_policy_ref=projection.field_visibility_policy_ref,
             field_visibility_policy_digest=(projection.field_visibility_policy_digest),
             recommendation_refs=projection.recommendation_refs,
@@ -1207,8 +1167,6 @@ def _publication_records(
             narrative_attempt_id=publication.narrative_attempt_id,
             local_report_ref=publication.local_report_ref,
             local_report_digest=publication.local_report_digest,
-            block_verifier_report_ref=publication.block_verifier_report_ref,
-            block_verifier_report_digest=(publication.block_verifier_report_digest),
             projection_id=publication.projection_id,
             projection_digest=publication.projection_digest,
             publication_digest=publication.publication_digest,
@@ -1256,6 +1214,209 @@ def _publication_records(
     elif customer_record is not None:
         raise PublicationPersistenceError("withheld_customer_payload_forbidden")
     return tuple(records)
+
+
+def _narrative_quality_audit_records(
+    *,
+    owner_ref: str,
+    run_attempt_id: str,
+    narrative_workflow: NarrativeWorkflowResult,
+    quality_audit: NarrativeQualityAuditResult,
+) -> tuple[_InsertRecord, ...]:
+    records: list[_InsertRecord] = []
+
+    def record(
+        table: str,
+        identity_column: str,
+        identity: str,
+        payload: Mapping[str, Any],
+        **columns: Any,
+    ) -> None:
+        records.append(
+            _InsertRecord(
+                table=table,
+                identity_column=identity_column,
+                columns={
+                    identity_column: identity,
+                    "owner_ref": owner_ref,
+                    "run_attempt_id": run_attempt_id,
+                    **columns,
+                    "payload": canonical_value(payload),
+                },
+                json_columns=frozenset({"payload"}),
+            )
+        )
+
+    for response in quality_audit.provider_responses:
+        replayed = RestrictedProviderResponse.from_dict(response.to_dict())
+        record(
+            "restricted_provider_responses",
+            "provider_response_ref",
+            replayed.response_ref,
+            replayed.to_dict(),
+            attempt_id=replayed.attempt_id,
+            purpose=replayed.purpose,
+            provider_ref=replayed.provider_ref,
+            model_ref=replayed.model_ref,
+            input_ref=replayed.input_ref,
+            input_digest=replayed.input_digest,
+            attempt_number=replayed.attempt_number,
+            raw_response_content=replayed.content,
+            content_digest=replayed.content_digest,
+        )
+    attempt = quality_audit.verification_attempt
+    if attempt is not None:
+        record(
+            "block_verification_attempts",
+            "verification_attempt_ref",
+            attempt.verification_attempt_ref,
+            attempt.to_dict(),
+            narrative_id=attempt.narrative_id,
+            narrative_digest=attempt.narrative_digest,
+            local_report_ref=attempt.local_report_ref,
+            local_report_digest=attempt.local_report_digest,
+            attempt_id=attempt.attempt_id,
+            input_ref=attempt.input_ref,
+            input_digest=attempt.input_digest,
+            provider_ref=attempt.provider_ref,
+            model_ref=attempt.model_ref,
+            attempt_number=attempt.attempt_number,
+            provider_response_ref=attempt.provider_response_ref,
+            provider_response_digest=attempt.provider_response_digest,
+            content_digest=attempt.content_digest,
+        )
+    report = quality_audit.verifier_report
+    for veto in report.vetoes:
+        if report.verification_attempt_ref is None:
+            raise PublicationPersistenceError(
+                "block_verifier_veto_without_attempt"
+            )
+        record(
+            "block_vetoes",
+            "veto_ref",
+            veto.veto_ref,
+            veto.to_dict(),
+            verification_attempt_ref=report.verification_attempt_ref,
+            narrative_id=veto.narrative_id,
+            block_id=veto.block_id,
+            reason_code=veto.reason_code,
+            content_digest=veto.content_digest,
+        )
+    record(
+        "block_verification_reports",
+        "verifier_report_ref",
+        report.verifier_report_ref,
+        report.to_dict(),
+        audit_status=report.audit_status,
+        verification_attempt_ref=report.verification_attempt_ref,
+        verification_attempt_digest=report.verification_attempt_digest,
+        narrative_id=report.narrative_id,
+        narrative_digest=report.narrative_digest,
+        local_report_ref=report.local_report_ref,
+        local_report_digest=report.local_report_digest,
+        failure_kind=report.failure_kind,
+        retryability=report.retryability,
+        technical_detail_ref=report.technical_detail_ref,
+        content_digest=report.content_digest,
+    )
+    audit_result_ref = (
+        "narrative-quality-audit-result:sha256:" + quality_audit.content_digest
+    )
+    record(
+        "narrative_quality_audit_results",
+        "audit_result_ref",
+        audit_result_ref,
+        quality_audit.to_dict(),
+        source_customer_publication_ref=(
+            quality_audit.source_customer_publication_ref
+        ),
+        narrative_workflow_ref=quality_audit.narrative_workflow_ref,
+        narrative_workflow_digest=quality_audit.narrative_workflow_digest,
+        call_input_ref=quality_audit.call_input_ref,
+        call_input_digest=quality_audit.call_input_digest,
+        verifier_report_ref=report.verifier_report_ref,
+        verifier_report_digest=report.content_digest,
+        audit_status=report.audit_status,
+        content_digest=quality_audit.content_digest,
+    )
+    if (
+        quality_audit.narrative_workflow_ref
+        != "narrative-workflow-result:sha256:" + narrative_workflow.content_digest
+        or quality_audit.narrative_workflow_digest
+        != narrative_workflow.content_digest
+    ):
+        raise PublicationPersistenceError(
+            "narrative_quality_audit_workflow_conflict"
+        )
+    return tuple(records)
+
+
+def persist_narrative_quality_audit(
+    connection: Any,
+    *,
+    owner_ref: str,
+    run_attempt_id: str,
+    narrative_workflow: NarrativeWorkflowResult,
+    quality_audit: NarrativeQualityAuditResult,
+) -> NarrativeQualityAuditPersistenceResult:
+    owner = _required_string(owner_ref, "narrative_quality_audit_owner_invalid")
+    run = _required_string(
+        run_attempt_id,
+        "narrative_quality_audit_run_attempt_invalid",
+    )
+    if type(narrative_workflow) is not NarrativeWorkflowResult:
+        raise PublicationPersistenceError(
+            "narrative_quality_audit_workflow_invalid"
+        )
+    try:
+        audit = NarrativeQualityAuditResult.from_dict(
+            quality_audit.to_dict(),
+            narrative_workflow=narrative_workflow,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise PublicationPersistenceError(
+            "narrative_quality_audit_result_invalid"
+        ) from exc
+    if audit != quality_audit:
+        raise PublicationPersistenceError(
+            "narrative_quality_audit_result_invalid"
+        )
+    records = _narrative_quality_audit_records(
+        owner_ref=owner,
+        run_attempt_id=run,
+        narrative_workflow=narrative_workflow,
+        quality_audit=audit,
+    )
+    try:
+        for record in records:
+            _insert_exact(connection, record)
+        connection.commit()
+    except PublicationPersistenceError:
+        connection.rollback()
+        raise
+    except Exception as exc:
+        connection.rollback()
+        if not isinstance(exc, (PublicationPersistenceBackendError, PsycopgError)):
+            raise
+        detail_digest = canonical_digest(
+            {
+                "run_attempt_id": run,
+                "narrative_workflow_ref": audit.narrative_workflow_ref,
+                "audit_result_digest": audit.content_digest,
+                "exception_type": type(exc).__name__,
+            }
+        )
+        raise PublicationPersistenceOperationalError(
+            technical_detail_ref="technical-detail:sha256:" + detail_digest
+        ) from exc
+    return NarrativeQualityAuditPersistenceResult(
+        audit_result_ref=(
+            "narrative-quality-audit-result:sha256:" + audit.content_digest
+        ),
+        verifier_report_ref=audit.verifier_report.verifier_report_ref,
+        audit_status=audit.verifier_report.audit_status,
+        status="persisted",
+    )
 
 
 def _compose_transition_record(

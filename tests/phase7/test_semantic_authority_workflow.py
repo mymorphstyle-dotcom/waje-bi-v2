@@ -373,6 +373,30 @@ def test_typed_recommendation_path_does_not_replay_complete_settlement(
     assert len(result.recommendations) == 1
 
 
+def test_verified_evidence_semantic_calls_disable_thinking() -> None:
+    execution = _execution(_ExecutionSpec("comparative_change", "observed"))
+    client = _FakeLLM(
+        (_accept_claims, _one_recommendation, _accept_recommendation)
+    )
+    client.supports_thinking_mode = True
+
+    result = run_semantic_authority_workflow(
+        execution,
+        authority_namespace=_namespace(execution),
+        llm_client=client,
+    )
+
+    assert len(result.recommendations) == 1
+    assert [
+        (call["task"], call["thinking"])
+        for call in client.calls
+    ] == [
+        ("semantic_authority_claim_verification", "disabled"),
+        ("semantic_authority_recommendation_proposal", "disabled"),
+        ("semantic_authority_recommendation_verification", "disabled"),
+    ]
+
+
 def _recommendation_with_semantics(
     call_input: Mapping[str, Any],
     *,
@@ -551,8 +575,15 @@ def test_recommendation_input_projects_typed_authorization_from_claim_ceiling() 
         llm_client=client,
     )
 
-    claim = client.calls[1]["call_input"]["payload"]["verified_claims"][0]
-    authorization = claim["recommendation_authorization"]
+    payload = client.calls[1]["call_input"]["payload"]
+    claim = payload["verified_claims"][0]
+    authorization_by_ref = {
+        item["recommendation_authorization_ref"]: item["authorization"]
+        for item in payload["recommendation_authorization_catalog"]
+    }
+    authorization = authorization_by_ref[
+        claim["recommendation_authorization_ref"]
+    ]
     assert {
         "action_domain": "business_operation",
         "action_stage": "experiment",
@@ -824,7 +855,7 @@ def test_claim_verification_projects_repeated_records_once_with_lossless_encodin
     assert serialized_call.count("segment-0") == 1
 
 
-def test_all_claim_bearing_semantic_calls_share_one_lossless_evidence_catalog() -> None:
+def test_recommendation_proposal_reuses_verified_claim_graph_without_evidence_replay() -> None:
     members = [
         {
             "member": f"segment-{index}",
@@ -858,7 +889,7 @@ def test_all_claim_bearing_semantic_calls_share_one_lossless_evidence_catalog() 
         (2, "supporting_claims", "decision"),
     ):
         assert client.calls[call_index]["prompt_version"] == (
-            "single-authority-phase04.v9"
+            "single-authority-phase04.v13"
         )
         assert output_key in client.calls[call_index]["messages"][0]["content"]
         payload = client.calls[call_index]["call_input"]["payload"]
@@ -867,11 +898,29 @@ def test_all_claim_bearing_semantic_calls_share_one_lossless_evidence_catalog() 
         assert "evidence_observations" not in json.dumps(
             payload[claims_field], ensure_ascii=False
         )
-        evidence = payload["aggregate_evidence"][0]
-        assert (
-            _decode_semantic_projection(evidence["observation_facts"]["value"])
-            == result.projection.to_dict()["aggregate_evidence"][0]["observation_facts"]
-        )
+        if call_index == 1:
+            assert "aggregate_evidence" not in payload
+            evidence = payload["verified_evidence_context"][0]
+            assert set(evidence) == {
+                "evidence_entry_ref",
+                "evidence_kind",
+                "dimension_path",
+                "window_refs",
+                "limitation_refs",
+                "observation_facts",
+            }
+            claim = payload[claims_field][0]
+            assert "content_digest" not in claim
+            assert "factual_payload_digest" not in claim
+            assert "support_sources" not in claim
+        else:
+            evidence = payload["aggregate_evidence"][0]
+            assert (
+                _decode_semantic_projection(evidence["observation_facts"]["value"])
+                == result.projection.to_dict()["aggregate_evidence"][0][
+                    "observation_facts"
+                ]
+            )
 
 
 def test_semantic_projection_round_trip_preserves_empty_records_and_reserved_tags() -> (
@@ -905,23 +954,15 @@ def test_candidate_claim_is_one_typed_proposal_call_bound_to_known_refs() -> Non
     def propose(call_input: Mapping[str, Any]) -> Mapping[str, Any]:
         projection = call_input["payload"]
         obligation = projection["obligations"][0]
-        evidence = projection["aggregate_evidence"][0]
         return {
             "candidate_claim_proposals": [
                 {
-                    "proposal_item_ref": "proposal-item:merchant-mix",
                     "obligation_id": obligation["obligation_id"],
                     "subject": "Merchant mix is a candidate mechanism.",
                     "factual_payload": {
                         "candidate": "merchant_mix",
                         "interpretation": "Candidate only",
                     },
-                    "evidence_support": [
-                        {
-                            "evidence_entry_ref": evidence["evidence_entry_ref"],
-                            "source_claim_kind": "candidate_mechanism",
-                        }
-                    ],
                     "assumption_refs": ["assumption:accepted"],
                     "limitation_refs": ["limitation:aggregate"],
                 }
@@ -929,6 +970,7 @@ def test_candidate_claim_is_one_typed_proposal_call_bound_to_known_refs() -> Non
         }
 
     client = _FakeLLM((propose, _accept_claims, _no_recommendations))
+    client.supports_thinking_mode = True
     result = run_semantic_authority_workflow(
         execution,
         authority_namespace=_namespace(execution),
@@ -943,11 +985,23 @@ def test_candidate_claim_is_one_typed_proposal_call_bound_to_known_refs() -> Non
         "recommendation_proposal",
     ]
     assert "candidate_claim_proposals" in client.calls[0]["messages"][0]["content"]
+    assert client.calls[0]["thinking"] == "disabled"
     assert (
         "factual_payload is a non-empty JSON object"
         in (client.calls[0]["messages"][0]["content"])
     )
-    assert client.calls[0]["prompt_version"] == "single-authority-phase04.v9"
+    assert client.calls[0]["prompt_version"] == "single-authority-phase04.v13"
+    assert set(client.calls[0]["call_input"]["payload"]) == {
+        "obligations",
+        "aggregate_evidence",
+        "assumption_refs",
+        "limitation_refs",
+    }
+    assert len(client.calls[0]["call_input"]["payload"]["obligations"]) == 1
+    assert len(client.calls[0]["call_input"]["payload"]["aggregate_evidence"]) == 1
+    assert result.candidate_proposals[0].proposal_item_ref.startswith(
+        "candidate-proposal-item:sha256:"
+    )
     candidate_evidence = client.calls[0]["call_input"]["payload"]["aggregate_evidence"][
         0
     ]
@@ -982,7 +1036,7 @@ def test_zero_candidate_proposals_do_not_trigger_a_local_claim_fallback() -> Non
     assert result.replay() == result
 
 
-def test_unknown_candidate_evidence_ref_is_rejected_by_the_typed_validator() -> None:
+def test_candidate_provider_cannot_override_runtime_evidence_binding() -> None:
     execution = _execution(
         _ExecutionSpec(
             "candidate_mechanism",
@@ -997,7 +1051,6 @@ def test_unknown_candidate_evidence_ref_is_rejected_by_the_typed_validator() -> 
         return {
             "candidate_claim_proposals": [
                 {
-                    "proposal_item_ref": "proposal-item:unknown-evidence",
                     "obligation_id": obligation["obligation_id"],
                     "subject": "Unknown evidence candidate.",
                     "factual_payload": {"candidate": "unknown"},
@@ -1015,7 +1068,7 @@ def test_unknown_candidate_evidence_ref_is_rejected_by_the_typed_validator() -> 
 
     with pytest.raises(
         SemanticAuthorityWorkflowError,
-        match="candidate_claim_output_evidence_ref_unknown",
+        match="candidate_claim_output_item_shape_invalid",
     ):
         run_semantic_authority_workflow(
             execution,
@@ -1186,7 +1239,7 @@ def test_claim_verifier_allows_reasoned_veto_without_borrowed_limitation() -> No
 def test_claim_verification_prompt_is_class_relative() -> None:
     prompt = semantic_workflow._PROMPTS["claim_verification"]
 
-    assert semantic_workflow._SEMANTIC_PROMPT_VERSION == "single-authority-phase04.v9"
+    assert semantic_workflow._SEMANTIC_PROMPT_VERSION == "single-authority-phase04.v13"
     assert "declared claim_class and publication_ceiling" in prompt
     assert "success_policy" in prompt
     assert "required_claim_strength" in prompt

@@ -26,19 +26,12 @@ class PublicationFlowError(ValueError):
     pass
 
 
-_WRITER_CONTRACT_CUSTOMER_WARNING = (
-    "部分分析要求的表达仍需人工复核，当前内容可作为业务判断参考。"
-)
-
-
 def _customer_warnings(
     narrative_workflow: NarrativeWorkflowResult,
     warnings: Sequence[str],
 ) -> tuple[str, ...]:
-    combined = list(warnings)
-    if narrative_workflow.completion_repair_status == "exhausted":
-        combined.append(_WRITER_CONTRACT_CUSTOMER_WARNING)
-    return tuple(dict.fromkeys(combined))
+    del narrative_workflow
+    return tuple(dict.fromkeys(warnings))
 
 
 def _strict_mapping(
@@ -215,11 +208,8 @@ class PublicationFlowResult:
     ) -> "PublicationFlowResult":
         authority_bundle = context.authority_bundle
         narrative_result = context.narrative_workflow
-        narrative = narrative_result.final_accepted_narrative
-        if narrative is None:
-            raise PublicationFlowError("publication_flow_narrative_not_publishable")
+        narrative = narrative_result.delivery_narrative
         local_report = narrative_result.final_local_report
-        verifier_report = narrative_result.projection_ready_verifier_report
         safety_excluded = {
             finding.block_id for finding in local_report.sensitive_output_findings
         }
@@ -233,7 +223,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
             display_order=display_order,
             customer_term_labels=customer_term_labels,
@@ -245,7 +234,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
         )
         publication = PublicationRevision.create(
@@ -253,7 +241,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             projection=projection,
             visibility_policy=narrative_result.visibility_policy,
             revision=(
@@ -269,7 +256,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
             supersedes_publication=supersedes_publication,
             publication=publication,
@@ -377,18 +363,14 @@ class PublicationFlowResult:
             raise PublicationFlowError("publication_flow_children_invalid")
         authority_bundle = context.authority_bundle
         narrative_result = context.narrative_workflow
-        narrative = narrative_result.final_accepted_narrative
-        if narrative is None:
-            raise PublicationFlowError("publication_flow_narrative_not_publishable")
+        narrative = narrative_result.delivery_narrative
         local_report = narrative_result.final_local_report
-        verifier_report = narrative_result.projection_ready_verifier_report
         projection = PublicationProjection.from_dict(
             raw_projection,
             authority_bundle=authority_bundle,
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
         )
         publication = PublicationRevision.from_dict(
@@ -397,7 +379,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             projection=projection,
             visibility_policy=narrative_result.visibility_policy,
             supersedes_publication=supersedes_publication,
@@ -410,7 +391,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
             supersedes_publication=supersedes_publication,
         )
@@ -419,7 +399,6 @@ class PublicationFlowResult:
             material_projection=narrative_result.material_projection,
             narrative=narrative,
             local_report=local_report,
-            verifier_report=verifier_report,
             visibility_policy=narrative_result.visibility_policy,
         )
         expected = cls._assemble_validated(

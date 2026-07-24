@@ -47,9 +47,13 @@ class LLMOutputError(RuntimeError):
         self,
         message: str,
         *,
+        retryable: bool = True,
         audit: Mapping[str, Any] | None = None,
     ):
+        if type(retryable) is not bool:
+            raise ValueError("llm_output_failure_retryability_invalid")
         super().__init__(message)
+        self.retryable = retryable
         self.audit = dict(audit or {})
 
 
@@ -240,6 +244,8 @@ class OpenAICompatibleLLMClient:
                 "attempt": 1,
                 "failure_code": failure_code,
                 "response_id": str(response_payload.get("response_id") or ""),
+                "finish_reason": str(response_payload.get("finish_reason") or ""),
+                "output_bytes": len(content.encode("utf-8")),
                 "reasoning_content_present": bool(
                     response_payload.get("reasoning_content_present", False)
                 ),
@@ -272,7 +278,11 @@ class OpenAICompatibleLLMClient:
                 attempt_failures=(attempt_failure,),
             )
             if isinstance(exc, LLMOutputError):
-                raise LLMOutputError(str(exc), audit=audit) from exc
+                raise LLMOutputError(
+                    str(exc),
+                    retryable=exc.retryable,
+                    audit=audit,
+                ) from exc
             if isinstance(exc, LLMProviderError):
                 raise LLMProviderError(
                     kind=exc.kind,
@@ -392,7 +402,9 @@ def llm_failure_code(exc: Exception) -> str:
 
 
 def llm_failure_is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (LLMOutputError, LLMTimeoutError)):
+    if isinstance(exc, LLMOutputError):
+        return exc.retryable
+    if isinstance(exc, LLMTimeoutError):
         return True
     return isinstance(exc, LLMProviderError) and exc.retryability == "retryable"
 
@@ -426,6 +438,7 @@ def _failed_llm_audit(
         ),
         "prompt_version": prompt_version,
         "response_id": str(response_payload.get("response_id") or ""),
+        "finish_reason": str(response_payload.get("finish_reason") or ""),
         "required_keys": list(required_keys),
         "started_at": started_at,
         "finished_at": _utc_now(),
@@ -436,6 +449,9 @@ def _failed_llm_audit(
         "input_message_count": len(messages),
         "base_url_hash": _hash_text(base_url) if base_url else "",
         "usage": dict(response_payload.get("usage") or {}),
+        "output_bytes": len(
+            str(response_payload.get("content") or "").encode("utf-8")
+        ),
         "status": "failed",
         "failure_code": failure_code,
         "attempt_failures": [dict(item) for item in attempt_failures],

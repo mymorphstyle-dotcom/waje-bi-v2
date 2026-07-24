@@ -96,21 +96,16 @@ class _NarrativeLLM:
                     {
                         "role": "executive_answer",
                         "text": "Accepted executive answer statement.",
-                        "claim_handles": [claim["claim_handle"]],
-                        "recommendation_handles": (
+                        "c": [claim["claim_handle"]],
+                        "r": (
                             [recommendations[0]["recommendation_handle"]]
                             if recommendations
                             else []
                         ),
-                        "limitation_handles": list(claim["limitation_handles"]),
-                        "material_fact_bindings": [
-                            {
-                                "claim_handle": claim["claim_handle"],
-                                "fact_handle": fact["fact_handle"],
-                            }
-                        ],
-                        "statement_role": "business_finding",
-                        "required": True,
+                        "l": list(claim["limitation_handles"]),
+                        "f": [[claim["claim_handle"], fact["fact_handle"]]],
+                        "s": "business_finding",
+                        "q": True,
                     }
                 ]
             }
@@ -973,6 +968,17 @@ def test_delivery_continuation_skips_reload_and_public_rematerialization(
 
     assert result.status == "completed"
     assert result.customer_payload == fixture.flow.customer_payload
+    assert (
+        workflow.validate_in_process_post_execution_workflow_result(result)
+        is result
+    )
+    with pytest.raises(
+        workflow.PostExecutionWorkflowError,
+        match="^post_execution_result_integrity_invalid$",
+    ):
+        workflow.validate_in_process_post_execution_workflow_result(
+            replace(result, publication_ref="publication:tampered")
+        )
     assert no_llm.calls == 0
 
 

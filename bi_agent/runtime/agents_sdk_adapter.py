@@ -6,11 +6,14 @@ import inspect
 import json
 import logging
 import threading
-from typing import Any, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from agents import Agent, FunctionTool, RunConfig, Runner
 from agents.agent import ToolsToFinalOutputResult
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
+from agents.models.interface import Model, ModelResponse
+from agents.usage import Usage
+from openai.types.responses import ResponseFunctionToolCall
 from pydantic import BaseModel, ValidationError
 
 from bi_agent.runtime.agent_sdk_contracts import (
@@ -23,6 +26,7 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentStreamEvent,
     WajeAgentTool,
     WajeAgentToolCall,
+    WajePreboundToolCall,
 )
 from bi_agent.runtime.agents_sdk_trace import (
     install_waje_trace_processor,
@@ -56,14 +60,103 @@ _SDK_LOG_REDACTION_LOCK = threading.Lock()
 _SDK_LOG_REDACTION_FILTER: _WajeSdkLogRedactionFilter | None = None
 
 
+class _PreboundToolCallModel(Model):
+    """Emit one WAJE-bound read-only tool call before the real provider request."""
+
+    def __init__(
+        self,
+        *,
+        delegate: Model,
+        tool_call: WajePreboundToolCall,
+    ) -> None:
+        self._delegate = delegate
+        self._tool_call = tool_call
+        self._emitted = False
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        if not self._emitted:
+            self._emitted = True
+            return ModelResponse(
+                output=[
+                    ResponseFunctionToolCall(
+                        arguments=json.dumps(
+                            dict(self._tool_call.arguments),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        call_id=self._tool_call.call_id,
+                        name=self._tool_call.tool_name,
+                        type="function_call",
+                        status="completed",
+                    )
+                ],
+                usage=Usage(),
+                response_id=None,
+            )
+        if args:
+            if len(args) < 4:
+                raise AgentSdkAdapterError("agent_prebound_model_call_invalid")
+            delegated_args = list(args)
+            delegated_args[2] = replace(
+                delegated_args[2],
+                tool_choice=None,
+                parallel_tool_calls=None,
+            )
+            delegated_args[3] = []
+            return await self._delegate.get_response(
+                *delegated_args,
+                **kwargs,
+            )
+        settings = kwargs.get("model_settings")
+        if settings is None:
+            raise AgentSdkAdapterError("agent_prebound_model_call_invalid")
+        delegated_kwargs = dict(kwargs)
+        delegated_kwargs["model_settings"] = replace(
+            settings,
+            tool_choice=None,
+            parallel_tool_calls=None,
+        )
+        delegated_kwargs["tools"] = []
+        return await self._delegate.get_response(**delegated_kwargs)
+
+    def stream_response(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        if not self._emitted:
+            raise AgentSdkAdapterError("agent_prebound_streaming_unsupported")
+        return self._delegate.stream_response(*args, **kwargs)
+
+
+def _typed_causal_error(error: Exception) -> Exception:
+    """Recover WAJE-owned typed failures wrapped by the SDK run loop."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (AgentSdkAdapterError, AgentSessionError, LLMProviderError),
+        ):
+            return current
+        current = current.__cause__ or current.__context__
+    return error
+
+
 def _mapped_sdk_error(error: Exception) -> Exception:
-    if isinstance(error, AgentSessionError):
+    typed = _typed_causal_error(error)
+    if isinstance(typed, AgentSdkAdapterError):
+        return typed
+    if isinstance(typed, AgentSessionError):
         return AgentSdkAdapterError(
             "agent_session_persistence_failed",
             retryability="retryable",
         )
-    if isinstance(error, LLMProviderError):
-        return error
+    if isinstance(typed, LLMProviderError):
+        return typed
     if isinstance(error, MaxTurnsExceeded):
         return AgentSdkAdapterError(
             "agent_model_turn_limit_exceeded",
@@ -132,6 +225,8 @@ class WajeAgentsSdkAdapter:
         self,
         request: WajeAgentRunRequest,
     ) -> WajeAgentRunResult:
+        if request.prebound_tool_call is not None:
+            raise AgentSdkAdapterError("agent_prebound_streaming_unsupported")
         agent, run_config = self._build_sdk_run(request)
         self._trace_processor.register_run(request.run_id, self._trace_sink)
         projected_events: list[WajeAgentStreamEvent] = []
@@ -193,9 +288,20 @@ class WajeAgentsSdkAdapter:
             if tool.execution_mode == "suspend_turn"
         ]
         model_name = self._provider.config.model
+        sdk_model: str | Model = model_name
+        if request.prebound_tool_call is not None:
+            sdk_model = _PreboundToolCallModel(
+                delegate=self._provider.get_model(model_name),
+                tool_call=request.prebound_tool_call,
+            )
         settings = self._provider.sdk_model_settings(
             structured_output=request.output_type is not None,
             initial_tool_choice=request.initial_tool_choice,
+            thinking=(
+                None
+                if request.thinking_mode == "provider_default"
+                else request.thinking_mode
+            ),
         )
         settings = replace(settings, tool_choice=request.initial_tool_choice)
         if suspending_tool_names:
@@ -220,7 +326,7 @@ class WajeAgentsSdkAdapter:
         agent = Agent(
             name=request.agent_name,
             instructions=instructions,
-            model=model_name,
+            model=sdk_model,
             model_settings=settings,
             tools=tools,
             output_type=request.output_type,
@@ -237,9 +343,20 @@ class WajeAgentsSdkAdapter:
             "provider": self._provider.config.provider,
             "model": model_name,
             "transport": self._provider.transport,
+            "thinking_mode": request.thinking_mode,
+            "prebound_tool_name": (
+                request.prebound_tool_call.tool_name
+                if request.prebound_tool_call is not None
+                else ""
+            ),
+            "provider_request_plan": (
+                "prebound_read_then_provider"
+                if request.prebound_tool_call is not None
+                else "provider_loop"
+            ),
         }
         run_config = RunConfig(
-            model=model_name,
+            model=sdk_model,
             model_provider=self._provider,
             model_settings=settings,
             tracing_disabled=False,
@@ -322,6 +439,17 @@ def _to_sdk_tool(tool: WajeAgentTool, *, event_sink: Any = None) -> FunctionTool
                     isinstance(value, AgentToolResult) and value.status == "failed"
                 ),
             )
+        if (
+            isinstance(value, AgentToolResult)
+            and value.status == "failed"
+            and tool.failure_recovery == "customer_summary"
+        ):
+            # A read-only tool with an explicit customer-safe recovery contract
+            # has already produced its terminal result. Returning it to the model
+            # invites repeated calls with the same unavailable reference and adds
+            # no new evidence. Abort the SDK loop after the result is durably
+            # recorded; AgentTurnRuntime projects the persisted summary.
+            raise AgentSdkAdapterError("agent_tool_terminal_failure")
         if isinstance(value, BaseModel):
             return _sdk_tool_output(value.model_dump(mode="json", by_alias=True))
         if isinstance(value, Mapping):

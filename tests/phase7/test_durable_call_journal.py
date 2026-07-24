@@ -367,6 +367,14 @@ def _reject_poison_output(output) -> None:
         raise LLMOutputError("planner_contract_rejected")
 
 
+def _reject_poison_output_without_retry(output) -> None:
+    if output.get("decision") == "poison":
+        raise LLMOutputError(
+            "narrative_contract_rejected",
+            retryable=False,
+        )
+
+
 def test_provider_client_replays_persisted_result_and_exposes_stage_attempt_refs():
     journal = InMemoryDurableCallJournal()
     provider = _Provider()
@@ -529,6 +537,68 @@ def test_wrapper_rejects_poison_before_acceptance_without_provider_validator_sup
     assert client.accepted_attempt_refs == (attempts[1].attempt_ref,)
 
 
+def test_wrapper_does_not_retry_non_retryable_output_contract_failure() -> None:
+    journal = InMemoryDurableCallJournal()
+    provider = _ProviderWithoutValidatorCapability()
+    messages = (
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "payload"},
+    )
+    input_payload = {
+        "task": "single_authority_narrative_writer",
+        "prompt_version": "test.v1",
+        "messages": messages,
+        "required_keys": ("decision",),
+        "output_validator_ref": (
+            f"{__name__}:_reject_poison_output_without_retry"
+        ),
+        "model_tier": "critical",
+        "thinking": None,
+    }
+    expected_spec = DurableCallSpec.create(
+        run_attempt_id="run-provider",
+        intent_revision_id="intent-provider",
+        plan_revision_id="plan-provider",
+        task_id=None,
+        stage_name="compose_claim_aware_narrative",
+        call_kind="narrative_provider",
+        operation_name="single_authority_narrative_writer",
+        input_ref="provider-call-input:sha256:" + canonical_digest(input_payload),
+        input_payload=input_payload,
+    )
+    client = DurableProviderClient(
+        provider,
+        journal=journal,
+        run_attempt_id="run-provider",
+        intent_revision_id="intent-provider",
+        plan_revision_id="plan-provider",
+        call_kind="narrative_provider",
+        task_id=None,
+        stage_name="compose_claim_aware_narrative",
+    )
+
+    with pytest.raises(
+        LLMOutputError,
+        match="^narrative_contract_rejected$",
+    ) as captured:
+        client.invoke_json(
+            task="single_authority_narrative_writer",
+            prompt_version="test.v1",
+            messages=messages,
+            required_keys=("decision",),
+            output_validator=_reject_poison_output_without_retry,
+            model_tier="critical",
+        )
+
+    attempts = journal.attempts_for_idempotency(
+        expected_spec.idempotency_key
+    )
+    assert captured.value.retryable is False
+    assert provider.calls == 1
+    assert len(attempts) == 1
+    assert journal.events_for_attempt(attempts[0])[-1].status == "failed"
+
+
 def test_unknown_provider_failure_terminalizes_once_without_retry():
     journal = InMemoryDurableCallJournal()
     provider = _UnknownFailureProvider()
@@ -612,6 +682,41 @@ def test_historical_acceptance_cannot_bind_after_scope_becomes_inactive():
             run_attempt_id="run-durable-call",
             transition_attempt_id="transition-after-cancellation",
             stage_name="settle_claim_authority",
+        )
+
+
+def test_exact_stage_binding_replay_survives_later_scope_supersession():
+    scope_active = Event()
+    scope_active.set()
+    journal = InMemoryDurableCallJournal(
+        active_scope_validator=lambda _spec: scope_active.is_set()
+    )
+    claim = journal.claim(_spec())
+    accepted = journal.succeed(claim.attempt, {"output": {"ok": True}})
+    attempt_ref = accepted.acceptance.accepted_attempt_ref
+
+    bound = journal.bind_stage(
+        run_attempt_id="run-durable-call",
+        transition_attempt_id="transition-before-supersession",
+        stage_name="settle_claim_authority",
+        attempt_refs=(attempt_ref,),
+    )
+    scope_active.clear()
+
+    replayed = journal.bind_stage(
+        run_attempt_id="run-durable-call",
+        transition_attempt_id="transition-before-supersession",
+        stage_name="settle_claim_authority",
+        attempt_refs=(attempt_ref,),
+    )
+    assert replayed == bound == (attempt_ref,)
+
+    with pytest.raises(DurableCallJournalError, match="call_scope_not_active"):
+        journal.bind_stage(
+            run_attempt_id="run-durable-call",
+            transition_attempt_id="new-transition-after-supersession",
+            stage_name="settle_claim_authority",
+            attempt_refs=(attempt_ref,),
         )
 
 

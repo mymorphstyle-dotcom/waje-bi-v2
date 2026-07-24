@@ -835,15 +835,18 @@ class InMemoryDurableCallJournal:
             }
             if set(refs) - accepted_refs:
                 raise DurableCallJournalError("stage_attempt_not_accepted")
-            for ref in refs:
-                self._validate_active_scope(self._attempts[ref].spec)
             if any(self._attempts[ref].spec.stage_name != stage for ref in refs):
                 raise DurableCallJournalError("stage_attempt_scope_invalid")
             key = (run_id, transition_id, stage)
-            existing = self._stage_bindings.setdefault(key, refs)
-            if existing != refs:
-                raise DurableCallJournalError("stage_binding_conflict")
-            return existing
+            existing = self._stage_bindings.get(key)
+            if existing is not None:
+                if existing != refs:
+                    raise DurableCallJournalError("stage_binding_conflict")
+                return existing
+            for ref in refs:
+                self._validate_active_scope(self._attempts[ref].spec)
+            self._stage_bindings[key] = refs
+            return refs
 
     def load_stage_attempt_refs(
         self,
@@ -1237,6 +1240,7 @@ class PostgresDurableCallJournal:
                     for item in accepted_rows
                 ):
                     raise DurableCallJournalError("stage_attempt_scope_invalid")
+                accepted_attempts = []
                 for item in accepted_rows:
                     accepted_attempt = DurableCallAttempt.from_dict(
                         _json_value(_field(item, "attempt_payload", 2))
@@ -1247,7 +1251,7 @@ class PostgresDurableCallJournal:
                         raise DurableCallJournalError(
                             "call_acceptance_integrity_invalid"
                         )
-                    self._validate_active_scope(accepted_attempt.spec)
+                    accepted_attempts.append(accepted_attempt)
                 attempt_set_digest = canonical_digest(refs)
                 seal_body = {
                     "run_attempt_id": run_id,
@@ -1292,6 +1296,8 @@ class PostgresDurableCallJournal:
                     if commit:
                         self.connection.commit()
                     return stored_refs
+                for accepted_attempt in accepted_attempts:
+                    self._validate_active_scope(accepted_attempt.spec)
                 seal_payload = {
                     **seal_body,
                     "stage_seal_ref": seal_ref,
@@ -1899,6 +1905,11 @@ class DurableProviderClient:
                         failure_code = str(exc).strip() or "llm_output_contract_invalid"
                         raise LLMOutputError(
                             failure_code,
+                            retryable=(
+                                exc.retryable
+                                if isinstance(exc, LLMOutputError)
+                                else True
+                            ),
                             audit=_provider_failure_journal_audit(
                                 audit,
                                 failure_code=failure_code,
@@ -2083,6 +2094,7 @@ def _compact_provider_failure_audit(raw_audit: Any) -> dict[str, Any]:
         "reasoning_content_present",
         "prompt_version",
         "response_id",
+        "finish_reason",
         "required_keys",
         "started_at",
         "finished_at",
@@ -2091,6 +2103,7 @@ def _compact_provider_failure_audit(raw_audit: Any) -> dict[str, Any]:
         "input_hash",
         "input_bytes",
         "input_message_count",
+        "output_bytes",
         "base_url_hash",
         "usage",
         "status",
@@ -2146,6 +2159,8 @@ def _compact_provider_attempt_failure(
         "attempt",
         "failure_code",
         "response_id",
+        "finish_reason",
+        "output_bytes",
         "reasoning_content_present",
         "raw_response_digest",
         "raw_response_bytes",

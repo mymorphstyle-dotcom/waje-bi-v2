@@ -61,7 +61,7 @@ from bi_agent.runtime.langgraph_workflow import (
 from bi_agent.runtime.llm_prompts import build_prompt
 from bi_agent.runtime.post_execution_workflow import (
     PostExecutionWorkflowResult,
-    validate_typed_post_execution_workflow_result,
+    validate_in_process_post_execution_workflow_result,
 )
 from bi_agent.runtime.publication_persistence import (
     DeliveryMessage,
@@ -127,6 +127,8 @@ def _record_analysis_performance_profile(
     thread_id: str,
     topic_id: str,
     checkpoint_events: Sequence[Mapping[str, Any]],
+    workflow_llm_calls: Sequence[Mapping[str, Any]] = (),
+    post_execution_result: PostExecutionWorkflowResult | None = None,
 ) -> None:
     if registry is None:
         return
@@ -143,6 +145,10 @@ def _record_analysis_performance_profile(
             checkpoint_events=checkpoint_events,
             policy=registry.analysis_performance_policy,
             capability_substages=capability_substages,
+            provider_call_audits=_provider_call_performance_audits(
+                workflow_llm_calls=workflow_llm_calls,
+                post_execution_result=post_execution_result,
+            ),
         )
         store.add_audit_event(
             "analysis_performance_profile_recorded",
@@ -169,6 +175,46 @@ def _record_analysis_performance_profile(
         except Exception:
             # Performance telemetry is audit-only and may not alter business execution.
             return
+
+
+def _provider_call_performance_audits(
+    *,
+    workflow_llm_calls: Sequence[Mapping[str, Any]],
+    post_execution_result: PostExecutionWorkflowResult | None,
+) -> tuple[dict[str, Any], ...]:
+    calls: list[dict[str, Any]] = []
+    for raw_audit in workflow_llm_calls:
+        if not isinstance(raw_audit, Mapping):
+            continue
+        task = raw_audit.get("task")
+        if not isinstance(task, str) or not task.strip():
+            continue
+        if task in {
+            "single_authority_intent",
+            "single_authority_clarification",
+        }:
+            stage = "intent"
+        elif task.startswith("single_authority_plan"):
+            stage = "plan"
+        else:
+            stage = "unclassified_provider"
+        calls.append({"stage": stage, "audit": dict(raw_audit)})
+    if post_execution_result is None:
+        return tuple(calls)
+    if type(post_execution_result) is not PostExecutionWorkflowResult:
+        raise TypeError("post_execution_result_invalid")
+    semantic = post_execution_result.semantic_authority_result
+    calls.extend(
+        {"stage": "claim_authority", "audit": dict(item.payload)}
+        for item in semantic.provider_audits
+    )
+    narrative = post_execution_result.narrative_workflow
+    if narrative is not None:
+        calls.extend(
+            {"stage": "narrative", "audit": dict(item.audit_payload)}
+            for item in narrative.provider_audits
+        )
+    return tuple(calls)
 
 
 class ConversationAgentCore:
@@ -463,6 +509,8 @@ class ConversationAgentCore:
             thread_id=thread_id,
             topic_id=turn.topic_id or "",
             checkpoint_events=tuple(result.checkpoint_events),
+            workflow_llm_calls=workflow_llm_calls,
+            post_execution_result=getattr(result, "post_execution_result", None),
         )
         if result.status == "waiting_for_clarification" and result.interaction_result:
             if result.interaction_result.get("schema_version") != (
@@ -778,6 +826,8 @@ class ConversationAgentCore:
             thread_id=thread_id,
             topic_id=topic_id,
             checkpoint_events=tuple(result.checkpoint_events),
+            workflow_llm_calls=workflow_llm_calls,
+            post_execution_result=getattr(result, "post_execution_result", None),
         )
         if result.status == "waiting_for_clarification":
             if (
@@ -1147,7 +1197,7 @@ def _validated_internal_post_execution_result(
     result: PostExecutionWorkflowResult,
 ) -> PostExecutionWorkflowResult:
     try:
-        return validate_typed_post_execution_workflow_result(result)
+        return validate_in_process_post_execution_workflow_result(result)
     except (AttributeError, TypeError, ValueError) as exc:
         raise EvidenceIntegrityError("post_execution_workflow_result_invalid") from exc
 

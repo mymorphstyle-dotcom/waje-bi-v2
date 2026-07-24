@@ -54,14 +54,14 @@ def _audit(**overrides: object) -> dict[str, object]:
 def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     schema, tables = _schema_contract()
 
-    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v13"
+    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v15"
     assert SOURCE_MIGRATION_ID == "single-authority-workflow.v7"
     assert SOURCE_MIGRATION_DIGEST == (
         "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
     )
-    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v12"
+    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v14"
     assert IN_PLACE_SOURCE_MIGRATION_DIGEST == (
-        "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3"
+        "7d361b82a893bc9747b3fdbb6c632e4e1305c964f8a62b9ef6615283897aba9c"
     )
     assert IN_PLACE_SOURCE_CONTRACTS == {
         (
@@ -85,6 +85,14 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
             "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3",
         ): {"agent_thread_summaries", "agent_generated_artifacts"},
         (
+            "single-authority-workflow.v12",
+            "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3",
+        ): set(),
+        (
+            "single-authority-workflow.v13",
+            "9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af",
+        ): {"narrative_quality_audit_results"},
+        (
             IN_PLACE_SOURCE_MIGRATION_ID,
             IN_PLACE_SOURCE_MIGRATION_DIGEST,
         ): set(),
@@ -92,13 +100,15 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     assert IN_PLACE_METADATA_BACKFILLS == {
         "conversation_messages",
         "investigation_threads",
+        "block_verification_reports",
     }
     assert IN_PLACE_ADDITIVE_TABLES == {
         "agent_thread_summaries",
         "agent_generated_artifacts",
+        "narrative_quality_audit_results",
     }
     assert len(SINGLE_AUTHORITY_MIGRATION_DIGEST) == 64
-    assert len(tables) == 73
+    assert len(tables) == 74
     for table in (
         "intent_revisions",
         "plan_revisions",
@@ -424,11 +434,12 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
         lambda _schema: frozenset(
             {
                 "run_dispatches",
-                "schema_migrations",
-                "agent_thread_summaries",
-                "agent_generated_artifacts",
-            }
-        ),
+                    "schema_migrations",
+                    "agent_thread_summaries",
+                    "agent_generated_artifacts",
+                    "narrative_quality_audit_results",
+                }
+            ),
     )
     monkeypatch.setattr(
         cutover_module,
@@ -441,16 +452,18 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
         lambda _connection: (
             {
                 "run_dispatches",
-                "schema_migrations",
-                "agent_thread_summaries",
-                "agent_generated_artifacts",
-            }
-            if connection.target_present
-            else {
+                    "schema_migrations",
+                    "agent_thread_summaries",
+                    "agent_generated_artifacts",
+                    "narrative_quality_audit_results",
+                }
+                if connection.target_present
+                else {
                 "run_dispatches",
                 "schema_migrations",
                 "agent_thread_summaries",
                 "agent_generated_artifacts",
+                "narrative_quality_audit_results",
             }
         ),
     )
@@ -507,6 +520,7 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
     assert result["business_row_counts"] == {
         "agent_generated_artifacts": 0,
         "agent_thread_summaries": 0,
+        "narrative_quality_audit_results": 0,
         "run_dispatches": 19,
     }
     assert connection.committed is True

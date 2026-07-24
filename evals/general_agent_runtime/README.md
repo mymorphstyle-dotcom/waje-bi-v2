@@ -75,12 +75,12 @@ unset OPENAI_API_KEY
 真实 DeepSeek case 使用同一命令并增加 `--adapter agent_live`、数据库 URL 和结果输出；
 回答完整度、深度、可读性及行动性继续进入 `human_advisory`，不改变首次 publication。
 
-## P7 回答完整性补全包
+## P7 回答完整性审计包
 
-P7 使用独立标准包验证 accepted obligation 的三层闭环：证据缺口走现有 `PlanPatch`，已封存材料
-的漏写走一次 additive narrative completion revision，增补失败继续交付首稿并附客户安全边界。
-追问还验证工具结果已持久化后的摘要恢复，以及工具选择模型暂时不可用时的完整 publication
-保全。质量 verifier 的主观发现继续只进入人工审阅：
+P7 使用独立标准包验证 accepted obligation 的证据闭环：执行期证据缺口走现有 `PlanPatch`，
+已封存材料的表达完整性进入审计和人工复核，不触发 writer retry、自动补写、撤回或客户
+警告。追问还验证工具结果已持久化后的摘要恢复，以及工具选择模型暂时不可用时的完整
+publication 保全。质量 verifier 的主观发现只进入交付后的审计链：
 
 ```bash
 unset OPENAI_API_KEY
@@ -125,6 +125,32 @@ unset OPENAI_API_KEY
 `release` profile 中，`riskTier=critical` 的真实 DeepSeek case 固定执行三次；任何一次硬断言
 失败都会令该 case 失败。缺少 DeepSeek 配置、访问 `api.openai.com`、fixture 不完整、动作或
 工具不匹配、publication 未收敛、证据/数字越界都会令命令以非零状态退出。
+
+## P8 完整首答性能包
+
+P8 复用 P7 的支付终态历史失败问题，在隔离新线程同时检查完整性和现行性能合同。首答目标为
+480 秒，已发布材料追问目标为 20 秒；超时使 P8 eval 失败，线上 runtime 仍交付已经形成的
+安全 publication 并把 breach 写入 WAJE 审计。正常首答关键路径只运行 narrative writer；
+质量核验不随 publication 创建 `pending` 身份。客户交付完成后，独立审计调用可生成
+`completed` 或 `unavailable` 的结果并引用已交付 publication；它不改变首次 publication。
+已绑定的客户安全只读 artifact 工具通过 `agent-turn-action-binding.v2` 保存规范参数，SDK
+执行一次工具后只向 DeepSeek 发起一次不带工具 schema 的合成请求。两轮 live 追问都约束
+`maximumToolCallCount=1`，重复读取会令 P8 eval 失败，但不会撤销线上已交付内容。
+合法 fact 存在多个 claim owner 时，运行时按 accepted authority 顺序装配引用并保留模型原文；
+未知 claim/fact 仍是 provenance 合同错误。该规则不读取业务自由文本，也不承担回答质量判断。
+
+当前 P8 catalog 为 13 个 case：1 个真实 DeepSeek case 和 12 个 pytest case。最终真实报告
+`results/p8-final-live-r8.json` 记录首答 318.835 秒、两轮追问 11.175/9.518 秒、零
+Provider retry、DeepSeek 唯一出站和 OpenAI hosted request count 为 0；确定性报告
+`results/p8-final-deterministic-r5.json` 为 12/12 passed。
+
+```bash
+unset OPENAI_API_KEY
+.venv/bin/python -m evals.general_agent_runtime.run_local \
+  --cases evals/general_agent_runtime/p8-cases.jsonl \
+  --profile smoke \
+  --validate-only
+```
 
 ## 执行浏览器 case
 

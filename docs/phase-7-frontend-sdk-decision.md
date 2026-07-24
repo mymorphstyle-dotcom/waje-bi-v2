@@ -1,7 +1,7 @@
 # Phase 7 Frontend SDK Decision
 
 Date: 2026-07-08
-Rebased: 2026-07-18 on the accepted single-authority architecture
+Rebased: 2026-07-24 on the accepted single-authority architecture
 
 ## Decision
 
@@ -22,8 +22,9 @@ IntentRevision + DecisionLedger
 AuthorityContext + PlannerProposal + ProposalAdmissionRecord + PlanRevision
 CapabilityOutcome + EvidenceLedger
 ClaimGraph + sealed AuthorityBundle
-NarrativeDocument + block-verifier report + PublicationProjection
+NarrativeDocument + PublicationProjection
 delivery outbox
+post-delivery NarrativeQualityAuditResult
 ```
 
 The Gateway exposes fixed, customer-safe projections of the relevant records at

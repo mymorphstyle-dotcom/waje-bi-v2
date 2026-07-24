@@ -377,6 +377,24 @@ def _assert_claim_integrity(claim: ClaimRevision) -> None:
     )
 
 
+def _assert_public_fact_claim_closure(
+    fact: PublicFactDescriptor,
+    *,
+    claim: ClaimRevision,
+) -> None:
+    if type(fact) is not PublicFactDescriptor:
+        raise NarrativeAuthorityContractError("public_claim_facts_invalid")
+    fact.assert_integrity()
+    if (
+        fact.claim_ref != claim.claim_ref
+        or fact.claim_digest != claim.content_digest
+        or fact.source_material_ref not in claim.support_edge_refs
+    ):
+        raise NarrativeAuthorityContractError(
+            "public_fact_source_material_closure_invalid"
+        )
+
+
 def _assert_claim_key_integrity(claim_key: ClaimKey) -> None:
     if type(claim_key) is not ClaimKey:
         raise NarrativeAuthorityContractError("public_claim_key_closure_invalid")
@@ -857,6 +875,28 @@ class PublicFactDescriptor:
         source_material_ref: str,
     ) -> "PublicFactDescriptor":
         _assert_claim_integrity(claim)
+        return cls._create_for_validated_claim(
+            claim=claim,
+            public_name=public_name,
+            fact_kind=fact_kind,
+            value=value,
+            range_end=range_end,
+            unit=unit,
+            source_material_ref=source_material_ref,
+        )
+
+    @classmethod
+    def _create_for_validated_claim(
+        cls,
+        *,
+        claim: ClaimRevision,
+        public_name: str,
+        fact_kind: str,
+        value: Any,
+        range_end: Any,
+        unit: str | None,
+        source_material_ref: str,
+    ) -> "PublicFactDescriptor":
         if claim.status != "verified":
             raise NarrativeAuthorityContractError("public_fact_claim_invalid")
         normalized_value, normalized_end, normalized_unit = _normalize_fact_values(
@@ -900,8 +940,18 @@ class PublicFactDescriptor:
         *,
         claim: ClaimRevision,
     ) -> "PublicFactDescriptor":
+        _assert_claim_integrity(claim)
+        return cls._from_dict_for_validated_claim(payload, claim=claim)
+
+    @classmethod
+    def _from_dict_for_validated_claim(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        claim: ClaimRevision,
+    ) -> "PublicFactDescriptor":
         payload = _strict_shape(payload, cls, "public_fact_shape_invalid")
-        rebuilt = cls.create(
+        rebuilt = cls._create_for_validated_claim(
             claim=claim,
             public_name=payload["public_name"],
             fact_kind=payload["fact_kind"],
@@ -1437,7 +1487,7 @@ class PublicClaim:
         if any(fact.claim_ref != claim.claim_ref for fact in normalized_facts):
             raise NarrativeAuthorityContractError("public_claim_fact_closure_invalid")
         for fact in normalized_facts:
-            PublicFactDescriptor.from_dict(fact.to_dict(), claim=claim)
+            _assert_public_fact_claim_closure(fact, claim=claim)
         normalized_limitations = _typed_records(
             limitations,
             PublicLimitation,
@@ -1492,8 +1542,10 @@ class PublicClaim:
         raw_facts = payload.get("facts")
         if isinstance(raw_facts, (str, bytes)) or not isinstance(raw_facts, Sequence):
             raise NarrativeAuthorityContractError("public_claim_facts_invalid")
+        _assert_claim_integrity(claim)
         facts = tuple(
-            PublicFactDescriptor.from_dict(item, claim=claim) for item in raw_facts
+            PublicFactDescriptor._from_dict_for_validated_claim(item, claim=claim)
+            for item in raw_facts
         )
         try:
             limitations = tuple(
@@ -1628,12 +1680,14 @@ class PublicClaimPalette:
         if {item.claim_ref for item in normalized_facts} != claim_ref_set:
             raise NarrativeAuthorityContractError("public_palette_fact_closure_invalid")
         claims_by_ref = {item.claim_ref: item for item in normalized_claims}
+        forbidden_public_names = frozenset(visibility_policy.forbidden_fields)
         for fact in normalized_facts:
-            PublicFactDescriptor.from_dict(
-                fact.to_dict(),
+            _assert_public_fact_claim_closure(
+                fact,
                 claim=claims_by_ref[fact.claim_ref],
             )
-            visibility_policy.assert_public_name(fact.public_name)
+            if fact.public_name in forbidden_public_names:
+                raise NarrativeAuthorityContractError("public_fact_name_forbidden")
         normalized_limitations = _typed_records(
             public_limitations,
             PublicLimitation,
@@ -2651,19 +2705,44 @@ def _ranking_position_binding_gaps(
 def _internal_fact_name_exposure_refs(
     *,
     block: NarrativeBlock,
-    materials_by_handle: Mapping[str, Any],
+    refs_by_name: Mapping[str, tuple[str, ...]],
+    name_pattern: re.Pattern[str] | None,
 ) -> tuple[str, ...]:
     """Reject exact machine field names copied into customer prose."""
 
-    exposed: list[str] = []
+    if name_pattern is None:
+        return ()
+    exposed = {
+        ref
+        for match in name_pattern.finditer(block.text)
+        for ref in refs_by_name.get(match.group(0), ())
+    }
+    return tuple(sorted(exposed))
+
+
+def _internal_fact_name_index(
+    materials_by_handle: Mapping[str, Any],
+) -> tuple[dict[str, tuple[str, ...]], re.Pattern[str] | None]:
+    refs: dict[str, list[str]] = {}
     for material in materials_by_handle.values():
         for fact in material.facts:
-            if "_" not in fact.name:
-                continue
-            pattern = rf"(?<![A-Za-z0-9_]){re.escape(fact.name)}(?![A-Za-z0-9_])"
-            if re.search(pattern, block.text):
-                exposed.append(fact.projected_fact_ref)
-    return tuple(sorted(set(exposed)))
+            if "_" in fact.name:
+                refs.setdefault(fact.name, []).append(fact.projected_fact_ref)
+    normalized = {
+        name: tuple(sorted(set(values))) for name, values in refs.items()
+    }
+    if not normalized:
+        return normalized, None
+    alternatives = "|".join(
+        re.escape(name)
+        for name in sorted(normalized, key=lambda item: (-len(item), item))
+    )
+    return (
+        normalized,
+        re.compile(
+            rf"(?<![A-Za-z0-9_])(?:{alternatives})(?![A-Za-z0-9_])"
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -2749,6 +2828,9 @@ class BlockLocalValidationReport:
             item.material_handle: item
             for item in material_projection.evidence_materials
         }
+        internal_fact_refs_by_name, internal_fact_name_pattern = (
+            _internal_fact_name_index(materials_by_handle)
+        )
         for material in material_projection.evidence_materials:
             for fact in material.facts:
                 facts_by_handle[fact.fact_handle] = (
@@ -2864,7 +2946,8 @@ class BlockLocalValidationReport:
                 )
             exposed_fact_refs = _internal_fact_name_exposure_refs(
                 block=block,
-                materials_by_handle=materials_by_handle,
+                refs_by_name=internal_fact_refs_by_name,
+                name_pattern=internal_fact_name_pattern,
             )
             if exposed_fact_refs:
                 block_issues.append(
@@ -3173,18 +3256,47 @@ class BlockVeto:
 @dataclass(frozen=True)
 class BlockVerifierReport:
     verifier_report_ref: str
-    verification_attempt_ref: str
-    verification_attempt_digest: str
-    verification_attempt: BlockVerificationAttempt
+    audit_status: str
+    verification_attempt_ref: str | None
+    verification_attempt_digest: str | None
+    verification_attempt: BlockVerificationAttempt | None
     narrative_id: str
     narrative_digest: str
     local_report_ref: str
     local_report_digest: str
+    input_ref: str
+    input_digest: str
     evaluated_block_ids: tuple[str, ...]
     accepted_block_ids: tuple[str, ...]
     rejected_block_ids: tuple[str, ...]
     vetoes: tuple[BlockVeto, ...]
+    failure_kind: str | None
+    retryability: str | None
+    technical_detail_ref: str | None
     content_digest: str
+
+    @staticmethod
+    def _replay_sources(
+        *,
+        narrative: NarrativeDocument,
+        material_projection: "NarrativeMaterialProjection",
+        visibility_policy: PublicationFieldVisibilityPolicy,
+        local_report: BlockLocalValidationReport,
+    ) -> tuple[NarrativeDocument, BlockLocalValidationReport]:
+        if type(narrative) is not NarrativeDocument:
+            raise NarrativeAuthorityContractError("block_verifier_narrative_invalid")
+        replayed_narrative = NarrativeDocument.from_dict(narrative.to_dict())
+        if type(local_report) is not BlockLocalValidationReport:
+            raise NarrativeAuthorityContractError("block_verifier_local_report_invalid")
+        replayed_local = BlockLocalValidationReport.from_dict(
+            local_report.to_dict(),
+            narrative=replayed_narrative,
+            material_projection=material_projection,
+            visibility_policy=visibility_policy,
+        )
+        if replayed_local.narrative_id != replayed_narrative.narrative_id:
+            raise NarrativeAuthorityContractError("block_verifier_local_report_invalid")
+        return replayed_narrative, replayed_local
 
     @classmethod
     def create(
@@ -3198,19 +3310,12 @@ class BlockVerifierReport:
         accepted_block_ids: Sequence[str],
         vetoes: Sequence[BlockVeto],
     ) -> "BlockVerifierReport":
-        if type(narrative) is not NarrativeDocument:
-            raise NarrativeAuthorityContractError("block_verifier_narrative_invalid")
-        narrative = NarrativeDocument.from_dict(narrative.to_dict())
-        if type(local_report) is not BlockLocalValidationReport:
-            raise NarrativeAuthorityContractError("block_verifier_local_report_invalid")
-        local_report = BlockLocalValidationReport.from_dict(
-            local_report.to_dict(),
+        narrative, local_report = cls._replay_sources(
             narrative=narrative,
             material_projection=material_projection,
             visibility_policy=visibility_policy,
+            local_report=local_report,
         )
-        if local_report.narrative_id != narrative.narrative_id:
-            raise NarrativeAuthorityContractError("block_verifier_local_report_invalid")
         if type(verification_attempt) is not BlockVerificationAttempt:
             raise NarrativeAuthorityContractError(
                 "block_verifier_verification_attempt_invalid"
@@ -3270,6 +3375,7 @@ class BlockVerifierReport:
                     "block_verifier_veto_handle_closure_invalid"
                 )
         body = {
+            "audit_status": "completed",
             "verification_attempt_ref": attempt.verification_attempt_ref,
             "verification_attempt_digest": attempt.content_digest,
             "verification_attempt": attempt,
@@ -3277,10 +3383,95 @@ class BlockVerifierReport:
             "narrative_digest": narrative.content_digest,
             "local_report_ref": local_report.local_report_ref,
             "local_report_digest": local_report.content_digest,
+            "input_ref": attempt.input_ref,
+            "input_digest": attempt.input_digest,
             "evaluated_block_ids": evaluated,
             "accepted_block_ids": accepted,
             "rejected_block_ids": rejected,
             "vetoes": normalized_vetoes,
+            "failure_kind": None,
+            "retryability": None,
+            "technical_detail_ref": None,
+        }
+        digest = canonical_digest(body)
+        return cls(
+            verifier_report_ref="block-verifier-report:sha256:" + digest,
+            content_digest=digest,
+            **body,
+        )
+
+    @classmethod
+    def unavailable(
+        cls,
+        *,
+        narrative: NarrativeDocument,
+        material_projection: "NarrativeMaterialProjection",
+        visibility_policy: PublicationFieldVisibilityPolicy,
+        local_report: BlockLocalValidationReport,
+        input_ref: str,
+        input_digest: str,
+        failure_kind: str,
+        retryability: str,
+        technical_detail_ref: str,
+    ) -> "BlockVerifierReport":
+        narrative, local_report = cls._replay_sources(
+            narrative=narrative,
+            material_projection=material_projection,
+            visibility_policy=visibility_policy,
+            local_report=local_report,
+        )
+        normalized_input_ref = _required_string(
+            input_ref,
+            "block_verifier_input_ref_invalid",
+        )
+        if not normalized_input_ref.startswith("narrative-provider-input:sha256:"):
+            raise NarrativeAuthorityContractError("block_verifier_input_ref_invalid")
+        normalized_input_digest = _digest_string(
+            input_digest,
+            "block_verifier_input_digest_invalid",
+        )
+        normalized_failure_kind = _required_string(
+            failure_kind,
+            "block_verifier_failure_kind_invalid",
+        )
+        normalized_retryability = _required_string(
+            retryability,
+            "block_verifier_retryability_invalid",
+        )
+        if normalized_retryability not in {"retryable", "not_retryable"}:
+            raise NarrativeAuthorityContractError(
+                "block_verifier_retryability_invalid"
+            )
+        normalized_detail_ref = _required_string(
+            technical_detail_ref,
+            "block_verifier_technical_detail_ref_invalid",
+        )
+        detail_prefix = "technical-detail:sha256:"
+        if (
+            not normalized_detail_ref.startswith(detail_prefix)
+            or len(normalized_detail_ref.removeprefix(detail_prefix)) != 64
+        ):
+            raise NarrativeAuthorityContractError(
+                "block_verifier_technical_detail_ref_invalid"
+            )
+        body = {
+            "audit_status": "unavailable",
+            "verification_attempt_ref": None,
+            "verification_attempt_digest": None,
+            "verification_attempt": None,
+            "narrative_id": narrative.narrative_id,
+            "narrative_digest": narrative.content_digest,
+            "local_report_ref": local_report.local_report_ref,
+            "local_report_digest": local_report.content_digest,
+            "input_ref": normalized_input_ref,
+            "input_digest": normalized_input_digest,
+            "evaluated_block_ids": (),
+            "accepted_block_ids": (),
+            "rejected_block_ids": (),
+            "vetoes": (),
+            "failure_kind": normalized_failure_kind,
+            "retryability": normalized_retryability,
+            "technical_detail_ref": normalized_detail_ref,
         }
         digest = canonical_digest(body)
         return cls(
@@ -3302,25 +3493,46 @@ class BlockVerifierReport:
         payload = _strict_shape(payload, cls, "block_verifier_report_shape_invalid")
         raw_attempt = payload.get("verification_attempt")
         raw_vetoes = payload.get("vetoes")
-        if not isinstance(raw_attempt, Mapping):
-            raise NarrativeAuthorityContractError(
-                "block_verifier_verification_attempt_invalid"
-            )
         if isinstance(raw_vetoes, (str, bytes)) or not isinstance(raw_vetoes, Sequence):
             raise NarrativeAuthorityContractError("block_verifier_vetoes_invalid")
-        rebuilt = cls.create(
-            narrative=narrative,
-            material_projection=material_projection,
-            visibility_policy=visibility_policy,
-            local_report=local_report,
-            verification_attempt=BlockVerificationAttempt.from_dict(
-                raw_attempt,
+        if payload["audit_status"] == "completed":
+            if not isinstance(raw_attempt, Mapping):
+                raise NarrativeAuthorityContractError(
+                    "block_verifier_verification_attempt_invalid"
+                )
+            rebuilt = cls.create(
                 narrative=narrative,
+                material_projection=material_projection,
+                visibility_policy=visibility_policy,
                 local_report=local_report,
-            ),
-            accepted_block_ids=payload["accepted_block_ids"],
-            vetoes=tuple(BlockVeto.from_dict(item) for item in raw_vetoes),
-        )
+                verification_attempt=BlockVerificationAttempt.from_dict(
+                    raw_attempt,
+                    narrative=narrative,
+                    local_report=local_report,
+                ),
+                accepted_block_ids=payload["accepted_block_ids"],
+                vetoes=tuple(BlockVeto.from_dict(item) for item in raw_vetoes),
+            )
+        elif payload["audit_status"] == "unavailable":
+            if raw_attempt is not None or raw_vetoes:
+                raise NarrativeAuthorityContractError(
+                    "block_verifier_unavailable_shape_invalid"
+                )
+            rebuilt = cls.unavailable(
+                narrative=narrative,
+                material_projection=material_projection,
+                visibility_policy=visibility_policy,
+                local_report=local_report,
+                input_ref=payload["input_ref"],
+                input_digest=payload["input_digest"],
+                failure_kind=payload["failure_kind"],
+                retryability=payload["retryability"],
+                technical_detail_ref=payload["technical_detail_ref"],
+            )
+        else:
+            raise NarrativeAuthorityContractError(
+                "block_verifier_audit_status_invalid"
+            )
         if rebuilt.to_dict() != canonical_value(payload):
             raise NarrativeAuthorityContractError(
                 "block_verifier_report_integrity_invalid"
@@ -3331,17 +3543,21 @@ class BlockVerifierReport:
         return _plain(self)
 
     @property
-    def verifier_attempt_id(self) -> str:
+    def verifier_attempt_id(self) -> str | None:
+        if self.verification_attempt is None:
+            return None
         return self.verification_attempt.attempt_id
 
     @property
     def verifier_input_ref(self) -> str:
-        return self.verification_attempt.input_ref
+        return self.input_ref
 
     @property
     def verifier_input_digest(self) -> str:
-        return self.verification_attempt.input_digest
+        return self.input_digest
 
     @property
-    def raw_provider_response_ref(self) -> str:
+    def raw_provider_response_ref(self) -> str | None:
+        if self.verification_attempt is None:
+            return None
         return self.verification_attempt.provider_response_ref

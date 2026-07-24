@@ -73,6 +73,10 @@ def _revision(
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
         time_spec={"kind": "date", "target": target},
+        comparison_spec={
+            "kind": "decision_slot",
+            "slot_id": "comparison_baseline",
+        },
         direction_premise="user_hypothesis_positive",
         requested_factor_refs=(),
         requested_analysis_axes=("formula_tree", "dimension_screen", "time_context"),

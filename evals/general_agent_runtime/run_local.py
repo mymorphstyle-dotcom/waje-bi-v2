@@ -223,6 +223,13 @@ def _validate_turn(value: Any, line_number: int) -> None:
         or resolution.get("kind") != "recommended_option"
     ):
         raise ValueError(f"eval_case_turn_resolution_invalid:{line_number}")
+    maximum_tool_call_count = value["expected"].get("maximumToolCallCount")
+    if maximum_tool_call_count is not None and (
+        isinstance(maximum_tool_call_count, bool)
+        or not isinstance(maximum_tool_call_count, int)
+        or maximum_tool_call_count < 0
+    ):
+        raise ValueError(f"eval_case_tool_call_count_invalid:{line_number}")
 
 
 def _validate_advisory_review(
@@ -637,6 +644,7 @@ def _evaluate(
     result: Any,
     inspection: Mapping[str, Any],
     tasks_before: int,
+    duration_seconds: float | None = None,
 ) -> list[str]:
     failures: list[str] = []
     selection = inspection.get("selection") or {}
@@ -691,6 +699,12 @@ def _evaluate(
         failures.append("required_tool_not_allowed")
     if set(tool_calls) & set(expected.get("forbiddenTools") or []):
         failures.append("forbidden_tool_called")
+    maximum_tool_call_count = expected.get("maximumToolCallCount")
+    if (
+        maximum_tool_call_count is not None
+        and len(tool_calls) > int(maximum_tool_call_count)
+    ):
+        failures.append("tool_call_count_exceeded")
     if expected.get("customerState") and result.status != expected["customerState"]:
         failures.append("customer_state_mismatch")
     if expected.get("customerStateOneOf") and result.status not in expected["customerStateOneOf"]:
@@ -699,6 +713,13 @@ def _evaluate(
         failures.append("completion_kind_mismatch")
     if expected.get("completionKindOneOf") and completion_kind not in expected["completionKindOneOf"]:
         failures.append("completion_kind_not_allowed")
+    maximum_duration = expected.get("maximumDurationSeconds")
+    if (
+        maximum_duration is not None
+        and duration_seconds is not None
+        and duration_seconds > float(maximum_duration)
+    ):
+        failures.append("latency_target_exceeded")
     if expected.get("authorityRequired") and (
         admission is None or not admission.authority_refs
     ):
@@ -872,11 +893,13 @@ async def _run_agent_live_case(
             )
         inspection = _inspect_operation(thread_id, operation_id)
         inspections[turn_id] = inspection
+        duration_seconds = round(time.monotonic() - turn_started, 3)
         turn_failures = _evaluate(
             expected=turn["expected"],
             result=result,
             inspection=inspection,
             tasks_before=len(before["tasks"]),
+            duration_seconds=duration_seconds,
         )
         failures.extend(f"{turn_id}:{failure}" for failure in turn_failures)
         projection = result.customer_projection()
@@ -888,7 +911,7 @@ async def _run_agent_live_case(
                 "selection": inspection["selection"],
                 "toolCalls": inspection["toolCalls"],
                 "taskCount": len(inspection["tasks"]),
-                "durationSeconds": round(time.monotonic() - turn_started, 3),
+                "durationSeconds": duration_seconds,
                 "recoveryCycleCount": recovery_cycles,
                 "customerMessage": str(
                     (projection.get("message") or {}).get("text") or ""

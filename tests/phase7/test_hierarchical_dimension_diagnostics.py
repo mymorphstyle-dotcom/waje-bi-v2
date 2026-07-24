@@ -253,6 +253,22 @@ def test_constant_parent_is_coverage_only_and_informative_descendants_form_reado
             "subject_type": "dimension",
             "comparison_scope": "cross_dimension_diagnostic_priority",
         },
+        "writer_fact_selection": {
+            "mode": "named_fact_subset",
+            "fact_names": (
+                "dimension_count",
+                "eligible_dimension_count",
+                "dimension_label",
+                "member",
+                "baseline_amount",
+                "target_amount",
+                "delta",
+                "excess_delta",
+                "diagnostic_priority_score",
+                "priority_rank",
+                "primary_factor_alignment_coverage",
+            ),
+        },
     }
     priorities = {item["dimension"]: item for item in payload["diagnostic_priorities"]}
     for finding in payload["dimension_findings"]:

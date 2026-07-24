@@ -330,6 +330,22 @@ def candidate_dimension_screen(
         ),
         "causal_interpretation": "forbidden",
         "representative_member_selection": ("separate_from_dimension_priority_ranking"),
+        "writer_fact_selection": {
+            "mode": "named_fact_subset",
+            "fact_names": (
+                "dimension_count",
+                "eligible_dimension_count",
+                "dimension_label",
+                "member",
+                "baseline_amount",
+                "target_amount",
+                "delta",
+                "excess_delta",
+                "diagnostic_priority_score",
+                "priority_rank",
+                "primary_factor_alignment_coverage",
+            ),
+        },
     }
     priorities_by_dimension = {
         str(item["dimension"]): item for item in diagnostic_priorities

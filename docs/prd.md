@@ -2,7 +2,7 @@
 
 Status: current
 Architecture baseline: 2026-07-17 single-authority workflow
-Last rebased: 2026-07-18
+Last rebased: 2026-07-24
 
 ## 0. Product authority
 
@@ -22,14 +22,18 @@ IntentRevision
 → CapabilityOutcome + EvidenceLedger
 → ClaimGraph + ClaimVerifierReport
 → sealed AuthorityBundle
-→ NarrativeDocument + block-verifier report
+→ NarrativeDocument
 → PublicationProjection
 → delivery outbox
+
+customer delivery
+→ NarrativeQualityAuditResult (independent advisory record)
 ```
 
 Each kind of business truth has one writer. Downstream stages reference an
-upstream record, add a new revision, veto publication, or create a fixed safe
-projection. They cannot reconstruct or silently change upstream facts.
+upstream record, add a new revision, enforce its declared hard boundary, or
+create a fixed safe projection. They cannot reconstruct or silently change
+upstream facts.
 
 ## 1. Product goal
 
@@ -78,8 +82,11 @@ meaning from free text.
 The planner retains business-readable hypotheses and auxiliary ideas before
 admission. Deterministic admission controls execution. Claim settlement enforces
 evidence classes and ceilings. The writer controls structure and emphasis over a
-durably checkpointed `NarrativeMaterialProjection`. Publication verification may veto unsupported
-blocks and cannot rewrite them.
+durably checkpointed `NarrativeMaterialProjection`. Local narrative validation
+enforces schema, handles, numbers, dates, scope, fixed output safety and
+provenance. Subjective completeness, depth, readability and actionability are
+recorded after delivery for Workbench and human review; they cannot change,
+delay, withdraw or rewrite the publication.
 
 Mandatory answer completeness is expressed as opaque publication requirements,
 not a paragraph template. These requirements constrain claim and limitation

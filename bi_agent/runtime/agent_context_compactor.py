@@ -74,7 +74,9 @@ class WajeThreadSummaryGenerator:
                 item.to_dict(include_server_payload=False)
                 for item in value.source_items
             ],
-            "artifactAuthority": [item.to_dict() for item in value.artifacts],
+            "artifactAuthority": [
+                item.to_model_routing_dict() for item in value.artifacts
+            ],
             "allowedAuthorityRefs": list(value.authority_refs),
         }
         input_digest = canonical_digest(payload)
@@ -92,6 +94,7 @@ class WajeThreadSummaryGenerator:
                 ),
                 output_type=ThreadSummaryContent,
                 max_turns=1,
+                thinking_mode="disabled",
                 trace_metadata={
                     "waje_thread_id": value.thread_id,
                     "waje_compaction_input_digest": input_digest,

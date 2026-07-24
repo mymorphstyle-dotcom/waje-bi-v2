@@ -55,6 +55,7 @@ AUTHORITY_TABLES = (
     "publication_customer_payloads",
     "delivery_attempts",
     "customer_publications",
+    "narrative_quality_audit_results",
     "narrative_attempt_requests",
     "insight_quality_evaluations",
 )
@@ -255,12 +256,23 @@ def test_verification_attempt_decision_and_report_identities_are_durable():
     assert "verification_mode = 'local_boundary_authority'" in claim_report
     assert "verification_attempt_ref IS NULL" in claim_report
     assert "local_boundary_authority_ref IS NOT NULL" in claim_report
-    assert "verification_attempt_ref text NOT NULL" in block_report
+    assert "audit_status text NOT NULL CHECK" in block_report
+    assert "audit_status IN ('pending', 'completed', 'unavailable')" in block_report
+    assert "verification_attempt_ref text" in block_report
     assert "verifier_report_ref text PRIMARY KEY" in block_report
-    assert "verification_attempt_digest text NOT NULL" in block_report
+    assert "verification_attempt_digest text CHECK" in block_report
+    assert "audit_status = 'pending'" in block_report
+    assert "audit_status = 'completed'" in block_report
+    assert "audit_status = 'unavailable'" in block_report
     block_attempt = _table_body("block_verification_attempts")
     assert "provider_response_ref text NOT NULL" in block_attempt
     assert "provider_response_digest text NOT NULL" in block_attempt
+    quality_result = _table_body("narrative_quality_audit_results")
+    assert "source_customer_publication_ref text NOT NULL" in quality_result
+    assert (
+        "REFERENCES waje_runtime.customer_publications(" in quality_result
+    )
+    assert "audit_status IN ('completed', 'unavailable')" in quality_result
 
 
 def test_claim_settlement_checkpoint_and_obligation_basis_are_durable_resume_authority():

@@ -39,6 +39,7 @@ from bi_agent.runtime.narrative_authority import (
     RestrictedProviderResponse,
     SensitiveOutputFinding,
     _internal_fact_name_exposure_refs,
+    _internal_fact_name_index,
     _ranking_position_binding_gaps,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest
@@ -178,13 +179,16 @@ def test_customer_prose_rejects_exact_machine_fact_names() -> None:
         )
     }
 
+    refs_by_name, name_pattern = _internal_fact_name_index(materials)
     assert _internal_fact_name_exposure_refs(
         block=SimpleNamespace(text="付费金额增长，change_rate 为 12.5%。"),
-        materials_by_handle=materials,
+        refs_by_name=refs_by_name,
+        name_pattern=name_pattern,
     ) == ("projected-fact:change-rate",)
     assert _internal_fact_name_exposure_refs(
         block=SimpleNamespace(text="付费金额增长 12.5%。"),
-        materials_by_handle=materials,
+        refs_by_name=refs_by_name,
+        name_pattern=name_pattern,
     ) == ()
 
 
@@ -806,6 +810,9 @@ def _material_projection(palette: PublicClaimPalette) -> NarrativeMaterialProjec
                 )
             ),
             material_handle_by_evidence_ref=material_handle_by_evidence_ref,
+            verified_claim_payload={
+                "claim_kind": public_claim.claim_class,
+            },
         )
         for public_claim in palette.claims
     )
@@ -856,6 +863,7 @@ def _projection_with_shared_first_material(
         "evidence_entry_refs": (first_material.evidence_entry_ref,),
         "material_handles": (first_material.material_handle,),
         "limitation_handles": target.limitation_handles,
+        "verified_claim_payload": target.verified_claim_payload,
     }
     target_digest = canonical_digest(target_body)
     shared_target = ProjectedNarrativeClaim(
@@ -1091,6 +1099,7 @@ def test_writer_payload_comes_from_material_projection() -> None:
         "boundary_facets",
     }
     assert writer_payload["publication_requirements"] == []
+    assert writer_payload["claims"][0]["verified_claim_payload"]
     assert "0.125" in rendered
     assert "change_rate" in rendered
     assert "paid amount direction" in rendered

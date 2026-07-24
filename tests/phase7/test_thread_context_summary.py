@@ -10,7 +10,6 @@ import pytest
 from bi_agent.runtime.agent_context import (
     AgentContextAssembler,
     AgentContextBudgetExceeded,
-    AgentContextCompactionRequired,
     InMemoryArtifactIndex,
 )
 from bi_agent.runtime.agent_context_compactor import (
@@ -19,7 +18,6 @@ from bi_agent.runtime.agent_context_compactor import (
     WajeThreadSummaryGenerator,
 )
 from bi_agent.runtime.agent_sdk_contracts import (
-    AgentSdkAdapterError,
     WajeAgentRunRequest,
     WajeAgentRunResult,
 )
@@ -368,7 +366,7 @@ def test_context_assembler_uses_summary_and_only_uncompacted_items() -> None:
     assert summary.summary_digest in AgentContextAssembler.model_context(snapshot)
 
 
-def test_context_assembler_fails_explicitly_before_history_is_truncated() -> None:
+def test_context_assembler_bounds_history_and_exposes_exact_gap() -> None:
     ledger = _ledger_with_messages(5)
     assembler = AgentContextAssembler(
         ledger=ledger,
@@ -377,12 +375,27 @@ def test_context_assembler_fails_explicitly_before_history_is_truncated() -> Non
         compaction_retention=2,
     )
 
-    with pytest.raises(AgentContextCompactionRequired) as raised:
-        assembler.assemble("thread-summary")
+    snapshot = assembler.assemble("thread-summary")
 
-    assert raised.value.compact_from_sequence == 1
-    assert raised.value.compact_through_sequence == 3
-    assert raised.value.latest_item_sequence == 5
+    assert [item.sequence for item in snapshot.recent_items] == [2, 3, 4, 5]
+    assert snapshot.replay_after_sequence == 1
+    assert snapshot.context_window.to_dict() == {
+        "summaryCoversThroughSequence": 0,
+        "recentFromSequence": 2,
+        "recentThroughSequence": 5,
+        "historyGap": {
+            "fromSequence": 1,
+            "throughSequence": 1,
+            "handling": "not_loaded_for_this_turn_use_summary_or_authority_refs",
+        },
+        "summaryRefresh": {
+            "required": True,
+            "reasons": ["item_limit"],
+            "compactFromSequence": 1,
+            "compactThroughSequence": 3,
+            "execution": "durable_background_maintenance",
+        },
+    }
 
 
 def test_agent_session_replays_only_items_after_summary_coverage() -> None:
@@ -531,9 +544,13 @@ class CombinedAdapter:
             }
         else:
             history = await request.session.get_items() if request.session else []
-            assert history == [{"role": "user", "content": "消息 4"}]
+            assert history == [
+                {"role": "user", "content": "消息 2"},
+                {"role": "user", "content": "消息 3"},
+                {"role": "user", "content": "消息 4"},
+            ]
             output = {
-                "answerMarkdown": "已在版本化摘要后继续回答。",
+                "answerMarkdown": "已依据有界近期上下文继续回答。",
                 "materialRefs": [],
                 "limitationRefs": [],
             }
@@ -545,7 +562,7 @@ class CombinedAdapter:
         )
 
 
-def test_agent_turn_runtime_compacts_before_starting_the_main_runner() -> None:
+def test_agent_turn_runtime_never_runs_summary_model_on_customer_path() -> None:
     ledger = _ledger_with_messages(4)
     store = InMemoryThreadSummaryStore()
     adapter = CombinedAdapter()
@@ -560,12 +577,6 @@ def test_agent_turn_runtime_compacts_before_starting_the_main_runner() -> None:
         ledger=ledger,
         context_assembler=assembler,
         adapter=adapter,
-        context_compactor=ThreadContextCompactor(
-            ledger=ledger,
-            summary_store=store,
-            artifact_index=InMemoryArtifactIndex(),
-            generator=WajeThreadSummaryGenerator(adapter),
-        ),
         session_history_limit=4,
     )
     request = AgentTurnRequest(
@@ -581,14 +592,15 @@ def test_agent_turn_runtime_compacts_before_starting_the_main_runner() -> None:
     result = asyncio.run(runtime.run(request))
 
     assert result.status == "completed"
-    assert [call.agent_name for call in adapter.calls] == [
-        "WAJE Thread Context Compactor",
-        "WAJE General Agent",
-    ]
-    assert store.latest("thread-summary").covers_through_sequence == 3
+    assert [call.agent_name for call in adapter.calls] == ["WAJE General Agent"]
+    assert store.latest("thread-summary") is None
+    assert (
+        '"execution":"durable_background_maintenance"'
+        in adapter.calls[0].instructions
+    )
 
 
-def test_provider_context_budget_triggers_compaction_then_explicit_overflow() -> None:
+def test_provider_context_budget_shrinks_replay_and_records_refresh_need() -> None:
     ledger = InMemoryThreadItemLedger()
     ledger.create_thread("thread-summary")
     ledger.append_items(
@@ -598,7 +610,7 @@ def test_provider_context_budget_triggers_compaction_then_explicit_overflow() ->
                 item_id=f"message-{sequence}",
                 item_type="user_message",
                 role="user",
-                text="长上下文" * 300,
+                text="长上下文" * 160,
                 operation_key=f"user:long-{sequence}",
                 customer_visible=True,
             )
@@ -612,60 +624,74 @@ def test_provider_context_budget_triggers_compaction_then_explicit_overflow() ->
         summary_store=store,
         recent_item_limit=10,
         compaction_retention=2,
-        context_token_budget=1000,
+        context_token_budget=4_000,
     )
 
-    with pytest.raises(AgentContextCompactionRequired) as required:
-        assembler.assemble("thread-summary")
-    assert required.value.reason == "token_budget"
-    assert required.value.compact_through_sequence == 3
+    snapshot = assembler.assemble("thread-summary")
 
-    store.append(_summary_from_ledger(ledger, through_sequence=3))
+    assert 1 <= len(snapshot.recent_items) < 5
+    assert snapshot.context_window.summary_refresh_required is True
+    assert snapshot.context_window.summary_refresh_reasons == ("token_budget",)
+    assert snapshot.context_window.compact_through_sequence == 3
+
+
+def test_provider_context_budget_fails_only_when_minimum_window_cannot_fit() -> None:
+    ledger = InMemoryThreadItemLedger()
+    ledger.create_thread("thread-summary")
+    ledger.append_items(
+        "thread-summary",
+        [
+            NewThreadItem(
+                item_id="message-one",
+                item_type="user_message",
+                role="user",
+                text="超长输入" * 2_000,
+                operation_key="user:long-one",
+                customer_visible=True,
+            )
+        ],
+    )
+    assembler = AgentContextAssembler(
+        ledger=ledger,
+        artifact_index=InMemoryArtifactIndex(),
+        summary_store=InMemoryThreadSummaryStore(),
+        recent_item_limit=10,
+        compaction_retention=2,
+        context_token_budget=1_000,
+    )
+
     with pytest.raises(AgentContextBudgetExceeded) as overflow:
         assembler.assemble("thread-summary")
     assert overflow.value.estimated_tokens > overflow.value.budget_tokens
 
 
-def test_compaction_model_failure_becomes_a_typed_agent_terminal() -> None:
-    class FailingAdapter:
-        async def run(self, _request: WajeAgentRunRequest) -> WajeAgentRunResult:
-            raise AgentSdkAdapterError("agent_output_contract_invalid")
+def test_summary_generator_disables_thinking_for_background_maintenance() -> None:
+    class SummaryAdapter:
+        def __init__(self) -> None:
+            self.request: WajeAgentRunRequest | None = None
 
-    ledger = _ledger_with_messages(4)
-    store = InMemoryThreadSummaryStore()
-    adapter = FailingAdapter()
-    runtime = AgentTurnRuntime(
-        ledger=ledger,
-        context_assembler=AgentContextAssembler(
-            ledger=ledger,
-            artifact_index=InMemoryArtifactIndex(),
-            summary_store=store,
-            recent_item_limit=4,
-            compaction_retention=2,
-        ),
-        adapter=adapter,
-        context_compactor=ThreadContextCompactor(
-            ledger=ledger,
-            summary_store=store,
-            artifact_index=InMemoryArtifactIndex(),
-            generator=WajeThreadSummaryGenerator(adapter),
-        ),
-    )
-    request = AgentTurnRequest(
-        thread_id="thread-summary",
-        run_id="run-compaction-failed",
-        operation_id="operation-compaction-failed",
-        user_item_id="message-current",
-        user_message="继续当前问题",
-        expected_state_version=1,
-        instructions="依据权威上下文回答。",
+        async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
+            self.request = request
+            return WajeAgentRunResult(
+                run_id=request.run_id,
+                final_output={"statements": []},
+                usage={},
+                model_turns=1,
+            )
+
+    ledger = _ledger_with_messages(2)
+    adapter = SummaryAdapter()
+    content = asyncio.run(
+        WajeThreadSummaryGenerator(adapter).generate(
+            ThreadSummaryGenerationInput(
+                thread_id="thread-summary",
+                previous_summary=None,
+                source_items=ledger.list_items("thread-summary"),
+                artifacts=(),
+            )
+        )
     )
 
-    result = asyncio.run(runtime.run(request))
-
-    assert result.status == "failed"
-    assert result.error_code == "agent_output_contract_invalid"
-    assert ledger.get_head("thread-summary").customer_state == "idle"
-    assert result.terminal_admission is not None
-    assert result.terminal_admission.completion_kind == "failed_turn"
-    assert store.latest("thread-summary") is None
+    assert content.statements == []
+    assert adapter.request is not None
+    assert adapter.request.thinking_mode == "disabled"

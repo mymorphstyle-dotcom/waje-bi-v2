@@ -1124,6 +1124,7 @@ def _build_result(
     customer_payload: Mapping[str, Any] | None,
     failure_terminal: PostSealFailureTerminal | None = None,
     failure_persistence_status: str = "not_started",
+    replay_nested_authorities: bool = True,
 ) -> PostExecutionWorkflowResult:
     if status not in POST_EXECUTION_STATUSES:
         raise PostExecutionWorkflowError("post_execution_status_invalid")
@@ -1321,32 +1322,47 @@ def _build_result(
             raise PostExecutionWorkflowError(
                 "post_execution_result_narrative_closure_invalid"
             )
-        try:
-            replayed_narrative = validate_typed_narrative_workflow_result(
-                narrative,
-                authority_bundle=bundle,
-                claim_settlement=semantic.settlement,
-                recommendations=semantic.recommendations,
-                evidence_entries=evidence_entries,
-            )
-            replayed_flow = (
-                None
-                if flow is None
-                else validate_typed_publication_flow(
-                    flow,
-                    authority_inputs=semantic.authority_bundle_inputs,
+        if replay_nested_authorities:
+            try:
+                replayed_narrative = validate_typed_narrative_workflow_result(
+                    narrative,
                     authority_bundle=bundle,
                     claim_settlement=semantic.settlement,
                     recommendations=semantic.recommendations,
-                    narrative_workflow=replayed_narrative,
-                    supersedes_publication=None,
+                    evidence_entries=evidence_entries,
                 )
-            )
-            replayed_compose = DurableTransition.from_dict(compose_transition.to_dict())
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise PostExecutionWorkflowError(
-                "post_execution_result_narrative_closure_invalid"
-            ) from exc
+                replayed_flow = (
+                    None
+                    if flow is None
+                    else validate_typed_publication_flow(
+                        flow,
+                        authority_inputs=semantic.authority_bundle_inputs,
+                        authority_bundle=bundle,
+                        claim_settlement=semantic.settlement,
+                        recommendations=semantic.recommendations,
+                        narrative_workflow=replayed_narrative,
+                        supersedes_publication=None,
+                    )
+                )
+                replayed_compose = DurableTransition.from_dict(
+                    compose_transition.to_dict()
+                )
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise PostExecutionWorkflowError(
+                    "post_execution_result_narrative_closure_invalid"
+                ) from exc
+        else:
+            if (
+                type(narrative) is not NarrativeWorkflowResult
+                or type(flow) is not PublicationFlowResult
+                or type(compose_transition) is not DurableTransition
+            ):
+                raise PostExecutionWorkflowError(
+                    "post_execution_result_narrative_closure_invalid"
+                )
+            replayed_narrative = narrative
+            replayed_flow = flow
+            replayed_compose = compose_transition
         expected_input = _narrative_transition_input(
             bundle=bundle,
             semantic=semantic,
@@ -1634,6 +1650,129 @@ def validate_typed_post_execution_workflow_result(
     return result
 
 
+def validate_in_process_post_execution_workflow_result(
+    result: PostExecutionWorkflowResult,
+) -> PostExecutionWorkflowResult:
+    """Validate the frozen workflow handoff without replaying sealed children.
+
+    Serialized values still use ``from_dict`` or the full typed validator.
+    This boundary accepts only the exact in-process type produced by
+    ``_build_result``. Its nested authorities were replay-validated before
+    persistence, so terminal bookkeeping verifies their immutable identities
+    and the parent dependency digest without replaying the full claim,
+    evidence, narrative, and publication graphs after delivery.
+    """
+
+    if type(result) is not PostExecutionWorkflowResult:
+        raise PostExecutionWorkflowError("post_execution_result_shape_invalid")
+    semantic = result.semantic_authority_result
+    bundle = result.authority_bundle
+    authority_transition = result.authority_transition
+    failure_terminal = result.post_seal_failure_terminal
+    narrative = result.narrative_workflow
+    flow = result.publication_flow
+    compose_transition = result.compose_transition
+    if (
+        type(semantic) is not SemanticAuthorityResult
+        or type(bundle) is not AuthorityBundle
+        or type(authority_transition) is not DurableTransition
+        or (
+            failure_terminal is not None
+            and type(failure_terminal) is not PostSealFailureTerminal
+        )
+        or (
+            narrative is not None
+            and type(narrative) is not NarrativeWorkflowResult
+        )
+        or (flow is not None and type(flow) is not PublicationFlowResult)
+        or (
+            compose_transition is not None
+            and type(compose_transition) is not DurableTransition
+        )
+    ):
+        raise PostExecutionWorkflowError("post_execution_result_shape_invalid")
+
+    expected_narrative_ref = (
+        None
+        if narrative is None
+        else "narrative-workflow-result:sha256:" + narrative.content_digest
+    )
+    if (
+        result.status not in POST_EXECUTION_STATUSES
+        or result.run_attempt_id != bundle.run_attempt_id
+        or result.intent_revision_id != bundle.intent_revision_id
+        or result.semantic_authority_result_ref != semantic.result_ref
+        or result.semantic_authority_result_digest != semantic.content_digest
+        or result.authority_bundle_ref != bundle.bundle_ref
+        or result.authority_bundle_digest != bundle.bundle_digest
+        or result.authority_transition_id != authority_transition.transition_id
+        or result.post_seal_failure_terminal_ref
+        != (
+            None if failure_terminal is None else failure_terminal.terminal_ref
+        )
+        or result.narrative_workflow_ref != expected_narrative_ref
+        or result.narrative_workflow_digest
+        != (None if narrative is None else narrative.content_digest)
+        or result.compose_transition_id
+        != (
+            None
+            if compose_transition is None
+            else compose_transition.transition_id
+        )
+        or result.publication_ref
+        != (None if flow is None else flow.publication.publication_ref)
+        or result.outbox_ref != (None if flow is None else flow.outbox.outbox_ref)
+        or (narrative is None) != (flow is None)
+        or (narrative is None) != (compose_transition is None)
+    ):
+        raise PostExecutionWorkflowError("post_execution_result_integrity_invalid")
+
+    expected_digest = canonical_digest(
+        _post_execution_dependency_manifest(
+            status=result.status,
+            run_attempt_id=result.run_attempt_id,
+            intent_revision_id=result.intent_revision_id,
+            claim_coverage_checkpoint_ref=result.claim_coverage_checkpoint_ref,
+            claim_coverage_checkpoint_digest=(
+                result.claim_coverage_checkpoint_digest
+            ),
+            claim_coverage_transition_id=result.claim_coverage_transition_id,
+            semantic=semantic,
+            bundle=bundle,
+            authority_transition=authority_transition,
+            authority_persistence_status=result.authority_persistence_status,
+            failure_terminal=failure_terminal,
+            failure_persistence_status=(
+                result.post_seal_failure_persistence_status
+            ),
+            material_projection_ref=result.narrative_material_projection_ref,
+            material_projection_digest=(
+                result.narrative_material_projection_digest
+            ),
+            material_persistence_status=(
+                result.narrative_material_persistence_status
+            ),
+            narrative=narrative,
+            flow=flow,
+            compose_transition=compose_transition,
+            narrative_persistence_status=result.narrative_persistence_status,
+            customer_payload_ref=result.customer_payload_ref,
+            delivery_attempt_ref=result.delivery_attempt_ref,
+            delivery_status=result.delivery_status,
+            delivery_replayed=result.delivery_replayed,
+            customer_publication_ref=result.customer_publication_ref,
+            customer_payload=result.customer_payload,
+        )
+    )
+    if (
+        result.content_digest != expected_digest
+        or result.result_ref
+        != "post-execution-workflow-result:sha256:" + expected_digest
+    ):
+        raise PostExecutionWorkflowError("post_execution_result_integrity_invalid")
+    return result
+
+
 def _validated_prior_result(
     prior_result: PostExecutionWorkflowResult,
     *,
@@ -1742,6 +1881,7 @@ def _deliver_publication_result(
         delivery_replayed=delivery.replayed,
         customer_publication_ref=delivery.customer_publication_ref,
         customer_payload=safe_payload,
+        replay_nested_authorities=False,
     )
 
 
@@ -2108,6 +2248,7 @@ def run_post_execution_workflow(
             delivery_replayed=None,
             customer_publication_ref=None,
             customer_payload=None,
+            replay_nested_authorities=False,
         )
 
     if prior is not None and prior.status == "narrative_ready":
@@ -2492,6 +2633,7 @@ def run_post_execution_workflow(
             delivery_replayed=None,
             customer_publication_ref=None,
             customer_payload=None,
+            replay_nested_authorities=False,
         )
     return _deliver_publication_result(
         connection=connection,
@@ -2522,5 +2664,6 @@ __all__ = (
     "PostExecutionWorkflowResult",
     "STOP_BOUNDARIES",
     "run_post_execution_workflow",
+    "validate_in_process_post_execution_workflow_result",
     "validate_typed_post_execution_workflow_result",
 )

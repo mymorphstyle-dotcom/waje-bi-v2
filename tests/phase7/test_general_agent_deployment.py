@@ -229,6 +229,7 @@ class _FakeLiveAdapter:
                 "selectedTools": ["list_available_capabilities"],
                 "initialAction": "call_tool",
                 "requiredToolName": "list_available_capabilities",
+                "requiredToolArgumentsJson": "{}",
                 "materialDecisionTopics": [],
             }
         elif request.agent_name == "WAJE Controlled Investigation Agent":

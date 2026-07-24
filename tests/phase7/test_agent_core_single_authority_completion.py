@@ -23,7 +23,10 @@ from bi_agent.runtime.factor_coverage import (
 )
 from bi_agent.runtime.llm_client import LLMResult
 from bi_agent.runtime.langgraph_workflow import WorkflowRunResult
-from bi_agent.runtime.narrative_workflow import run_narrative_workflow
+from bi_agent.runtime.narrative_workflow import (
+    run_narrative_workflow,
+    run_narrative_quality_audit,
+)
 from bi_agent.runtime.post_execution_workflow import PostExecutionWorkflowResult
 import bi_agent.runtime.post_execution_workflow as post_execution
 from bi_agent.runtime.post_seal_failure_persistence import PostSealFailureTerminal
@@ -91,16 +94,6 @@ class _WithheldNarrativeLLM:
 
     @staticmethod
     def _writer_output(payload: Mapping[str, Any]) -> dict[str, Any]:
-        focused = payload["answer_context"].get("focused_retry")
-        if focused is not None:
-            return {
-                "blocks": [
-                    *(
-                        target["editable_source_block"]
-                        for target in focused["retry_targets"]
-                    ),
-                ]
-            }
         material_projection = payload["material_projection"]
         claim = material_projection["claims"][0]
         materials_by_handle = {
@@ -113,7 +106,7 @@ class _WithheldNarrativeLLM:
         recommendations = material_projection["recommendations"]
         return {
             "blocks": [
-                {
+                _WithheldNarrativeLLM._compact_writer_block({
                     "role": "executive_answer",
                     "text": "Candidate executive answer wording.",
                     "claim_handles": [claim["claim_handle"]],
@@ -131,9 +124,28 @@ class _WithheldNarrativeLLM:
                     ],
                     "statement_role": "business_finding",
                     "required": True,
-                }
+                })
             ]
         }
+
+    @staticmethod
+    def _compact_writer_block(
+        block: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        compact = {
+            "role": block["role"],
+            "text": block["text"],
+            "c": list(block["claim_handles"]),
+            "r": list(block["recommendation_handles"]),
+            "l": list(block["limitation_handles"]),
+            "f": [
+                [item["claim_handle"], item["fact_handle"]]
+                for item in block["material_fact_bindings"]
+            ],
+            "s": block["statement_role"],
+            "q": block["required"],
+        }
+        return compact
 
 
 @pytest.fixture(scope="module")
@@ -622,6 +634,7 @@ def test_verifier_findings_remain_advisory_for_agent_completion(
     accepted_fixture: Any,
 ) -> None:
     evidence_entries = accepted_fixture.source.semantic_result.authority_bundle_inputs.material_projection_evidence_entries()
+    client = _WithheldNarrativeLLM()
     narrative = run_narrative_workflow(
         authority_bundle=accepted_fixture.source.bundle,
         claim_settlement=accepted_fixture.source.semantic_result.settlement,
@@ -631,14 +644,27 @@ def test_verifier_findings_remain_advisory_for_agent_completion(
         visibility_policy=accepted_fixture.policy,
         material_projection=accepted_fixture.narrative.material_projection,
         answer_context=accepted_fixture.narrative.answer_context,
-        llm_client=_WithheldNarrativeLLM(),
+        llm_client=client,
         sensitive_output_inspector=_NoSensitiveOutput(),
     )
 
     assert narrative.publication_ready is True
-    assert narrative.final_accepted_narrative is narrative.narratives[0]
-    assert narrative.withheld_required_block_ids
-    assert narrative.focused_retry is None
+    assert narrative.delivery_narrative is narrative.narratives[0]
+    assert client.calls == 1
+    quality_audit = run_narrative_quality_audit(
+        source_customer_publication_ref=(
+            "customer-publication:sha256:" + "b" * 64
+        ),
+        authority_bundle=accepted_fixture.source.bundle,
+        claim_settlement=accepted_fixture.source.semantic_result.settlement,
+        evidence_entries=evidence_entries,
+        recommendations=accepted_fixture.source.semantic_result.recommendations,
+        narrative_workflow=narrative,
+        llm_client=client,
+    )
+    assert quality_audit.verifier_report.rejected_block_ids
+    assert narrative.delivery_narrative is narrative.narratives[0]
+    assert client.calls == 2
 
 
 def test_tampered_post_execution_result_cannot_complete_run(

@@ -195,6 +195,8 @@ def test_failed_client_audit_keeps_profile_without_reasoning_body():
     assert audit["model_tier"] == "critical"
     assert audit["thinking"] == "enabled"
     assert audit["reasoning_content_present"] is True
+    assert audit["finish_reason"] == ""
+    assert audit["output_bytes"] == len('{"unexpected": true}'.encode("utf-8"))
     assert "reasoning_content" not in audit
     assert all(
         "reasoning_content" not in attempt for attempt in audit["attempt_failures"]
@@ -339,7 +341,7 @@ def test_workflow_uses_explicit_single_authority_model_profiles():
     expected_profiles = {
         "single_authority_intent": (None, "enabled"),
         "single_authority_clarification": (None, "enabled"),
-        "single_authority_plan_proposal": ("critical", "enabled"),
+        "single_authority_plan_proposal": ("critical", "disabled"),
     }
     client = _TierAwareWorkflowClient(
         {

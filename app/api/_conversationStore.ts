@@ -3234,11 +3234,21 @@ export async function listPersistedPublicationRuns(
      AND projection.projection_digest = outbox.projection_digest
      AND projection.block_verifier_report_ref = publication.block_verifier_report_ref
      AND projection.block_verifier_report_digest = publication.block_verifier_report_digest
-    JOIN waje_runtime.block_verification_reports final_block_report
-      ON final_block_report.owner_ref = customer.owner_ref
-     AND final_block_report.run_attempt_id = customer.run_attempt_id
-     AND final_block_report.verifier_report_ref = publication.block_verifier_report_ref
-     AND final_block_report.content_digest = publication.block_verifier_report_digest
+    JOIN LATERAL (
+      SELECT report.*
+      FROM waje_runtime.block_verification_reports report
+      WHERE report.owner_ref = customer.owner_ref
+        AND report.run_attempt_id = customer.run_attempt_id
+        AND report.narrative_id = publication.narrative_id
+      ORDER BY
+        CASE report.audit_status
+          WHEN 'completed' THEN 0
+          WHEN 'unavailable' THEN 1
+          ELSE 2
+        END,
+        report.created_at DESC
+      LIMIT 1
+    ) final_block_report ON true
     JOIN waje_runtime.authority_bundles bundle
       ON bundle.owner_ref = customer.owner_ref
      AND bundle.run_attempt_id = customer.run_attempt_id
@@ -3591,6 +3601,7 @@ export async function listPersistedPublicationRuns(
         'vetoedClaimCount', jsonb_array_length(
           final_claim_report.payload -> 'rejected_claim_refs'
         ),
+        'blockAuditStatus', final_block_report.audit_status,
         'acceptedBlockCount', jsonb_array_length(
           final_block_report.payload -> 'accepted_block_ids'
         ),

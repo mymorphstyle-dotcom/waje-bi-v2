@@ -1,6 +1,12 @@
 # P7：回答完整性补全闭环
 
-状态：`implemented; accepted`
+状态：`historical; superseded`
+
+> 本计划中的 narrative focused completion、补全失败 warning、第二版 narrative 和同步
+> advisory verifier 已退出当前运行合同。当前合同以
+> `docs/adr/2026-07-20-advisory-publication-human-review.md` 与
+> `docs/specs/general-agent-runtime/target-architecture.md` 为准：质量评判只记录，交付后异步运行，
+> 不改写回答、不改变客户状态、不阻断 publication。
 
 ## 目标
 

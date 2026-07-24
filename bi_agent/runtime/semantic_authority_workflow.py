@@ -81,7 +81,15 @@ _FORBIDDEN_PROJECTION_FIELDS = frozenset(
         "token",
     }
 )
-_SEMANTIC_PROMPT_VERSION = "single-authority-phase04.v9"
+_SEMANTIC_PROMPT_VERSION = "single-authority-phase04.v13"
+_THINKING_MODE_BY_PURPOSE = MappingProxyType(
+    {
+        "candidate_claim_proposal": "disabled",
+        "claim_verification": "disabled",
+        "recommendation_proposal": "disabled",
+        "recommendation_verification": "disabled",
+    }
+)
 _SEMANTIC_ENCODING_TAG = "__waje_semantic_encoding__"
 _SEMANTIC_HOMOGENEOUS_RECORDS = "homogeneous_records.v1"
 _SEMANTIC_LITERAL_MAPPING = "literal_mapping.v1"
@@ -94,17 +102,23 @@ _SEMANTIC_ENCODING_GUIDANCE = (
 _CANDIDATE_OUTPUT_CONTRACT = (
     "Return one JSON object whose only top-level key is "
     "candidate_claim_proposals. Its value is an array. Each item must contain "
-    "exactly proposal_item_ref, obligation_id, subject, factual_payload, "
-    "evidence_support, assumption_refs, and limitation_refs. proposal_item_ref, "
-    "obligation_id, and subject are non-empty strings; subject is a concise business "
+    "exactly obligation_id, subject, factual_payload, "
+    "assumption_refs, and limitation_refs. "
+    "The runtime assigns proposal identity; never create or return a proposal_item_ref. "
+    "The runtime also binds every proposal to that obligation's supplied "
+    "eligible_candidate_evidence_refs using the obligation claim_kind; never create or "
+    "return evidence_support or any evidence reference. "
+    "obligation_id and subject are non-empty strings; subject is a concise business "
     "statement. factual_payload is a non-empty JSON object carrying structured facts, "
-    "never a string. evidence_support is a non-empty array of objects containing "
-    "exactly the non-empty strings evidence_entry_ref and source_claim_kind. "
-    "assumption_refs and limitation_refs are arrays of strings and may be empty. "
+    "never a string. assumption_refs and limitation_refs are arrays of strings and may "
+    "be empty. "
+    "Use only top-level assumption_refs and limitation_refs that directly qualify "
+    "that proposal; do not attach unrelated references. "
     "Propose only for supplied obligations with a non-empty "
     "eligible_candidate_evidence_refs array; direct and boundary claims are handled "
     'elsewhere. Use {"candidate_claim_proposals":[]} when no candidate is '
-    "supported. Every reference must come from the input. "
+    "supported. Do not repeat the same business proposal. Every returned reference "
+    "must come from the input. "
 )
 _CLAIM_VERIFICATION_OUTPUT_CONTRACT = (
     "Return one JSON object whose only top-level key is decisions. decisions is an "
@@ -148,8 +162,9 @@ _RECOMMENDATION_OUTPUT_CONTRACT = (
     "and exactly one expected_outcome; action must exactly equal the action commitment "
     "text and expected_decision_value must exactly equal the expected_outcome text. "
     "The item supporting_claim_refs must equal the union of commitment support refs. "
-    "Each commitment must stay inside every bound claim's supplied "
-    "recommendation_authorization. supporting_claim_refs is a non-empty array of "
+    "Each commitment must stay inside every bound claim's authorization resolved "
+    "through recommendation_authorization_ref and the supplied "
+    "recommendation_authorization_catalog. supporting_claim_refs is a non-empty array of "
     "claim references from the input. applicable_conditions is a non-empty array "
     "of customer-facing business conditions and must not contain claim refs or "
     "other internal identifiers. action, expected_decision_value, commitment text, "
@@ -213,12 +228,16 @@ _PROMPTS = MappingProxyType(
             _SEMANTIC_ENCODING_GUIDANCE
             + _RECOMMENDATION_OUTPUT_CONTRACT
             + "Propose zero or more decision recommendations grounded only in the "
-            "verified claim graph. Claims bind aggregate evidence by reference, and "
-            "the evidence catalog carries each fact once. Returning an empty list is "
-            "valid. Bind open-language diagnostic premises, actions, and expected "
-            "outcomes to typed commitments. Use the supplied per-claim "
-            "recommendation_authorization; never upgrade a claim into a stronger "
-            "diagnostic mode, action stage, or expected-value mode."
+            "verified claim graph. Each verified claim carries its accepted factual "
+            "payload, evidence references, publication ceiling, limitations, and "
+            "recommendation authorization. verified_evidence_context carries the business "
+            "facts for those references once, without replay-only authority metadata. Claim "
+            "verification has already closed those references; do not ask for or infer new "
+            "evidence. Returning an empty list is valid. Bind open-language diagnostic "
+            "premises, actions, and expected outcomes to typed commitments. Resolve each claim's "
+            "recommendation_authorization_ref through the shared "
+            "recommendation_authorization_catalog; never upgrade a claim into a "
+            "stronger diagnostic mode, action stage, or expected-value mode."
         ),
         "recommendation_verification": (
             _SEMANTIC_ENCODING_GUIDANCE
@@ -1054,10 +1073,10 @@ def _invoke(
     validator: Callable[[Mapping[str, Any]], None],
 ) -> _ProviderInvocation:
     required_key = _REQUIRED_OUTPUT_KEY[call_input.purpose]
-    result = llm_client.invoke_json(
-        task="semantic_authority_" + call_input.purpose,
-        prompt_version=_SEMANTIC_PROMPT_VERSION,
-        messages=(
+    invoke_kwargs: dict[str, Any] = {
+        "task": "semantic_authority_" + call_input.purpose,
+        "prompt_version": _SEMANTIC_PROMPT_VERSION,
+        "messages": (
             {"role": "system", "content": _PROMPTS[call_input.purpose]},
             {
                 "role": "user",
@@ -1069,10 +1088,13 @@ def _invoke(
                 ),
             },
         ),
-        required_keys=(required_key,),
-        output_validator=validator,
-        model_tier="critical",
-    )
+        "required_keys": (required_key,),
+        "output_validator": validator,
+        "model_tier": "critical",
+    }
+    if bool(getattr(llm_client, "supports_thinking_mode", False)):
+        invoke_kwargs["thinking"] = _THINKING_MODE_BY_PURPOSE[call_input.purpose]
+    result = llm_client.invoke_json(**invoke_kwargs)
     output = getattr(result, "output", None)
     audit = getattr(result, "audit", None)
     if not isinstance(output, Mapping) or not isinstance(audit, Mapping):
@@ -1120,36 +1142,23 @@ def _candidate_output_validator(
         for item in projection.obligations
         if item.claim_kind in _CANDIDATE_CLAIM_KINDS
     }
-    evidence_by_ref = {
-        item.evidence_entry_ref: item for item in projection.aggregate_evidence
-    }
     known_assumptions = set(projection.assumption_refs)
     known_limitations = set(projection.limitation_refs)
-    item_refs: set[str] = set()
+    proposal_identities: set[str] = set()
     for item in proposals:
         _strict_mapping(
             item,
             frozenset(
                 {
-                    "proposal_item_ref",
                     "obligation_id",
                     "subject",
                     "factual_payload",
-                    "evidence_support",
                     "assumption_refs",
                     "limitation_refs",
                 }
             ),
             "candidate_claim_output_item_shape_invalid",
         )
-        item_ref = _required_string(
-            item["proposal_item_ref"], "candidate_claim_output_item_ref_invalid"
-        )
-        if item_ref in item_refs:
-            raise SemanticAuthorityWorkflowError(
-                "candidate_claim_output_item_ref_duplicated"
-            )
-        item_refs.add(item_ref)
         obligation_id = _required_string(
             item["obligation_id"], "candidate_claim_output_obligation_invalid"
         )
@@ -1165,42 +1174,6 @@ def _candidate_output_validator(
                 "candidate_claim_output_factual_payload_invalid"
             )
         _assert_restricted(factual_payload, "candidate_claim_output_forbidden_field")
-        support = _mapping_sequence(
-            item["evidence_support"],
-            "candidate_claim_output_support_invalid",
-        )
-        if not support:
-            raise SemanticAuthorityWorkflowError(
-                "candidate_claim_output_support_invalid"
-            )
-        support_refs: set[tuple[str, str]] = set()
-        for raw_support in support:
-            _strict_mapping(
-                raw_support,
-                frozenset({"evidence_entry_ref", "source_claim_kind"}),
-                "candidate_claim_output_support_shape_invalid",
-            )
-            evidence_ref = _required_string(
-                raw_support["evidence_entry_ref"],
-                "candidate_claim_output_evidence_ref_invalid",
-            )
-            source_kind = _required_string(
-                raw_support["source_claim_kind"],
-                "candidate_claim_output_source_kind_invalid",
-            )
-            evidence = evidence_by_ref.get(evidence_ref)
-            if evidence is None or source_kind not in set(
-                evidence.supported_claim_kinds
-            ):
-                raise SemanticAuthorityWorkflowError(
-                    "candidate_claim_output_evidence_ref_unknown"
-                )
-            support_identity = (evidence_ref, source_kind)
-            if support_identity in support_refs:
-                raise SemanticAuthorityWorkflowError(
-                    "candidate_claim_output_support_duplicated"
-                )
-            support_refs.add(support_identity)
         assumptions = set(
             _string_tuple(
                 item["assumption_refs"],
@@ -1217,6 +1190,12 @@ def _candidate_output_validator(
             raise SemanticAuthorityWorkflowError(
                 "candidate_claim_output_reference_closure_invalid"
             )
+        proposal_identity = canonical_digest(item)
+        if proposal_identity in proposal_identities:
+            raise SemanticAuthorityWorkflowError(
+                "candidate_claim_output_proposal_duplicated"
+            )
+        proposal_identities.add(proposal_identity)
 
 
 def _candidate_proposals_from_output(
@@ -1227,19 +1206,34 @@ def _candidate_proposals_from_output(
 ) -> tuple[CandidateClaimProposal, ...]:
     _candidate_output_validator(output, projection=projection)
     proposals = []
-    for item in output["candidate_claim_proposals"]:
+    obligation_by_id = {
+        item.obligation_id: item
+        for item in projection.obligations
+        if item.claim_kind in _CANDIDATE_CLAIM_KINDS
+        and item.eligible_candidate_evidence_refs
+    }
+    for proposal_index, item in enumerate(output["candidate_claim_proposals"]):
+        obligation = obligation_by_id[item["obligation_id"]]
         support = tuple(
             CandidateEvidenceSupport.create(
                 authority_namespace=authority_namespace,
-                evidence_entry_ref=raw["evidence_entry_ref"],
-                source_claim_kind=raw["source_claim_kind"],
+                evidence_entry_ref=evidence_ref,
+                source_claim_kind=obligation.claim_kind,
             )
-            for raw in item["evidence_support"]
+            for evidence_ref in obligation.eligible_candidate_evidence_refs
         )
         proposals.append(
             CandidateClaimProposal.create(
                 authority_namespace=authority_namespace,
-                proposal_item_ref=item["proposal_item_ref"],
+                proposal_item_ref=(
+                    "candidate-proposal-item:sha256:"
+                    + canonical_digest(
+                        {
+                            "provider_output_index": proposal_index,
+                            "proposal": item,
+                        }
+                    )
+                ),
                 obligation_id=item["obligation_id"],
                 subject=item["subject"],
                 factual_payload=item["factual_payload"],
@@ -1689,8 +1683,57 @@ def _recommendation_verification_output_validator(
 def _candidate_call_input(
     projection: RestrictedExecutionProjection,
 ) -> SemanticAuthorityCallInput:
-    payload = projection.to_dict()
-    payload["aggregate_evidence"] = _aggregate_evidence_projection(projection)
+    obligations = tuple(
+        item
+        for item in projection.obligations
+        if item.claim_kind in _CANDIDATE_CLAIM_KINDS
+        and item.eligible_candidate_evidence_refs
+    )
+    eligible_evidence_refs = tuple(
+        sorted(
+            {
+                evidence_ref
+                for obligation in obligations
+                for evidence_ref in obligation.eligible_candidate_evidence_refs
+            }
+        )
+    )
+    evidence_by_ref = {
+        item.evidence_entry_ref: item for item in projection.aggregate_evidence
+    }
+    if (
+        not obligations
+        or not eligible_evidence_refs
+        or set(eligible_evidence_refs) - set(evidence_by_ref)
+    ):
+        raise SemanticAuthorityWorkflowError(
+            "candidate_claim_provider_projection_invalid"
+        )
+    relevant_limitation_refs = tuple(
+        sorted(
+            {
+                limitation_ref
+                for evidence_ref in eligible_evidence_refs
+                for limitation_ref in evidence_by_ref[evidence_ref].limitation_refs
+            }
+        )
+    )
+    payload = {
+        "obligations": tuple(
+            {
+                key: value
+                for key, value in obligation.to_dict().items()
+                if key != "content_digest"
+            }
+            for obligation in obligations
+        ),
+        "aggregate_evidence": _aggregate_evidence_projection(
+            projection,
+            eligible_evidence_refs,
+        ),
+        "assumption_refs": projection.assumption_refs,
+        "limitation_refs": relevant_limitation_refs,
+    }
     return SemanticAuthorityCallInput.create(
         purpose="candidate_claim_proposal",
         authority_input_ref=projection.projection_ref,
@@ -1724,6 +1767,55 @@ def _aggregate_evidence_projection(
     )
 
 
+def _claim_key_provider_projection(claim_key: ClaimKey) -> Mapping[str, Any]:
+    """Expose business claim identity without replay-only authority metadata."""
+
+    return {
+        "goal_id": claim_key.goal_id,
+        "claim_kind": claim_key.claim_kind,
+        "subject": claim_key.subject,
+        "metric_ref": claim_key.metric_ref,
+        "target_window_ref": claim_key.target_window_ref,
+        "baseline_window_ref": claim_key.baseline_window_ref,
+        "scope": claim_key.scope,
+        "grain": claim_key.grain,
+        "dimension_path": claim_key.dimension_path,
+    }
+
+
+def _support_source_provider_projection(
+    edge: SupportEdge,
+) -> Mapping[str, Any]:
+    """Project only the evidence semantics the verifier must judge."""
+
+    return {
+        "kind": edge.kind,
+        "source_type": edge.source_type,
+        "source_ref": edge.source_ref,
+        "source_epistemic_class": edge.source_epistemic_class,
+        "source_publication_ceiling": edge.source_publication_ceiling.to_dict(),
+        "limitation_refs": edge.limitation_refs,
+    }
+
+
+def _recommendation_evidence_projection(
+    aggregate_evidence: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Keep recommendation facts while dropping verifier-only evidence metadata."""
+
+    return tuple(
+        {
+            "evidence_entry_ref": item["evidence_entry_ref"],
+            "evidence_kind": item["evidence_kind"],
+            "dimension_path": item["dimension_path"],
+            "window_refs": item["window_refs"],
+            "limitation_refs": item["limitation_refs"],
+            "observation_facts": item["observation_facts"],
+        }
+        for item in aggregate_evidence
+    )
+
+
 def _claim_authority_projection(
     *,
     claims: Sequence[ClaimRevision],
@@ -1731,7 +1823,16 @@ def _claim_authority_projection(
     support_edges: Sequence[SupportEdge],
     obligation_by_claim_ref: Mapping[str, str],
     projection: RestrictedExecutionProjection,
+    projection_mode: str = "claim_verification",
 ) -> tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]]:
+    if projection_mode not in {
+        "claim_verification",
+        "recommendation_proposal",
+        "recommendation_verification",
+    }:
+        raise SemanticAuthorityWorkflowError(
+            "semantic_projection_mode_invalid"
+        )
     edge_by_ref = {edge.support_edge_ref: edge for edge in support_edges}
     key_by_ref = {item.claim_key: item for item in claim_keys}
     evidence_by_ref = {
@@ -1805,40 +1906,29 @@ def _claim_authority_projection(
 
         factual_payload = canonical_value(claim.factual_payload)
 
-        projected_claims.append(
-            {
-                "claim_ref": claim.claim_ref,
-                "claim_key": claim_key.to_dict(),
-                "claim_class": claim.claim_class,
-                "status": claim.status,
-                "publication_ceiling": claim.publication_ceiling.to_dict(),
-                "limitation_refs": claim.limitation_refs,
-                "dependency_claim_refs": claim.dependency_claim_refs,
-                "obligation_id": obligation_id,
-                "evidence_entry_refs": evidence_refs,
-                "bound_evidence_kinds": bound_evidence_kinds,
+        projected_claim = {
+            "claim_ref": claim.claim_ref,
+            "claim_key": _claim_key_provider_projection(claim_key),
+            "claim_class": claim.claim_class,
+            "publication_ceiling": claim.publication_ceiling.to_dict(),
+            "limitation_refs": claim.limitation_refs,
+            "dependency_claim_refs": claim.dependency_claim_refs,
+            "obligation_id": obligation_id,
+            "evidence_entry_refs": evidence_refs,
+            "bound_evidence_kinds": bound_evidence_kinds,
+            "assumption_refs": assumption_refs,
+            "factual_payload": _lossless_semantic_value(factual_payload),
+        }
+        if projection_mode != "recommendation_proposal":
+            projected_claim = {
+                **projected_claim,
                 "evidence_requirement_status": requirement_status,
-                "assumption_refs": assumption_refs,
                 "support_sources": tuple(
-                    {
-                        "support_edge_ref": edge.support_edge_ref,
-                        "kind": edge.kind,
-                        "source_type": edge.source_type,
-                        "source_ref": edge.source_ref,
-                        "source_epistemic_class": edge.source_epistemic_class,
-                        "source_publication_ceiling": (
-                            edge.source_publication_ceiling.to_dict()
-                        ),
-                        "limitation_refs": edge.limitation_refs,
-                        "content_digest": edge.content_digest,
-                    }
+                    _support_source_provider_projection(edge)
                     for edge in claim_support_edges
                 ),
-                "factual_payload_digest": canonical_digest(factual_payload),
-                "factual_payload": _lossless_semantic_value(factual_payload),
-                "content_digest": claim.content_digest,
             }
-        )
+        projected_claims.append(projected_claim)
 
     return tuple(projected_claims), _aggregate_evidence_projection(
         projection, tuple(sorted(referenced_evidence_refs))
@@ -1863,6 +1953,7 @@ def _claim_verification_projection(
         support_edges=checkpoint.proposed_support_edges,
         obligation_by_claim_ref=obligation_by_claim_ref,
         projection=projection,
+        projection_mode="claim_verification",
     )
 
 
@@ -1942,7 +2033,12 @@ def _accepted_claim_projection(
     projection: RestrictedExecutionProjection,
     *,
     claim_refs: Sequence[str] | None = None,
-) -> tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]]:
+    projection_mode: str = "recommendation_verification",
+) -> tuple[
+    tuple[Mapping[str, Any], ...],
+    tuple[Mapping[str, Any], ...],
+    tuple[Mapping[str, Any], ...],
+]:
     selected_refs = (
         tuple(item.claim_ref for item in settlement.accepted_claims)
         if claim_refs is None
@@ -1966,21 +2062,38 @@ def _accepted_claim_projection(
         support_edges=settlement.accepted_support_edges,
         obligation_by_claim_ref={ref: all_membership[ref] for ref in selected_refs},
         projection=projection,
+        projection_mode=projection_mode,
     )
     claim_by_ref = {item.claim_ref: item for item in claims}
-    return (
-        tuple(
+    authorization_catalog: dict[str, Mapping[str, Any]] = {}
+    provider_claims: list[Mapping[str, Any]] = []
+    for item in projected_claims:
+        authorization = canonical_value(
+            recommendation_authorization_for_ceiling(
+                claim_by_ref[str(item["claim_ref"])].publication_ceiling
+            )
+        )
+        authorization_ref = (
+            "recommendation-authorization:sha256:"
+            + canonical_digest(authorization)
+        )
+        authorization_catalog[authorization_ref] = authorization
+        provider_claims.append(
             {
                 **item,
-                "recommendation_authorization": canonical_value(
-                    recommendation_authorization_for_ceiling(
-                        claim_by_ref[str(item["claim_ref"])].publication_ceiling
-                    )
-                ),
+                "recommendation_authorization_ref": authorization_ref,
             }
-            for item in projected_claims
-        ),
+        )
+    return (
+        tuple(provider_claims),
         aggregate_evidence,
+        tuple(
+            {
+                "recommendation_authorization_ref": authorization_ref,
+                "authorization": authorization_catalog[authorization_ref],
+            }
+            for authorization_ref in sorted(authorization_catalog)
+        ),
     )
 
 
@@ -1988,8 +2101,14 @@ def _recommendation_call_input(
     settlement: ClaimSettlement,
     projection: RestrictedExecutionProjection,
 ) -> SemanticAuthorityCallInput:
-    verified_claims, aggregate_evidence = _accepted_claim_projection(
-        settlement, projection
+    (
+        verified_claims,
+        aggregate_evidence,
+        recommendation_authorization_catalog,
+    ) = _accepted_claim_projection(
+        settlement,
+        projection,
+        projection_mode="recommendation_proposal",
     )
     return SemanticAuthorityCallInput.create(
         purpose="recommendation_proposal",
@@ -1998,7 +2117,12 @@ def _recommendation_call_input(
             "claim_graph_ref": settlement.claim_graph.claim_graph_ref,
             "claim_graph_digest": settlement.claim_graph.content_digest,
             "verified_claims": verified_claims,
-            "aggregate_evidence": aggregate_evidence,
+            "recommendation_authorization_catalog": (
+                recommendation_authorization_catalog
+            ),
+            "verified_evidence_context": _recommendation_evidence_projection(
+                aggregate_evidence
+            ),
             "obligation_coverage": tuple(
                 item.to_dict() for item in settlement.obligation_coverage
             ),
@@ -2016,10 +2140,15 @@ def _recommendation_verification_call_input(
     supporting_refs = _accepted_claim_dependency_closure(
         settlement, proposal.supporting_claim_refs
     )
-    supporting_claims, aggregate_evidence = _accepted_claim_projection(
+    (
+        supporting_claims,
+        aggregate_evidence,
+        recommendation_authorization_catalog,
+    ) = _accepted_claim_projection(
         settlement,
         projection,
         claim_refs=supporting_refs,
+        projection_mode="recommendation_verification",
     )
     relevant_refs = set(supporting_refs)
     return SemanticAuthorityCallInput.create(
@@ -2030,6 +2159,9 @@ def _recommendation_verification_call_input(
             "claim_graph_digest": settlement.claim_graph.content_digest,
             "recommendation_proposal": proposal.to_dict(),
             "supporting_claims": supporting_claims,
+            "recommendation_authorization_catalog": (
+                recommendation_authorization_catalog
+            ),
             "aggregate_evidence": aggregate_evidence,
             "obligation_coverage": tuple(
                 item.to_dict()

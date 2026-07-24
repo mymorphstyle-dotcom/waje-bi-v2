@@ -209,7 +209,11 @@ def validate_time_spec(value: Any) -> Mapping[str, Any]:
         "period": {"kind", "period_ref"},
         "custom": {"kind", "expression"},
     }
-    if kind not in TIME_SPEC_KINDS or set(value) != shapes[kind]:
+    if (
+        not isinstance(kind, str)
+        or kind not in TIME_SPEC_KINDS
+        or set(value) != shapes[kind]
+    ):
         raise TemporalComparisonContractError(error)
     if kind == "date":
         return _immutable_mapping(
@@ -248,7 +252,7 @@ def target_window_ref(time_spec: Mapping[str, Any]) -> str:
 
 
 def _validate_aggregation(value: Any, error: str) -> str:
-    if value not in WINDOW_AGGREGATIONS:
+    if not isinstance(value, str) or value not in WINDOW_AGGREGATIONS:
         raise TemporalComparisonContractError(error)
     return str(value)
 
@@ -263,9 +267,14 @@ def _validate_calendar_members(
     if not isinstance(value, (list, tuple)) or not value:
         raise TemporalComparisonContractError(error)
     members = tuple(value)
-    if len(members) != len(set(members)) or any(
-        isinstance(member, bool) or member not in allowed for member in members
+    if any(
+        isinstance(member, bool)
+        or not isinstance(member, (str, int))
+        or member not in allowed
+        for member in members
     ):
+        raise TemporalComparisonContractError(error)
+    if len(members) != len(set(members)):
         raise TemporalComparisonContractError(error)
     return tuple(member for member in member_order if member in set(members))
 
@@ -282,7 +291,7 @@ def validate_comparison_spec(
     if not isinstance(value, Mapping):
         raise TemporalComparisonContractError(error)
     kind = value.get("kind")
-    if kind not in COMPARISON_KINDS:
+    if not isinstance(kind, str) or kind not in COMPARISON_KINDS:
         raise TemporalComparisonContractError(error)
     if kind == "none":
         if set(value) != {"kind"}:
@@ -317,7 +326,10 @@ def validate_comparison_spec(
         if bounds is None:
             raise TemporalComparisonContractError(error)
         baseline_class = value.get("baseline_class")
-        if baseline_class not in FIXED_WINDOW_BASELINE_CLASSES:
+        if (
+            not isinstance(baseline_class, str)
+            or baseline_class not in FIXED_WINDOW_BASELINE_CLASSES
+        ):
             raise TemporalComparisonContractError(error)
         baseline_start, baseline_end = _date_bounds(
             start=value.get("baseline_start"),
@@ -370,7 +382,11 @@ def validate_comparison_spec(
         if contract is None or value.get("period_grain") != contract[0]:
             raise TemporalComparisonContractError(error)
         baseline_class = value.get("baseline_class")
-        if baseline_class not in _CALENDAR_BASELINE_CLASSES[str(partition_field)]:
+        if (
+            not isinstance(baseline_class, str)
+            or baseline_class
+            not in _CALENDAR_BASELINE_CLASSES[str(partition_field)]
+        ):
             raise TemporalComparisonContractError(error)
         target_members = _validate_calendar_members(
             value.get("target_members"),

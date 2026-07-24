@@ -1,0 +1,260 @@
+{
+  "adapterCounts": {
+    "pytest": 12
+  },
+  "caseCount": 12,
+  "cases": [
+    {
+      "adapter": "pytest",
+      "caseId": "p8_provider_performance_audit",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_provider_performance_audit",
+          "durationSeconds": 1.038,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.57s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_intent_projection_compaction",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_intent_projection_compaction",
+          "durationSeconds": 1.04,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "......                                                                   [100%]\n6 passed in 0.63s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_narrative_retry_elimination",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_narrative_retry_elimination",
+          "durationSeconds": 0.574,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.24s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_quality_audit_off_delivery_path",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_quality_audit_off_delivery_path",
+          "durationSeconds": 0.52,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.19s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_narrative_reference_transport",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_narrative_reference_transport",
+          "durationSeconds": 4.493,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 4.15s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_verifier_thinking_policy",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_verifier_thinking_policy",
+          "durationSeconds": 0.569,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.22s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_terminal_handoff_validation",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_terminal_handoff_validation",
+          "durationSeconds": 1.153,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.69s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_batched_artifact_lookup",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_batched_artifact_lookup",
+          "durationSeconds": 1.078,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.56s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_summary_maintenance_off_customer_path",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_summary_maintenance_off_customer_path",
+          "durationSeconds": 0.534,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.18s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_quality_audit_failure_isolation",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_quality_audit_failure_isolation",
+          "durationSeconds": 0.766,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.40s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_prebound_read_only_follow_up",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_prebound_read_only_follow_up",
+          "durationSeconds": 1.29,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.80s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p8_narrative_reference_assembly",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p8_narrative_reference_assembly",
+          "durationSeconds": 0.583,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.22s\n"
+        }
+      ],
+      "riskTier": "critical"
+    }
+  ],
+  "generatedAt": "2026-07-23T19:44:14.206584+00:00",
+  "mode": "execution",
+  "model": "",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": null,
+  "passedCaseCount": 12,
+  "profile": "smoke",
+  "provider": "",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

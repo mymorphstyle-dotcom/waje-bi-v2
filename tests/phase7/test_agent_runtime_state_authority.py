@@ -15,6 +15,7 @@ from bi_agent.runtime.agent_context import (
     InMemoryArtifactIndex,
 )
 from bi_agent.runtime.agent_sdk_contracts import (
+    AgentSdkAdapterError,
     AgentToolResult,
     AgentSessionError,
     WajeAgentRunRequest,
@@ -126,7 +127,7 @@ class SessionWritingAdapter:
         self,
         final_output: Mapping[str, Any],
         *,
-        tool_events: tuple[tuple[str, str, Mapping[str, Any], Any], ...] = (),
+        tool_events: tuple[tuple[Any, ...], ...] = (),
         error: Exception | None = None,
         post_tool_error: Exception | None = None,
     ) -> None:
@@ -147,7 +148,14 @@ class SessionWritingAdapter:
         persisted_sdk_items: list[dict[str, Any]] = [
             {"role": "user", "content": request.input_text}
         ]
-        for tool_name, call_id, arguments, result in self.tool_events:
+        for event in self.tool_events:
+            if len(event) == 4:
+                tool_name, call_id, arguments, result = event
+                succeeded = True
+            elif len(event) == 5:
+                tool_name, call_id, arguments, result, succeeded = event
+            else:
+                raise AssertionError("tool_event_shape_invalid")
             await request.event_sink.record_tool_call(
                 tool_name=tool_name,
                 call_id=call_id,
@@ -157,7 +165,7 @@ class SessionWritingAdapter:
                 tool_name=tool_name,
                 call_id=call_id,
                 result=result,
-                succeeded=True,
+                succeeded=succeeded,
             )
             persisted_sdk_items.extend(
                 [
@@ -879,6 +887,7 @@ def test_post_tool_model_failure_delivers_persisted_customer_safe_summary() -> N
         selected_tools=[tool.name],
         initial_action="call_tool",
         required_tool_name=tool.name,
+        required_tool_arguments={},
         material_decision_topics=[],
     )
 
@@ -916,6 +925,76 @@ def test_post_tool_model_failure_delivers_persisted_customer_safe_summary() -> N
     )
     assert terminal is not None
     assert terminal.payload["error_code"] == "provider_unavailable"
+
+
+def test_terminal_tool_failure_delivers_summary_without_a_second_model_turn() -> None:
+    tool_result = AgentToolResult(
+        status="failed",
+        output=None,
+        artifactRefs=[],
+        materialRefs=[],
+        limitationRefs=[],
+        retryability="replan_required",
+        customerSummary="当前线程中没有找到可用于解释的已发布材料。",
+        technicalDetailRef=None,
+    )
+    adapter = SessionWritingAdapter(
+        {},
+        tool_events=(
+            (
+                "inspect_analysis_artifact",
+                "call-missing-artifact",
+                {},
+                tool_result.model_dump(mode="json", by_alias=True),
+                False,
+            ),
+        ),
+        post_tool_error=AgentSdkAdapterError("agent_tool_terminal_failure"),
+    )
+    ledger, runtime = _runtime(adapter)
+    tool = WajeAgentTool(
+        name="inspect_analysis_artifact",
+        description="Read one persisted customer-safe analysis artifact.",
+        input_model=_NoArguments,
+        handler=lambda _arguments: tool_result,
+        failure_recovery="customer_summary",
+    )
+    action_binding = AgentTurnActionBinding.create(
+        catalog_digest="catalog-digest",
+        input_digest="input-digest",
+        action_context_digest="context-digest",
+        selected_tools=[tool.name],
+        initial_action="call_tool",
+        required_tool_name=tool.name,
+        required_tool_arguments={},
+        material_decision_topics=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            replace(
+                _request(),
+                tools=(tool,),
+                action_binding=action_binding,
+            )
+        )
+    )
+
+    assert result.status == "completed_with_limits"
+    assert result.error_code == "agent_tool_terminal_failure"
+    assert result.assistant_item.text == tool_result.customer_summary
+    assert result.final_output == {
+        "answerMarkdown": tool_result.customer_summary,
+        "materialRefs": [],
+        "limitationRefs": [],
+    }
+    tool_results = [
+        item
+        for item in ledger.list_items("thread-runtime")
+        if item.item_type == "tool_result"
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0].payload["succeeded"] is False
 
 
 def test_post_tool_model_failure_does_not_recover_an_unapproved_tool_result() -> None:
@@ -958,6 +1037,7 @@ def test_post_tool_model_failure_does_not_recover_an_unapproved_tool_result() ->
         selected_tools=[tool.name],
         initial_action="call_tool",
         required_tool_name=tool.name,
+        required_tool_arguments={},
         material_decision_topics=[],
     )
 
@@ -1017,6 +1097,7 @@ def test_post_tool_model_failure_rejects_an_unsafe_recovery_summary() -> None:
         selected_tools=[tool.name],
         initial_action="call_tool",
         required_tool_name=tool.name,
+        required_tool_arguments={},
         material_decision_topics=[],
     )
 

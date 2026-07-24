@@ -867,20 +867,22 @@ P4 的执行与验收细节见
    count 必须为零。
 4. 回答质量由人工 advisory review 评价，不改变硬合同和首次 publication。
 
-### P7：回答完整性补全（已实现）
+### P7：回答完整性审计与持续交付（已实现）
 
 1. typed requested factors 编译为独立 user-required obligations，并保留对应 axis 和
    contract-declared dimensions。
 2. claim coverage 的数据缺口继续走有界 `PlanPatch` 补查；无可用 route 时形成局部 explicit
    boundary，可靠结论继续发布。
 3. `AnswerCompletenessAssessment` 检查 required blocks 中的 claim handles、显式请求 factor 的
-   required public fact handles 和 limitation handles。
-4. narrative 遗漏最多触发一次 additive completion revision；补全失败保留首稿，以
-   `completed_with_limits`、安全 warning 和已知边界交付。
+   required public fact handles 和 limitation handles，结果只进入 Workbench 与人工复核。
+4. narrative writer 每个首次 publication 只生成一个正文版本。表达遗漏、洞察深度、段落组织
+   和行动性不触发自动补写、局部改写、客户 warning、状态降级或撤回。
 5. payment final-outcome capability 对账全样本 totals，并为 payment method/channel 生成同成员
    跨窗口的代表性终态 summary。typed interpretation contract 禁止把终态变化扩写成效率、
    失败环节、延迟、重试、事故或因果机制。
-6. 逐块 verifier 的主观质量发现仍只进入人工审核，不触发自动补全、撤回或 publication veto。
+6. 逐块质量核验不创建 publication 依赖或 `pending` 发布身份。客户 publication 完成后，独立
+   审计调用才可生成 `completed` 或 `unavailable` 的 `NarrativeQualityAuditResult`，并引用已完成
+   的 customer publication。该调用不在首答关键路径，主观发现只进入 Workbench 和人工审核。
 7. 已发布材料追问使用 typed 工具恢复能力：客户安全只读工具成功持久化后，最终模型失败可以
    直接交付工具摘要并标记 `completed_with_limits`；普通工具、挂起工具、失败结果、来源闭包或
    审计持久化失败不进入恢复路径。
@@ -892,8 +894,42 @@ P7 的执行与验收细节见
 [P7 answer-completeness repair plan](../../superpowers/plans/2026-07-23-p7-answer-completeness-repair.md)
 和 [P7 answer-completeness repair report](../../reviews/2026-07-23-p7-answer-completeness-repair.md)。
 
+### P8：完整首答性能收敛（验收完成）
+
+1. 完整首答性能合同保持 480 秒，已发布材料追问保持 20 秒；超限进入 WAJE 性能审计，线上
+   已形成的安全 publication 继续交付。
+2. plan proposal 使用 critical 模型档位并关闭额外 thinking，确定性 compiler 继续验证 accepted
+   obligation、capability route、数据合同和安全边界。
+3. candidate claim、semantic verifier、recommendation、narrative writer 均使用显式 purpose
+   profile；质量 block verifier 从客户交付关键路径移出。
+4. narrative 与 semantic provider payload 使用无损列式材料和短 authority alias，SDK、原始
+   Provider payload 与技术错误只进入 Workbench。
+5. P8 标准包同时验证首答、两轮基于已发布 artifact 的追问、无 `OPENAI_API_KEY`、大陆
+   Provider 唯一出站和质量审计不影响首次 publication。
+6. 动态动作绑定升级为 `agent-turn-action-binding.v2`，同时持久化已选只读工具及经 Pydantic
+   合同验证的规范参数。对 `prebinding_policy=read_only` 的工具，Agents SDK 先执行这次已绑定
+   调用，随后只向 DeepSeek 发起一次不携带工具 schema 的强类型合成请求；普通和多轮工具 loop
+   继续使用原 SDK Runner 路径。
+7. intent 提示合同明确区分独立业务目标与组成、诊断、健康度指标。模型按 goal catalog 绑定
+   `target_metric_refs`，其余用户显式要求的指标进入 `requested_factor_refs`；运行时不使用
+   关键词表或本地语义改写。
+8. narrative 引用装配由 accepted authority 决定：已知 fact 绑定到多个合法 claim 时，按
+   authority 顺序确定 owner 并保留模型原文；未知 claim/fact 继续作为 provenance 合同错误。
+   完整度、深度、表达和行动性只进入交付后的 advisory review，不触发删段、补写、模型重试、
+   状态降级或 publication veto。
+9. 最终真实 DeepSeek 验收中，完整首答为 318.835 秒，两轮 artifact 追问为 11.175 秒和
+   9.518 秒。首答保留 21 个 accepted capability task、23 条 evidence、22 个 verified claim、
+   7 个 narrative block、claim verifier、settlement、publication 与 delivery 闭包。两轮追问
+   各执行一个只读 artifact 工具和一次真实 generation，没有重跑 BI。
+10. 首答的 6 次模型调用全部一次成功，Provider retry 为 0；WAJE performance profile 中
+    intent、plan、evidence、coverage、claim authority、narrative 和 delivery 均满足各自预算。
+    验收环境没有 `OPENAI_API_KEY`，唯一模型出站为 `https://api.deepseek.com`，
+    OpenAI hosted request count 为 0。
+
 2026-07-22 已在仓库 `.env` 指向的目标环境完成快照一致备份、v9→v12 原位升级、数据库只读
-审计、真实 DeepSeek gate、运行进程验证和完整回归；随后完成 v12→v13 原位升级与当前门禁。
+审计、真实 DeepSeek gate、运行进程验证和完整回归；随后完成 v12→v13 以及 v13→v14 原位
+升级。v14→v15 删除 publication 对质量核验的运行时依赖；v15 的质量审计结果只允许
+`completed` 或 `unavailable`，并引用已经完成的 customer publication，不重写业务记录。
 后续每个部署目标都要重新生成自己的
 `general-agent-deployment.v1` 报告；缺少目标环境时不会伪造通过状态。
 

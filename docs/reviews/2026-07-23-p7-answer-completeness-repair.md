@@ -1,7 +1,12 @@
 # P7 回答完整性补全闭环验收
 
 日期：2026-07-23
-状态：实现完成，真实 DeepSeek 复验通过
+状态：历史验收记录；其中 narrative 自动补全、客户 warning 和同步 verifier 路径已被
+`docs/adr/2026-07-20-advisory-publication-human-review.md` 的当前合同明确取代
+
+> 当前有效合同：回答深度、完整性、可读性和行动性只进入交付后质量审计与人工复核。质量发现
+> 不触发 writer retry、自动补写、状态降级、客户 warning、撤回或 publication veto，也不占用
+> 首答交付关键路径。本页保留为 P7 当时的实现与测试证据，不能作为当前运行时合同。
 
 ## 交付边界
 

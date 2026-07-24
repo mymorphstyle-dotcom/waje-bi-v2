@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+import pytest
+
+import bi_agent.runtime.narrative_workflow as narrative_workflow_module
 from bi_agent.runtime.llm_client import LLMProviderError
-from bi_agent.runtime.narrative_workflow import run_narrative_workflow
+from bi_agent.runtime.narrative_authority import BlockVerifierReport
+from bi_agent.runtime.narrative_workflow import (
+    NarrativeWorkflowResult,
+    run_narrative_workflow,
+)
 from bi_agent.runtime.publication_flow import PublicationFlowResult
 from tests.phase7.test_narrative_workflow import (
     _FakeNarrativeLLM,
@@ -14,7 +21,7 @@ from tests.phase7.test_narrative_workflow import (
     _context,
     _initial_writer,
     _prepared_projection,
-    _provider_material_facts,
+    _run_quality_audit,
 )
 
 
@@ -26,70 +33,6 @@ def _incomplete_writer(
     for block in output["blocks"]:
         block["required"] = False
     return output
-
-
-def _completion_writer(
-    _: str,
-    payload: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    focused = payload["answer_context"]["focused_retry"]
-    material = payload["material_projection"]
-    claims_by_handle = {
-        item["claim_handle"]: item for item in material["claims"]
-    }
-    materials_by_handle = {
-        item["material_handle"]: item for item in material["evidence_materials"]
-    }
-    blocks: list[dict[str, Any]] = []
-    for target in focused["retry_targets"]:
-        required_coverage = target["required_coverage"]
-        claim_handles = list(
-            dict.fromkeys(
-                handle
-                for item in required_coverage
-                for handle in item["claim_handle_options"][:1]
-            )
-        )
-        limitation_handles = list(
-            dict.fromkeys(
-                handle
-                for item in required_coverage
-                for handle in item["required_limitation_handles"]
-            )
-        )
-        bindings = []
-        for claim_handle in claim_handles:
-            claim = claims_by_handle[claim_handle]
-            evidence = materials_by_handle[claim["material_handles"][0]]
-            bindings.append(
-                {
-                    "claim_handle": claim_handle,
-                    "fact_handle": _provider_material_facts(evidence)[0][
-                        "fact_handle"
-                    ],
-                }
-            )
-        blocks.append(
-            {
-                "text": "补充已验证但首稿遗漏的必答分析材料。",
-                "claim_handles": claim_handles,
-                "recommendation_handles": [],
-                "limitation_handles": limitation_handles,
-                "material_fact_bindings": bindings,
-                "statement_role": "business_finding",
-            }
-        )
-    return {"blocks": blocks}
-
-
-class _CompletionFailureLLM(_FakeNarrativeLLM):
-    def invoke_json(self, **kwargs: Any):
-        if len(self.calls) == 2:
-            raise LLMProviderError(
-                kind="provider_unavailable",
-                retryability="retryable",
-            )
-        return super().invoke_json(**kwargs)
 
 
 def _run(client: Any):
@@ -108,32 +51,22 @@ def _run(client: Any):
     )
 
 
-def test_incomplete_required_handles_trigger_one_additive_completion_revision() -> None:
-    client = _FakeNarrativeLLM(
-        (
-            _incomplete_writer,
-            _accept_every_block,
-            _completion_writer,
-            _accept_every_block,
-        )
-    )
+def test_incomplete_required_handles_are_audited_without_quality_revision() -> None:
+    client = _FakeNarrativeLLM((_incomplete_writer, _accept_every_block))
 
     authority, result = _run(client)
 
-    assert result.completion_repair_status == "completed"
-    assert result.completion_repair_failure_kind is None
-    assert [item.status for item in result.completeness_assessments] == [
-        "incomplete",
-        "complete",
-    ]
-    assert len(result.narratives) == 2
-    assert result.focused_retry is not None
-    assert result.narratives[1].parent_narrative_id == result.narratives[0].narrative_id
-    assert tuple(result.narratives[1].blocks[:2]) == result.narratives[0].blocks
-    assert len(client.calls) == 4
-    assert client.calls[2]["payload"]["answer_context"]["focused_retry"][
-        "accepted_sibling_blocks"
-    ]
+    assert [item.status for item in result.completeness_assessments] == ["incomplete"]
+    assert len(result.narratives) == 1
+    assert result.delivery_narrative is result.narratives[0]
+    assert tuple(item.purpose for item in result.provider_call_inputs) == (
+        "narrative_writer",
+    )
+    assert len(client.calls) == 1
+    quality_audit = _run_quality_audit(authority, result, client)
+    assert quality_audit.verifier_report.audit_status == "completed"
+    assert len(client.calls) == 2
+    assert result.publication_ready is True
     assert result.replay(
         authority_bundle=authority.bundle,
         claim_settlement=authority.settlement,
@@ -142,22 +75,80 @@ def test_incomplete_required_handles_trigger_one_additive_completion_revision() 
     ) == result
 
 
-def test_completion_provider_failure_keeps_initial_answer_publishable_with_limit() -> None:
-    client = _CompletionFailureLLM(
-        (
-            _incomplete_writer,
-            _accept_every_block,
-        )
-    )
+def test_delivery_workflow_contract_has_no_quality_audit_dependency() -> None:
+    assert not hasattr(BlockVerifierReport, "pending")
+    assert {
+        "verification_attempts",
+        "verifier_reports",
+        "quality_audit_report",
+    }.isdisjoint(NarrativeWorkflowResult.__dataclass_fields__)
 
+
+def test_incomplete_quality_observation_does_not_add_customer_warning() -> None:
+    client = _FakeNarrativeLLM((_incomplete_writer, _accept_every_block))
+    authority, result = _run(client)
+    flow = PublicationFlowResult.create(
+        authority_inputs=authority.authority_inputs,
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        recommendations=authority.recommendations,
+        narrative_workflow=result,
+        supersedes_publication=None,
+        destination_ref="gateway:test-customer",
+        channel="gateway",
+        published_at="2026-07-23T12:00:00Z",
+    )
+    assert flow.customer_payload["blocks"]
+    assert flow.customer_payload["warnings"] == []
+
+
+def test_complete_initial_narrative_remains_a_single_delivery_version() -> None:
+    client = _FakeNarrativeLLM((_initial_writer, _accept_every_block))
+
+    _, result = _run(client)
+
+    assert [item.status for item in result.completeness_assessments] == ["complete"]
+    assert result.delivery_narrative is result.narratives[0]
+    assert tuple(item.purpose for item in result.provider_call_inputs) == (
+        "narrative_writer",
+    )
+    assert len(client.calls) == 1
+
+
+def test_quality_verifier_provider_failure_is_audited_without_blocking_delivery() -> (
+    None
+):
+    def unavailable_verifier(
+        _: str,
+        __: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        raise LLMProviderError(
+            kind="provider_unavailable",
+            retryability="retryable",
+        )
+
+    client = _FakeNarrativeLLM((_incomplete_writer, unavailable_verifier))
     authority, result = _run(client)
 
-    assert result.completion_repair_status == "exhausted"
-    assert result.completion_repair_failure_kind == "provider_unavailable"
-    assert [item.status for item in result.completeness_assessments] == ["incomplete"]
-    assert len(result.narratives) == 1
-    assert result.focused_retry is None
     assert result.publication_ready is True
+    assert result.delivery_narrative is result.narratives[0]
+    assert len(result.provider_audits) == 1
+    assert tuple(item.purpose for item in result.provider_call_inputs) == (
+        "narrative_writer",
+    )
+    quality_audit = _run_quality_audit(authority, result, client)
+    assert quality_audit.verifier_report.audit_status == "unavailable"
+    assert quality_audit.verifier_report.failure_kind == "provider_unavailable"
+    assert quality_audit.verifier_report.retryability == "retryable"
+    assert quality_audit.verifier_report.technical_detail_ref.startswith(
+        "technical-detail:sha256:"
+    )
+    assert result.replay(
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        evidence_entries=authority.evidence_entries,
+        recommendations=authority.recommendations,
+    ) == result
 
     flow = PublicationFlowResult.create(
         authority_inputs=authority.authority_inputs,
@@ -171,18 +162,41 @@ def test_completion_provider_failure_keeps_initial_answer_publishable_with_limit
         published_at="2026-07-23T12:00:00Z",
     )
     assert flow.customer_payload["blocks"]
-    assert flow.customer_payload["warnings"] == [
-        "部分分析要求的表达仍需人工复核，当前内容可作为业务判断参考。"
-    ]
+    assert flow.customer_payload["warnings"] == []
 
 
-def test_complete_initial_narrative_does_not_open_completion_repair() -> None:
-    client = _FakeNarrativeLLM((_initial_writer, _accept_every_block))
+def test_quality_audit_setup_failure_cannot_change_completed_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeNarrativeLLM((_initial_writer,))
+    authority, result = _run(client)
+    flow = PublicationFlowResult.create(
+        authority_inputs=authority.authority_inputs,
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        recommendations=authority.recommendations,
+        narrative_workflow=result,
+        supersedes_publication=None,
+        destination_ref="gateway:test-customer",
+        channel="gateway",
+        published_at="2026-07-23T12:00:00Z",
+    )
+    before = flow.to_dict()
 
-    _, result = _run(client)
+    def fail_audit_setup(**_: Any) -> Any:
+        raise RuntimeError("injected_quality_audit_setup_failure")
 
-    assert result.completion_repair_status == "not_required"
-    assert result.completion_repair_failure_kind is None
-    assert [item.status for item in result.completeness_assessments] == ["complete"]
-    assert result.focused_retry is None
-    assert len(client.calls) == 2
+    monkeypatch.setattr(
+        narrative_workflow_module,
+        "_prepare_verifier_call",
+        fail_audit_setup,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="injected_quality_audit_setup_failure",
+    ):
+        _run_quality_audit(authority, result, client)
+
+    assert flow.to_dict() == before
+    assert flow.customer_payload["blocks"]
+    assert len(client.calls) == 1

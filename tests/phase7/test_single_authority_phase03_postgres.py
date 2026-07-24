@@ -15,11 +15,11 @@ from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
     CapabilityExecutionPlan,
     CapabilityInputSlot,
+    QueryContract,
+    QueryResultEnvelope,
+    ResultShape,
     analysis_contract_signature,
-)
-from bi_agent.runtime.authoritative_query_chain import (
-    _report_from_record,
-    _result_from_record,
+    query_contract_signature,
 )
 from bi_agent.runtime.authoritative_execution_result import (
     AuthoritativeExecutionResult,
@@ -44,10 +44,13 @@ from bi_agent.runtime.capability_execution import bind_capability_inputs
 from bi_agent.runtime.evidence_authority import (
     EvidenceIntegrityError,
     canonical_digest,
+    canonical_result_rows_hash,
 )
 from bi_agent.runtime.evidence_taxonomy import publication_evidence_kind
 from bi_agent.runtime.durable_call_journal import DurableCallSpec
 from bi_agent.runtime.runtime_persistence import CapabilitySettlementAuthority
+from bi_agent.runtime.query_audit import query_audit_refs
+from bi_agent.runtime.query_completeness import ASSERTIONS, validate_query_result
 from bi_agent.runtime.single_authority import DurableTransition
 from tests.phase7.test_single_authority_phase02_postgres import (
     QUESTION,
@@ -355,21 +358,22 @@ def _compare_period_settlement_authority(plan, task):
     analysis_ref = f"analysis:{run_id}:capability-settlement"
     query_ref = f"query:{run_id}:channel-scan"
     snapshot_ref = f"snapshot:paid:{run_id}"
+    source_rows = (
+        {
+            "window_id": "target_day",
+            "period": "2026-06-19",
+            "channel": "app",
+            "amount": 12,
+        },
+        {
+            "window_id": "previous_day",
+            "period": "2026-06-18",
+            "channel": "app",
+            "amount": 10,
+        },
+    )
     content = verified_dimension_scan_context(
-        rows=(
-            {
-                "window_id": "target_day",
-                "period": "2026-06-19",
-                "channel": "app",
-                "amount": 12,
-            },
-            {
-                "window_id": "previous_day",
-                "period": "2026-06-18",
-                "channel": "app",
-                "amount": 10,
-            },
-        ),
+        rows=source_rows,
         required_fields=(
             "window_id",
             "window_role",
@@ -394,23 +398,113 @@ def _compare_period_settlement_authority(plan, task):
         analysis_contract_ref=analysis_ref,
     )
     resolver = content["evidence_resolver"]
-    segment_binding = resolver.resolve_capability_binding(
+    source_binding = resolver.resolve_capability_binding(
         content["binding_manifest_ref"]
     )
-    result_ref = segment_binding.validation_result_refs[0]
-    query_record = resolver.resolve_query_execution(result_ref)
-    rows_record = resolver.resolve_rows_record(
-        segment_binding.validation_rows_metadata_record_refs[0]
+    source_query_record = resolver.resolve_query_execution(
+        source_binding.validation_result_refs[0]
     )
-    completeness_record = resolver.resolve_completeness(
-        segment_binding.validation_completeness_record_refs[0]
-    )
-    rows = resolver.rows_loader.load_rows(rows_record.storage_ref)
-    result = _result_from_record(query_record, rows)
-    report = _report_from_record(completeness_record.report_payload)
-    contract = query_record.contract
+    source_contract = source_query_record.contract
+    snapshot_ref = source_contract.dataset_snapshot_refs[0]
+    snapshot_record = resolver.resolve_snapshot(snapshot_ref)
+    snapshot = snapshot_record.snapshot
     registry = content["runtime_registry"]
     capability = registry.capability_inputs("compare_periods")
+    query_shape = registry.query_shape("daily_metric_baselines")
+    metric_binding = source_contract.metric_bindings[0]
+    required_fields = tuple(
+        dict.fromkeys(
+            (
+                *query_shape["required_fields"],
+                metric_binding.metric_id,
+            )
+        )
+    )
+    contract = QueryContract(
+        query_contract_id=f"query:{run_id}:daily-metric-baselines",
+        analysis_contract_ref=analysis_ref,
+        query_intent="daily_metric_baselines",
+        dataset_snapshot_refs=(snapshot_ref,),
+        metric_bindings=(metric_binding,),
+        dimension_bindings=(),
+        window_refs=source_contract.window_refs,
+        resolved_windows=source_contract.resolved_windows,
+        filters=(),
+        result_shape=ResultShape(
+            required_fields=required_fields,
+            unique_key=tuple(query_shape["unique_key"]),
+            grain=tuple(query_shape["grain"]),
+            required_window_ids=source_contract.window_refs,
+            result_semantics=str(
+                query_shape.get("result_semantics") or "complete_aggregate"
+            ),
+            dimension_presence_policy=str(
+                query_shape["dimension_presence_policy"]
+            ),
+        ),
+        completeness_assertions=ASSERTIONS,
+        workload_class="interactive_aggregate",
+        contract_signature="",
+        query_role_ref=f"query-role:{run_id}:daily-metric-baselines",
+    )
+    contract = replace(
+        contract,
+        contract_signature=query_contract_signature(contract),
+    )
+    windows_by_id = {
+        window.window_id: window for window in contract.resolved_windows
+    }
+    rows = tuple(
+        {
+            "window_id": source["window_id"],
+            "window_role": windows_by_id[source["window_id"]].role,
+            "observation_key": source["period"],
+            metric_binding.metric_id: source["amount"],
+        }
+        for source in source_rows
+    )
+    execution_attempt_ref = f"attempt:{run_id}:daily-metric-baselines"
+    query_hash = f"query-hash:{run_id}:daily-metric-baselines"
+    audit_refs = query_audit_refs(
+        query_hash,
+        contract.contract_signature,
+        contract.dataset_snapshot_refs,
+        query_contract_ref=contract.query_contract_id,
+        execution_attempt_ref=execution_attempt_ref,
+        rows_content_hash=canonical_result_rows_hash(
+            rows,
+            contract.result_shape.unique_key,
+        ),
+    )
+    result = QueryResultEnvelope(
+        query_contract_ref=contract.query_contract_id,
+        query_id=f"clickhouse:{run_id}:daily-metric-baselines",
+        query_hash=query_hash,
+        result_ref=audit_refs.result_ref,
+        execution_status="succeeded",
+        rows_ref=audit_refs.rows_ref,
+        row_count=len(rows),
+        completeness_report_ref=audit_refs.completeness_report_ref,
+        rows=rows,
+        observed_schema={field: "String" for field in required_fields},
+        observed_windows=contract.window_refs,
+        observed_grain=contract.result_shape.grain,
+        source_snapshot_refs=(snapshot_ref,),
+        execution_attempt_ref=execution_attempt_ref,
+    )
+    report = validate_query_result(
+        contract,
+        result,
+        snapshot,
+        release_resolver=content["release_resolver"],
+    )
+    writer = resolver._runtime_writer()
+    writer.record_query_execution(
+        contract,
+        result,
+        {snapshot_ref: snapshot},
+    )
+    writer.record_completeness(report)
     maximum_strength = str(capability["maximum_claim_strength"])
     capability_plan = CapabilityExecutionPlan(
         capability_id="compare_periods",

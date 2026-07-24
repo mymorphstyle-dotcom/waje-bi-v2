@@ -59,6 +59,10 @@ def test_one_runtime_cycle_processes_all_durable_work_sources() -> None:
             "tools.runtime.recover_run_dispatches.process_agent_task_resume_outbox",
             return_value={"claimed": ["bi-run-2"]},
         ) as task_resumes,
+        patch(
+            "tools.runtime.recover_run_dispatches.process_stale_thread_summaries",
+            return_value={"completed": [{"thread_id": "thread-1"}]},
+        ) as summary_refreshes,
     ):
         summary = run_runtime_recovery_cycle(
             limit=9,
@@ -69,11 +73,15 @@ def test_one_runtime_cycle_processes_all_durable_work_sources() -> None:
         "run_dispatches": {"leased": ["bi-run-1"]},
         "general_agent_turns": {"discovered": ["operation-1"]},
         "agent_task_resumes": {"claimed": ["bi-run-2"]},
+        "thread_summary_refreshes": {
+            "completed": [{"thread_id": "thread-1"}]
+        },
     }
     run_dispatches.assert_called_once_with(store=store, limit=9)
     general_turns.assert_called_once_with(store=store, limit=9)
     assert task_resumes.call_args.kwargs["limit"] == 9
     assert task_resumes.call_args.kwargs["worker_id"] == "worker-production-1"
+    assert summary_refreshes.call_args.kwargs["limit"] == 9
 
 
 def test_scoped_runtime_cycle_never_leases_another_thread() -> None:
@@ -97,6 +105,10 @@ def test_scoped_runtime_cycle_never_leases_another_thread() -> None:
             "tools.runtime.recover_run_dispatches.process_agent_task_resume_outbox",
             return_value={"claimed": ["bi-run-scoped"]},
         ) as task_resumes,
+        patch(
+            "tools.runtime.recover_run_dispatches.process_stale_thread_summaries",
+            return_value={"completed": []},
+        ) as summary_refreshes,
     ):
         run_runtime_recovery_cycle(
             limit=1,
@@ -108,6 +120,7 @@ def test_scoped_runtime_cycle_never_leases_another_thread() -> None:
     run_dispatches.assert_called_once_with(store=store, limit=1, **expected_scope)
     general_turns.assert_called_once_with(store=store, limit=1, **expected_scope)
     assert task_resumes.call_args.kwargs["thread_id"] == "thread-eval-scoped"
+    assert summary_refreshes.call_args.kwargs["thread_id"] == "thread-eval-scoped"
 
 
 def test_continuous_worker_repeats_cycles_and_stops_gracefully() -> None:

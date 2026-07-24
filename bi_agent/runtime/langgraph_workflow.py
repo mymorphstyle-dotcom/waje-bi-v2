@@ -126,7 +126,7 @@ LLM_TASK_PROFILES: dict[str, tuple[str, str]] = {
     "single_authority_intent": ("default", "enabled"),
     "single_authority_clarification": ("default", "enabled"),
     "single_authority_decision_binding": ("critical", "enabled"),
-    "single_authority_plan_proposal": ("critical", "enabled"),
+    "single_authority_plan_proposal": ("critical", "disabled"),
     PLAN_EXPANSION_PROVIDER_TASK: ("critical", "enabled"),
     "single_authority_plan_patch_proposal": ("critical", "enabled"),
 }
@@ -774,10 +774,10 @@ def _single_authority_intent_payload(
     return {
         "original_user_text": question,
         "goal_catalog": [
-            {
-                "goal_id": goal_id,
-                **registry.analysis_goal_obligation(goal_id),
-            }
+            _intent_goal_catalog_item(
+                goal_id,
+                registry.analysis_goal_obligation(goal_id),
+            )
             for goal_id in registry.analysis_goal_ids
         ],
         "metric_catalog": [
@@ -788,10 +788,10 @@ def _single_authority_intent_payload(
             for metric_id in registry.metric_ids
         ],
         "analysis_axis_catalog": [
-            {
-                "axis_id": axis_id,
-                **registry.analysis_axis(axis_id),
-            }
+            _intent_axis_catalog_item(
+                axis_id,
+                registry.analysis_axis(axis_id),
+            )
             for axis_id in registry.analysis_axis_ids
         ],
         "scope_type_catalog": list(registry.public_scope_types),
@@ -920,6 +920,47 @@ def _single_authority_intent_payload(
     }
 
 
+def _intent_goal_catalog_item(
+    goal_id: str,
+    obligation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project only business intent fields; execution authority stays in the registry."""
+
+    return {
+        "goal_id": goal_id,
+        "business_name": obligation["business_name"],
+        "semantics": obligation["semantics"],
+        "question_family_ref": obligation["question_family_ref"],
+        "target_metric_refs": list(obligation["target_metric_refs"]),
+        "required_outcomes": list(obligation["required_outcomes"]),
+        "analysis_axes": [
+            {
+                "axis_id": item["axis_id"],
+                "role": item["role"],
+            }
+            for item in obligation["analysis_axes"]
+        ],
+    }
+
+
+def _intent_axis_catalog_item(
+    axis_id: str,
+    axis: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Expose business selection semantics without duplicating execution routing."""
+
+    return {
+        "axis_id": axis_id,
+        "business_name": axis["business_name"],
+        "semantics": axis["semantics"],
+        "axis_kind": axis["axis_kind"],
+        "target_metric_refs": list(axis["target_metric_refs"]),
+        "metric_refs": list(axis["metric_refs"]),
+        "dimension_refs": list(axis["dimension_refs"]),
+        "context_source_refs": list(axis["context_source_refs"]),
+    }
+
+
 def _single_authority_desired_decision_catalog(
     registry: RuntimeContractRegistry,
 ) -> list[dict[str, str]]:
@@ -1028,29 +1069,76 @@ def _validated_single_authority_intent_output(
 
 
 def _normalize_provider_intent_binding(value: Any) -> Any:
-    """Remove a matching derived target copy before strict authority validation."""
+    """Normalize only deterministic duplicates before strict authority validation."""
 
     if not isinstance(value, Mapping):
         return value
-    time_spec = value.get("time_spec")
-    comparison_spec = value.get("comparison_spec")
+    normalized = dict(value)
+
+    def scalar_enum(candidate: Any) -> Any:
+        if (
+            isinstance(candidate, Sequence)
+            and not isinstance(candidate, (str, bytes))
+            and len(candidate) == 1
+            and isinstance(candidate[0], str)
+        ):
+            return candidate[0]
+        return candidate
+
+    raw_time_spec = value.get("time_spec")
+    if isinstance(raw_time_spec, Mapping):
+        normalized["time_spec"] = {
+            **dict(raw_time_spec),
+            "kind": scalar_enum(raw_time_spec.get("kind")),
+        }
+    raw_comparison_spec = value.get("comparison_spec")
+    if isinstance(raw_comparison_spec, Mapping):
+        normalized["comparison_spec"] = {
+            **dict(raw_comparison_spec),
+            **{
+                field: scalar_enum(raw_comparison_spec.get(field))
+                for field in (
+                    "kind",
+                    "baseline_class",
+                    "aggregation",
+                    "period_grain",
+                    "partition_field",
+                )
+                if field in raw_comparison_spec
+            },
+        }
+    target_metric_refs = value.get("target_metric_refs")
+    requested_factor_refs = value.get("requested_factor_refs")
+    if (
+        isinstance(target_metric_refs, Sequence)
+        and not isinstance(target_metric_refs, (str, bytes))
+        and all(isinstance(item, str) for item in target_metric_refs)
+        and isinstance(requested_factor_refs, Sequence)
+        and not isinstance(requested_factor_refs, (str, bytes))
+        and all(isinstance(item, str) for item in requested_factor_refs)
+    ):
+        target_refs = set(target_metric_refs)
+        normalized["requested_factor_refs"] = [
+            item for item in requested_factor_refs if item not in target_refs
+        ]
+    time_spec = normalized.get("time_spec")
+    comparison_spec = normalized.get("comparison_spec")
     if (
         not isinstance(time_spec, Mapping)
         or not isinstance(comparison_spec, Mapping)
         or comparison_spec.get("kind") != "fixed_window"
         or not {"target_start", "target_end"}.issubset(comparison_spec)
     ):
-        return dict(value)
+        return normalized
     try:
         bounds = target_bounds(time_spec)
     except TemporalComparisonContractError:
-        return dict(value)
+        return normalized
     if bounds != (
         comparison_spec.get("target_start"),
         comparison_spec.get("target_end"),
     ):
-        return dict(value)
-    normalized = dict(value)
+        return normalized
     normalized_comparison = dict(comparison_spec)
     normalized_comparison.pop("target_start")
     normalized_comparison.pop("target_end")

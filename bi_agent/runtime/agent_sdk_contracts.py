@@ -5,10 +5,16 @@ from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, Sequenc
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from bi_agent.runtime.evidence_authority import canonical_value
+
 
 ToolHandler = Callable[
     [Mapping[str, Any]],
     Union[Any, Awaitable[Any]],
+]
+ToolArgumentAuthorityValidator = Callable[
+    [Mapping[str, Any], Mapping[str, Any]],
+    None,
 ]
 
 
@@ -79,6 +85,8 @@ class WajeAgentTool:
     handler: ToolHandler
     execution_mode: Literal["continue", "suspend_turn"] = "continue"
     failure_recovery: Literal["none", "customer_summary"] = "none"
+    prebinding_policy: Literal["disabled", "read_only"] = "disabled"
+    argument_authority_validator: ToolArgumentAuthorityValidator | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.replace("_", "").isalnum():
@@ -94,11 +102,48 @@ class WajeAgentTool:
             raise ValueError("agent_tool_execution_mode_invalid")
         if self.failure_recovery not in {"none", "customer_summary"}:
             raise ValueError("agent_tool_failure_recovery_invalid")
+        if self.prebinding_policy not in {"disabled", "read_only"}:
+            raise ValueError("agent_tool_prebinding_policy_invalid")
+        if (
+            self.argument_authority_validator is not None
+            and not callable(self.argument_authority_validator)
+        ):
+            raise TypeError("agent_tool_argument_authority_validator_invalid")
         if (
             self.execution_mode == "suspend_turn"
             and self.failure_recovery != "none"
         ):
             raise ValueError("agent_suspending_tool_failure_recovery_invalid")
+        if (
+            self.prebinding_policy == "read_only"
+            and self.execution_mode != "continue"
+        ):
+            raise ValueError("agent_tool_prebinding_requires_continue")
+
+
+@dataclass(frozen=True)
+class WajePreboundToolCall:
+    """SDK-neutral, typed first tool call accepted by WAJE action binding."""
+
+    tool_name: str
+    call_id: str
+    arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        for value, code in (
+            (self.tool_name, "agent_prebound_tool_name_invalid"),
+            (self.call_id, "agent_prebound_tool_call_id_invalid"),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+            ):
+                raise ValueError(code)
+        normalized = canonical_value(dict(self.arguments))
+        if not isinstance(normalized, dict):
+            raise ValueError("agent_prebound_tool_arguments_invalid")
+        object.__setattr__(self, "arguments", normalized)
 
 
 @dataclass(frozen=True)
@@ -117,6 +162,10 @@ class WajeAgentRunRequest:
     event_sink: WajeAgentEventSink | None = None
     initial_tool_choice: str = "auto"
     required_tool_name: str | None = None
+    prebound_tool_call: WajePreboundToolCall | None = None
+    thinking_mode: Literal["provider_default", "enabled", "disabled"] = (
+        "provider_default"
+    )
 
     def __post_init__(self) -> None:
         for value, code in (
@@ -150,6 +199,32 @@ class WajeAgentRunRequest:
                 raise ValueError("agent_required_tool_unknown")
             if self.initial_tool_choice != self.required_tool_name:
                 raise ValueError("agent_required_tool_choice_mismatch")
+        if self.prebound_tool_call is not None:
+            prebound = self.prebound_tool_call
+            if (
+                self.required_tool_name != prebound.tool_name
+                or self.initial_tool_choice != prebound.tool_name
+            ):
+                raise ValueError("agent_prebound_tool_binding_mismatch")
+            tool = next(
+                (candidate for candidate in self.tools if candidate.name == prebound.tool_name),
+                None,
+            )
+            if tool is None or tool.prebinding_policy != "read_only":
+                raise ValueError("agent_prebound_tool_policy_forbidden")
+            try:
+                parsed = tool.input_model.model_validate(dict(prebound.arguments))
+            except Exception as exc:
+                raise ValueError("agent_prebound_tool_arguments_invalid") from exc
+            normalized = canonical_value(parsed.model_dump(mode="json"))
+            if normalized != dict(prebound.arguments):
+                raise ValueError("agent_prebound_tool_arguments_not_canonical")
+        if self.thinking_mode not in {
+            "provider_default",
+            "enabled",
+            "disabled",
+        }:
+            raise ValueError("agent_thinking_mode_invalid")
 
 
 @dataclass(frozen=True)

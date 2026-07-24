@@ -11,11 +11,16 @@ class RoadmapRebaselineTest(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn("Architecture authority:", roadmap)
         self.assertIn(
-            "Architecture authority: [2026-07-17 single-authority workflow ADR]",
+            "[2026-07-17 single-authority workflow ADR]",
             roadmap,
         )
-        for phase in range(8):
+        self.assertIn(
+            "[2026-07-20 advisory publication ADR]",
+            roadmap,
+        )
+        for phase in range(9):
             self.assertIn(f"## Phase {phase}:", roadmap)
         self.assertIn("The cutover has no backward-compatibility path", roadmap)
         self.assertNotIn("Post-Phase 4 Rebaseline", roadmap)

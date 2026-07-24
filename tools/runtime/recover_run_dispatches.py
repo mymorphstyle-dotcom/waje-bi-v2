@@ -20,6 +20,10 @@ from bi_agent.runtime.agent_task_resume_outbox import (
 from bi_agent.runtime.general_agent_turn_recovery import (
     recover_general_agent_turns,
 )
+from bi_agent.runtime.thread_summary_maintenance import (
+    PostgresThreadSummaryMaintenance,
+    process_stale_thread_summaries,
+)
 
 
 DispatchRunner = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -252,6 +256,11 @@ def run_runtime_recovery_cycle(
                 worker_id=worker_id,
                 **scope_kwargs,
             ),
+            "thread_summary_refreshes": process_stale_thread_summaries(
+                maintenance=PostgresThreadSummaryMaintenance(store.connection),
+                limit=limit,
+                **scope_kwargs,
+            ),
         }
         return summary
     finally:
@@ -320,7 +329,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Continuously recover committed WAJE BI dispatches, General Agent "
-            "turns, and BI-to-Agent task resumes."
+            "turns, BI-to-Agent task resumes, and stale thread summaries."
         ),
     )
     parser.add_argument("--limit", type=int, default=100)

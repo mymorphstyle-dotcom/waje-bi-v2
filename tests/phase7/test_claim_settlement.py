@@ -625,6 +625,7 @@ def test_event_candidate_impact_requires_the_matching_composite_authority() -> N
         execution.plan_revision.temporal_authority.authority_ref
     )
     assert claim.factual_payload["causal_interpretation_allowed"] is False
+    assert claim.factual_payload["candidate_subject"] == proposal.subject
 
 
 def test_event_candidate_impact_rejects_missing_presence_support() -> None:

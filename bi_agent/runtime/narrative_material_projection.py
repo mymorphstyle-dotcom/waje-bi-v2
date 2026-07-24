@@ -480,6 +480,7 @@ class ProjectedNarrativeClaim:
     evidence_entry_refs: tuple[str, ...]
     material_handles: tuple[str, ...]
     limitation_handles: tuple[str, ...]
+    verified_claim_payload: Mapping[str, Any]
     content_digest: str
 
     @classmethod
@@ -489,8 +490,17 @@ class ProjectedNarrativeClaim:
         public_claim: PublicClaim,
         evidence_entry_refs: Sequence[str],
         material_handle_by_evidence_ref: Mapping[str, str],
+        verified_claim_payload: Mapping[str, Any],
     ) -> "ProjectedNarrativeClaim":
         public_claim.assert_integrity()
+        if not isinstance(verified_claim_payload, Mapping) or not verified_claim_payload:
+            raise NarrativeMaterialProjectionContractError(
+                "narrative_material_projection_claim_payload_invalid"
+            )
+        payload = _freeze(
+            verified_claim_payload,
+            "narrative_material_projection_claim_payload_invalid",
+        )
         refs = _string_tuple(
             evidence_entry_refs,
             "narrative_material_projection_claim_material_refs_invalid",
@@ -518,6 +528,7 @@ class ProjectedNarrativeClaim:
             "evidence_entry_refs": refs,
             "material_handles": handles,
             "limitation_handles": public_claim.limitation_handles,
+            "verified_claim_payload": payload,
         }
         projected_ref, digest = _content_ref("narrative-projected-claim:sha256:", body)
         return cls(
@@ -548,6 +559,7 @@ class ProjectedNarrativeClaim:
             "evidence_entry_refs": self.evidence_entry_refs,
             "material_handles": self.material_handles,
             "limitation_handles": self.limitation_handles,
+            "verified_claim_payload": self.verified_claim_payload,
         }
         expected_ref, digest = _content_ref("narrative-projected-claim:sha256:", body)
         if (
@@ -557,6 +569,8 @@ class ProjectedNarrativeClaim:
             or ceiling.claim_class != self.claim_class
             or len(self.evidence_entry_refs) != len(self.material_handles)
             or len(set(self.material_handles)) != len(self.material_handles)
+            or not isinstance(self.verified_claim_payload, Mapping)
+            or not self.verified_claim_payload
         ):
             raise NarrativeMaterialProjectionContractError(
                 "narrative_material_projection_integrity_invalid"
@@ -576,6 +590,7 @@ class ProjectedNarrativeClaim:
             "dimension_path": list(self.dimension_path),
             "material_handles": list(self.material_handles),
             "limitation_handles": list(self.limitation_handles),
+            "verified_claim_payload": canonical_value(self.verified_claim_payload),
         }
 
 
@@ -1623,18 +1638,21 @@ class NarrativeMaterialProjection:
         material_handle_by_ref = {
             item.evidence_entry_ref: item.material_handle for item in materials
         }
+        accepted_claims_by_ref = {
+            item.claim_ref: item for item in settlement.accepted_claims
+        }
         projected_claims = tuple(
             ProjectedNarrativeClaim.create(
                 public_claim=public_claim,
                 evidence_entry_refs=claim_material_refs[public_claim.claim_ref],
                 material_handle_by_evidence_ref=material_handle_by_ref,
+                verified_claim_payload=accepted_claims_by_ref[
+                    public_claim.claim_ref
+                ].factual_payload,
             )
             for public_claim in public_claims
         )
         projected_limitations, facets = _boundary_projection(palette.limitations)
-        accepted_claims_by_ref = {
-            item.claim_ref: item for item in settlement.accepted_claims
-        }
         claim_handle_by_ref = {
             item.claim_ref: item.claim_handle for item in projected_claims
         }

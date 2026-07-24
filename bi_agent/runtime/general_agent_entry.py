@@ -61,7 +61,10 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
-from bi_agent.runtime.thread_context_summary import PostgresThreadSummaryStore
+from bi_agent.runtime.thread_context_summary import (
+    PostgresThreadSummaryStore,
+    VersionedThreadSummary,
+)
 
 
 GENERAL_AGENT_INSTRUCTIONS = """\
@@ -212,12 +215,6 @@ def build_general_agent_runtime(
             summary_store=summary_store,
             context_token_budget=_context_token_budget(provider),
         )
-        context_compactor = ThreadContextCompactor(
-            ledger=ledger,
-            summary_store=summary_store,
-            artifact_index=artifact_registry,
-            generator=WajeThreadSummaryGenerator(adapter),
-        )
         application_tools = (
             capability_catalog_tool(
                 registry
@@ -256,7 +253,6 @@ def build_general_agent_runtime(
                 ledger=ledger,
                 context_assembler=context_assembler,
                 adapter=adapter,
-                context_compactor=context_compactor,
                 tool_resolver=DynamicAgentToolResolver(
                     generator=WajeToolSelectionGenerator(
                         adapter,
@@ -378,12 +374,6 @@ async def resume_general_agent_task(
                 context_token_budget=_context_token_budget(provider),
             ),
             adapter=adapter,
-            context_compactor=ThreadContextCompactor(
-                ledger=ledger,
-                summary_store=summary_store,
-                artifact_index=artifact_registry,
-                generator=WajeThreadSummaryGenerator(adapter),
-            ),
         )
         return await runtime.resume_ready_task(
             thread_id=thread_id,
@@ -415,6 +405,87 @@ async def resume_general_agent_task(
                         admission_lease.release()
                 finally:
                     store.connection.close()
+
+
+async def refresh_general_agent_thread_summary(
+    *,
+    thread_id: str,
+    compact_through_sequence: int,
+    environ: Mapping[str, str] | None = None,
+) -> VersionedThreadSummary | None:
+    """Refresh one stale summary outside the customer turn critical path."""
+
+    if (
+        not isinstance(thread_id, str)
+        or not thread_id
+        or thread_id != thread_id.strip()
+        or isinstance(compact_through_sequence, bool)
+        or not isinstance(compact_through_sequence, int)
+        or compact_through_sequence < 1
+    ):
+        raise ValueError("thread_summary_refresh_request_invalid")
+    env = os.environ if environ is None else environ
+    store = PostgresConversationStore.from_env()
+    trace_store: PostgresConversationStore | None = None
+    provider: MainlandModelProvider | None = None
+    try:
+        row = store.connection.execute(
+            """
+            SELECT owner_id
+            FROM waje_runtime.investigation_threads
+            WHERE thread_id = %(thread_id)s
+            """,
+            {"thread_id": thread_id},
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("thread_not_found")
+        actor_id = str(row.get("owner_id") if isinstance(row, Mapping) else row[0])
+        store.set_actor_id(actor_id)
+        ledger = store.thread_item_ledger
+        summary_store = PostgresThreadSummaryStore(store.connection)
+        latest = summary_store.latest(thread_id)
+        if (
+            latest is not None
+            and latest.covers_through_sequence >= compact_through_sequence
+        ):
+            return latest
+        head = ledger.get_head(thread_id)
+        if compact_through_sequence >= head.latest_item_sequence:
+            raise RuntimeError("thread_summary_refresh_retention_conflict")
+        trace_store = PostgresConversationStore.from_env()
+        trace_store.set_actor_id(actor_id)
+        artifact_registry = PostgresAnalysisArtifactRegistry(store.connection)
+        provider = MainlandModelProvider.deepseek_from_env(
+            env,
+            circuit_connection=store.connection,
+        )
+        adapter = WajeAgentsSdkAdapter(
+            provider=provider,
+            trace_sink=PostgresAgentTraceSink(trace_store),
+        )
+        compactor = ThreadContextCompactor(
+            ledger=ledger,
+            summary_store=summary_store,
+            artifact_index=artifact_registry,
+            generator=WajeThreadSummaryGenerator(adapter),
+        )
+        return await compactor.compact(
+            thread_id=thread_id,
+            compact_from_sequence=(
+                1 if latest is None else latest.covers_through_sequence + 1
+            ),
+            compact_through_sequence=compact_through_sequence,
+        )
+    finally:
+        try:
+            if provider is not None:
+                await provider.close()
+        finally:
+            try:
+                if trace_store is not None:
+                    trace_store.connection.close()
+            finally:
+                store.connection.close()
 
 
 def _require_thread_owner(

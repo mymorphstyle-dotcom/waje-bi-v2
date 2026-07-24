@@ -98,7 +98,7 @@ class NarrativeProviderCallError(RuntimeError):
 
 _PROVIDER_PURPOSES = frozenset({"narrative_writer", "block_verification"})
 NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT = 512 * 1024
-_NARRATIVE_PROMPT_VERSION = "single-authority-phase05.v21"
+_NARRATIVE_PROMPT_VERSION = "single-authority-phase05.v25"
 _MATERIAL_FACT_COLUMNS = (
     "fact_handle",
     "name",
@@ -108,20 +108,14 @@ _MATERIAL_FACT_COLUMNS = (
     "unit",
 )
 _MATERIAL_FACT_TRANSPORT_ENCODING = "columnar-material-facts.v1"
+_REFERENCE_TRANSPORT_ENCODING = "short-authority-alias.v1"
+_WRITER_OUTPUT_TRANSPORT_ENCODING = "compact-narrative-blocks.v1"
 _WRITER_CONTRACT_FINDINGS_AUDIT_FIELD = "writer_contract_findings"
-_COMPLETION_REPAIR_FAILURE_KINDS = frozenset(
-    {
-        "provider_unavailable",
-        "provider_timeout",
-        "provider_configuration_invalid",
-        "provider_output_invalid",
-        "provider_authentication_failed",
-        "provider_permission_denied",
-        "provider_rate_limited",
-        "provider_request_rejected",
-        "narrative_input_budget_exceeded",
-    }
-)
+_VERIFIER_CONTRACT_FINDINGS_AUDIT_FIELD = "verifier_contract_findings"
+_THINKING_MODE_BY_PROVIDER_PURPOSE = {
+    "narrative_writer": "disabled",
+    "block_verification": "disabled",
+}
 _WRITER_BLOCK_FIELDS = frozenset(
     {
         "role",
@@ -134,20 +128,22 @@ _WRITER_BLOCK_FIELDS = frozenset(
         "required",
     }
 )
-_FOCUSED_WRITER_EDITABLE_BLOCK_FIELDS = frozenset(
-    {
-        "text",
-        "claim_handles",
-        "recommendation_handles",
-        "limitation_handles",
-        "material_fact_bindings",
-        "statement_role",
-    }
-)
 _FACT_BINDING_FIELDS = frozenset(
     {
         "claim_handle",
         "fact_handle",
+    }
+)
+_COMPACT_WRITER_BLOCK_FIELDS = frozenset(
+    {
+        "role",
+        "text",
+        "c",
+        "r",
+        "l",
+        "f",
+        "s",
+        "q",
     }
 )
 _VERIFIER_DECISION_FIELDS = frozenset(
@@ -185,10 +181,30 @@ Write an original, business-readable analysis using the supplied public material
 projection and answer context. Claims declare material_handles; evidence_materials
 hold the facts and evidence metadata authorized by those handles. A material fact may
 be bound to a claim only when that claim includes the fact's material_handle.
+Each claim's verified_claim_payload is part of the accepted claim authority. Use it to
+understand the verified business proposition, especially for open-language candidate
+mechanisms. It does not create a second evidence source: every explicit number, date,
+amount, range, ratio, score, or rank still requires an available material fact binding.
 material_projection.transport_encoding declares the lossless wire representation for
 facts. Under columnar-material-facts.v1, each evidence material supplies fact_columns
 and each facts item is a positional row with exactly those columns. Resolve each row
 back to the named fact fields before using it.
+Each evidence material also supplies fact_claim_handle_options. Every fact row in that
+material may bind only to one of those claim handles. Copy the exact fact_handle from a
+supplied row; never synthesize, shorten, or edit a handle.
+An evidence material may also carry fact_selection. When its mode is
+contract_required_representative_view, the supplied facts are the complete
+contract-selected public view for that material. source_fact_count and
+omitted_fact_count describe transport reduction only; never infer exhaustive dimension
+coverage from that view.
+When fact_selection.mode is accepted_candidate_claim_without_required_facts, the
+accepted candidate claim's verified_claim_payload carries the publishable proposition
+and no numeric fact from that material is available to the writer. Explain the claim
+within its ceiling without inventing or binding an omitted fact.
+When fact_selection.mode is contract_named_fact_view, the material's typed
+interpretation contract selected the complete writer-facing fact view. Omitted facts
+remain in the evidence authority and are outside this writing call; never reconstruct
+or invent them.
 Limitations reference pooled boundary_facets. Use the relevant facets to express the
 exact boundary without repeating unrelated context. You may synthesize, compare,
 qualify, prioritize, and develop decision-useful insight freely within each claim's
@@ -272,6 +288,9 @@ limitation. The runtime supplies customer-facing section headings from the typed
 role, so do not add a redundant heading at the start of every text field. These are
 composition guidelines only: they do not impose a fixed length or block count and they
 do not change publication or verifier authority.
+Consolidate claims and limitations that belong to the same reasoning move. Avoid one
+block per claim, one block per limitation, or restating machine metadata; integrated
+prose or a compact comparison table should carry the required handle coverage.
 
 Bind every claim, recommendation, limitation, and material fact to the supplied handle.
 Material fact names, field identifiers, handles, enums, and snake_case tokens are
@@ -281,6 +300,13 @@ label when no customer-safe label is supplied.
 Every explicit number, date, amount, range, ratio, score, or rank in a block must have
 its own material_fact_binding on that block. Finding the same value elsewhere in the
 projection does not authorize unbound prose.
+Return each exact claim-fact pair at most once inside a block. A repeated number in the
+prose still uses one binding for that block. For each fact, choose only a claim already
+listed on that block whose material_handles include the fact's material_handle; use the
+material's fact_claim_handle_options to resolve ownership. The runtime treats duplicate
+pair removal and selection among multiple equally legal block owners as mechanical
+reference assembly, while it continues to reject unknown facts, missing legal owners,
+and facts outside the accepted material closure.
 Treat bound numeric values as exact unless their fact contract declares a range or
 approximation. A ratio of 0.5 is exactly 50%; do not describe it as above, below, near,
 or slightly different from 50%. Every qualitative numeric modifier must be logically
@@ -293,13 +319,17 @@ contract gap unless an explicit typed completeness fact says so.
 Never invent a handle, date, scope, label, recommendation, or stronger claim. You may
 derive exact arithmetic relationships from bound numeric facts when the operands share
 an authorized synthesis or comparison basis. Keep the exact prose you want published
-in each text field. Return one JSON object with exactly this
-shape: {"blocks":[{"role":string,"text":string,"claim_handles":[string],
-"recommendation_handles":[string],"limitation_handles":[string],
-"material_fact_bindings":[{"claim_handle":string,"fact_handle":string}],
-"statement_role":string,"required":boolean}]}. Material fact bindings contain handles
-only; the runtime resolves the fact kind, value, range end, and unit from the supplied
-projection. Do not add fields outside this schema. Choose the block count, ordering,
+in each text field. The runtime wire contract uses short aliases for authority
+references. Treat every alias as opaque and return it exactly; never expand or edit it.
+Return one JSON object with exactly this compact shape:
+{"blocks":[{"role":string,"text":string,"c":[claim_alias],
+"r":[recommendation_alias],"l":[limitation_alias],
+"f":[[claim_alias,fact_alias]],"s":string,"q":boolean}]}.
+Here c means claim handles, r recommendation handles, l limitation handles, f material
+fact bindings, s statement_role, and q required. Fact-binding pairs contain aliases
+only; the runtime restores their canonical handles and resolves fact kind, value, range
+end, and unit from the supplied projection. Do not add fields outside this schema.
+Choose the block count, ordering,
 roles, emphasis, and synthesis that best answer the question. Valid roles are
 executive_answer, direction, accounting_drivers, dimension_localization,
 contextual_pattern, boundary, and next_action. Mark the blocks whose meaning is
@@ -329,7 +359,8 @@ handle-coverage rules do not prescribe the prose, block count, ordering, roles,
 emphasis, comparison, or synthesis.
 
 requirement_limitation_scope gives the same obligations with each required limitation's
-boundary facets embedded directly. Treat this mapping as authoritative even when a
+binding topology and boundary_facet_handles. Resolve those handles through
+material_projection.boundary_facets. Treat this mapping as authoritative even when a
 requirement-level limitation does not appear in a claim's local limitation_handles. Each
 required limitation declares its typed binding_mode and claim_binding_options. In
 claim_or_boundary mode, bind it to one of those claims or express it in a boundary block.
@@ -343,87 +374,6 @@ metadata verbatim. Each bound limitation must be expressed through its own facet
 coverage is empty on the initial writer call because the runtime has not received your
 blocks yet.
 """
-_FOCUSED_WRITER_SYSTEM_PROMPT = """\
-Repair the compiler-declared narrative targets using the supplied scoped public material
-view and answer context. The runtime owns every target's identity, role, required value,
-position, and replace-or-insert operation. Return one JSON object containing exactly one
-editable block for every retry target, in retry_targets order. Return only editable target
-fields with exactly this shape: {"blocks":[{"text":string,"claim_handles":[string],
-"recommendation_handles":[string],"limitation_handles":[string],
-"material_fact_bindings":[{"claim_handle":string,"fact_handle":string}],
-"statement_role":string}]}. Never return target identity, role, required, source blocks,
-or accepted siblings. The runtime restores its fixed fields and preserves untargeted
-accepted siblings byte-for-byte.
-
-The scoped material view is derived from the retry targets and open publication coverage.
-Its transport_encoding is lossless. Under columnar-material-facts.v1, resolve each facts
-row using the evidence material's fact_columns before selecting a fact_handle.
-Use allowed_claim_fact_pairs for every material fact binding. Use limitation_scope to keep
-limitations on an authorized claim, recommendation risk, or a boundary target. Each retry
-target declares its allowed_claim_handles, allowed_recommendation_handles, and
-allowed_limitation_handles; use only those handles in that target. Satisfy every entry in
-the target's required_coverage independently: bind at least one claim_handle_option when
-the entry supplies options, bind every required_fact_handle through one of those claim
-options, express every required fact in the repaired prose or table, and bind every
-required_limitation_handle. The
-editable_source_block is only a repair seed. Its handle lists have already been stripped
-of locally invalid relationships, while its prose may still require rewriting to match the
-final handles. required_coverage is the remaining global publication obligation after
-preserved required siblings are merged and must also hold across all repaired targets.
-requirement_limitation_scope supplies the corresponding requirement-level claim options,
-coverage semantics, assertion scope, required fact-to-claim binding options, typed
-limitation topology, and embedded limitation facets. Enforce each required limitation's
-binding_mode. In claim_or_boundary mode, bind the limitation to one of its
-claim_binding_options or a boundary target. In boundary_only mode, keep it on a boundary
-target and do not weaken accepted claims. Use its typed identity and outcome provenance
-to express the concrete unavailable business analysis path and local effect. Treat
-boundary_code as semantic input without mechanically repeating it, and never repeat
-capability identifiers, retryability, provider fields, or other internal metadata
-verbatim. Its source block coverage is context for the repair; satisfy the runtime-owned
-retry target coverage in the returned blocks.
-
-You may synthesize, compare, qualify, prioritize, and develop decision-useful insight
-freely inside the supplied claim ceilings and exact bindings. Resolve fact details from
-evidence_materials and never invent or rewrite a handle, number, date, scope, label,
-recommendation, limitation, or stronger claim. Keep the exact prose intended for
-publication in each text field. Preserve interpretation_contract, synthesis_contract,
-recommendation commitment, coverage_semantics, assertion_scope, and limitation
-scope_effect semantics exactly. supported_with_limitations does not imply conflicting
-evidence, and a local claim-family limitation cannot become a global evidence boundary.
-Write every repaired customer-facing block in answer_context.locale. Translate ordinary
-source prose and management terms while preserving useful proper nouns, customer-safe
-labels, and conventional abbreviations. For every named recommendation subject, preserve
-its own evidence direction and purpose; keep positive replication and negative-deviation
-investigation distinct when both occur in one recommendation.
-Keep repaired prose operationally readable: separate distinct reasoning moves with
-Markdown blank lines, keep each paragraph centered on one business idea, and use compact
-bullets only for genuinely comparable items. Preserve depth by pairing quantified
-evidence with its authorized business meaning instead of collapsing all material into
-one dense paragraph. Do not add a redundant heading at the start of every text field;
-the runtime renders a customer-facing heading from the typed block role. Readability is
-composition guidance and does not change target identity, authority, or verifier rules.
-Exact arithmetic synthesis is allowed when all operands are bound and share an
-authorized comparison or synthesis basis.
-When one block compares two or more materials under a shared ranking_scope and uses
-the ranking_measure, bind ranking_position_measure for every compared item and keep
-the prose in the exact declared ranking_order and priority_rank_order.
-Preserve every declared count partition exactly. Treat a structurally absent group as
-zero only when its interpretation contract authorizes zero fill through complete query
-coverage and passed reconciliation. Translate material fact names and field identifiers
-into business language; never publish handles, enums, or snake_case machine vocabulary.
-Do not turn an observed outcome change into a process, efficiency, latency, reliability,
-retry, failure-stage, incident, or causal explanation unless the material's
-interpretation contract explicitly permits that claim class.
-Bind every explicit number, date, amount, range, ratio, score, and rank used by a
-repaired block; projection membership without a block binding is insufficient.
-Treat bound numeric values as exact unless their fact contract declares a range or
-approximation. Every qualitative numeric modifier must follow the bound value,
-threshold, range, and interpretation contract exactly. When typed limitation semantics
-declare source_availability=available and evidence_role=background_context, describe
-the source as available background or localization evidence and preserve the restriction
-on direct attribution or causal conclusions. Do not describe it as missing, unavailable,
-incomplete, or a data contract gap without an explicit typed completeness fact.
-"""
 _VERIFIER_SYSTEM_PROMPT = """\
 Independently evaluate each supplied narrative block against the public material
 projection. Check publication ceilings, claim-to-material membership, exact facts in
@@ -431,6 +381,10 @@ evidence_materials, recommendations, limitation-to-boundary_facet membership, an
 block's declared handle-only fact bindings. Resolve fact details from evidence_materials;
 under columnar-material-facts.v1, resolve each facts row using the evidence material's
 fact_columns before evaluating the bound fact_handle.
+The runtime wire contract replaces authority references with opaque short aliases.
+Return every block, claim, recommendation, and limitation alias exactly as supplied;
+never expand, edit, or synthesize one. The runtime restores canonical references before
+applying the verifier contract.
 the block cannot restate or override them. Enforce every evidence interpretation_contract
 and synthesis_contract: reject cross-slice addition, contribution wording, or ranking on
 an undeclared basis; require the declared synthesis fact group to remain complete. Check
@@ -821,7 +775,14 @@ class ReviewedPublicFactMaterialization:
                     "reviewed_public_fact_materialization_claim_coverage_invalid"
                 )
             try:
-                PublicFactDescriptor.from_dict(fact.to_dict(), claim=claim)
+                fact.assert_integrity()
+                if (
+                    fact.claim_digest != claim.content_digest
+                    or fact.source_material_ref not in claim.support_edge_refs
+                ):
+                    raise NarrativeWorkflowError(
+                        "reviewed_public_fact_materialization_fact_integrity_invalid"
+                    )
             except (TypeError, ValueError) as exc:
                 raise NarrativeWorkflowError(
                     "reviewed_public_fact_materialization_fact_integrity_invalid"
@@ -884,7 +845,7 @@ class ReviewedPublicFactMaterialization:
         )
         try:
             facts = tuple(
-                PublicFactDescriptor.from_dict(
+                PublicFactDescriptor._from_dict_for_validated_claim(
                     item,
                     claim=claims_by_ref[item["claim_ref"]],
                 )
@@ -974,16 +935,57 @@ class NarrativeProviderCallInput:
         authority_bundle: AuthorityBundle,
         material_projection: NarrativeMaterialProjection,
     ) -> "NarrativeProviderCallInput":
+        return cls.from_dict_with_authority_identity(
+            payload,
+            authority_bundle_ref=authority_bundle.bundle_ref,
+            authority_bundle_digest=authority_bundle.bundle_digest,
+            material_projection=material_projection,
+        )
+
+    @classmethod
+    def from_dict_with_authority_identity(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        authority_bundle_ref: str,
+        authority_bundle_digest: str,
+        material_projection: NarrativeMaterialProjection,
+    ) -> "NarrativeProviderCallInput":
         payload = _strict_record_payload(
             payload,
             cls,
             "narrative_provider_call_input_shape_invalid",
         )
-        rebuilt = cls.create(
-            purpose=payload["purpose"],
-            authority_bundle=authority_bundle,
-            material_projection=material_projection,
-            payload=payload["payload"],
+        purpose = payload["purpose"]
+        if purpose not in _PROVIDER_PURPOSES:
+            raise NarrativeWorkflowError("narrative_provider_purpose_invalid")
+        material_projection.assert_integrity()
+        body = {
+            "purpose": purpose,
+            "authority_bundle_ref": _required_string(
+                authority_bundle_ref,
+                "narrative_provider_authority_bundle_ref_invalid",
+            ),
+            "authority_bundle_digest": _required_string(
+                authority_bundle_digest,
+                "narrative_provider_authority_bundle_digest_invalid",
+            ),
+            "material_projection_ref": material_projection.projection_ref,
+            "material_projection_digest": material_projection.content_digest,
+            "payload": _freeze(
+                canonical_value(payload["payload"]),
+                "narrative_provider_payload_invalid",
+            ),
+        }
+        if len(body["authority_bundle_digest"]) != 64:
+            raise NarrativeWorkflowError(
+                "narrative_provider_authority_bundle_digest_invalid"
+            )
+        digest = canonical_digest(body)
+        rebuilt = cls(
+            call_input_ref="narrative-provider-input:sha256:" + digest,
+            content_digest=digest,
+            **body,
         )
         if rebuilt.to_dict() != canonical_value(payload):
             raise NarrativeWorkflowError(
@@ -1125,130 +1127,6 @@ class NarrativeProviderCallAudit:
 
 
 @dataclass(frozen=True)
-class FocusedNarrativeRetry:
-    retry_ref: str
-    retry_kind: str
-    source_narrative_id: str
-    rejection_report_ref: str
-    targeted_block_ids: tuple[str, ...]
-    preserved_source_block_ids: tuple[str, ...]
-    writer_attempt_ref: str
-    resulting_narrative_id: str
-    content_digest: str
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        retry_kind: str,
-        source_narrative: NarrativeDocument,
-        rejection_report: BlockVerifierReport,
-        material_projection: NarrativeMaterialProjection,
-        targeted_blocks: Sequence[NarrativeBlock],
-        preserved_blocks: Sequence[NarrativeBlock],
-        writer_attempt: NarrativeWriterAttempt,
-        resulting_narrative: NarrativeDocument,
-    ) -> "FocusedNarrativeRetry":
-        if retry_kind not in {"answer_completeness", "verifier_repair"}:
-            raise NarrativeWorkflowError("focused_narrative_retry_kind_invalid")
-        targets = tuple(item.block_id for item in targeted_blocks)
-        preserved = tuple(item.block_id for item in preserved_blocks)
-        if retry_kind == "answer_completeness":
-            accepted_block_ids = tuple(
-                item.block_id for item in source_narrative.blocks
-            )
-            rejected_block_ids: tuple[str, ...] = ()
-            ensure_publication_coverage = True
-        else:
-            accepted_block_ids = rejection_report.accepted_block_ids
-            rejected_block_ids = rejection_report.rejected_block_ids
-            ensure_publication_coverage = False
-        retry_plan = _compile_focused_retry_plan(
-            source_order=source_narrative.blocks,
-            accepted_block_ids=accepted_block_ids,
-            rejected_block_ids=rejected_block_ids,
-            material_projection=material_projection,
-            ensure_publication_coverage=ensure_publication_coverage,
-        )
-        expected_targets = tuple(
-            item.block_id for item in retry_plan.source_target_blocks
-        )
-        expected_preserved = tuple(
-            item.block_id for item in retry_plan.preserved_blocks
-        )
-        if (
-            rejection_report.narrative_id != source_narrative.narrative_id
-            or targets != expected_targets
-            or preserved != expected_preserved
-            or resulting_narrative.writer_attempt_id != writer_attempt.attempt_id
-        ):
-            raise NarrativeWorkflowError("focused_narrative_retry_closure_invalid")
-        body = {
-            "retry_kind": retry_kind,
-            "source_narrative_id": source_narrative.narrative_id,
-            "rejection_report_ref": rejection_report.verifier_report_ref,
-            "targeted_block_ids": targets,
-            "preserved_source_block_ids": preserved,
-            "writer_attempt_ref": writer_attempt.writer_attempt_ref,
-            "resulting_narrative_id": resulting_narrative.narrative_id,
-        }
-        digest = canonical_digest(body)
-        return cls(
-            retry_ref="focused-narrative-retry:sha256:" + digest,
-            content_digest=digest,
-            **body,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return canonical_value(self)
-
-    @classmethod
-    def from_dict(
-        cls,
-        payload: Mapping[str, Any],
-        *,
-        narratives_by_id: Mapping[str, NarrativeDocument],
-        verifier_reports_by_ref: Mapping[str, BlockVerifierReport],
-        writer_attempts_by_ref: Mapping[str, NarrativeWriterAttempt],
-        material_projection: NarrativeMaterialProjection,
-    ) -> "FocusedNarrativeRetry":
-        payload = _strict_record_payload(
-            payload,
-            cls,
-            "focused_narrative_retry_shape_invalid",
-        )
-        try:
-            source = narratives_by_id[payload["source_narrative_id"]]
-            report = verifier_reports_by_ref[payload["rejection_report_ref"]]
-            writer_attempt = writer_attempts_by_ref[payload["writer_attempt_ref"]]
-            resulting = narratives_by_id[payload["resulting_narrative_id"]]
-            source_blocks = {item.block_id: item for item in source.blocks}
-            targeted = tuple(
-                source_blocks[item] for item in payload["targeted_block_ids"]
-            )
-            preserved = tuple(
-                source_blocks[item] for item in payload["preserved_source_block_ids"]
-            )
-        except (KeyError, TypeError) as exc:
-            raise NarrativeWorkflowError(
-                "focused_narrative_retry_child_closure_invalid"
-            ) from exc
-        rebuilt = cls.create(
-            retry_kind=payload["retry_kind"],
-            source_narrative=source,
-            rejection_report=report,
-            material_projection=material_projection,
-            targeted_blocks=targeted,
-            preserved_blocks=preserved,
-            writer_attempt=writer_attempt,
-            resulting_narrative=resulting,
-        )
-        if rebuilt.to_dict() != canonical_value(payload):
-            raise NarrativeWorkflowError("focused_narrative_retry_integrity_invalid")
-        return rebuilt
-
-
-@dataclass(frozen=True)
 class NarrativeWorkflowResult:
     authority_bundle_ref: str
     authority_bundle_digest: str
@@ -1264,17 +1142,10 @@ class NarrativeWorkflowResult:
     writer_attempts: tuple[NarrativeWriterAttempt, ...]
     narratives: tuple[NarrativeDocument, ...]
     local_reports: tuple[BlockLocalValidationReport, ...]
-    verification_attempts: tuple[BlockVerificationAttempt, ...]
-    verifier_reports: tuple[BlockVerifierReport, ...]
-    focused_retry: FocusedNarrativeRetry | None
     completeness_assessments: tuple[AnswerCompletenessAssessment, ...]
-    completion_repair_status: str
-    completion_repair_failure_kind: str | None
-    final_accepted_narrative: NarrativeDocument | None
+    delivery_narrative: NarrativeDocument
     final_local_report: BlockLocalValidationReport
-    projection_ready_verifier_report: BlockVerifierReport
     publication_ready: bool
-    withheld_required_block_ids: tuple[str, ...]
     content_digest: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -1475,91 +1346,11 @@ class NarrativeWorkflowResult:
                 )
             )
         local_reports_tuple = tuple(local_reports)
-        local_reports_by_ref = {
-            item.local_report_ref: item for item in local_reports_tuple
-        }
-        if len(local_reports_by_ref) != len(local_reports_tuple):
+        if len({item.local_report_ref for item in local_reports_tuple}) != len(
+            local_reports_tuple
+        ):
             raise NarrativeWorkflowError(
                 "narrative_workflow_result_local_reports_duplicated"
-            )
-        verification_attempts = []
-        for item in _mapping_sequence(
-            payload["verification_attempts"],
-            "narrative_workflow_result_verification_attempts_invalid",
-        ):
-            try:
-                narrative = narratives_by_id[item["narrative_id"]]
-                local_report = local_reports_by_ref[item["local_report_ref"]]
-            except (KeyError, TypeError) as exc:
-                raise NarrativeWorkflowError(
-                    "narrative_workflow_result_verification_children_invalid"
-                ) from exc
-            attempt = BlockVerificationAttempt.from_dict(
-                item,
-                narrative=narrative,
-                local_report=local_report,
-            )
-            response = responses_by_ref.get(attempt.provider_response_ref)
-            if response != attempt.provider_response:
-                raise NarrativeWorkflowError(
-                    "narrative_workflow_result_verifier_response_closure_invalid"
-                )
-            verification_attempts.append(attempt)
-        verification_attempts_tuple = tuple(verification_attempts)
-        verification_attempts_by_ref = {
-            item.verification_attempt_ref: item for item in verification_attempts_tuple
-        }
-        if len(verification_attempts_by_ref) != len(verification_attempts_tuple):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_result_verification_attempts_duplicated"
-            )
-        verifier_reports = []
-        for item in _mapping_sequence(
-            payload["verifier_reports"],
-            "narrative_workflow_result_verifier_reports_invalid",
-        ):
-            try:
-                narrative = narratives_by_id[item["narrative_id"]]
-                local_report = local_reports_by_ref[item["local_report_ref"]]
-            except (KeyError, TypeError) as exc:
-                raise NarrativeWorkflowError(
-                    "narrative_workflow_result_verifier_children_invalid"
-                ) from exc
-            report = BlockVerifierReport.from_dict(
-                item,
-                narrative=narrative,
-                material_projection=material_projection,
-                visibility_policy=policy,
-                local_report=local_report,
-            )
-            attempt = verification_attempts_by_ref.get(report.verification_attempt_ref)
-            if attempt != report.verification_attempt:
-                raise NarrativeWorkflowError(
-                    "narrative_workflow_result_verifier_attempt_closure_invalid"
-                )
-            verifier_reports.append(report)
-        verifier_reports_tuple = tuple(verifier_reports)
-        verifier_reports_by_ref = {
-            item.verifier_report_ref: item for item in verifier_reports_tuple
-        }
-        if len(verifier_reports_by_ref) != len(verifier_reports_tuple):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_result_verifier_reports_duplicated"
-            )
-        raw_focused_retry = payload["focused_retry"]
-        if raw_focused_retry is None:
-            focused_retry = None
-        elif isinstance(raw_focused_retry, Mapping):
-            focused_retry = FocusedNarrativeRetry.from_dict(
-                raw_focused_retry,
-                narratives_by_id=narratives_by_id,
-                verifier_reports_by_ref=verifier_reports_by_ref,
-                writer_attempts_by_ref=writer_attempts_by_ref,
-                material_projection=material_projection,
-            )
-        else:
-            raise NarrativeWorkflowError(
-                "narrative_workflow_result_focused_retry_invalid"
             )
         rebuilt = _workflow_result(
             authority_bundle=authority_bundle,
@@ -1574,12 +1365,6 @@ class NarrativeWorkflowResult:
             writer_attempts=writer_attempts,
             narratives=narratives,
             local_reports=local_reports_tuple,
-            verification_attempts=verification_attempts_tuple,
-            verifier_reports=verifier_reports_tuple,
-            focused_retry=focused_retry,
-            completion_repair_failure_kind=payload[
-                "completion_repair_failure_kind"
-            ],
         )
         if rebuilt.to_dict() != canonical_value(payload):
             raise NarrativeWorkflowError("narrative_workflow_result_integrity_invalid")
@@ -1600,6 +1385,241 @@ class NarrativeWorkflowResult:
             evidence_entries=evidence_entries,
             recommendations=recommendations,
         )
+
+
+@dataclass(frozen=True)
+class NarrativeQualityAuditResult:
+    source_customer_publication_ref: str
+    narrative_workflow_ref: str
+    narrative_workflow_digest: str
+    call_input: NarrativeProviderCallInput
+    provider_responses: tuple[RestrictedProviderResponse, ...]
+    provider_audit: NarrativeProviderCallAudit | None
+    verification_attempt: BlockVerificationAttempt | None
+    verifier_report: BlockVerifierReport
+    content_digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return canonical_value(self)
+
+    @property
+    def call_input_ref(self) -> str:
+        return self.call_input.call_input_ref
+
+    @property
+    def call_input_digest(self) -> str:
+        return self.call_input.content_digest
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        source_customer_publication_ref: str,
+        narrative_workflow: NarrativeWorkflowResult,
+        call_input: NarrativeProviderCallInput,
+        provider_responses: Sequence[RestrictedProviderResponse],
+        provider_audit: NarrativeProviderCallAudit | None,
+        verification_attempt: BlockVerificationAttempt | None,
+        verifier_report: BlockVerifierReport,
+    ) -> "NarrativeQualityAuditResult":
+        if type(narrative_workflow) is not NarrativeWorkflowResult:
+            raise NarrativeWorkflowError("narrative_quality_audit_workflow_invalid")
+        publication_ref = _required_string(
+            source_customer_publication_ref,
+            "narrative_quality_audit_customer_publication_invalid",
+        )
+        publication_prefix = "customer-publication:sha256:"
+        if (
+            not publication_ref.startswith(publication_prefix)
+            or len(publication_ref.removeprefix(publication_prefix)) != 64
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_customer_publication_invalid"
+            )
+        try:
+            replayed_input = NarrativeProviderCallInput.from_dict_with_authority_identity(
+                call_input.to_dict(),
+                authority_bundle_ref=narrative_workflow.authority_bundle_ref,
+                authority_bundle_digest=narrative_workflow.authority_bundle_digest,
+                material_projection=narrative_workflow.material_projection,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_call_input_invalid"
+            ) from exc
+        expected_payload, _, _ = _verifier_payload(
+            material_projection=narrative_workflow.material_projection,
+            answer_context=narrative_workflow.answer_context,
+            narrative=narrative_workflow.delivery_narrative,
+            local_report=narrative_workflow.final_local_report,
+        )
+        if (
+            replayed_input != call_input
+            or call_input.purpose != "block_verification"
+            or call_input.authority_bundle_ref
+            != narrative_workflow.authority_bundle_ref
+            or call_input.authority_bundle_digest
+            != narrative_workflow.authority_bundle_digest
+            or canonical_value(call_input.payload)
+            != canonical_value(expected_payload)
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_call_input_invalid"
+            )
+        responses = tuple(provider_responses)
+        if any(type(item) is not RestrictedProviderResponse for item in responses):
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_responses_invalid"
+            )
+        if type(verifier_report) is not BlockVerifierReport:
+            raise NarrativeWorkflowError("narrative_quality_audit_report_invalid")
+        try:
+            replayed_report = BlockVerifierReport.from_dict(
+                verifier_report.to_dict(),
+                narrative=narrative_workflow.delivery_narrative,
+                material_projection=narrative_workflow.material_projection,
+                visibility_policy=narrative_workflow.visibility_policy,
+                local_report=narrative_workflow.final_local_report,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_report_invalid"
+            ) from exc
+        if replayed_report != verifier_report:
+            raise NarrativeWorkflowError("narrative_quality_audit_report_invalid")
+        if (
+            verifier_report.narrative_id
+            != narrative_workflow.delivery_narrative.narrative_id
+            or verifier_report.narrative_digest
+            != narrative_workflow.delivery_narrative.content_digest
+            or verifier_report.local_report_ref
+            != narrative_workflow.final_local_report.local_report_ref
+            or verifier_report.local_report_digest
+            != narrative_workflow.final_local_report.content_digest
+            or verifier_report.input_ref != call_input.call_input_ref
+            or verifier_report.input_digest != call_input.content_digest
+            or verifier_report.audit_status not in {"completed", "unavailable"}
+        ):
+            raise NarrativeWorkflowError("narrative_quality_audit_report_invalid")
+        if verifier_report.audit_status == "completed":
+            try:
+                replayed_audit = NarrativeProviderCallAudit.from_dict(
+                    provider_audit.to_dict(),
+                    call_inputs_by_ref={call_input.call_input_ref: call_input},
+                    responses_by_ref={
+                        item.response_ref: item for item in responses
+                    },
+                )
+                replayed_attempt = BlockVerificationAttempt.from_dict(
+                    verification_attempt.to_dict(),
+                    narrative=narrative_workflow.delivery_narrative,
+                    local_report=narrative_workflow.final_local_report,
+                )
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise NarrativeWorkflowError(
+                    "narrative_quality_audit_completed_closure_invalid"
+                ) from exc
+            if (
+                type(provider_audit) is not NarrativeProviderCallAudit
+                or type(verification_attempt) is not BlockVerificationAttempt
+                or replayed_audit != provider_audit
+                or replayed_attempt != verification_attempt
+                or provider_audit.purpose != "block_verification"
+                or provider_audit.call_input_ref != call_input.call_input_ref
+                or tuple(provider_audit.provider_response_refs)
+                != tuple(item.response_ref for item in responses)
+                or verifier_report.verification_attempt != verification_attempt
+            ):
+                raise NarrativeWorkflowError(
+                    "narrative_quality_audit_completed_closure_invalid"
+                )
+        elif provider_audit is not None or verification_attempt is not None or responses:
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_unavailable_closure_invalid"
+            )
+        body = {
+            "source_customer_publication_ref": publication_ref,
+            "narrative_workflow_ref": (
+                "narrative-workflow-result:sha256:"
+                + narrative_workflow.content_digest
+            ),
+            "narrative_workflow_digest": narrative_workflow.content_digest,
+            "call_input": call_input,
+            "provider_responses": responses,
+            "provider_audit": provider_audit,
+            "verification_attempt": verification_attempt,
+            "verifier_report": verifier_report,
+        }
+        return cls(content_digest=canonical_digest(body), **body)
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        narrative_workflow: NarrativeWorkflowResult,
+    ) -> "NarrativeQualityAuditResult":
+        payload = _strict_record_payload(
+            payload,
+            cls,
+            "narrative_quality_audit_shape_invalid",
+        )
+        call_input = NarrativeProviderCallInput.from_dict_with_authority_identity(
+            payload["call_input"],
+            authority_bundle_ref=narrative_workflow.authority_bundle_ref,
+            authority_bundle_digest=narrative_workflow.authority_bundle_digest,
+            material_projection=narrative_workflow.material_projection,
+        )
+        call_inputs_by_ref = {call_input.call_input_ref: call_input}
+        responses = tuple(
+            RestrictedProviderResponse.from_dict(item)
+            for item in _mapping_sequence(
+                payload["provider_responses"],
+                "narrative_quality_audit_responses_invalid",
+            )
+        )
+        responses_by_ref = {item.response_ref: item for item in responses}
+        raw_audit = payload["provider_audit"]
+        provider_audit = (
+            None
+            if raw_audit is None
+            else NarrativeProviderCallAudit.from_dict(
+                raw_audit,
+                call_inputs_by_ref=call_inputs_by_ref,
+                responses_by_ref=responses_by_ref,
+            )
+        )
+        raw_attempt = payload["verification_attempt"]
+        verification_attempt = (
+            None
+            if raw_attempt is None
+            else BlockVerificationAttempt.from_dict(
+                raw_attempt,
+                narrative=narrative_workflow.delivery_narrative,
+                local_report=narrative_workflow.final_local_report,
+            )
+        )
+        verifier_report = BlockVerifierReport.from_dict(
+            payload["verifier_report"],
+            narrative=narrative_workflow.delivery_narrative,
+            material_projection=narrative_workflow.material_projection,
+            visibility_policy=narrative_workflow.visibility_policy,
+            local_report=narrative_workflow.final_local_report,
+        )
+        rebuilt = cls.create(
+            source_customer_publication_ref=payload[
+                "source_customer_publication_ref"
+            ],
+            narrative_workflow=narrative_workflow,
+            call_input=call_input,
+            provider_responses=responses,
+            provider_audit=provider_audit,
+            verification_attempt=verification_attempt,
+            verifier_report=verifier_report,
+        )
+        if rebuilt.to_dict() != canonical_value(payload):
+            raise NarrativeWorkflowError("narrative_quality_audit_integrity_invalid")
+        return rebuilt
 
 
 @dataclass(frozen=True)
@@ -1724,6 +1744,260 @@ def _responses_from_audit(
     )
 
 
+_REFERENCE_FIELD_PREFIXES = (
+    ("boundary_facet_handle", "b"),
+    ("recommendation_handle", "r"),
+    ("requirement_handle", "q"),
+    ("limitation_handle", "l"),
+    ("commitment_handle", "k"),
+    ("material_handle", "m"),
+    ("claim_handle", "c"),
+    ("fact_handle", "f"),
+    ("capability_id", "p"),
+    ("capability_ref", "p"),
+    ("dimension_ref", "n"),
+    ("metric_ref", "e"),
+    ("window_ref", "w"),
+    ("obligation_id", "o"),
+    ("target_id", "t"),
+    ("block_id", "x"),
+    ("goal_id", "g"),
+    ("goal_ref", "g"),
+)
+
+
+def _reference_prefix_for_field(field_name: str) -> str | None:
+    for marker, prefix in _REFERENCE_FIELD_PREFIXES:
+        if marker in field_name:
+            return prefix
+    if field_name.endswith(("_digest", "_digests")):
+        return "d"
+    if field_name.endswith(("_ref", "_refs")):
+        return "u"
+    if field_name.endswith(("_id", "_ids")):
+        return "i"
+    return None
+
+
+def _direct_reference_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str) and value:
+        return (value,)
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and all(isinstance(item, str) and item for item in value)
+    ):
+        return tuple(value)
+    return ()
+
+
+def _provider_reference_aliases(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build a deterministic, reversible alias map for provider-only references."""
+
+    values_by_prefix: dict[str, set[str]] = {}
+
+    def collect(value: Any) -> None:
+        if isinstance(value, Mapping):
+            fact_columns = value.get("fact_columns")
+            fact_rows = value.get("facts")
+            if (
+                isinstance(fact_columns, Sequence)
+                and not isinstance(fact_columns, (str, bytes))
+                and "fact_handle" in fact_columns
+                and isinstance(fact_rows, Sequence)
+                and not isinstance(fact_rows, (str, bytes))
+            ):
+                fact_index = tuple(fact_columns).index("fact_handle")
+                for row in fact_rows:
+                    if (
+                        isinstance(row, Sequence)
+                        and not isinstance(row, (str, bytes))
+                        and len(row) > fact_index
+                        and isinstance(row[fact_index], str)
+                        and row[fact_index]
+                    ):
+                        values_by_prefix.setdefault("f", set()).add(row[fact_index])
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                prefix = _reference_prefix_for_field(key)
+                if prefix is not None:
+                    values_by_prefix.setdefault(prefix, set()).update(
+                        _direct_reference_values(child)
+                    )
+                collect(child)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for child in value:
+                collect(child)
+
+    collect(payload)
+    reference_to_alias: dict[str, str] = {}
+    alias_to_reference: dict[str, str] = {}
+    prefix_order = tuple(
+        dict.fromkeys(
+            prefix for _, prefix in _REFERENCE_FIELD_PREFIXES
+        )
+    ) + ("d", "u", "i")
+    for prefix in prefix_order:
+        index = 0
+        for reference in sorted(values_by_prefix.get(prefix, ())):
+            if reference in reference_to_alias:
+                continue
+            index += 1
+            alias = f"{prefix}{index}"
+            if alias in alias_to_reference:
+                raise NarrativeWorkflowError(
+                    "narrative_provider_reference_alias_collision"
+                )
+            reference_to_alias[reference] = alias
+            alias_to_reference[alias] = reference
+    return reference_to_alias, alias_to_reference
+
+
+def _replace_exact_references(value: Any, replacements: Mapping[str, str]) -> Any:
+    if isinstance(value, str):
+        return replacements.get(value, value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _replace_exact_references(child, replacements)
+            for key, child in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_replace_exact_references(child, replacements) for child in value]
+    return value
+
+
+def _decode_compact_fact_bindings(value: Any) -> list[dict[str, str]]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise NarrativeWorkflowError("narrative_writer_fact_bindings_invalid")
+    bindings: list[dict[str, str]] = []
+    for pair in value:
+        if (
+            isinstance(pair, (str, bytes))
+            or not isinstance(pair, Sequence)
+            or len(pair) != 2
+            or not all(isinstance(item, str) and item for item in pair)
+        ):
+            raise NarrativeWorkflowError("narrative_writer_fact_binding_invalid")
+        bindings.append(
+            {
+                "claim_handle": pair[0],
+                "fact_handle": pair[1],
+            }
+        )
+    return bindings
+
+
+def _decode_compact_writer_output(
+    output: Mapping[str, Any],
+) -> dict[str, Any]:
+    _strict_mapping(
+        output,
+        frozenset({"blocks"}),
+        "narrative_writer_output_shape_invalid",
+    )
+    blocks = _mapping_sequence(
+        output["blocks"],
+        "narrative_writer_blocks_invalid",
+    )
+    allowed_fields = _COMPACT_WRITER_BLOCK_FIELDS
+    required_fields = allowed_fields - frozenset({"s", "q"})
+    decoded: list[dict[str, Any]] = []
+    for raw_block in blocks:
+        unknown_fields = set(raw_block) - set(allowed_fields)
+        missing_fields = set(required_fields) - set(raw_block)
+        if unknown_fields or missing_fields:
+            raise NarrativeWorkflowError(
+                "narrative_writer_block_shape_invalid"
+            )
+        block = {
+            "text": raw_block["text"],
+            "claim_handles": raw_block["c"],
+            "recommendation_handles": raw_block["r"],
+            "limitation_handles": raw_block["l"],
+            "material_fact_bindings": _decode_compact_fact_bindings(raw_block["f"]),
+            **(
+                {"statement_role": raw_block["s"]}
+                if "s" in raw_block
+                else {}
+            ),
+        }
+        block = {
+            "role": raw_block["role"],
+            **block,
+            **({"required": raw_block["q"]} if "q" in raw_block else {}),
+        }
+        decoded.append(block)
+    return {"blocks": decoded}
+
+
+@dataclass(frozen=True)
+class _NarrativeProviderTransport:
+    provider_payload: Mapping[str, Any]
+    reference_to_alias: Mapping[str, str]
+    alias_to_reference: Mapping[str, str]
+    writer_output_encoding: str | None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        call_input: NarrativeProviderCallInput,
+    ) -> "_NarrativeProviderTransport":
+        reference_to_alias, alias_to_reference = _provider_reference_aliases(
+            call_input.payload
+        )
+        encoded_payload = _replace_exact_references(
+            call_input.to_provider_payload(),
+            reference_to_alias,
+        )
+        if not isinstance(encoded_payload, Mapping):
+            raise NarrativeWorkflowError("narrative_provider_payload_invalid")
+        if "_wire" in encoded_payload:
+            raise NarrativeWorkflowError("narrative_provider_wire_field_collision")
+        writer_output_encoding = (
+            _WRITER_OUTPUT_TRANSPORT_ENCODING
+            if call_input.purpose == "narrative_writer"
+            else None
+        )
+        provider_payload = {
+            "_wire": {
+                "reference_encoding": _REFERENCE_TRANSPORT_ENCODING,
+                "writer_output_encoding": writer_output_encoding,
+            },
+            **encoded_payload,
+        }
+        return cls(
+            provider_payload=MappingProxyType(provider_payload),
+            reference_to_alias=MappingProxyType(reference_to_alias),
+            alias_to_reference=MappingProxyType(alias_to_reference),
+            writer_output_encoding=writer_output_encoding,
+        )
+
+    def decode_output(
+        self,
+        output: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        decoded_references = _replace_exact_references(
+            output,
+            self.alias_to_reference,
+        )
+        if not isinstance(decoded_references, Mapping):
+            raise NarrativeWorkflowError("narrative_provider_output_invalid")
+        if self.writer_output_encoding is None:
+            return decoded_references
+        return _decode_compact_writer_output(decoded_references)
+
+    def audit_payload(self, *, outbound_bytes: int) -> dict[str, Any]:
+        return {
+            "reference_encoding": _REFERENCE_TRANSPORT_ENCODING,
+            "writer_output_encoding": self.writer_output_encoding,
+            "reference_alias_count": len(self.reference_to_alias),
+            "outbound_bytes": outbound_bytes,
+        }
+
+
 def _invoke_provider(
     llm_client: TypedNarrativeLLM,
     *,
@@ -1736,26 +2010,33 @@ def _invoke_provider(
     ]
     | None = None,
 ) -> _ProviderInvocation:
+    transport = _NarrativeProviderTransport.create(call_input=call_input)
+
     def normalize_provider_output(
         output: Mapping[str, Any],
     ) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+        decoded_output = transport.decode_output(output)
         if output_normalizer is not None:
-            return output_normalizer(output)
-        validator(output)
-        return output, ()
+            return output_normalizer(decoded_output)
+        validator(decoded_output)
+        return decoded_output, ()
 
     def provider_output_validator(output: Mapping[str, Any]) -> None:
         try:
             normalize_provider_output(output)
         except NarrativeWorkflowError as exc:
-            raise LLMOutputError(str(exc)) from exc
+            # Reissuing the same narrative request without a diagnostic patch
+            # cannot repair a deterministic WAJE contract violation. Transport
+            # failures and malformed provider JSON retain their provider-layer
+            # retry policy; this local validation result does not.
+            raise LLMOutputError(str(exc), retryable=False) from exc
 
     messages = (
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": json.dumps(
-                call_input.to_provider_payload(),
+                canonical_value(transport.provider_payload),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1786,14 +2067,19 @@ def _invoke_provider(
             technical_detail_ref="technical-detail:sha256:" + detail_digest,
         )
     try:
-        result = llm_client.invoke_json(
-            task="single_authority_" + call_input.purpose,
-            prompt_version=_NARRATIVE_PROMPT_VERSION,
-            messages=messages,
-            required_keys=(required_key,),
-            output_validator=provider_output_validator,
-            model_tier="critical",
-        )
+        invoke_kwargs: dict[str, Any] = {
+            "task": "single_authority_" + call_input.purpose,
+            "prompt_version": _NARRATIVE_PROMPT_VERSION,
+            "messages": messages,
+            "required_keys": (required_key,),
+            "output_validator": provider_output_validator,
+            "model_tier": "critical",
+        }
+        if bool(getattr(llm_client, "supports_thinking_mode", False)):
+            invoke_kwargs["thinking"] = _THINKING_MODE_BY_PROVIDER_PURPOSE[
+                call_input.purpose
+            ]
+        result = llm_client.invoke_json(**invoke_kwargs)
     except (
         LLMConfigurationError,
         LLMOutputError,
@@ -1841,8 +2127,17 @@ def _invoke_provider(
     normalized_audit = {
         **raw_audit,
         "prompt_version": _NARRATIVE_PROMPT_VERSION,
+        "provider_transport": transport.audit_payload(
+            outbound_bytes=outbound_bytes,
+        ),
         **(
-            {_WRITER_CONTRACT_FINDINGS_AUDIT_FIELD: contract_findings}
+            {
+                (
+                    _WRITER_CONTRACT_FINDINGS_AUDIT_FIELD
+                    if call_input.purpose == "narrative_writer"
+                    else _VERIFIER_CONTRACT_FINDINGS_AUDIT_FIELD
+                ): contract_findings
+            }
             if output_normalizer is not None
             else {}
         ),
@@ -1886,6 +2181,26 @@ def _writer_block_shape(
         block["limitation_handles"],
         "narrative_writer_limitation_handles_invalid",
     )
+    known_claim_handles = {
+        item.claim_handle for item in material_projection.claims
+    }
+    known_recommendation_handles = {
+        item.recommendation_handle
+        for item in material_projection.recommendations
+    }
+    known_limitation_handles = {
+        item.limitation_handle for item in material_projection.limitations
+    }
+    if not set(claim_handles).issubset(known_claim_handles):
+        raise NarrativeWorkflowError("narrative_writer_claim_handle_unknown")
+    if not set(recommendation_handles).issubset(
+        known_recommendation_handles
+    ):
+        raise NarrativeWorkflowError(
+            "narrative_writer_recommendation_handle_unknown"
+        )
+    if not set(limitation_handles).issubset(known_limitation_handles):
+        raise NarrativeWorkflowError("narrative_writer_limitation_handle_unknown")
     if not narrative_block_authority_handles_are_valid(
         role=block["role"],
         claim_handles=claim_handles,
@@ -2223,7 +2538,7 @@ def _normalize_initial_writer_output_for_delivery(
     authority_mode: str,
     material_projection: NarrativeMaterialProjection,
 ) -> tuple[Mapping[str, Any], tuple[str, ...]]:
-    """Keep generated insight deliverable while auditing quality-only defects."""
+    """Assemble provider metadata without turning quality findings into a gate."""
 
     _strict_mapping(
         output,
@@ -2248,7 +2563,12 @@ def _normalize_initial_writer_output_for_delivery(
         for material in material_projection.evidence_materials
         for fact in material.facts
     }
+    claim_order = {
+        claim.claim_handle: index
+        for index, claim in enumerate(material_projection.claims)
+    }
     for raw_block in raw_blocks:
+        block_findings: list[str] = []
         unknown_fields = set(raw_block) - set(_WRITER_BLOCK_FIELDS)
         missing_fields = set(_WRITER_BLOCK_FIELDS) - set(raw_block)
         if unknown_fields or not missing_fields.issubset(defaultable_fields):
@@ -2265,18 +2585,25 @@ def _normalize_initial_writer_output_for_delivery(
                 if isinstance(block.get("role"), str) and block["role"]
                 else "business_reference"
             )
-            findings.append("statement_role_defaulted")
+            block_findings.append("statement_role_defaulted")
         if type(block.get("required")) is not bool:
             block["required"] = True
-            findings.append("required_flag_defaulted")
+            block_findings.append("required_flag_defaulted")
         raw_claim_handles = block.get("claim_handles")
         raw_bindings = block.get("material_fact_bindings")
         if (
-            isinstance(raw_claim_handles, list)
-            and isinstance(raw_bindings, list)
+            isinstance(raw_claim_handles, Sequence)
+            and not isinstance(raw_claim_handles, (str, bytes))
+            and isinstance(raw_bindings, Sequence)
+            and not isinstance(raw_bindings, (str, bytes))
         ):
             normalized_bindings: list[Any] = []
             owner_normalized = False
+            global_owner_added = False
+            duplicate_binding_removed = False
+            ambiguous_owner_resolved = False
+            normalized_claim_handles = list(raw_claim_handles)
+            seen_binding_pairs: set[tuple[str, str]] = set()
             for raw_binding in raw_bindings:
                 if not isinstance(raw_binding, Mapping):
                     normalized_bindings.append(raw_binding)
@@ -2296,25 +2623,103 @@ def _normalize_initial_writer_output_for_delivery(
                     and material_handle
                     not in claim_material_handles[claim_handle]
                 ):
-                    legal_owners = [
+                    block_legal_owners = [
                         candidate
-                        for candidate in raw_claim_handles
+                        for candidate in normalized_claim_handles
                         if isinstance(candidate, str)
                         and material_handle
                         in claim_material_handles.get(candidate, frozenset())
                     ]
-                    if len(legal_owners) == 1:
-                        binding["claim_handle"] = legal_owners[0]
+                    global_legal_owners = sorted(
+                        (
+                            candidate
+                            for candidate, candidate_materials in (
+                                claim_material_handles.items()
+                            )
+                            if material_handle in candidate_materials
+                        ),
+                        key=lambda item: (claim_order.get(item, 2**31), item),
+                    )
+                    if block_legal_owners:
+                        chosen_owner = min(
+                            block_legal_owners,
+                            key=lambda item: (claim_order.get(item, 2**31), item),
+                        )
+                        binding["claim_handle"] = chosen_owner
+                        if len(block_legal_owners) > 1:
+                            ambiguous_owner_resolved = True
                         owner_normalized = True
+                    elif global_legal_owners:
+                        binding["claim_handle"] = global_legal_owners[0]
+                        if global_legal_owners[0] not in normalized_claim_handles:
+                            normalized_claim_handles.append(global_legal_owners[0])
+                            global_owner_added = True
+                        if len(global_legal_owners) > 1:
+                            ambiguous_owner_resolved = True
+                        owner_normalized = True
+                normalized_pair = (
+                    binding.get("claim_handle"),
+                    binding.get("fact_handle"),
+                )
+                if (
+                    isinstance(normalized_pair[0], str)
+                    and isinstance(normalized_pair[1], str)
+                ):
+                    typed_pair = (normalized_pair[0], normalized_pair[1])
+                    if typed_pair in seen_binding_pairs:
+                        duplicate_binding_removed = True
+                        continue
+                    seen_binding_pairs.add(typed_pair)
                 normalized_bindings.append(binding)
-            if owner_normalized:
+            if owner_normalized or duplicate_binding_removed:
                 block["material_fact_bindings"] = normalized_bindings
-                findings.append("fact_binding_unique_owner_normalized")
+            binding_owner_added = False
+            for binding in normalized_bindings:
+                binding_claim_handle = (
+                    binding.get("claim_handle")
+                    if isinstance(binding, Mapping)
+                    else None
+                )
+                if (
+                    isinstance(binding_claim_handle, str)
+                    and binding_claim_handle in claim_material_handles
+                    and binding_claim_handle not in normalized_claim_handles
+                ):
+                    normalized_claim_handles.append(binding_claim_handle)
+                    binding_owner_added = True
+            if binding_owner_added:
+                block["claim_handles"] = sorted(normalized_claim_handles)
+                block_findings.append("fact_binding_owner_added_to_block")
+            if owner_normalized:
+                block_findings.append("fact_binding_owner_normalized")
+            if ambiguous_owner_resolved:
+                block_findings.append(
+                    "fact_binding_ambiguous_owner_deterministically_resolved"
+                )
+            if duplicate_binding_removed:
+                block_findings.append("fact_binding_duplicate_removed")
+            if global_owner_added:
+                block["claim_handles"] = sorted(normalized_claim_handles)
+                block_findings.append("fact_binding_global_owner_added")
+        if block.get("role") not in NARRATIVE_BLOCK_ROLES or not (
+            narrative_block_authority_handles_are_valid(
+                role=block.get("role"),
+                claim_handles=block.get("claim_handles", ()),
+                recommendation_handles=block.get("recommendation_handles", ()),
+                limitation_handles=block.get("limitation_handles", ()),
+            )
+        ):
+            block["role"] = _derived_narrative_block_role(
+                block,
+                material_projection=material_projection,
+            )
+            block_findings.append("block_role_derived_from_authority_handles")
         _writer_block_shape(
             block,
             material_projection=material_projection,
         )
         normalized_blocks.append(block)
+        findings.extend(block_findings)
 
     if authority_mode == "boundary_only":
         block = normalized_blocks[0] if len(normalized_blocks) == 1 else None
@@ -2359,6 +2764,70 @@ def _normalize_initial_writer_output_for_delivery(
         {"blocks": normalized_blocks},
         tuple(dict.fromkeys(findings)),
     )
+
+
+_BLOCK_ROLE_BY_CLAIM_CLASS = {
+    "observed_fact": "direction",
+    "accounting_identity_contribution": "accounting_drivers",
+    "dimension_localization": "dimension_localization",
+    "statistical_association": "contextual_pattern",
+    "candidate_mechanism": "contextual_pattern",
+    "candidate_impact": "contextual_pattern",
+    "causal_effect": "contextual_pattern",
+    "scenario": "contextual_pattern",
+    "boundary": "boundary",
+}
+_BLOCK_ROLE_PRIORITY = (
+    "accounting_drivers",
+    "dimension_localization",
+    "direction",
+    "contextual_pattern",
+    "boundary",
+)
+
+
+def _derived_narrative_block_role(
+    block: Mapping[str, Any],
+    *,
+    material_projection: NarrativeMaterialProjection,
+) -> str:
+    recommendation_handles = block.get("recommendation_handles")
+    claim_handles = block.get("claim_handles")
+    limitation_handles = block.get("limitation_handles")
+    if (
+        isinstance(recommendation_handles, Sequence)
+        and not isinstance(recommendation_handles, (str, bytes))
+        and recommendation_handles
+    ):
+        return "next_action"
+    if (
+        isinstance(claim_handles, Sequence)
+        and not isinstance(claim_handles, (str, bytes))
+        and not claim_handles
+        and isinstance(limitation_handles, Sequence)
+        and not isinstance(limitation_handles, (str, bytes))
+        and limitation_handles
+    ):
+        return "boundary"
+    claim_class_by_handle = {
+        item.claim_handle: item.claim_class for item in material_projection.claims
+    }
+    normalized_claim_handles = (
+        claim_handles
+        if isinstance(claim_handles, Sequence)
+        and not isinstance(claim_handles, (str, bytes))
+        else ()
+    )
+    derived = {
+        _BLOCK_ROLE_BY_CLAIM_CLASS.get(claim_class_by_handle.get(handle, ""))
+        for handle in normalized_claim_handles
+        if isinstance(handle, str)
+    }
+    derived.discard(None)
+    for role in _BLOCK_ROLE_PRIORITY:
+        if role in derived:
+            return role
+    return "contextual_pattern"
 
 
 def _fact_binding_from_output(
@@ -2463,11 +2932,6 @@ def _block_to_provider_payload(block: NarrativeBlock) -> dict[str, Any]:
     }
 
 
-def _block_to_focused_editable_payload(block: NarrativeBlock) -> dict[str, Any]:
-    payload = _block_to_provider_payload(block)
-    return {key: payload[key] for key in _FOCUSED_WRITER_EDITABLE_BLOCK_FIELDS}
-
-
 def _writer_attempt_from_invocation(
     *,
     authority_bundle: AuthorityBundle,
@@ -2516,63 +2980,6 @@ def _initial_writer_attempt_and_document(
     return attempt, narrative
 
 
-def _focused_narrative_from_target_output(
-    *,
-    authority_bundle: AuthorityBundle,
-    material_projection: NarrativeMaterialProjection,
-    source_narrative: NarrativeDocument,
-    writer_attempt: NarrativeWriterAttempt,
-    target_output: Mapping[str, Any],
-    retry_plan: _FocusedRetryPlan,
-) -> NarrativeDocument:
-    output_blocks = _mapping_sequence(
-        target_output["blocks"],
-        "focused_writer_blocks_invalid",
-    )
-    if len(output_blocks) != len(retry_plan.targets):
-        raise NarrativeWorkflowError("focused_writer_target_count_invalid")
-    materialized_targets = tuple(
-        _block_from_output(
-            _focused_output_block(
-                output_block,
-                target=target,
-                material_projection=material_projection,
-            ),
-            writer_attempt_id=writer_attempt.attempt_id,
-            material_projection=material_projection,
-        )
-        for output_block, target in zip(output_blocks, retry_plan.targets, strict=True)
-    )
-    replacement_by_source_id = {
-        target.source_block.block_id: block
-        for target, block in zip(retry_plan.targets, materialized_targets, strict=True)
-        if target.source_block is not None
-    }
-    preserved_by_id = {item.block_id: item for item in retry_plan.preserved_blocks}
-    merged_blocks = [
-        (
-            replacement_by_source_id[item.block_id]
-            if item.block_id in replacement_by_source_id
-            else preserved_by_id[item.block_id]
-        )
-        for item in source_narrative.blocks
-        if item.block_id in replacement_by_source_id or item.block_id in preserved_by_id
-    ]
-    merged_blocks.extend(
-        block
-        for target, block in zip(retry_plan.targets, materialized_targets, strict=True)
-        if target.target_kind == "insert"
-    )
-    return NarrativeDocument.create(
-        authority_bundle_ref=authority_bundle.bundle_ref,
-        material_projection_ref=material_projection.projection_ref,
-        material_projection_digest=material_projection.content_digest,
-        writer_attempt=writer_attempt,
-        parent_narrative_id=source_narrative.narrative_id,
-        blocks=tuple(merged_blocks),
-    )
-
-
 def _sensitive_findings(
     inspector: SensitiveOutputInspector,
     *,
@@ -2613,9 +3020,6 @@ def _requirement_limitation_scope(
         fact.fact_handle: material.material_handle
         for material in material_projection.evidence_materials
         for fact in material.facts
-    }
-    facets_by_handle = {
-        item.boundary_facet_handle: item for item in material_projection.boundary_facets
     }
     scope: list[dict[str, Any]] = []
     for requirement in material_projection.publication_requirements:
@@ -2659,10 +3063,6 @@ def _requirement_limitation_scope(
                         "boundary_facet_handles": list(
                             limitation.boundary_facet_handles
                         ),
-                        "boundary_facets": [
-                            facets_by_handle[facet_handle].to_writer_payload()
-                            for facet_handle in limitation.boundary_facet_handles
-                        ],
                     }
                 )
         except KeyError as exc:
@@ -2727,24 +3127,6 @@ def _requirement_limitation_scope(
     return scope
 
 
-def _focused_context_block_payload(
-    *,
-    block: NarrativeBlock,
-    source_verifier_report: BlockVerifierReport,
-    material_projection: NarrativeMaterialProjection,
-) -> dict[str, Any]:
-    return {
-        **_verifier_block_payload(block),
-        "settled_acceptance": {
-            "source_verifier_report_ref": (source_verifier_report.verifier_report_ref),
-            "source_verifier_report_digest": source_verifier_report.content_digest,
-            "block_content_digest": block.content_digest,
-            "material_projection_digest": material_projection.content_digest,
-            "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
-        },
-    }
-
-
 def _columnar_material_fact_transport(
     material_view: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -2755,11 +3137,38 @@ def _columnar_material_fact_transport(
         or "transport_encoding" in material_view
     ):
         raise NarrativeWorkflowError("narrative_material_fact_transport_invalid")
-    normalized = canonical_value(material_view)
+    normalized = _contract_scoped_material_fact_view(
+        canonical_value(material_view)
+    )
     materials = _mapping_sequence(
         normalized.get("evidence_materials"),
         "narrative_material_fact_transport_invalid",
     )
+    claims = _mapping_sequence(
+        normalized.get("claims"),
+        "narrative_material_fact_transport_invalid",
+    )
+    claim_handles_by_material: dict[str, list[str]] = {}
+    for claim in claims:
+        claim_handle = claim.get("claim_handle")
+        material_handles = claim.get("material_handles")
+        if (
+            not isinstance(claim_handle, str)
+            or not claim_handle
+            or isinstance(material_handles, (str, bytes))
+            or not isinstance(material_handles, Sequence)
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_material_fact_transport_invalid"
+            )
+        for material_handle in material_handles:
+            if not isinstance(material_handle, str) or not material_handle:
+                raise NarrativeWorkflowError(
+                    "narrative_material_fact_transport_invalid"
+                )
+            claim_handles_by_material.setdefault(material_handle, []).append(
+                claim_handle
+            )
     encoded_materials = []
     fact_fields = frozenset(_MATERIAL_FACT_COLUMNS)
     for material in materials:
@@ -2774,6 +3183,12 @@ def _columnar_material_fact_transport(
         encoded_materials.append(
             {
                 **{key: value for key, value in material.items() if key != "facts"},
+                "fact_claim_handle_options": sorted(
+                    claim_handles_by_material.get(
+                        str(material.get("material_handle") or ""),
+                        (),
+                    )
+                ),
                 "fact_columns": list(_MATERIAL_FACT_COLUMNS),
                 "facts": [
                     [fact[column] for column in _MATERIAL_FACT_COLUMNS]
@@ -2785,6 +3200,182 @@ def _columnar_material_fact_transport(
         **normalized,
         "transport_encoding": _MATERIAL_FACT_TRANSPORT_ENCODING,
         "evidence_materials": encoded_materials,
+    }
+
+
+def _contract_scoped_material_fact_view(
+    material_view: Mapping[str, Any],
+) -> dict[str, Any]:
+    requirements = _mapping_sequence(
+        material_view.get("publication_requirements"),
+        "narrative_material_fact_transport_invalid",
+    )
+    required_fact_handles = {
+        handle
+        for requirement in requirements
+        for handle in requirement.get("required_fact_handles", ())
+        if isinstance(handle, str) and handle
+    }
+    materials = _mapping_sequence(
+        material_view.get("evidence_materials"),
+        "narrative_material_fact_transport_invalid",
+    )
+    claims = _mapping_sequence(
+        material_view.get("claims"),
+        "narrative_material_fact_transport_invalid",
+    )
+    claim_classes_by_material: dict[str, set[str]] = {}
+    for claim in claims:
+        claim_class = claim.get("claim_class")
+        material_handles = claim.get("material_handles")
+        if (
+            not isinstance(claim_class, str)
+            or not claim_class
+            or isinstance(material_handles, (str, bytes))
+            or not isinstance(material_handles, Sequence)
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_material_fact_transport_invalid"
+            )
+        for material_handle in material_handles:
+            if not isinstance(material_handle, str) or not material_handle:
+                raise NarrativeWorkflowError(
+                    "narrative_material_fact_transport_invalid"
+                )
+            claim_classes_by_material.setdefault(material_handle, set()).add(
+                claim_class
+            )
+    selected_materials: list[dict[str, Any]] = []
+    for material in materials:
+        facts = _mapping_sequence(
+            material.get("facts"),
+            "narrative_material_fact_transport_invalid",
+        )
+        contract = material.get("interpretation_contract")
+        writer_fact_selection = (
+            contract.get("writer_fact_selection")
+            if isinstance(contract, Mapping)
+            else None
+        )
+        if writer_fact_selection is not None:
+            if (
+                not isinstance(writer_fact_selection, Mapping)
+                or set(writer_fact_selection) != {"mode", "fact_names"}
+                or writer_fact_selection.get("mode") != "named_fact_subset"
+            ):
+                raise NarrativeWorkflowError(
+                    "narrative_material_writer_fact_selection_invalid"
+                )
+            raw_fact_names = writer_fact_selection.get("fact_names")
+            if (
+                isinstance(raw_fact_names, (str, bytes))
+                or not isinstance(raw_fact_names, Sequence)
+            ):
+                raise NarrativeWorkflowError(
+                    "narrative_material_writer_fact_selection_invalid"
+                )
+            writer_fact_names = tuple(raw_fact_names)
+            if (
+                not writer_fact_names
+                or any(
+                    not isinstance(name, str) or not name.strip()
+                    for name in writer_fact_names
+                )
+                or len(writer_fact_names) != len(set(writer_fact_names))
+            ):
+                raise NarrativeWorkflowError(
+                    "narrative_material_writer_fact_selection_invalid"
+                )
+        else:
+            writer_fact_names = ()
+        eligible = (
+            isinstance(contract, Mapping)
+            and contract.get("dimension_summary_claim_scope")
+            == "representative_not_exhaustive"
+            and isinstance(
+                contract.get("dimension_summary_selection_policy"),
+                str,
+            )
+            and bool(contract["dimension_summary_selection_policy"].strip())
+        )
+        selected = tuple(
+            fact
+            for fact in facts
+            if isinstance(fact.get("fact_handle"), str)
+            and fact["fact_handle"] in required_fact_handles
+        )
+        material_handle = material.get("material_handle")
+        accepted_candidate_without_required_facts = (
+            isinstance(material_handle, str)
+            and bool(facts)
+            and not selected
+            and not contract
+            and claim_classes_by_material.get(material_handle)
+            == {"candidate_mechanism"}
+        )
+        if accepted_candidate_without_required_facts:
+            selected_materials.append(
+                {
+                    **material,
+                    "facts": [],
+                    "fact_selection": {
+                        "mode": (
+                            "accepted_candidate_claim_without_required_facts"
+                        ),
+                        "source_fact_count": len(facts),
+                        "selected_fact_count": 0,
+                        "omitted_fact_count": len(facts),
+                    },
+                }
+            )
+        elif writer_fact_names:
+            allowed_names = set(writer_fact_names)
+            writer_selected = tuple(
+                fact
+                for fact in facts
+                if fact.get("name") in allowed_names
+                or (
+                    isinstance(fact.get("fact_handle"), str)
+                    and fact["fact_handle"] in required_fact_handles
+                )
+            )
+            selected_materials.append(
+                {
+                    **material,
+                    "facts": list(writer_selected),
+                    "fact_selection": {
+                        "mode": "contract_named_fact_view",
+                        "contract_id": str(contract.get("contract_id") or ""),
+                        "source_fact_count": len(facts),
+                        "selected_fact_count": len(writer_selected),
+                        "omitted_fact_count": len(facts) - len(writer_selected),
+                    },
+                }
+            )
+        elif eligible and selected and len(selected) < len(facts):
+            selected_materials.append(
+                {
+                    **material,
+                    "facts": list(selected),
+                    "fact_selection": {
+                        "mode": "contract_required_representative_view",
+                        "source_fact_count": len(facts),
+                        "selected_fact_count": len(selected),
+                        "omitted_fact_count": len(facts) - len(selected),
+                        "dimension_summary_claim_scope": contract[
+                            "dimension_summary_claim_scope"
+                        ],
+                        "dimension_summary_selection_policy": contract[
+                            "dimension_summary_selection_policy"
+                        ],
+                    },
+                }
+            )
+        else:
+            selected_materials.append(dict(material))
+    return {
+        **material_view,
+        "evidence_materials": selected_materials,
     }
 
 
@@ -2890,10 +3481,6 @@ def _verifier_payload(
     answer_context: NarrativeAnswerContext,
     narrative: NarrativeDocument,
     local_report: BlockLocalValidationReport,
-    source_narrative: NarrativeDocument | None = None,
-    source_local_report: BlockLocalValidationReport | None = None,
-    source_verifier_report: BlockVerifierReport | None = None,
-    source_verifier_call_input: NarrativeProviderCallInput | None = None,
 ) -> tuple[dict[str, Any], tuple[NarrativeBlock, ...], tuple[NarrativeBlock, ...]]:
     blocks_by_id = {item.block_id: item for item in narrative.blocks}
     try:
@@ -2902,131 +3489,15 @@ def _verifier_payload(
         )
     except KeyError as exc:
         raise NarrativeWorkflowError("block_verifier_local_scope_invalid") from exc
-    source_values = (
-        source_narrative,
-        source_local_report,
-        source_verifier_report,
-        source_verifier_call_input,
-    )
-    if all(item is None for item in source_values):
-        target_blocks = accepted_locally
-        context_blocks: tuple[NarrativeBlock, ...] = ()
-        scope = {
-            "mode": "full",
-            "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
-            "material_projection_ref": material_projection.projection_ref,
-            "material_projection_digest": material_projection.content_digest,
-            "source_verifier_report_ref": None,
-            "source_verifier_report_digest": None,
-            "source_verifier_input_ref": None,
-            "source_verifier_input_digest": None,
-            "inherited_acceptances": [],
-            "target_block_ids": [item.block_id for item in target_blocks],
-        }
-        context_payload: list[dict[str, Any]] = []
-    else:
-        if any(item is None for item in source_values):
-            raise NarrativeWorkflowError("block_verifier_source_scope_invalid")
-        if (
-            type(source_narrative) is not NarrativeDocument
-            or type(source_local_report) is not BlockLocalValidationReport
-            or type(source_verifier_report) is not BlockVerifierReport
-            or type(source_verifier_call_input) is not NarrativeProviderCallInput
-        ):
-            raise NarrativeWorkflowError("block_verifier_source_scope_invalid")
-        if (
-            source_narrative.material_projection_ref
-            != material_projection.projection_ref
-            or source_narrative.material_projection_digest
-            != material_projection.content_digest
-            or narrative.material_projection_ref != material_projection.projection_ref
-            or narrative.material_projection_digest
-            != material_projection.content_digest
-            or source_local_report.narrative_id != source_narrative.narrative_id
-            or source_local_report.narrative_digest != source_narrative.content_digest
-            or source_verifier_report.narrative_id != source_narrative.narrative_id
-            or source_verifier_report.narrative_digest
-            != source_narrative.content_digest
-            or source_verifier_report.local_report_ref
-            != source_local_report.local_report_ref
-            or source_verifier_report.local_report_digest
-            != source_local_report.content_digest
-            or source_verifier_report.verifier_input_ref
-            != source_verifier_call_input.call_input_ref
-            or source_verifier_report.verifier_input_digest
-            != source_verifier_call_input.content_digest
-            or source_verifier_call_input.purpose != "block_verification"
-            or source_verifier_call_input.material_projection_ref
-            != material_projection.projection_ref
-            or source_verifier_call_input.material_projection_digest
-            != material_projection.content_digest
-        ):
-            raise NarrativeWorkflowError("block_verifier_source_scope_invalid")
-        expected_source_payload, _, _ = _verifier_payload(
-            material_projection=material_projection,
-            answer_context=answer_context,
-            narrative=source_narrative,
-            local_report=source_local_report,
-        )
-        if canonical_value(source_verifier_call_input.payload) != canonical_value(
-            expected_source_payload
-        ):
-            raise NarrativeWorkflowError("block_verifier_source_scope_invalid")
-        source_blocks_by_id = {item.block_id: item for item in source_narrative.blocks}
-        accepted_source_ids = frozenset(source_verifier_report.accepted_block_ids)
-        context = []
-        for block in accepted_locally:
-            source_block = source_blocks_by_id.get(block.block_id)
-            if source_block is None or block.block_id not in accepted_source_ids:
-                continue
-            if (
-                source_block.content_digest != block.content_digest
-                or source_block.to_dict() != block.to_dict()
-            ):
-                raise NarrativeWorkflowError(
-                    "block_verifier_inherited_acceptance_invalid"
-                )
-            context.append(block)
-        context_blocks = tuple(context)
-        context_ids = {item.block_id for item in context_blocks}
-        target_blocks = tuple(
-            item for item in accepted_locally if item.block_id not in context_ids
-        )
-        inherited_acceptances = [
-            {
-                "block_id": item.block_id,
-                "content_digest": item.content_digest,
-                "source_verifier_report_ref": (
-                    source_verifier_report.verifier_report_ref
-                ),
-                "source_verifier_report_digest": (
-                    source_verifier_report.content_digest
-                ),
-                "material_projection_digest": material_projection.content_digest,
-                "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
-            }
-            for item in context_blocks
-        ]
-        scope = {
-            "mode": "focused_retry",
-            "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
-            "material_projection_ref": material_projection.projection_ref,
-            "material_projection_digest": material_projection.content_digest,
-            "source_verifier_report_ref": (source_verifier_report.verifier_report_ref),
-            "source_verifier_report_digest": source_verifier_report.content_digest,
-            "source_verifier_input_ref": (source_verifier_call_input.call_input_ref),
-            "source_verifier_input_digest": source_verifier_call_input.content_digest,
-            "inherited_acceptances": inherited_acceptances,
-            "target_block_ids": [item.block_id for item in target_blocks],
-        }
-        context_payload = [
-            _focused_context_block_payload(
-                block=item,
-                source_verifier_report=source_verifier_report,
-                material_projection=material_projection,
-            )
-            for item in context_blocks
-        ]
+    target_blocks = accepted_locally
+    context_blocks: tuple[NarrativeBlock, ...] = ()
+    scope = {
+        "mode": "full",
+        "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
+        "material_projection_ref": material_projection.projection_ref,
+        "material_projection_digest": material_projection.content_digest,
+        "target_block_ids": [item.block_id for item in target_blocks],
+    }
     payload = {
         "material_projection": _verification_scoped_material_view(
             material_projection=material_projection,
@@ -3038,7 +3509,6 @@ def _verifier_payload(
             material_projection=material_projection,
             blocks=accepted_locally,
         ),
-        "context_blocks": context_payload,
         "blocks": [_verifier_block_payload(item) for item in target_blocks],
     }
     return payload, target_blocks, context_blocks
@@ -3106,6 +3576,46 @@ def _verifier_validator(
             raise NarrativeWorkflowError("block_verifier_veto_invalid")
 
 
+def _normalize_verifier_output_for_delivery(
+    output: Mapping[str, Any],
+    *,
+    blocks: Sequence[NarrativeBlock],
+) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+    _strict_mapping(
+        output,
+        frozenset({"decisions"}),
+        "block_verifier_output_shape_invalid",
+    )
+    decisions = _mapping_sequence(
+        output["decisions"],
+        "block_verifier_decisions_invalid",
+    )
+    normalized: list[dict[str, Any]] = []
+    findings: list[str] = []
+    for raw_decision in decisions:
+        _strict_mapping(
+            raw_decision,
+            _VERIFIER_DECISION_FIELDS,
+            "block_verifier_decision_shape_invalid",
+        )
+        decision = dict(raw_decision)
+        if decision.get("disposition") == "accepted" and (
+            decision.get("reason_code") is not None
+            or decision.get("affected_claim_handles")
+            or decision.get("affected_recommendation_handles")
+            or decision.get("limitation_handles")
+        ):
+            decision["reason_code"] = None
+            decision["affected_claim_handles"] = []
+            decision["affected_recommendation_handles"] = []
+            decision["limitation_handles"] = []
+            findings.append("accepted_decision_details_cleared")
+        normalized.append(decision)
+    normalized_output = {"decisions": normalized}
+    _verifier_validator(normalized_output, blocks=blocks)
+    return normalized_output, tuple(dict.fromkeys(findings))
+
+
 def _verifier_report_from_output(
     *,
     material_projection: NarrativeMaterialProjection,
@@ -3147,29 +3657,23 @@ def _verifier_report_from_output(
     )
 
 
-def _verify_narrative(
+def _prepare_verifier_call(
     *,
     authority_bundle: AuthorityBundle,
     material_projection: NarrativeMaterialProjection,
-    visibility_policy: PublicationFieldVisibilityPolicy,
     answer_context: NarrativeAnswerContext,
     narrative: NarrativeDocument,
     local_report: BlockLocalValidationReport,
-    llm_client: TypedNarrativeLLM,
-    source_narrative: NarrativeDocument | None = None,
-    source_local_report: BlockLocalValidationReport | None = None,
-    source_verifier_report: BlockVerifierReport | None = None,
-    source_verifier_call_input: NarrativeProviderCallInput | None = None,
-) -> tuple[_ProviderInvocation, BlockVerificationAttempt, BlockVerifierReport]:
+) -> tuple[
+    NarrativeProviderCallInput,
+    tuple[NarrativeBlock, ...],
+    tuple[NarrativeBlock, ...],
+]:
     payload, target_blocks, inherited_blocks = _verifier_payload(
         material_projection=material_projection,
         answer_context=answer_context,
         narrative=narrative,
         local_report=local_report,
-        source_narrative=source_narrative,
-        source_local_report=source_local_report,
-        source_verifier_report=source_verifier_report,
-        source_verifier_call_input=source_verifier_call_input,
     )
     call_input = NarrativeProviderCallInput.create(
         purpose="block_verification",
@@ -3177,6 +3681,20 @@ def _verify_narrative(
         material_projection=material_projection,
         payload=payload,
     )
+    return call_input, target_blocks, inherited_blocks
+
+
+def _verify_narrative(
+    *,
+    material_projection: NarrativeMaterialProjection,
+    visibility_policy: PublicationFieldVisibilityPolicy,
+    narrative: NarrativeDocument,
+    local_report: BlockLocalValidationReport,
+    llm_client: TypedNarrativeLLM,
+    call_input: NarrativeProviderCallInput,
+    target_blocks: Sequence[NarrativeBlock],
+    inherited_blocks: Sequence[NarrativeBlock],
+) -> tuple[_ProviderInvocation, BlockVerificationAttempt, BlockVerifierReport]:
 
     def validator(output: Mapping[str, Any]) -> None:
         _verifier_validator(output, blocks=target_blocks)
@@ -3187,6 +3705,10 @@ def _verify_narrative(
         system_prompt=_VERIFIER_SYSTEM_PROMPT,
         required_key="decisions",
         validator=validator,
+        output_normalizer=lambda output: _normalize_verifier_output_for_delivery(
+            output,
+            blocks=target_blocks,
+        ),
     )
     response = invocation.responses[-1]
     attempt = BlockVerificationAttempt.create(
@@ -3210,1206 +3732,6 @@ def _verify_narrative(
     return invocation, attempt, report
 
 
-def _focused_retry_required_coverage(
-    *,
-    preserved_blocks: Sequence[NarrativeBlock],
-    material_projection: NarrativeMaterialProjection,
-) -> tuple[dict[str, Any], ...]:
-    accepted_required_blocks = tuple(
-        block for block in preserved_blocks if block.required
-    )
-    covered_claim_handles = frozenset(
-        handle for block in accepted_required_blocks for handle in block.claim_handles
-    )
-    covered_limitation_handles = frozenset(
-        handle
-        for block in accepted_required_blocks
-        for handle in block.limitation_handles
-    )
-    covered_fact_binding_pairs = frozenset(
-        (binding.claim_handle, binding.fact_handle)
-        for block in accepted_required_blocks
-        for binding in block.material_fact_bindings
-    )
-    required_coverage: list[dict[str, Any]] = []
-    for requirement in material_projection.publication_requirements:
-        if requirement.status in {"satisfied", "mixed", "contradicted"}:
-            claim_handle_options = (
-                ()
-                if not covered_claim_handles.isdisjoint(requirement.claim_handles)
-                else requirement.claim_handles
-            )
-        elif requirement.status == "unavailable":
-            claim_handle_options = ()
-        else:
-            raise NarrativeWorkflowError(
-                "narrative_publication_requirement_status_invalid"
-            )
-        required_fact_handles = tuple(
-            fact_handle
-            for fact_handle in requirement.required_fact_handles
-            if not any(
-                (claim_handle, fact_handle) in covered_fact_binding_pairs
-                for claim_handle in requirement.claim_handles
-            )
-        )
-        if required_fact_handles and not claim_handle_options:
-            claim_handle_options = requirement.claim_handles
-        required_limitation_handles = tuple(
-            handle
-            for handle in requirement.limitation_handles
-            if handle not in covered_limitation_handles
-        )
-        if (
-            claim_handle_options
-            or required_fact_handles
-            or required_limitation_handles
-        ):
-            required_coverage.append(
-                {
-                    "requirement_handle": requirement.requirement_handle,
-                    "claim_handle_options": list(claim_handle_options),
-                    "required_fact_handles": list(required_fact_handles),
-                    "required_limitation_handles": list(required_limitation_handles),
-                }
-            )
-    return tuple(required_coverage)
-
-
-@dataclass(frozen=True)
-class _FocusedTargetCoverage:
-    requirement_handle: str
-    claim_handle_options: tuple[str, ...]
-    required_fact_handles: tuple[str, ...]
-    required_limitation_handles: tuple[str, ...]
-
-    def to_provider_payload(self) -> dict[str, Any]:
-        return {
-            "requirement_handle": self.requirement_handle,
-            "claim_handle_options": list(self.claim_handle_options),
-            "required_fact_handles": list(self.required_fact_handles),
-            "required_limitation_handles": list(self.required_limitation_handles),
-        }
-
-
-@dataclass(frozen=True)
-class _FocusedRetryTarget:
-    target_id: str
-    target_kind: str
-    role: str
-    required: bool
-    source_block: NarrativeBlock | None
-    required_coverage: tuple[_FocusedTargetCoverage, ...]
-    allowed_claim_handles: tuple[str, ...]
-    allowed_recommendation_handles: tuple[str, ...]
-    allowed_limitation_handles: tuple[str, ...]
-    source_seed_limitation_handles: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _FocusedRetryPlan:
-    targets: tuple[_FocusedRetryTarget, ...]
-    preserved_blocks: tuple[NarrativeBlock, ...]
-    open_required_coverage: tuple[dict[str, Any], ...]
-
-    @property
-    def source_target_blocks(self) -> tuple[NarrativeBlock, ...]:
-        return tuple(
-            target.source_block
-            for target in self.targets
-            if target.source_block is not None
-        )
-
-
-def _block_can_carry_limitation(
-    block: NarrativeBlock,
-    limitation_handle: str,
-    *,
-    material_projection: NarrativeMaterialProjection,
-) -> bool:
-    if block.role == "boundary":
-        return True
-    claims = {item.claim_handle: item for item in material_projection.claims}
-    recommendations = {
-        item.recommendation_handle: item for item in material_projection.recommendations
-    }
-    return any(
-        limitation_handle in claims[handle].limitation_handles
-        for handle in block.claim_handles
-        if handle in claims
-    ) or any(
-        limitation_handle in recommendations[handle].risk_handles
-        for handle in block.recommendation_handles
-        if handle in recommendations
-    )
-
-
-def _focused_target_handle_space(
-    *,
-    role: str,
-    source_block: NarrativeBlock | None,
-    required_coverage: Sequence[_FocusedTargetCoverage],
-    material_projection: NarrativeMaterialProjection,
-) -> tuple[
-    tuple[str, ...],
-    tuple[str, ...],
-    tuple[str, ...],
-    tuple[str, ...],
-]:
-    claim_by_handle = {item.claim_handle: item for item in material_projection.claims}
-    recommendation_by_handle = {
-        item.recommendation_handle: item for item in material_projection.recommendations
-    }
-    known_limitation_handles = {
-        item.limitation_handle for item in material_projection.limitations
-    }
-    source_claim_handles = tuple(
-        handle
-        for handle in (() if source_block is None else source_block.claim_handles)
-        if handle in claim_by_handle
-    )
-    source_recommendation_handles = tuple(
-        handle
-        for handle in (
-            () if source_block is None else source_block.recommendation_handles
-        )
-        if handle in recommendation_by_handle
-    )
-    supporting_claim_handles = tuple(
-        dict.fromkeys(
-            claim_handle
-            for recommendation_handle in source_recommendation_handles
-            for claim_handle in recommendation_by_handle[
-                recommendation_handle
-            ].supporting_claim_handles
-            if claim_handle in claim_by_handle
-        )
-    )
-    allowed_claim_handles = tuple(
-        dict.fromkeys(
-            source_claim_handles
-            + tuple(
-                handle
-                for coverage in required_coverage
-                for handle in coverage.claim_handle_options
-            )
-            + supporting_claim_handles
-        )
-    )
-    allowed_recommendation_handles = source_recommendation_handles
-    scoped_limitation_handles = tuple(
-        dict.fromkeys(
-            handle
-            for claim_handle in allowed_claim_handles
-            for handle in claim_by_handle[claim_handle].limitation_handles
-        )
-    ) + tuple(
-        dict.fromkeys(
-            handle
-            for recommendation_handle in allowed_recommendation_handles
-            for handle in recommendation_by_handle[recommendation_handle].risk_handles
-        )
-    )
-    source_scoped_limitation_handles = tuple(
-        dict.fromkeys(
-            handle
-            for claim_handle in source_claim_handles
-            for handle in claim_by_handle[claim_handle].limitation_handles
-        )
-    ) + tuple(
-        dict.fromkeys(
-            handle
-            for recommendation_handle in source_recommendation_handles
-            for handle in recommendation_by_handle[recommendation_handle].risk_handles
-        )
-    )
-    required_limitation_handles = tuple(
-        handle
-        for coverage in required_coverage
-        for handle in coverage.required_limitation_handles
-    )
-    source_limitation_handles = (
-        ()
-        if source_block is None
-        else tuple(
-            handle
-            for handle in source_block.limitation_handles
-            if handle in known_limitation_handles
-        )
-    )
-    if role == "boundary":
-        allowed_limitation_handles = tuple(
-            dict.fromkeys(
-                source_limitation_handles
-                + required_limitation_handles
-                + scoped_limitation_handles
-            )
-        )
-        source_seed_limitation_handles = source_limitation_handles
-    else:
-        scoped = frozenset(scoped_limitation_handles)
-        allowed_limitation_handles = tuple(
-            handle
-            for handle in dict.fromkeys(
-                source_limitation_handles
-                + required_limitation_handles
-                + scoped_limitation_handles
-            )
-            if handle in scoped
-        )
-        source_scope = frozenset(source_scoped_limitation_handles)
-        source_seed_limitation_handles = tuple(
-            handle for handle in source_limitation_handles if handle in source_scope
-        )
-    return (
-        allowed_claim_handles,
-        allowed_recommendation_handles,
-        allowed_limitation_handles,
-        source_seed_limitation_handles,
-    )
-
-
-def _assert_focused_retry_plan_satisfiable(
-    *,
-    targets: Sequence[_FocusedRetryTarget],
-    open_required_coverage: Sequence[Mapping[str, Any]],
-    material_projection: NarrativeMaterialProjection,
-) -> None:
-    known_claim_handles = {item.claim_handle for item in material_projection.claims}
-    known_recommendation_handles = {
-        item.recommendation_handle for item in material_projection.recommendations
-    }
-    known_limitation_handles = {
-        item.limitation_handle for item in material_projection.limitations
-    }
-    known_fact_handles = {
-        fact.fact_handle
-        for material in material_projection.evidence_materials
-        for fact in material.facts
-    }
-    expected = {
-        item["requirement_handle"]: (
-            frozenset(item["claim_handle_options"]),
-            frozenset(item["required_fact_handles"]),
-            frozenset(item["required_limitation_handles"]),
-        )
-        for item in open_required_coverage
-    }
-    assigned: dict[str, tuple[set[str], set[str], set[str]]] = {}
-    for target in targets:
-        if (
-            not set(target.allowed_claim_handles).issubset(known_claim_handles)
-            or not set(target.allowed_recommendation_handles).issubset(
-                known_recommendation_handles
-            )
-            or not set(target.allowed_limitation_handles).issubset(
-                known_limitation_handles
-            )
-            or not set(target.source_seed_limitation_handles).issubset(
-                target.allowed_limitation_handles
-            )
-        ):
-            raise NarrativeWorkflowError("focused_retry_plan_handle_space_invalid")
-        if (
-            (target.role == "boundary" and not target.allowed_limitation_handles)
-            or (
-                target.role == "next_action"
-                and not target.allowed_recommendation_handles
-            )
-            or (
-                target.role not in {"boundary", "next_action"}
-                and not (
-                    target.allowed_claim_handles
-                    or target.allowed_recommendation_handles
-                )
-            )
-        ):
-            raise NarrativeWorkflowError("focused_retry_plan_target_authority_missing")
-        for coverage in target.required_coverage:
-            if (
-                coverage.requirement_handle not in expected
-                or not set(coverage.claim_handle_options).issubset(
-                    target.allowed_claim_handles
-                )
-                or not set(coverage.required_fact_handles).issubset(
-                    known_fact_handles
-                )
-                or not set(coverage.required_limitation_handles).issubset(
-                    target.allowed_limitation_handles
-                )
-            ):
-                raise NarrativeWorkflowError("focused_retry_plan_handle_space_invalid")
-            assigned_claims, assigned_facts, assigned_limitations = assigned.setdefault(
-                coverage.requirement_handle,
-                (set(), set(), set()),
-            )
-            coverage_claims = set(coverage.claim_handle_options)
-            coverage_facts = set(coverage.required_fact_handles)
-            coverage_limitations = set(coverage.required_limitation_handles)
-            if assigned_claims.intersection(
-                coverage_claims
-            ) or assigned_facts.intersection(
-                coverage_facts
-            ) or assigned_limitations.intersection(coverage_limitations):
-                raise NarrativeWorkflowError(
-                    "focused_retry_plan_coverage_assignment_invalid"
-                )
-            assigned_claims.update(coverage_claims)
-            assigned_facts.update(coverage_facts)
-            assigned_limitations.update(coverage_limitations)
-    normalized_assigned = {
-        requirement_handle: (
-            frozenset(claim_handles),
-            frozenset(fact_handles),
-            frozenset(limitation_handles),
-        )
-        for requirement_handle, (
-            claim_handles,
-            fact_handles,
-            limitation_handles,
-        ) in assigned.items()
-    }
-    if normalized_assigned != expected:
-        raise NarrativeWorkflowError("focused_retry_plan_coverage_assignment_invalid")
-
-
-_COMPLETION_BLOCK_ROLE_BY_CLAIM_KIND = MappingProxyType(
-    {
-        "formula_component_contribution": "accounting_drivers",
-        "comparative_change": "direction",
-        "directional_change": "direction",
-        "dimension_localization": "dimension_localization",
-        "dimension_association": "dimension_localization",
-        "periodic_pattern": "contextual_pattern",
-        "event_alignment": "contextual_pattern",
-    }
-)
-
-
-def _completion_block_role(claim_kind: str) -> str:
-    role = _COMPLETION_BLOCK_ROLE_BY_CLAIM_KIND.get(
-        _required_string(
-            claim_kind,
-            "focused_retry_plan_claim_kind_invalid",
-        ),
-        "contextual_pattern",
-    )
-    if role not in NARRATIVE_BLOCK_ROLES:
-        raise NarrativeWorkflowError("focused_retry_plan_block_role_invalid")
-    return role
-
-
-def _compile_focused_retry_plan(
-    *,
-    source_order: Sequence[NarrativeBlock],
-    accepted_block_ids: Sequence[str],
-    rejected_block_ids: Sequence[str],
-    material_projection: NarrativeMaterialProjection,
-    ensure_publication_coverage: bool = False,
-) -> _FocusedRetryPlan:
-    source = tuple(source_order)
-    source_ids = tuple(item.block_id for item in source)
-    accepted = frozenset(accepted_block_ids)
-    rejected = frozenset(rejected_block_ids)
-    if (
-        not source
-        or len(source_ids) != len(set(source_ids))
-        or accepted.intersection(rejected)
-        or accepted.union(rejected) != set(source_ids)
-    ):
-        raise NarrativeWorkflowError("focused_retry_plan_source_closure_invalid")
-    target_ids = {
-        item.block_id for item in source if item.required and item.block_id in rejected
-    }
-    if not target_ids and not ensure_publication_coverage:
-        raise NarrativeWorkflowError("focused_retry_plan_target_missing")
-    preserved_ids = set(accepted)
-    provisional_targets = tuple(item for item in source if item.block_id in target_ids)
-    provisional_preserved = tuple(
-        item for item in source if item.block_id in preserved_ids
-    )
-    provisional_coverage = _focused_retry_required_coverage(
-        preserved_blocks=provisional_preserved,
-        material_projection=material_projection,
-    )
-    open_limitations = tuple(
-        handle
-        for requirement in provisional_coverage
-        for handle in requirement["required_limitation_handles"]
-    )
-    boundary_required = tuple(
-        handle
-        for handle in dict.fromkeys(open_limitations)
-        if not any(
-            _block_can_carry_limitation(
-                block,
-                handle,
-                material_projection=material_projection,
-            )
-            for block in provisional_targets
-        )
-    )
-    boundary_source = next(
-        (
-            block
-            for block in provisional_targets
-            if block.required and block.role == "boundary"
-        ),
-        None,
-    )
-    if boundary_required and boundary_source is None:
-        boundary_source = next(
-            (
-                block
-                for block in provisional_preserved
-                if block.required and block.role == "boundary"
-            ),
-            None,
-        )
-        if boundary_source is not None:
-            target_ids.add(boundary_source.block_id)
-            preserved_ids.remove(boundary_source.block_id)
-
-    source_targets = tuple(item for item in source if item.block_id in target_ids)
-    preserved_blocks = tuple(item for item in source if item.block_id in preserved_ids)
-    open_coverage = _focused_retry_required_coverage(
-        preserved_blocks=preserved_blocks,
-        material_projection=material_projection,
-    )
-    open_limitations = tuple(
-        handle
-        for requirement in open_coverage
-        for handle in requirement["required_limitation_handles"]
-    )
-    boundary_required = tuple(
-        handle
-        for handle in dict.fromkeys(open_limitations)
-        if not any(
-            _block_can_carry_limitation(
-                block,
-                handle,
-                material_projection=material_projection,
-            )
-            for block in source_targets
-        )
-    )
-    target_seeds: list[tuple[str, str, bool, NarrativeBlock | None]] = [
-        (block.block_id, block.role, block.required, block) for block in source_targets
-    ]
-    if boundary_required and not any(
-        role == "boundary" and required for _, role, required, _ in target_seeds
-    ):
-        slot_digest = canonical_digest(
-            {
-                "source_block_ids": source_ids,
-                "accepted_block_ids": tuple(sorted(accepted)),
-                "rejected_block_ids": tuple(sorted(rejected)),
-                "required_limitation_handles": boundary_required,
-            }
-        )
-        target_seeds.append(
-            (
-                "focused-boundary-slot:sha256:" + slot_digest,
-                "boundary",
-                True,
-                None,
-            )
-        )
-    inserted_claim_target_by_requirement: dict[
-        str, tuple[str, str, bool, NarrativeBlock | None]
-    ] = {}
-    if ensure_publication_coverage:
-        requirement_by_handle = {
-            item.requirement_handle: item
-            for item in material_projection.publication_requirements
-        }
-        for coverage in open_coverage:
-            claim_options = tuple(coverage["claim_handle_options"])
-            if not claim_options or any(
-                seed[3] is not None
-                and not set(seed[3].claim_handles).isdisjoint(claim_options)
-                for seed in target_seeds
-            ):
-                continue
-            requirement_handle = str(coverage["requirement_handle"])
-            requirement = requirement_by_handle.get(requirement_handle)
-            if requirement is None:
-                raise NarrativeWorkflowError(
-                    "focused_retry_plan_requirement_missing"
-                )
-            slot_digest = canonical_digest(
-                {
-                    "source_block_ids": source_ids,
-                    "requirement_handle": requirement_handle,
-                    "claim_handle_options": claim_options,
-                }
-            )
-            seed = (
-                "focused-claim-slot:sha256:" + slot_digest,
-                _completion_block_role(requirement.claim_kind),
-                True,
-                None,
-            )
-            target_seeds.append(seed)
-            inserted_claim_target_by_requirement[requirement_handle] = seed
-
-    assignments: dict[str, dict[str, dict[str, list[str]]]] = {
-        target_id: {} for target_id, _, _, _ in target_seeds
-    }
-
-    def assignment_for(
-        target_id: str,
-        requirement_handle: str,
-    ) -> dict[str, list[str]]:
-        return assignments[target_id].setdefault(
-            requirement_handle,
-            {"claims": [], "facts": [], "limitations": []},
-        )
-
-    for requirement in open_coverage:
-        requirement_handle = requirement["requirement_handle"]
-        claim_options = tuple(requirement["claim_handle_options"])
-        if claim_options:
-            claim_target = next(
-                (
-                    seed
-                    for seed in target_seeds
-                    if seed[3] is not None
-                    and not set(seed[3].claim_handles).isdisjoint(claim_options)
-                ),
-                None,
-            )
-            if claim_target is None:
-                claim_target = inserted_claim_target_by_requirement.get(
-                    requirement_handle
-                )
-            if claim_target is None:
-                raise NarrativeWorkflowError("focused_retry_plan_claim_target_missing")
-            assignment_for(claim_target[0], requirement_handle)["claims"].extend(
-                claim_options
-            )
-            assignment_for(claim_target[0], requirement_handle)["facts"].extend(
-                requirement["required_fact_handles"]
-            )
-        for limitation_handle in requirement["required_limitation_handles"]:
-            limitation_target = next(
-                (
-                    seed
-                    for seed in target_seeds
-                    if seed[3] is not None
-                    and limitation_handle in seed[3].limitation_handles
-                    and _block_can_carry_limitation(
-                        seed[3],
-                        limitation_handle,
-                        material_projection=material_projection,
-                    )
-                ),
-                None,
-            )
-            if limitation_target is None:
-                limitation_target = next(
-                    (
-                        seed
-                        for seed in target_seeds
-                        if seed[1] != "boundary"
-                        and seed[3] is not None
-                        and _block_can_carry_limitation(
-                            seed[3],
-                            limitation_handle,
-                            material_projection=material_projection,
-                        )
-                    ),
-                    None,
-                )
-            if limitation_target is None:
-                limitation_target = next(
-                    (
-                        seed
-                        for seed in target_seeds
-                        if seed[1] == "boundary" and seed[2]
-                    ),
-                    None,
-                )
-            if limitation_target is None:
-                raise NarrativeWorkflowError(
-                    "focused_retry_plan_limitation_target_missing"
-                )
-            assignment_for(limitation_target[0], requirement_handle)[
-                "limitations"
-            ].append(limitation_handle)
-
-    targets: list[_FocusedRetryTarget] = []
-    for target_id, role, required, source_block in target_seeds:
-        required_coverage = tuple(
-            _FocusedTargetCoverage(
-                requirement_handle=requirement_handle,
-                claim_handle_options=tuple(dict.fromkeys(values["claims"])),
-                required_fact_handles=tuple(dict.fromkeys(values["facts"])),
-                required_limitation_handles=tuple(dict.fromkeys(values["limitations"])),
-            )
-            for requirement_handle, values in assignments[target_id].items()
-        )
-        (
-            allowed_claim_handles,
-            allowed_recommendation_handles,
-            allowed_limitation_handles,
-            source_seed_limitation_handles,
-        ) = _focused_target_handle_space(
-            role=role,
-            source_block=source_block,
-            required_coverage=required_coverage,
-            material_projection=material_projection,
-        )
-        targets.append(
-            _FocusedRetryTarget(
-                target_id=target_id,
-                target_kind=("replace" if source_block is not None else "insert"),
-                role=role,
-                required=required,
-                source_block=source_block,
-                required_coverage=required_coverage,
-                allowed_claim_handles=allowed_claim_handles,
-                allowed_recommendation_handles=(allowed_recommendation_handles),
-                allowed_limitation_handles=allowed_limitation_handles,
-                source_seed_limitation_handles=(source_seed_limitation_handles),
-            )
-        )
-    _assert_focused_retry_plan_satisfiable(
-        targets=targets,
-        open_required_coverage=open_coverage,
-        material_projection=material_projection,
-    )
-    return _FocusedRetryPlan(
-        targets=tuple(targets),
-        preserved_blocks=preserved_blocks,
-        open_required_coverage=open_coverage,
-    )
-
-
-def _focused_scoped_material_view(
-    *,
-    retry_plan: _FocusedRetryPlan,
-    material_projection: NarrativeMaterialProjection,
-) -> dict[str, Any]:
-    full = material_projection.to_writer_payload()
-    relevant_claim_handles = {
-        handle
-        for target in retry_plan.targets
-        for handle in target.allowed_claim_handles
-    }
-    relevant_recommendation_handles = {
-        handle
-        for target in retry_plan.targets
-        for handle in target.allowed_recommendation_handles
-    }
-    recommendation_by_handle = {
-        item["recommendation_handle"]: item for item in full["recommendations"]
-    }
-    for handle in tuple(relevant_recommendation_handles):
-        recommendation = recommendation_by_handle.get(handle)
-        if recommendation is not None:
-            relevant_claim_handles.update(recommendation["supporting_claim_handles"])
-    claims = [
-        item
-        for item in full["claims"]
-        if item["claim_handle"] in relevant_claim_handles
-    ]
-    relevant_material_handles = {
-        handle for claim in claims for handle in claim["material_handles"]
-    }
-    evidence_materials = [
-        item
-        for item in full["evidence_materials"]
-        if item["material_handle"] in relevant_material_handles
-    ]
-    facts_by_material = {
-        item["material_handle"]: tuple(fact["fact_handle"] for fact in item["facts"])
-        for item in evidence_materials
-    }
-    allowed_claim_fact_pairs = [
-        {
-            "claim_handle": claim["claim_handle"],
-            "fact_handles": list(
-                dict.fromkeys(
-                    fact_handle
-                    for material_handle in claim["material_handles"]
-                    for fact_handle in facts_by_material.get(material_handle, ())
-                )
-            ),
-        }
-        for claim in claims
-    ]
-    relevant_limitation_handles = {
-        handle
-        for target in retry_plan.targets
-        for handle in target.allowed_limitation_handles
-    }
-    recommendations = [
-        item
-        for item in full["recommendations"]
-        if item["recommendation_handle"] in relevant_recommendation_handles
-    ]
-    limitations = [
-        item
-        for item in full["limitations"]
-        if item["limitation_handle"] in relevant_limitation_handles
-    ]
-    relevant_facet_handles = {
-        handle
-        for limitation in limitations
-        for handle in limitation["boundary_facet_handles"]
-    }
-    open_requirement_handles = {
-        item["requirement_handle"] for item in retry_plan.open_required_coverage
-    }
-    limitation_scope = [
-        {
-            "limitation_handle": limitation["limitation_handle"],
-            "claim_handles": [
-                claim["claim_handle"]
-                for claim in claims
-                if limitation["limitation_handle"] in claim["limitation_handles"]
-            ],
-            "recommendation_handles": [
-                recommendation["recommendation_handle"]
-                for recommendation in recommendations
-                if limitation["limitation_handle"] in recommendation["risk_handles"]
-            ],
-            "boundary_allowed": True,
-        }
-        for limitation in limitations
-    ]
-    return _columnar_material_fact_transport({
-        "authority_mode": full["authority_mode"],
-        "claims": claims,
-        "publication_requirements": [
-            item
-            for item in full["publication_requirements"]
-            if item["requirement_handle"] in open_requirement_handles
-        ],
-        "evidence_materials": evidence_materials,
-        "recommendations": recommendations,
-        "limitations": limitations,
-        "boundary_facets": [
-            item
-            for item in full["boundary_facets"]
-            if item["boundary_facet_handle"] in relevant_facet_handles
-        ],
-        "allowed_claim_fact_pairs": allowed_claim_fact_pairs,
-        "limitation_scope": limitation_scope,
-    })
-
-
-def _focused_requirement_limitation_scope(
-    *,
-    retry_plan: _FocusedRetryPlan,
-    material_projection: NarrativeMaterialProjection,
-) -> list[dict[str, Any]]:
-    return _requirement_limitation_scope(
-        material_projection=material_projection,
-        blocks=(*retry_plan.preserved_blocks, *retry_plan.source_target_blocks),
-    )
-
-
-def _focused_editable_source_payload(
-    target: _FocusedRetryTarget,
-) -> dict[str, Any] | None:
-    source_block = target.source_block
-    editable_source_block = (
-        None
-        if source_block is None
-        else _block_to_focused_editable_payload(source_block)
-    )
-    if editable_source_block is not None:
-        editable_source_block["claim_handles"] = [
-            handle
-            for handle in editable_source_block["claim_handles"]
-            if handle in target.allowed_claim_handles
-        ]
-        editable_source_block["recommendation_handles"] = [
-            handle
-            for handle in editable_source_block["recommendation_handles"]
-            if handle in target.allowed_recommendation_handles
-        ]
-        editable_source_block["limitation_handles"] = [
-            handle
-            for handle in editable_source_block["limitation_handles"]
-            if handle in target.source_seed_limitation_handles
-        ]
-        editable_source_block["material_fact_bindings"] = [
-            item
-            for item in editable_source_block["material_fact_bindings"]
-            if item["claim_handle"] in target.allowed_claim_handles
-        ]
-    return editable_source_block
-
-
-def _focused_target_to_provider_payload(
-    target: _FocusedRetryTarget,
-    *,
-    local_report: BlockLocalValidationReport,
-    verifier_report: BlockVerifierReport,
-) -> dict[str, Any]:
-    source_block = target.source_block
-    return {
-        "target_id": target.target_id,
-        "target_kind": target.target_kind,
-        "fixed_role": target.role,
-        "fixed_required": target.required,
-        "editable_source_block": _focused_editable_source_payload(target),
-        "allowed_claim_handles": list(target.allowed_claim_handles),
-        "allowed_recommendation_handles": list(target.allowed_recommendation_handles),
-        "allowed_limitation_handles": list(target.allowed_limitation_handles),
-        "local_issue_codes": (
-            []
-            if source_block is None
-            else sorted(
-                item.code
-                for item in local_report.issues
-                if item.block_id == source_block.block_id
-            )
-        ),
-        "semantic_veto_reason_codes": (
-            []
-            if source_block is None
-            else sorted(
-                item.reason_code
-                for item in verifier_report.vetoes
-                if item.block_id == source_block.block_id
-            )
-        ),
-        "required_coverage": [
-            item.to_provider_payload() for item in target.required_coverage
-        ],
-    }
-
-
-def _focused_retry_answer_context_payload(
-    *,
-    answer_context: NarrativeAnswerContext,
-    source_narrative: NarrativeDocument,
-    rejection_report: BlockVerifierReport,
-    local_report: BlockLocalValidationReport,
-    retry_plan: _FocusedRetryPlan,
-) -> dict[str, Any]:
-    return {
-        **answer_context.to_writer_payload(),
-        "focused_retry": {
-            "source_narrative_id": source_narrative.narrative_id,
-            "rejection_report_ref": rejection_report.verifier_report_ref,
-            "accepted_sibling_blocks": [
-                _block_to_provider_payload(item) for item in retry_plan.preserved_blocks
-            ],
-            "retry_targets": [
-                _focused_target_to_provider_payload(
-                    item,
-                    local_report=local_report,
-                    verifier_report=rejection_report,
-                )
-                for item in retry_plan.targets
-            ],
-            "required_coverage": list(retry_plan.open_required_coverage),
-        },
-    }
-
-
-def _focused_output_block(
-    payload: Mapping[str, Any],
-    *,
-    target: _FocusedRetryTarget,
-    material_projection: NarrativeMaterialProjection,
-) -> dict[str, Any]:
-    _strict_mapping(
-        payload,
-        _FOCUSED_WRITER_EDITABLE_BLOCK_FIELDS,
-        "focused_writer_block_shape_invalid",
-    )
-    block = {
-        "role": target.role,
-        **dict(payload),
-        "required": target.required,
-    }
-    _writer_block_shape(block, material_projection=material_projection)
-    claims = {item.claim_handle: item for item in material_projection.claims}
-    recommendations = {
-        item.recommendation_handle: item for item in material_projection.recommendations
-    }
-    limitations = {item.limitation_handle for item in material_projection.limitations}
-    if any(handle not in claims for handle in block["claim_handles"]) or any(
-        handle not in recommendations for handle in block["recommendation_handles"]
-    ):
-        raise NarrativeWorkflowError("focused_writer_authority_handle_unknown")
-    claim_handles = set(block["claim_handles"])
-    limitation_handles = set(block["limitation_handles"])
-    fact_binding_pairs = {
-        (item["claim_handle"], item["fact_handle"])
-        for item in block["material_fact_bindings"]
-    }
-    for coverage in target.required_coverage:
-        if coverage.claim_handle_options and claim_handles.isdisjoint(
-            coverage.claim_handle_options
-        ):
-            raise NarrativeWorkflowError("focused_writer_target_claim_coverage_invalid")
-        if any(
-            not any(
-                (claim_handle, fact_handle) in fact_binding_pairs
-                for claim_handle in coverage.claim_handle_options
-            )
-            for fact_handle in coverage.required_fact_handles
-        ):
-            raise NarrativeWorkflowError(
-                "focused_writer_target_fact_coverage_invalid"
-            )
-        if not set(coverage.required_limitation_handles).issubset(limitation_handles):
-            raise NarrativeWorkflowError(
-                "focused_writer_target_limitation_coverage_invalid"
-            )
-    if (
-        not claim_handles.issubset(target.allowed_claim_handles)
-        or not set(block["recommendation_handles"]).issubset(
-            target.allowed_recommendation_handles
-        )
-        or not limitation_handles.issubset(target.allowed_limitation_handles)
-    ):
-        raise NarrativeWorkflowError("focused_writer_target_handle_scope_invalid")
-    allowed_limitations = (
-        limitations
-        if target.role == "boundary"
-        else {
-            handle
-            for claim_handle in block["claim_handles"]
-            for handle in claims[claim_handle].limitation_handles
-        }.union(
-            handle
-            for recommendation_handle in block["recommendation_handles"]
-            for handle in recommendations[recommendation_handle].risk_handles
-        )
-    )
-    if not limitation_handles.issubset(allowed_limitations):
-        raise NarrativeWorkflowError("focused_writer_limitation_scope_invalid")
-    return block
-
-
-def _validated_focused_writer_merge(
-    output: Mapping[str, Any],
-    *,
-    source_order: Sequence[NarrativeBlock],
-    retry_plan: _FocusedRetryPlan,
-    authority_mode: str,
-    material_projection: NarrativeMaterialProjection,
-) -> dict[str, Any]:
-    _strict_mapping(
-        output,
-        frozenset({"blocks"}),
-        "focused_writer_output_shape_invalid",
-    )
-    output_blocks = _mapping_sequence(
-        output["blocks"],
-        "focused_writer_blocks_invalid",
-    )
-    source = tuple(source_order)
-    source_ids = {item.block_id for item in source}
-    source_targets = retry_plan.source_target_blocks
-    source_target_ids = {item.block_id for item in source_targets}
-    preserved_ids = {item.block_id for item in retry_plan.preserved_blocks}
-    if source_target_ids.intersection(preserved_ids) or not source_target_ids.union(
-        preserved_ids
-    ).issubset(source_ids):
-        raise NarrativeWorkflowError("focused_writer_source_closure_invalid")
-    if len(output_blocks) != len(retry_plan.targets):
-        raise NarrativeWorkflowError("focused_writer_target_count_invalid")
-    resolved_blocks = tuple(
-        _focused_output_block(
-            output_block,
-            target=target,
-            material_projection=material_projection,
-        )
-        for output_block, target in zip(output_blocks, retry_plan.targets, strict=True)
-    )
-    output_by_target_id = {
-        target.target_id: block
-        for target, block in zip(retry_plan.targets, resolved_blocks, strict=True)
-    }
-    preserved_by_id = {item.block_id: item for item in retry_plan.preserved_blocks}
-    merged_blocks = [
-        (
-            output_by_target_id[item.block_id]
-            if item.block_id in output_by_target_id
-            else _block_to_provider_payload(preserved_by_id[item.block_id])
-        )
-        for item in source
-        if item.block_id in source_target_ids or item.block_id in preserved_by_id
-    ]
-    merged_blocks.extend(
-        output_by_target_id[target.target_id]
-        for target in retry_plan.targets
-        if target.target_kind == "insert"
-    )
-    merged_output = {"blocks": merged_blocks}
-    _initial_writer_validator(
-        merged_output,
-        authority_mode=authority_mode,
-        material_projection=material_projection,
-    )
-    return merged_output
-
-
-def _focused_writer_validator(
-    output: Mapping[str, Any],
-    *,
-    source_order: Sequence[NarrativeBlock],
-    retry_plan: _FocusedRetryPlan,
-    authority_mode: str,
-    material_projection: NarrativeMaterialProjection,
-) -> None:
-    _validated_focused_writer_merge(
-        output,
-        source_order=source_order,
-        retry_plan=retry_plan,
-        authority_mode=authority_mode,
-        material_projection=material_projection,
-    )
-
-
-@dataclass(frozen=True)
-class _CompletionRepairArtifacts:
-    writer_invocation: _ProviderInvocation
-    writer_attempt: NarrativeWriterAttempt
-    narrative: NarrativeDocument
-    local_report: BlockLocalValidationReport
-    verifier_invocation: _ProviderInvocation
-    verification_attempt: BlockVerificationAttempt
-    verifier_report: BlockVerifierReport
-    focused_retry: FocusedNarrativeRetry
-
-
-def _run_answer_completeness_repair(
-    *,
-    authority_bundle: AuthorityBundle,
-    material_projection: NarrativeMaterialProjection,
-    visibility_policy: PublicationFieldVisibilityPolicy,
-    answer_context: NarrativeAnswerContext,
-    source_narrative: NarrativeDocument,
-    source_local_report: BlockLocalValidationReport,
-    source_verifier_report: BlockVerifierReport,
-    source_verifier_call_input: NarrativeProviderCallInput,
-    llm_client: TypedNarrativeLLM,
-    sensitive_output_inspector: SensitiveOutputInspector,
-) -> _CompletionRepairArtifacts:
-    retry_plan = _compile_focused_retry_plan(
-        source_order=source_narrative.blocks,
-        accepted_block_ids=tuple(item.block_id for item in source_narrative.blocks),
-        rejected_block_ids=(),
-        material_projection=material_projection,
-        ensure_publication_coverage=True,
-    )
-    focused_payload = {
-        "material_projection": _focused_scoped_material_view(
-            retry_plan=retry_plan,
-            material_projection=material_projection,
-        ),
-        "requirement_limitation_scope": _focused_requirement_limitation_scope(
-            retry_plan=retry_plan,
-            material_projection=material_projection,
-        ),
-        "answer_context": _focused_retry_answer_context_payload(
-            answer_context=answer_context,
-            source_narrative=source_narrative,
-            rejection_report=source_verifier_report,
-            local_report=source_local_report,
-            retry_plan=retry_plan,
-        ),
-    }
-    call_input = NarrativeProviderCallInput.create(
-        purpose="narrative_writer",
-        authority_bundle=authority_bundle,
-        material_projection=material_projection,
-        payload=focused_payload,
-    )
-
-    def focused_validator(output: Mapping[str, Any]) -> None:
-        _focused_writer_validator(
-            output,
-            source_order=source_narrative.blocks,
-            retry_plan=retry_plan,
-            authority_mode=authority_bundle.authority_mode,
-            material_projection=material_projection,
-        )
-
-    writer_invocation = _invoke_provider(
-        llm_client,
-        call_input=call_input,
-        system_prompt=_FOCUSED_WRITER_SYSTEM_PROMPT,
-        required_key="blocks",
-        validator=focused_validator,
-    )
-    writer_attempt = _writer_attempt_from_invocation(
-        authority_bundle=authority_bundle,
-        material_projection=material_projection,
-        invocation=writer_invocation,
-    )
-    narrative = _focused_narrative_from_target_output(
-        authority_bundle=authority_bundle,
-        material_projection=material_projection,
-        source_narrative=source_narrative,
-        writer_attempt=writer_attempt,
-        target_output=writer_invocation.output,
-        retry_plan=retry_plan,
-    )
-    completeness = AnswerCompletenessAssessment.evaluate(
-        material_projection=material_projection,
-        narrative=narrative,
-    )
-    if completeness.status != "complete":
-        raise NarrativeWorkflowError(
-            "narrative_completion_repair_output_incomplete"
-        )
-    findings = _sensitive_findings(
-        sensitive_output_inspector,
-        narrative=narrative,
-        visibility_policy=visibility_policy,
-    )
-    local_report = BlockLocalValidationReport.validate(
-        narrative=narrative,
-        material_projection=material_projection,
-        visibility_policy=visibility_policy,
-        sensitive_output_findings=findings,
-    )
-    verifier_invocation, verification_attempt, verifier_report = _verify_narrative(
-        authority_bundle=authority_bundle,
-        material_projection=material_projection,
-        visibility_policy=visibility_policy,
-        answer_context=answer_context,
-        narrative=narrative,
-        local_report=local_report,
-        llm_client=llm_client,
-        source_narrative=source_narrative,
-        source_local_report=source_local_report,
-        source_verifier_report=source_verifier_report,
-        source_verifier_call_input=source_verifier_call_input,
-    )
-    focused_retry = FocusedNarrativeRetry.create(
-        retry_kind="answer_completeness",
-        source_narrative=source_narrative,
-        rejection_report=source_verifier_report,
-        material_projection=material_projection,
-        targeted_blocks=retry_plan.source_target_blocks,
-        preserved_blocks=retry_plan.preserved_blocks,
-        writer_attempt=writer_attempt,
-        resulting_narrative=narrative,
-    )
-    return _CompletionRepairArtifacts(
-        writer_invocation=writer_invocation,
-        writer_attempt=writer_attempt,
-        narrative=narrative,
-        local_report=local_report,
-        verifier_invocation=verifier_invocation,
-        verification_attempt=verification_attempt,
-        verifier_report=verifier_report,
-        focused_retry=focused_retry,
-    )
-
-
 def _workflow_result(
     *,
     authority_bundle: AuthorityBundle,
@@ -4424,10 +3746,6 @@ def _workflow_result(
     writer_attempts: Sequence[NarrativeWriterAttempt],
     narratives: Sequence[NarrativeDocument],
     local_reports: Sequence[BlockLocalValidationReport],
-    verification_attempts: Sequence[BlockVerificationAttempt],
-    verifier_reports: Sequence[BlockVerifierReport],
-    focused_retry: FocusedNarrativeRetry | None,
-    completion_repair_failure_kind: str | None,
 ) -> NarrativeWorkflowResult:
     settlement = _validated_settlement(claim_settlement)
     _assert_bundle_settlement_closure(authority_bundle, settlement)
@@ -4464,32 +3782,24 @@ def _workflow_result(
     writers = tuple(writer_attempts)
     narrative_versions = tuple(narratives)
     local_versions = tuple(local_reports)
-    verifier_attempt_versions = tuple(verification_attempts)
-    verifier_report_versions = tuple(verifier_reports)
     version_count = len(narrative_versions)
     if (
-        version_count not in {1, 2}
-        or len(writers) != version_count
-        or len(local_versions) != version_count
-        or len(verifier_attempt_versions) != version_count
-        or len(verifier_report_versions) != version_count
-        or len(call_inputs) != version_count * 2
-        or len(audits) != len(call_inputs)
+        version_count != 1
+        or len(writers) != 1
+        or len(local_versions) != 1
+        or len(call_inputs) != 1
+        or len(audits) != 1
     ):
         raise NarrativeWorkflowError("narrative_workflow_artifact_cardinality_invalid")
-    expected_purposes = tuple(
-        purpose
-        for _ in range(version_count)
-        for purpose in ("narrative_writer", "block_verification")
-    )
-    if (
-        tuple(item.purpose for item in call_inputs) != expected_purposes
-        or tuple(item.purpose for item in audits) != expected_purposes
-    ):
+    if tuple(item.purpose for item in call_inputs) != (
+        "narrative_writer",
+    ) or tuple(item.purpose for item in audits) != ("narrative_writer",):
         raise NarrativeWorkflowError("narrative_workflow_call_order_invalid")
+    call_inputs_by_ref = {item.call_input_ref: item for item in call_inputs}
     if any(
-        audit.call_input_ref != call_input.call_input_ref
-        for call_input, audit in zip(call_inputs, audits, strict=True)
+        audit.call_input_ref not in call_inputs_by_ref
+        or call_inputs_by_ref[audit.call_input_ref].purpose != audit.purpose
+        for audit in audits
     ):
         raise NarrativeWorkflowError("narrative_workflow_call_audit_closure_invalid")
     if any(
@@ -4499,6 +3809,24 @@ def _workflow_result(
         raise NarrativeWorkflowError(
             "narrative_workflow_provider_audit_prompt_version_invalid"
         )
+    for audit in audits:
+        call_input = call_inputs_by_ref[audit.call_input_ref]
+        transport = _NarrativeProviderTransport.create(call_input=call_input)
+        raw_transport_audit = audit.audit_payload.get("provider_transport")
+        if (
+            not isinstance(raw_transport_audit, Mapping)
+            or raw_transport_audit.get("reference_encoding")
+            != _REFERENCE_TRANSPORT_ENCODING
+            or raw_transport_audit.get("writer_output_encoding")
+            != transport.writer_output_encoding
+            or raw_transport_audit.get("reference_alias_count")
+            != len(transport.reference_to_alias)
+            or type(raw_transport_audit.get("outbound_bytes")) is not int
+            or raw_transport_audit["outbound_bytes"] <= 0
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_workflow_provider_transport_audit_invalid"
+            )
     if any(
         call_input.material_projection_ref != material_projection.projection_ref
         or call_input.material_projection_digest != material_projection.content_digest
@@ -4538,9 +3866,12 @@ def _workflow_result(
     raw_initial_writer_output = audits[0].audit_payload.get("structured_output")
     if not isinstance(raw_initial_writer_output, Mapping):
         raise NarrativeWorkflowError("narrative_workflow_initial_writer_output_invalid")
+    decoded_initial_writer_output = _NarrativeProviderTransport.create(
+        call_input=call_inputs[0],
+    ).decode_output(raw_initial_writer_output)
     normalized_initial_writer_output, initial_writer_findings = (
         _normalize_initial_writer_output_for_delivery(
-            raw_initial_writer_output,
+            decoded_initial_writer_output,
             authority_mode=authority_bundle.authority_mode,
             material_projection=material_projection,
         )
@@ -4575,215 +3906,35 @@ def _workflow_result(
         raise NarrativeWorkflowError(
             "narrative_workflow_initial_writer_normalization_closure_invalid"
         )
-    for index in range(version_count):
-        writer_call = call_inputs[index * 2]
-        writer_audit = audits[index * 2]
-        verifier_call = call_inputs[index * 2 + 1]
-        verifier_audit = audits[index * 2 + 1]
-        writer = writers[index]
-        narrative = narrative_versions[index]
-        local = local_versions[index]
-        verifier_attempt = verifier_attempt_versions[index]
-        verifier_report = verifier_report_versions[index]
-        writer_response = responses_by_ref[writer_audit.provider_response_refs[-1]]
-        verifier_response = responses_by_ref[verifier_audit.provider_response_refs[-1]]
-        if (
-            writer.input_ref != writer_call.call_input_ref
-            or writer.input_digest != writer_call.content_digest
-            or writer.material_projection_ref != material_projection.projection_ref
-            or writer.material_projection_digest != material_projection.content_digest
-            or writer.provider_response != writer_response
-            or narrative.writer_attempt != writer
-            or narrative.material_projection_ref != material_projection.projection_ref
-            or narrative.material_projection_digest
-            != material_projection.content_digest
-            or local.narrative_id != narrative.narrative_id
-            or local.narrative_digest != narrative.content_digest
-            or local.material_projection_ref != material_projection.projection_ref
-            or local.material_projection_digest != material_projection.content_digest
-            or verifier_attempt.input_ref != verifier_call.call_input_ref
-            or verifier_attempt.input_digest != verifier_call.content_digest
-            or verifier_attempt.provider_response != verifier_response
-            or verifier_attempt.narrative_id != narrative.narrative_id
-            or verifier_attempt.local_report_ref != local.local_report_ref
-            or verifier_report.verification_attempt != verifier_attempt
-            or verifier_report.narrative_id != narrative.narrative_id
-            or verifier_report.local_report_ref != local.local_report_ref
-        ):
-            raise NarrativeWorkflowError("narrative_workflow_version_closure_invalid")
-        if index == 0:
-            expected_verifier_payload, target_blocks, inherited_blocks = (
-                _verifier_payload(
-                    material_projection=material_projection,
-                    answer_context=answer_context,
-                    narrative=narrative,
-                    local_report=local,
-                )
-            )
-        else:
-            expected_verifier_payload, target_blocks, inherited_blocks = (
-                _verifier_payload(
-                    material_projection=material_projection,
-                    answer_context=answer_context,
-                    narrative=narrative,
-                    local_report=local,
-                    source_narrative=narrative_versions[0],
-                    source_local_report=local_versions[0],
-                    source_verifier_report=verifier_report_versions[0],
-                    source_verifier_call_input=call_inputs[1],
-                )
-            )
-        if canonical_value(verifier_call.payload) != canonical_value(
-            expected_verifier_payload
-        ):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_verifier_input_closure_invalid"
-            )
-        raw_verifier_output = verifier_audit.audit_payload.get("structured_output")
-        if not isinstance(raw_verifier_output, Mapping):
-            raise NarrativeWorkflowError("narrative_workflow_verifier_output_invalid")
-        expected_verifier_report = _verifier_report_from_output(
-            material_projection=material_projection,
-            visibility_policy=visibility_policy,
-            narrative=narrative,
-            local_report=local,
-            verification_attempt=verifier_attempt,
-            output=raw_verifier_output,
-            target_blocks=target_blocks,
-            inherited_blocks=inherited_blocks,
-        )
-        if verifier_report != expected_verifier_report:
-            raise NarrativeWorkflowError(
-                "narrative_workflow_verifier_report_closure_invalid"
-            )
-    if version_count == 1 and focused_retry is not None:
-        raise NarrativeWorkflowError("narrative_workflow_retry_cardinality_invalid")
-    if version_count == 2 and (
-        focused_retry is None
-        or focused_retry.source_narrative_id != narrative_versions[0].narrative_id
-        or focused_retry.rejection_report_ref
-        != verifier_report_versions[0].verifier_report_ref
-        or focused_retry.writer_attempt_ref != writers[1].writer_attempt_ref
-        or focused_retry.resulting_narrative_id != narrative_versions[1].narrative_id
+    writer_call = call_inputs[0]
+    writer_audit = audits[0]
+    writer = writers[0]
+    narrative = narrative_versions[0]
+    local = local_versions[0]
+    writer_response = responses_by_ref[writer_audit.provider_response_refs[-1]]
+    if (
+        writer.input_ref != writer_call.call_input_ref
+        or writer.input_digest != writer_call.content_digest
+        or writer.material_projection_ref != material_projection.projection_ref
+        or writer.material_projection_digest != material_projection.content_digest
+        or writer.provider_response != writer_response
+        or narrative.writer_attempt != writer
+        or narrative.material_projection_ref != material_projection.projection_ref
+        or narrative.material_projection_digest != material_projection.content_digest
+        or local.narrative_id != narrative.narrative_id
+        or local.narrative_digest != narrative.content_digest
+        or local.material_projection_ref != material_projection.projection_ref
+        or local.material_projection_digest != material_projection.content_digest
     ):
-        raise NarrativeWorkflowError("narrative_workflow_retry_closure_invalid")
-    if version_count == 2:
-        if focused_retry is None:
-            raise AssertionError("narrative_workflow_retry_missing")
-        source_narrative = narrative_versions[0]
-        source_report = verifier_report_versions[0]
-        completion_retry = focused_retry.retry_kind == "answer_completeness"
-        retry_plan = _compile_focused_retry_plan(
-            source_order=source_narrative.blocks,
-            accepted_block_ids=(
-                tuple(item.block_id for item in source_narrative.blocks)
-                if completion_retry
-                else source_report.accepted_block_ids
-            ),
-            rejected_block_ids=(
-                () if completion_retry else source_report.rejected_block_ids
-            ),
-            material_projection=material_projection,
-            ensure_publication_coverage=completion_retry,
-        )
-        if focused_retry.targeted_block_ids != tuple(
-            item.block_id for item in retry_plan.source_target_blocks
-        ) or focused_retry.preserved_source_block_ids != tuple(
-            item.block_id for item in retry_plan.preserved_blocks
-        ):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_retry_scope_closure_invalid"
-            )
-        expected_focused_payload = {
-            "material_projection": _focused_scoped_material_view(
-                retry_plan=retry_plan,
-                material_projection=material_projection,
-            ),
-            "requirement_limitation_scope": (
-                _focused_requirement_limitation_scope(
-                    retry_plan=retry_plan,
-                    material_projection=material_projection,
-                )
-            ),
-            "answer_context": _focused_retry_answer_context_payload(
-                answer_context=answer_context,
-                source_narrative=source_narrative,
-                rejection_report=source_report,
-                local_report=local_versions[0],
-                retry_plan=retry_plan,
-            ),
-        }
-        if canonical_value(call_inputs[2].payload) != canonical_value(
-            expected_focused_payload
-        ):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_focused_input_closure_invalid"
-            )
-        raw_focused_output = audits[2].audit_payload.get("structured_output")
-        if not isinstance(raw_focused_output, Mapping):
-            raise NarrativeWorkflowError("narrative_workflow_focused_output_invalid")
-        _validated_focused_writer_merge(
-            raw_focused_output,
-            source_order=source_narrative.blocks,
-            retry_plan=retry_plan,
-            authority_mode=authority_bundle.authority_mode,
-            material_projection=material_projection,
-        )
-        expected_result = _focused_narrative_from_target_output(
-            authority_bundle=authority_bundle,
-            material_projection=material_projection,
-            source_narrative=source_narrative,
-            writer_attempt=writers[1],
-            target_output=raw_focused_output,
-            retry_plan=retry_plan,
-        )
-        if narrative_versions[1] != expected_result:
-            raise NarrativeWorkflowError(
-                "narrative_workflow_focused_merge_closure_invalid"
-            )
-    completeness_assessments = tuple(
+        raise NarrativeWorkflowError("narrative_workflow_version_closure_invalid")
+    completeness_assessments = (
         AnswerCompletenessAssessment.evaluate(
             material_projection=material_projection,
-            narrative=item,
-        )
-        for item in narrative_versions
+            narrative=narrative,
+        ),
     )
-    if completeness_assessments[0].status == "complete":
-        completion_repair_status = "not_required"
-        if version_count != 1 or completion_repair_failure_kind is not None:
-            raise NarrativeWorkflowError(
-                "narrative_workflow_completion_repair_closure_invalid"
-            )
-    elif version_count == 2:
-        completion_repair_status = "completed"
-        if (
-            completeness_assessments[-1].status != "complete"
-            or focused_retry is None
-            or focused_retry.retry_kind != "answer_completeness"
-            or completion_repair_failure_kind is not None
-        ):
-            raise NarrativeWorkflowError(
-                "narrative_workflow_completion_repair_closure_invalid"
-            )
-    else:
-        completion_repair_status = "exhausted"
-        if completion_repair_failure_kind not in _COMPLETION_REPAIR_FAILURE_KINDS:
-            raise NarrativeWorkflowError(
-                "narrative_workflow_completion_repair_closure_invalid"
-            )
-    final_narrative = narrative_versions[-1]
-    final_local = local_versions[-1]
-    final_verifier = verifier_report_versions[-1]
-    final_blocks_by_id = {item.block_id: item for item in final_narrative.blocks}
-    withheld = tuple(
-        item
-        for item in final_verifier.rejected_block_ids
-        if final_blocks_by_id[item].required
-    )
-    # Verification is an audit signal for human review and later model/system
-    # improvement. It must never regain authority over whether the generated
-    # business reference is delivered to the user. Hard output-safety remains
-    # enforced later by the customer projection.
+    # Completeness is persisted for the advisory learning path. The provider
+    # quality audit starts only after this delivery artifact exists.
     publication_ready = True
     body = {
         "authority_bundle_ref": authority_bundle.bundle_ref,
@@ -4799,34 +3950,19 @@ def _workflow_result(
         "material_projection_ref": material_projection.projection_ref,
         "material_projection_digest": material_projection.content_digest,
         "provider_call_input_refs": tuple(
-            item.call_input_ref for item in provider_call_inputs
+            item.call_input_ref for item in call_inputs
         ),
-        "provider_response_refs": tuple(
-            item.response_ref for item in provider_responses
-        ),
-        "provider_audit_refs": tuple(item.audit_ref for item in provider_audits),
-        "writer_attempt_refs": tuple(
-            item.writer_attempt_ref for item in writer_attempts
-        ),
-        "narrative_ids": tuple(item.narrative_id for item in narratives),
-        "local_report_refs": tuple(item.local_report_ref for item in local_reports),
-        "verification_attempt_refs": tuple(
-            item.verification_attempt_ref for item in verification_attempts
-        ),
-        "verifier_report_refs": tuple(
-            item.verifier_report_ref for item in verifier_reports
-        ),
-        "focused_retry_ref": focused_retry.retry_ref if focused_retry else None,
+        "provider_response_refs": tuple(item.response_ref for item in responses),
+        "provider_audit_refs": tuple(item.audit_ref for item in audits),
+        "writer_attempt_refs": tuple(item.writer_attempt_ref for item in writers),
+        "narrative_ids": tuple(item.narrative_id for item in narrative_versions),
+        "local_report_refs": tuple(item.local_report_ref for item in local_versions),
         "completeness_assessment_refs": tuple(
             item.assessment_ref for item in completeness_assessments
         ),
-        "completion_repair_status": completion_repair_status,
-        "completion_repair_failure_kind": completion_repair_failure_kind,
-        "final_accepted_narrative_id": final_narrative.narrative_id,
-        "final_local_report_ref": final_local.local_report_ref,
-        "projection_ready_verifier_report_ref": final_verifier.verifier_report_ref,
+        "delivery_narrative_id": narrative.narrative_id,
+        "final_local_report_ref": local.local_report_ref,
         "publication_ready": publication_ready,
-        "withheld_required_block_ids": withheld,
     }
     return NarrativeWorkflowResult(
         authority_bundle_ref=authority_bundle.bundle_ref,
@@ -4843,17 +3979,10 @@ def _workflow_result(
         writer_attempts=writers,
         narratives=narrative_versions,
         local_reports=local_versions,
-        verification_attempts=verifier_attempt_versions,
-        verifier_reports=verifier_report_versions,
-        focused_retry=focused_retry,
         completeness_assessments=completeness_assessments,
-        completion_repair_status=completion_repair_status,
-        completion_repair_failure_kind=completion_repair_failure_kind,
-        final_accepted_narrative=final_narrative,
-        final_local_report=final_local,
-        projection_ready_verifier_report=final_verifier,
+        delivery_narrative=narrative,
+        final_local_report=local,
         publication_ready=publication_ready,
-        withheld_required_block_ids=withheld,
         content_digest=canonical_digest(body),
     )
 
@@ -4921,10 +4050,6 @@ def validate_typed_narrative_workflow_result(
         writer_attempts=value.writer_attempts,
         narratives=value.narratives,
         local_reports=value.local_reports,
-        verification_attempts=value.verification_attempts,
-        verifier_reports=value.verifier_reports,
-        focused_retry=value.focused_retry,
-        completion_repair_failure_kind=value.completion_repair_failure_kind,
     )
     if rebuilt != value:
         raise NarrativeWorkflowError("narrative_workflow_result_integrity_invalid")
@@ -5127,74 +4252,12 @@ def run_narrative_workflow(
         visibility_policy=policy,
         sensitive_output_findings=findings,
     )
-    verifier_invocation, verification_attempt, verifier_report = _verify_narrative(
-        authority_bundle=authority_bundle,
-        material_projection=material_projection,
-        visibility_policy=policy,
-        answer_context=answer_context,
-        narrative=narrative,
-        local_report=local_report,
-        llm_client=llm_client,
-    )
-    provider_call_inputs = [
-        writer_invocation.call_input,
-        verifier_invocation.call_input,
-    ]
-    provider_responses = [*writer_invocation.responses, *verifier_invocation.responses]
-    provider_audits = [writer_invocation.audit, verifier_invocation.audit]
+    provider_call_inputs = [writer_invocation.call_input]
+    provider_responses = [*writer_invocation.responses]
+    provider_audits = [writer_invocation.audit]
     writer_attempts = [writer_attempt]
     narratives = [narrative]
     local_reports = [local_report]
-    verification_attempts = [verification_attempt]
-    verifier_reports = [verifier_report]
-    focused_retry: FocusedNarrativeRetry | None = None
-    completion_repair_failure_kind: str | None = None
-
-    initial_completeness = AnswerCompletenessAssessment.evaluate(
-        material_projection=material_projection,
-        narrative=narrative,
-    )
-    if initial_completeness.status == "incomplete":
-        try:
-            repair = _run_answer_completeness_repair(
-                authority_bundle=authority_bundle,
-                material_projection=material_projection,
-                visibility_policy=policy,
-                answer_context=answer_context,
-                source_narrative=narrative,
-                source_local_report=local_report,
-                source_verifier_report=verifier_report,
-                source_verifier_call_input=verifier_invocation.call_input,
-                llm_client=llm_client,
-                sensitive_output_inspector=sensitive_output_inspector,
-            )
-        except NarrativeProviderCallError as exc:
-            # Structural completion is bounded and additive. A provider failure
-            # keeps the locally safe initial narrative deliverable; the durable
-            # provider journal retains the restricted technical failure.
-            completion_repair_failure_kind = exc.kind
-        else:
-            provider_call_inputs.extend(
-                (
-                    repair.writer_invocation.call_input,
-                    repair.verifier_invocation.call_input,
-                )
-            )
-            provider_responses.extend(repair.writer_invocation.responses)
-            provider_responses.extend(repair.verifier_invocation.responses)
-            provider_audits.extend(
-                (
-                    repair.writer_invocation.audit,
-                    repair.verifier_invocation.audit,
-                )
-            )
-            writer_attempts.append(repair.writer_attempt)
-            narratives.append(repair.narrative)
-            local_reports.append(repair.local_report)
-            verification_attempts.append(repair.verification_attempt)
-            verifier_reports.append(repair.verifier_report)
-            focused_retry = repair.focused_retry
-
     return _workflow_result(
         authority_bundle=authority_bundle,
         claim_settlement=settlement,
@@ -5208,26 +4271,96 @@ def run_narrative_workflow(
         writer_attempts=writer_attempts,
         narratives=narratives,
         local_reports=local_reports,
-        verification_attempts=verification_attempts,
-        verifier_reports=verifier_reports,
-        focused_retry=focused_retry,
-        completion_repair_failure_kind=completion_repair_failure_kind,
+    )
+
+
+def run_narrative_quality_audit(
+    *,
+    source_customer_publication_ref: str,
+    authority_bundle: AuthorityBundle,
+    claim_settlement: ClaimSettlement,
+    evidence_entries: Sequence[EvidenceLedgerEntry],
+    recommendations: Sequence[RecommendationRecord],
+    narrative_workflow: NarrativeWorkflowResult,
+    llm_client: TypedNarrativeLLM,
+) -> NarrativeQualityAuditResult:
+    workflow = validate_typed_narrative_workflow_result(
+        narrative_workflow,
+        authority_bundle=authority_bundle,
+        claim_settlement=claim_settlement,
+        recommendations=recommendations,
+        evidence_entries=evidence_entries,
+    )
+    narrative = workflow.delivery_narrative
+    local_report = workflow.final_local_report
+    verifier_input, target_blocks, inherited_blocks = _prepare_verifier_call(
+        authority_bundle=authority_bundle,
+        material_projection=workflow.material_projection,
+        answer_context=workflow.answer_context,
+        narrative=narrative,
+        local_report=local_report,
+    )
+    try:
+        invocation, verification_attempt, verifier_report = _verify_narrative(
+            material_projection=workflow.material_projection,
+            visibility_policy=workflow.visibility_policy,
+            narrative=narrative,
+            local_report=local_report,
+            llm_client=llm_client,
+            call_input=verifier_input,
+            target_blocks=target_blocks,
+            inherited_blocks=inherited_blocks,
+        )
+    except NarrativeProviderCallError as exc:
+        if exc.call_input_ref != verifier_input.call_input_ref:
+            raise NarrativeWorkflowError(
+                "narrative_quality_audit_failure_input_invalid"
+            ) from exc
+        verifier_report = BlockVerifierReport.unavailable(
+            narrative=narrative,
+            material_projection=workflow.material_projection,
+            visibility_policy=workflow.visibility_policy,
+            local_report=local_report,
+            input_ref=verifier_input.call_input_ref,
+            input_digest=verifier_input.content_digest,
+            failure_kind=exc.kind,
+            retryability=exc.retryability,
+            technical_detail_ref=exc.technical_detail_ref,
+        )
+        return NarrativeQualityAuditResult.create(
+            source_customer_publication_ref=source_customer_publication_ref,
+            narrative_workflow=workflow,
+            call_input=verifier_input,
+            provider_responses=(),
+            provider_audit=None,
+            verification_attempt=None,
+            verifier_report=verifier_report,
+        )
+    return NarrativeQualityAuditResult.create(
+        source_customer_publication_ref=source_customer_publication_ref,
+        narrative_workflow=workflow,
+        call_input=verifier_input,
+        provider_responses=invocation.responses,
+        provider_audit=invocation.audit,
+        verification_attempt=verification_attempt,
+        verifier_report=verifier_report,
     )
 
 
 __all__ = (
-    "FocusedNarrativeRetry",
     "NarrativeAnswerContext",
     "NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT",
     "NarrativeProviderCallAudit",
     "NarrativeProviderCallError",
     "NarrativeProviderCallInput",
+    "NarrativeQualityAuditResult",
     "NarrativeWorkflowError",
     "NarrativeWorkflowResult",
     "ReviewedPublicFactMaterialization",
     "SensitiveOutputInspector",
     "TypedNarrativeLLM",
     "prepare_narrative_material_projection",
+    "run_narrative_quality_audit",
     "run_narrative_workflow",
     "validate_typed_narrative_workflow_result",
 )

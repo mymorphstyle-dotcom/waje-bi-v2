@@ -15,17 +15,17 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "tools/runtime/conversation-runtime.sql"
 SINGLE_AUTHORITY_MARKER = "-- Current single-authority workflow slice."
-SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v13"
+SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v15"
 SINGLE_AUTHORITY_MIGRATION_DIGEST = (
-    "9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af"
+    "8bac54f39a1573aead3b1d2be4aaac4f88102c0952d664113f44e8fcf023e305"
 )
 SOURCE_MIGRATION_ID = "single-authority-workflow.v7"
 SOURCE_MIGRATION_DIGEST = (
     "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
 )
-IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v12"
+IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v14"
 IN_PLACE_SOURCE_MIGRATION_DIGEST = (
-    "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3"
+    "7d361b82a893bc9747b3fdbb6c632e4e1305c964f8a62b9ef6615283897aba9c"
 )
 IN_PLACE_SOURCE_CONTRACTS = {
     (
@@ -53,6 +53,14 @@ IN_PLACE_SOURCE_CONTRACTS = {
         "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3",
     ): frozenset({"agent_thread_summaries", "agent_generated_artifacts"}),
     (
+        "single-authority-workflow.v12",
+        "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3",
+    ): frozenset(),
+    (
+        "single-authority-workflow.v13",
+        "9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af",
+    ): frozenset({"narrative_quality_audit_results"}),
+    (
         IN_PLACE_SOURCE_MIGRATION_ID,
         IN_PLACE_SOURCE_MIGRATION_DIGEST,
     ): frozenset(),
@@ -66,15 +74,21 @@ IN_PLACE_BACKFILL_PREDICATES = {
     "capability_binding_authority": "run_id IS NULL",
     "analysis_runs": "run_attempt_id IS NULL OR run_attempt_id = ''",
     "decision_records": "run_attempt_id IS NULL OR run_attempt_id = ''",
+    "block_verification_reports": "audit_status IS NULL",
 }
 IN_PLACE_METADATA_BACKFILLS = frozenset(
     {
         "conversation_messages",
         "investigation_threads",
+        "block_verification_reports",
     }
 )
 IN_PLACE_ADDITIVE_TABLES = frozenset(
-    {"agent_thread_summaries", "agent_generated_artifacts"}
+    {
+        "agent_thread_summaries",
+        "agent_generated_artifacts",
+        "narrative_quality_audit_results",
+    }
 )
 OBSOLETE_TABLES = (
     "analysis_runtime_publications",

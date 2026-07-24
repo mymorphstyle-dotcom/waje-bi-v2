@@ -2187,7 +2187,10 @@ def _candidate_claim_proposal(
             claim_class=claim_class,
             strength="candidate_mechanism",
         )
-        factual_payload = proposal.factual_payload
+        factual_payload = {
+            "candidate_subject": proposal.subject,
+            **dict(proposal.factual_payload),
+        }
     else:
         claim_class = str(composite["claim_class"])
         ceiling = ClaimPublicationCeiling.create(
@@ -2202,6 +2205,7 @@ def _candidate_claim_proposal(
                 "candidate_claim_composite_causal_interpretation_forbidden"
             )
         factual_payload = {
+            "candidate_subject": proposal.subject,
             **dict(proposal.factual_payload),
             **dict(composite["identity"]),
             "causal_interpretation_allowed": False,

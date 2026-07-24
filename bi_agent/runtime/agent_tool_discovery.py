@@ -15,7 +15,7 @@ from bi_agent.runtime.evidence_authority import canonical_digest, canonical_valu
 from bi_agent.runtime.durable_tool_bridge import MaterialDecisionTopic
 
 
-TOOL_SELECTION_SCHEMA_VERSION = "agent-turn-action-binding.v1"
+TOOL_SELECTION_SCHEMA_VERSION = "agent-turn-action-binding.v2"
 
 TOOL_DISCOVERY_INSTRUCTIONS = """\
 Bind the first executable action and select the smallest set of optional WAJE tools for the
@@ -24,11 +24,21 @@ Use only tool names from the supplied catalog. Select no optional tool when the 
 answered directly from ordinary conversation context. Select artifact tools for persisted-result
 explanation, BI analysis tools only when new business-data evidence or a material revision is
 needed, and the capability catalog tool when the user asks what analysis is available. Use
-inspect_analysis_artifact or explain_claim directly for a single follow-up about an existing
-publication's calculation, evidence trace, meaning, or limitation. Do not delegate that work.
+inspect_analysis_artifact or explain_claim directly for a follow-up about an existing
+publication's calculation, evidence trace, meaning, or limitation. Both tools accept a bounded
+list of exact references. Use artifactIndex.routing_summary and task_ref as a hierarchy: for a
+broad recap or boundary question about one published analysis, select its newest bi_publication
+alone. Select a bi_claim only when the question targets that claim more narrowly, and select
+bi_evidence only when evidence-level detail absent from the publication or claim is required.
+Never select a bi_publication together with its descendant claims or evidence in one call. Batch
+only the smallest set of peer materials needed for the requested angle; do not issue a serial call
+for every claim. Do not delegate that work.
 Prior assistant prose is not material authority for those questions. Call the artifact or claim
 tool even when the same statement or number is already visible in conversation context, so the
 turn carries the persisted authority and material references.
+For artifact tools, copy the exact artifact_ref or claim reference from artifactIndex. Never use
+an artifact version, invent a type prefix, or transform an opaque reference. Routing summaries
+only help select references; facts and conclusions still come from the tool result.
 conversationContext.publishedAnalysisTasks is the typed list of published BI tasks available as
 revision sources. When the latest message materially changes the metric, time window, baseline,
 scope, filters, analysis axes, goal, or desired decisions of one supplied published task while
@@ -86,9 +96,11 @@ baseline_or_counterfactual. The fact that a counterfactual involves a comparison
 comparison_scope unresolved. Do not add comparison_scope to the same causal action binding. If
 the scope of channels, regions, products, or customer segments is independently unresolved, bind
 that decision after the causal reference has been resolved.
-Always include requiredToolName. Set it to null for respond, ask_user, and request_approval; the
-typed runtime binds those two fixed actions to their mandatory tools. For call_tool it must name
-the exact first optional tool. Do not infer
+Always include requiredToolName and requiredToolArgumentsJson. Set both to null for respond,
+ask_user, and request_approval; the typed runtime binds the latter two fixed actions to their
+mandatory tools. For call_tool, requiredToolName must name the exact first optional tool and
+requiredToolArgumentsJson must be a serialized JSON object that satisfies that tool's
+inputSchema. Copy opaque references exactly from the supplied context. Do not infer
 permissions or invent tools. Always populate materialDecisionTopics with every unresolved
 material dimension from the allowed enum; leave it empty only when those dimensions are bound.
 Any non-empty materialDecisionTopics means the first action is ask_user. Return only the typed
@@ -109,6 +121,9 @@ class DynamicToolSelectionOutput(BaseModel):
         "respond", "call_tool", "ask_user", "request_approval"
     ] = Field(alias="initialAction")
     required_tool_name: str | None = Field(alias="requiredToolName")
+    required_tool_arguments_json: str | None = Field(
+        alias="requiredToolArgumentsJson"
+    )
     material_decision_topics: list[MaterialDecisionTopic] = Field(
         alias="materialDecisionTopics"
     )
@@ -132,6 +147,7 @@ class DynamicToolSelectionOutput(BaseModel):
         if self.initial_action == "respond":
             if (
                 self.required_tool_name is not None
+                or self.required_tool_arguments_json is not None
                 or self.selected_tools
                 or self.material_decision_topics
             ):
@@ -140,6 +156,7 @@ class DynamicToolSelectionOutput(BaseModel):
         if self.initial_action == "ask_user":
             if (
                 self.required_tool_name is not None
+                or self.required_tool_arguments_json is not None
                 or not self.material_decision_topics
             ):
                 raise ValueError("agent_clarification_tool_invalid")
@@ -147,6 +164,7 @@ class DynamicToolSelectionOutput(BaseModel):
         if self.initial_action == "request_approval":
             if (
                 self.required_tool_name is not None
+                or self.required_tool_arguments_json is not None
                 or self.material_decision_topics
             ):
                 raise ValueError("agent_approval_tool_invalid")
@@ -155,6 +173,7 @@ class DynamicToolSelectionOutput(BaseModel):
             if (
                 not self.required_tool_name
                 or self.required_tool_name not in self.selected_tools
+                or self.required_tool_arguments_json is None
                 or self.material_decision_topics
             ):
                 raise ValueError("agent_required_action_tool_missing")
@@ -166,7 +185,7 @@ class DynamicToolSelectionOutput(BaseModel):
 class AgentTurnActionBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    schema_version: Literal["agent-turn-action-binding.v1"] = Field(
+    schema_version: Literal["agent-turn-action-binding.v2"] = Field(
         alias="schemaVersion",
         default=TOOL_SELECTION_SCHEMA_VERSION,
     )
@@ -178,6 +197,9 @@ class AgentTurnActionBinding(BaseModel):
         "respond", "call_tool", "ask_user", "request_approval"
     ] = Field(alias="initialAction")
     required_tool_name: str | None = Field(alias="requiredToolName")
+    required_tool_arguments: dict[str, Any] | None = Field(
+        alias="requiredToolArguments"
+    )
     material_decision_topics: list[MaterialDecisionTopic] = Field(
         alias="materialDecisionTopics"
     )
@@ -197,13 +219,21 @@ class AgentTurnActionBinding(BaseModel):
         if self.schema_version != TOOL_SELECTION_SCHEMA_VERSION:
             raise ValueError("agent_tool_selection_schema_invalid")
         if self.initial_action == "respond":
-            if self.required_tool_name is not None:
+            if (
+                self.required_tool_name is not None
+                or self.required_tool_arguments is not None
+            ):
                 raise ValueError("agent_direct_action_tools_forbidden")
         elif (
             not self.required_tool_name
             or self.required_tool_name not in self.selected_tools
         ):
             raise ValueError("agent_required_action_tool_missing")
+        if self.initial_action == "call_tool":
+            if self.required_tool_arguments is None:
+                raise ValueError("agent_required_action_arguments_missing")
+        elif self.required_tool_arguments is not None:
+            raise ValueError("agent_action_arguments_forbidden")
         if self.initial_action == "ask_user" and self.required_tool_name != "ask_user":
             raise ValueError("agent_clarification_tool_invalid")
         if (
@@ -225,6 +255,7 @@ class AgentTurnActionBinding(BaseModel):
             selected_tools=self.selected_tools,
             initial_action=self.initial_action,
             required_tool_name=self.required_tool_name,
+            required_tool_arguments=self.required_tool_arguments,
             material_decision_topics=self.material_decision_topics,
         )
         if self.selection_digest != expected:
@@ -241,9 +272,19 @@ class AgentTurnActionBinding(BaseModel):
         selected_tools: Sequence[str],
         initial_action: str,
         required_tool_name: str | None,
+        required_tool_arguments: Mapping[str, Any] | None,
         material_decision_topics: Sequence[str],
     ) -> "AgentTurnActionBinding":
         normalized = sorted(set(selected_tools))
+        normalized_arguments = (
+            canonical_value(dict(required_tool_arguments))
+            if required_tool_arguments is not None
+            else None
+        )
+        if normalized_arguments is not None and not isinstance(
+            normalized_arguments, dict
+        ):
+            raise ValueError("agent_required_action_arguments_invalid")
         return cls(
             catalogDigest=catalog_digest,
             inputDigest=input_digest,
@@ -251,6 +292,7 @@ class AgentTurnActionBinding(BaseModel):
             selectedTools=normalized,
             initialAction=initial_action,
             requiredToolName=required_tool_name,
+            requiredToolArguments=normalized_arguments,
             materialDecisionTopics=sorted(set(material_decision_topics)),
             selectionDigest=_selection_digest(
                 catalog_digest=catalog_digest,
@@ -259,6 +301,7 @@ class AgentTurnActionBinding(BaseModel):
                 selected_tools=normalized,
                 initial_action=initial_action,
                 required_tool_name=required_tool_name,
+                required_tool_arguments=normalized_arguments,
                 material_decision_topics=material_decision_topics,
             ),
         )
@@ -320,6 +363,7 @@ class WajeToolSelectionGenerator:
                 ),
                 output_type=DynamicToolSelectionOutput,
                 max_turns=1,
+                thinking_mode="disabled",
                 trace_metadata={
                     **self._trace_metadata,
                     "waje_tool_catalog_digest": canonical_digest(tool_catalog),
@@ -396,6 +440,20 @@ class DynamicAgentToolResolver:
             raise AgentToolDiscoveryError("agent_action_required_tool_unselected")
         catalog_digest = canonical_digest(catalog)
         input_digest = _input_digest(user_message, permission_scope)
+        required_tool_arguments = _validated_required_tool_arguments(
+            initial_action=output.initial_action,
+            required_tool_name=required_tool_name,
+            raw_arguments=_decode_required_tool_arguments(
+                output.required_tool_arguments_json
+            ),
+            tools_by_name=by_name,
+        )
+        _validate_required_tool_argument_authority(
+            required_tool_name=required_tool_name,
+            required_tool_arguments=required_tool_arguments,
+            tools_by_name=by_name,
+            action_context=action_context or {},
+        )
         selection = AgentTurnActionBinding.create(
             catalog_digest=catalog_digest,
             input_digest=input_digest,
@@ -403,6 +461,7 @@ class DynamicAgentToolResolver:
             selected_tools=selected_names,
             initial_action=output.initial_action,
             required_tool_name=required_tool_name,
+            required_tool_arguments=required_tool_arguments,
             material_decision_topics=output.material_decision_topics,
         )
         return ResolvedAgentTools(
@@ -430,6 +489,10 @@ class DynamicAgentToolResolver:
             raise AgentToolDiscoveryError("agent_tool_selection_catalog_conflict")
         if selection.input_digest != _input_digest(user_message, permission_scope):
             raise AgentToolDiscoveryError("agent_tool_selection_input_conflict")
+        if selection.action_context_digest != canonical_digest(action_context or {}):
+            raise AgentToolDiscoveryError(
+                "agent_tool_selection_action_context_conflict"
+            )
         selected_names = set(selection.selected_tools)
         if not self._mandatory_tool_names.issubset(selected_names):
             raise AgentToolDiscoveryError("agent_tool_selection_mandatory_missing")
@@ -445,6 +508,22 @@ class DynamicAgentToolResolver:
             and selection.required_tool_name not in selected_names
         ):
             raise AgentToolDiscoveryError("agent_action_required_tool_unselected")
+        replayed_arguments = _validated_required_tool_arguments(
+            initial_action=selection.initial_action,
+            required_tool_name=selection.required_tool_name,
+            raw_arguments=selection.required_tool_arguments,
+            tools_by_name=by_name,
+        )
+        if replayed_arguments != selection.required_tool_arguments:
+            raise AgentToolDiscoveryError(
+                "agent_required_action_arguments_conflict"
+            )
+        _validate_required_tool_argument_authority(
+            required_tool_name=selection.required_tool_name,
+            required_tool_arguments=replayed_arguments,
+            tools_by_name=by_name,
+            action_context=action_context or {},
+        )
         return ResolvedAgentTools(
             tools=tuple(tool for tool in candidate_tools if tool.name in selected_names),
             selection=selection,
@@ -463,6 +542,10 @@ def _catalog(
             "description": tool.description,
             "inputSchema": tool.input_model.model_json_schema(),
             "executionMode": tool.execution_mode,
+            "prebindingPolicy": tool.prebinding_policy,
+            "argumentAuthorityValidation": (
+                tool.argument_authority_validator is not None
+            ),
         }
         for tool in sorted(tools, key=lambda item: item.name)
     )
@@ -489,6 +572,7 @@ def _selection_digest(
     selected_tools: Sequence[str],
     initial_action: str,
     required_tool_name: str | None,
+    required_tool_arguments: Mapping[str, Any] | None,
     material_decision_topics: Sequence[str],
 ) -> str:
     return canonical_digest(
@@ -500,9 +584,80 @@ def _selection_digest(
             "selected_tools": sorted(set(selected_tools)),
             "initial_action": initial_action,
             "required_tool_name": required_tool_name,
+            "required_tool_arguments": (
+                canonical_value(dict(required_tool_arguments))
+                if required_tool_arguments is not None
+                else None
+            ),
             "material_decision_topics": sorted(set(material_decision_topics)),
         }
     )
+
+
+def _validated_required_tool_arguments(
+    *,
+    initial_action: str,
+    required_tool_name: str | None,
+    raw_arguments: Mapping[str, Any] | None,
+    tools_by_name: Mapping[str, WajeAgentTool],
+) -> dict[str, Any] | None:
+    if initial_action != "call_tool":
+        if raw_arguments is not None:
+            raise AgentToolDiscoveryError("agent_action_arguments_forbidden")
+        return None
+    if required_tool_name is None or raw_arguments is None:
+        raise AgentToolDiscoveryError("agent_required_action_arguments_missing")
+    tool = tools_by_name.get(required_tool_name)
+    if tool is None:
+        raise AgentToolDiscoveryError("agent_action_required_tool_unselected")
+    try:
+        parsed = tool.input_model.model_validate(dict(raw_arguments))
+    except Exception as exc:
+        raise AgentToolDiscoveryError(
+            "agent_required_action_arguments_invalid"
+        ) from exc
+    normalized = canonical_value(parsed.model_dump(mode="json"))
+    if not isinstance(normalized, dict):
+        raise AgentToolDiscoveryError("agent_required_action_arguments_invalid")
+    return normalized
+
+
+def _decode_required_tool_arguments(
+    value: str | None,
+) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not value or value != value.strip():
+        raise AgentToolDiscoveryError("agent_required_action_arguments_json_invalid")
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AgentToolDiscoveryError(
+            "agent_required_action_arguments_json_invalid"
+        ) from exc
+    if not isinstance(decoded, Mapping):
+        raise AgentToolDiscoveryError("agent_required_action_arguments_json_invalid")
+    return decoded
+
+
+def _validate_required_tool_argument_authority(
+    *,
+    required_tool_name: str | None,
+    required_tool_arguments: Mapping[str, Any] | None,
+    tools_by_name: Mapping[str, WajeAgentTool],
+    action_context: Mapping[str, Any],
+) -> None:
+    if required_tool_name is None or required_tool_arguments is None:
+        return
+    validator = tools_by_name[required_tool_name].argument_authority_validator
+    if validator is None:
+        return
+    try:
+        validator(required_tool_arguments, action_context)
+    except Exception as exc:
+        raise AgentToolDiscoveryError(
+            "agent_required_action_argument_authority_invalid"
+        ) from exc
 
 
 __all__ = (

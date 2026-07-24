@@ -21,6 +21,7 @@
 - [P5 data coverage and performance report](./reviews/2026-07-23-p5-data-coverage-performance.md)
 - [P6 production-chain acceptance report](./reviews/2026-07-23-p6-production-chain-acceptance.md)
 - [P7 answer-completeness repair report](./reviews/2026-07-23-p7-answer-completeness-repair.md)
+- [P8 complete first-answer performance report](./reviews/2026-07-24-p8-first-answer-performance.md)
 - [General Agent Runtime target architecture](./specs/general-agent-runtime/target-architecture.md)
 - [General Agent Runtime P0 framework and provider](./specs/general-agent-runtime/p0-framework-provider.md)
 - [General Agent Runtime P0 conversation and state authority](./specs/general-agent-runtime/p0-conversation-state-authority.md)
@@ -50,10 +51,9 @@ are projected to the writer as typed business context; raw customer text and
 fixed-sensitive identifiers stay outside provider payloads. Subjective quality,
 explanation-depth, readability, actionability and potential-hallucination findings
 enter the Workbench review chain after delivery. They do not block publication or
-trigger an automatic rewrite. A separate typed structural-completeness assessment
-may add one traceable narrative revision when required claim, public-fact or
-limitation handles are absent; failure preserves the initial delivery with a
-customer-safe limit. Retired references are
+trigger an automatic rewrite. The typed structural-completeness assessment is also
+an advisory record: it cannot add a narrative revision, remove original text, delay
+delivery, create a customer warning or alter publication state. Retired references are
 kept only to explain superseded implementation history. Live acceptance remains
 governed by the implementation roadmap and real-conversation protocol.
 
@@ -95,17 +95,25 @@ P7 closes the structural answer-completeness loop. Accepted factor requests beco
 scoped user-required obligations; payment final-outcome evidence reconciles
 full-sample totals across payment method and channel, publishes baseline/target facts,
 and carries representative dimension summaries under a typed interpretation contract.
-Execution evidence gaps continue through the existing bounded `PlanPatch` path. A
-sealed narrative can receive at most one additive completion revision, while Provider
-failure or incomplete repair still publishes reliable content as
-`completed_with_limits`. A persisted customer-safe read-only tool result can also close
-a follow-up as `completed_with_limits` when only the final model synthesis fails; tools
-must opt in through a typed recovery contract. If model-owned dynamic tool selection is
-temporarily unavailable, a thread with a customer-safe `bi_publication` preserves the
-latest complete publication and clearly marks the new follow-up interpretation as
-unfinished. Contract, context, and source-closure failures continue to fail closed.
-Human quality review remains advisory.
+Execution evidence gaps continue through the existing bounded `PlanPatch` path before
+claim settlement. The writer creates one first-publication narrative; completeness,
+depth and wording findings are saved after delivery without a completion revision,
+automatic rewrite, warning or state downgrade. A persisted customer-safe read-only
+tool result can close a follow-up as `completed_with_limits` when only the final model
+synthesis fails; tools must opt in through a typed recovery contract. If model-owned
+dynamic tool selection is temporarily unavailable, a thread with a customer-safe
+`bi_publication` preserves the latest complete publication and clearly marks the new
+follow-up interpretation as unfinished. Contract, context and source-closure failures
+continue to fail closed.
 
-The launch gate is fully automated except for one fresh post-freeze Case B run
-through the real service chain. Manual truth review, manual insight scoring, and
-wording-pair review are optional post-launch evaluations.
+P8 closes the current first-answer performance gate. Compact Provider projections,
+off-path thread-summary maintenance, one-call read-only follow-ups and deterministic
+authority reference assembly reduce the real complete first answer to 318.835 seconds;
+two published-material follow-ups complete in 11.175 and 9.518 seconds. The accepted
+Plan still carries 21 capability tasks and settles 23 evidence entries and 22 verified
+claims. The run uses only the configured DeepSeek Chat Completions endpoint, with no
+`OPENAI_API_KEY` and zero OpenAI hosted requests. Answer-quality review remains
+post-delivery advisory.
+
+Case B and further multi-Agent expansion remain subsequent work. Manual truth review,
+manual insight scoring and wording-pair review remain advisory evaluation surfaces.
