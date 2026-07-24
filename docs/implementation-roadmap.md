@@ -285,3 +285,26 @@ cannot alter the gate or publication.
 
 Case B and further multi-Agent expansion remain subsequent stages. They do not
 change Phase 8 completion or the advisory-only answer-quality decision.
+
+## Proposed Phase 9: Current Case B and controlled multi-Agent investigation
+
+Phase 9 first creates a fresh single-Agent Case B reference on the current P8
+contracts, data releases and performance path. It then extends the existing
+read-only controlled investigation tool with durable child identity, restart
+recovery, idempotency, failure isolation and parent-child WAJE trace lineage.
+
+Child agents consume only customer-safe artifacts and produce source-closed
+candidate investigation artifacts. They cannot query BI, create evidence or
+claims, own ThreadHead, publish, deliver, or change customer state. One accepted
+IntentRevision and PlanRevision continue to drive the complete authority chain.
+
+The same Case B, clarification, snapshot, plan and model configuration are run
+through single-Agent and controlled multi-Agent paths. Hard acceptance compares
+authority closure, query parity, source closure, recovery, latency, Provider
+egress and customer projection. Human review compares mechanism depth,
+offsetting factors, segment concentration, contextual signals, alternative
+explanations and actionability. That review informs whether multi-Agent becomes
+default, while remaining unable to block or mutate any customer publication.
+
+The executable plan is
+[P9 Case B and controlled multi-Agent investigation](./superpowers/plans/2026-07-24-p9-case-b-controlled-multi-agent.md).

@@ -10,6 +10,7 @@
 - [P5 data coverage and performance](./superpowers/plans/2026-07-23-p5-data-coverage-performance.md)
 - [P6 production-chain acceptance](./superpowers/plans/2026-07-23-p6-production-chain-acceptance.md)
 - [P7 answer-completeness repair](./superpowers/plans/2026-07-23-p7-answer-completeness-repair.md)
+- [P9 Case B and controlled multi-Agent investigation](./superpowers/plans/2026-07-24-p9-case-b-controlled-multi-agent.md)
 - [Failure attribution taxonomy](./evals/failure-attribution-taxonomy.md)
 
 ## Runtime architecture
