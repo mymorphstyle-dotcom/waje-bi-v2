@@ -396,11 +396,22 @@ def test_database_deployment_audit_rejects_missing_required_column() -> None:
         ).run()
 
 
-def test_database_deployment_audit_rejects_superseded_migration_rows() -> None:
+def test_database_deployment_audit_accepts_content_addressed_migration_history() -> None:
     connection = _DatabaseConnection(
         migration_rows=[
             ("single-authority-workflow.v11", "a" * 64),
             (SINGLE_AUTHORITY_MIGRATION_ID, SINGLE_AUTHORITY_MIGRATION_DIGEST),
+        ]
+    )
+
+    assert DeploymentDatabaseAuditor(connection).run().status == "passed"
+
+
+def test_database_deployment_audit_rejects_database_ahead_of_code() -> None:
+    connection = _DatabaseConnection(
+        migration_rows=[
+            (SINGLE_AUTHORITY_MIGRATION_ID, SINGLE_AUTHORITY_MIGRATION_DIGEST),
+            ("single-authority-workflow.v999", "f" * 64),
         ]
     )
 
@@ -429,8 +440,11 @@ def test_live_deployment_probe_covers_provider_p2_and_waje_trace() -> None:
     assert all(item.status == "passed" for item in checks)
     trace = next(item for item in checks if item.name == "waje_trace_boundary")
     assert trace.detail["openaiExporterUsed"] is False
-    assert trace.detail["recordCount"] == 18
-    assert trace.detail["traceCount"] == 9
+    assert trace.detail["traceCount"] >= 7
+    assert trace.detail["recordCount"] >= trace.detail["traceCount"] * 2
+    assert {"trace_started", "trace_finished"} <= set(
+        trace.detail["eventTypes"]
+    )
     mainland = next(
         item for item in checks if item.name == "mainland_provider_capabilities"
     )

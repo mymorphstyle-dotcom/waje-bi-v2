@@ -128,7 +128,7 @@ coverage:
     - order_level_paid_amount_reconciliation
 
 runtime_binding:
-  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@20
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@23
   dataset_id: payment_order_bet_link
   physical_table_prefix: payment_order_bet_link__
   snapshot_field: snapshot_id

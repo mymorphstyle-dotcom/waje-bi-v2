@@ -22,6 +22,9 @@ from bi_agent.runtime.claim_coverage import (
     ClaimCoverageCheckpoint,
     ClaimCoverageContractError,
 )
+from bi_agent.runtime.controlled_investigation_workflow import (
+    run_controlled_investigation_workflow,
+)
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
 from bi_agent.runtime.factor_coverage import (
     FactorCoveragePlan,
@@ -92,6 +95,11 @@ from bi_agent.runtime.single_authority import (
     DurableTransition,
     FailureRecord,
     IntentRevision,
+)
+from bi_agent.runtime.llm_client import (
+    LLMOutputError,
+    LLMProviderError,
+    LLMTimeoutError,
 )
 
 
@@ -2062,6 +2070,7 @@ def run_post_execution_workflow(
     prior_result: PostExecutionWorkflowResult | None = None,
     factor_coverage_plan: FactorCoveragePlan | None = None,
     factor_coverage_result: FactorCoverageResult | None = None,
+    controlled_investigation_enabled: bool = False,
 ) -> PostExecutionWorkflowResult:
     execution = _validated_execution(execution_result)
     coverage_checkpoint = _validated_claim_coverage_checkpoint(
@@ -2113,6 +2122,10 @@ def run_post_execution_workflow(
         raise PostExecutionWorkflowError("post_execution_connection_invalid")
     if not callable(getattr(llm_client, "invoke_json", None)):
         raise PostExecutionWorkflowError("post_execution_llm_client_invalid")
+    if type(controlled_investigation_enabled) is not bool:
+        raise PostExecutionWorkflowError(
+            "post_execution_controlled_investigation_flag_invalid"
+        )
     if not callable(sensitive_output_inspector):
         raise PostExecutionWorkflowError(
             "post_execution_sensitive_output_inspector_invalid"
@@ -2165,6 +2178,7 @@ def run_post_execution_workflow(
         semantic = run_semantic_authority_workflow(
             execution,
             authority_namespace=namespace,
+            claim_coverage_checkpoint=coverage_checkpoint,
             llm_client=semantic_llm,
         )
         bundle = semantic.authority_bundle_inputs.seal(
@@ -2224,6 +2238,16 @@ def run_post_execution_workflow(
     else:
         semantic, bundle, authority_transition = accepted_authority
         authority_persistence_status = "replayed"
+
+    if (
+        semantic.projection.claim_coverage_evaluation_ref
+        != coverage_checkpoint.evaluation_ref
+        or semantic.projection.claim_coverage_evaluation_digest
+        != coverage_checkpoint.evaluation.content_digest
+    ):
+        raise PostExecutionWorkflowError(
+            "post_execution_claim_coverage_semantic_closure_invalid"
+        )
 
     if stop_after == "phase04":
         return _build_result(
@@ -2343,15 +2367,6 @@ def run_post_execution_workflow(
                 synthesis=final_synthesis,
             ),
         )
-    answer_context = build_narrative_answer_context(
-        authority_bundle=bundle,
-        authority_inputs=semantic.authority_bundle_inputs,
-        intent_revision=intent,
-        recommendations=semantic.recommendations,
-        locale=_required_string(locale, "post_execution_locale_invalid"),
-        customer_term_labels=customer_term_labels,
-        additional_business_context=coverage_business_context,
-    )
     palette, material_projection = prepare_narrative_material_projection(
         authority_bundle=bundle,
         claim_settlement=semantic.settlement,
@@ -2412,6 +2427,42 @@ def run_post_execution_workflow(
     ):
         raise PostExecutionWorkflowError("post_execution_material_persistence_invalid")
     material_persistence_status = material_persistence.status
+    controlled_business_context: tuple[str, ...] = ()
+    if controlled_investigation_enabled and coverage_plan is not None:
+        try:
+            controlled_result = run_controlled_investigation_workflow(
+                owner_ref=owner,
+                thread_ref=thread,
+                run_attempt_id=bundle.run_attempt_id,
+                intent_revision_id=bundle.intent_revision_id,
+                plan_revision_id=bundle.plan_revision_id,
+                authority_context_ref=execution.authority_context_ref,
+                authority_bundle_ref=bundle.bundle_ref,
+                parent_transition_id=authority_transition.attempt_id,
+                material_projection=material_projection,
+                factor_coverage_plan=coverage_plan,
+                llm_client=llm_client,
+                attempt_journal=attempt_journal,
+                connection=connection,
+                worker_id="controlled-investigation-worker:" + bundle.run_attempt_id,
+            )
+            controlled_business_context = (
+                controlled_result.narrative_context_record(),
+            )
+        except (LLMOutputError, LLMProviderError, LLMTimeoutError):
+            controlled_business_context = ()
+    answer_context = build_narrative_answer_context(
+        authority_bundle=bundle,
+        authority_inputs=semantic.authority_bundle_inputs,
+        intent_revision=intent,
+        recommendations=semantic.recommendations,
+        locale=_required_string(locale, "post_execution_locale_invalid"),
+        customer_term_labels=customer_term_labels,
+        additional_business_context=(
+            *coverage_business_context,
+            *controlled_business_context,
+        ),
+    )
     destination = _required_string(
         destination_ref, "post_execution_destination_ref_invalid"
     )

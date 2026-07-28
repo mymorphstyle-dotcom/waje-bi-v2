@@ -202,17 +202,48 @@ class ClarificationOption:
 
 
 @dataclass(frozen=True)
+class ClarificationQuestion:
+    slot_id: str
+    question: str
+    options: list[ClarificationOption]
+    recommendation_reason: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            for value in (
+                self.slot_id,
+                self.question,
+                self.recommendation_reason,
+            )
+        ) or not self.options:
+            raise ValueError("clarification_question_invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "question": self.question,
+            "options": [option.to_dict() for option in self.options],
+            "recommendation_reason": self.recommendation_reason,
+        }
+
+
+@dataclass(frozen=True)
 class ClarificationState:
     run_id: str
     topic_id: str
     question: str
     options: list[ClarificationOption]
+    questions: list[ClarificationQuestion] | None = None
     status: str = "waiting"
     answer: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["options"] = [option.to_dict() for option in self.options]
+        data["questions"] = [
+            question.to_dict() for question in (self.questions or [])
+        ]
         return data
 
 

@@ -231,6 +231,28 @@ def test_waiting_run_events_project_typed_clarification_options_for_resume():
                         description: "自由说明业务选择。",
                         recommended: false,
                       }],
+                      questions: [{
+                        slot_id: "comparison_baseline",
+                        question: "目标日期要跟哪个基准比较？",
+                        recommendation_reason: "上一日最适合解释日变化。",
+                        options: [{
+                          option_id: "comparison_baseline.previous_day",
+                          label: "跟前一天比较（推荐）",
+                          description: "用于日变化解释。",
+                          recommended: true,
+                        }, {
+                          option_id:
+                            "comparison_baseline.rolling_7_day_baseline",
+                          label: "跟过去七天比较",
+                          description: "用于平滑短期波动。",
+                          recommended: false,
+                        }, {
+                          option_id: "tell_agent_differently",
+                          label: "告诉分析助手采用其他方式",
+                          description: "自由说明业务选择。",
+                          recommended: false,
+                        }],
+                      }],
                     },
                     created_at: "2026-07-18T08:00:01.000Z",
                   }] };
@@ -287,6 +309,35 @@ def test_waiting_run_events_project_typed_clarification_options_for_resume():
                 "recommended": False,
             },
         ],
+        "questions": [
+            {
+                "slot_id": "comparison_baseline",
+                "question": "目标日期要跟哪个基准比较？",
+                "recommendation_reason": "上一日最适合解释日变化。",
+                "options": [
+                    {
+                        "option_id": "comparison_baseline.previous_day",
+                        "label": "跟前一天比较（推荐）",
+                        "description": "用于日变化解释。",
+                        "recommended": True,
+                    },
+                    {
+                        "option_id": (
+                            "comparison_baseline.rolling_7_day_baseline"
+                        ),
+                        "label": "跟过去七天比较",
+                        "description": "用于平滑短期波动。",
+                        "recommended": False,
+                    },
+                    {
+                        "option_id": "tell_agent_differently",
+                        "label": "告诉分析助手采用其他方式",
+                        "description": "自由说明业务选择。",
+                        "recommended": False,
+                    },
+                ],
+            }
+        ],
     }
     serialized = json.dumps(clarification, ensure_ascii=False)
     for private_field_or_value in (
@@ -325,6 +376,23 @@ def test_waiting_projection_rejects_legacy_clarification_option_aliases():
                 recommended: false,
               }],
               recommendation_reason: "上一日最适合解释日变化。",
+              questions: [{
+                slot_id: "comparison_baseline",
+                question: "目标日期要跟哪个基准比较？",
+                recommendation_reason: "上一日最适合解释日变化。",
+                options: [{
+                  option_id: "comparison_baseline.previous_day",
+                  label: "跟前一天比较（推荐）",
+                  description: "用于日变化解释。",
+                  recommended: true,
+                  typed_value: { baseline_id: "previous_day" },
+                }, {
+                  option_id: "tell_agent_differently",
+                  label: "告诉分析助手采用其他方式",
+                  description: "自由说明业务选择。",
+                  recommended: false,
+                }],
+              }],
             };
             const wrapper = (value) => ({
               status: "waiting_for_clarification",
@@ -338,7 +406,8 @@ def test_waiting_projection_rejects_legacy_clarification_option_aliases():
             });
             const visible = projectAgentCoreForCustomer(wrapper(clarification));
             const legacy = structuredClone(clarification);
-            legacy.options[0].id = legacy.options[0].option_id;
+            legacy.questions[0].options[0].id =
+              legacy.questions[0].options[0].option_id;
             let legacyError = null;
             try {
               projectAgentCoreForCustomer(wrapper(legacy));
@@ -351,10 +420,13 @@ def test_waiting_projection_rejects_legacy_clarification_option_aliases():
     )
 
     assert result["visible"]["result"]["clarification"] == {
-        "question": "目标日期要跟哪个基准比较？",
         "status": "question_tool_opened",
         "allow_freeform": True,
-        "options": [
+        "questions": [{
+            "slot_id": "comparison_baseline",
+            "question": "目标日期要跟哪个基准比较？",
+            "recommendation_reason": "上一日最适合解释日变化。",
+            "options": [
             {
                 "option_id": "comparison_baseline.previous_day",
                 "label": "跟前一天比较（推荐）",
@@ -367,8 +439,8 @@ def test_waiting_projection_rejects_legacy_clarification_option_aliases():
                 "description": "自由说明业务选择。",
                 "recommended": False,
             },
-        ],
-        "recommendation_reason": "上一日最适合解释日变化。",
+            ],
+        }],
     }
     assert result["legacyError"] == "clarification_payload_invalid"
 

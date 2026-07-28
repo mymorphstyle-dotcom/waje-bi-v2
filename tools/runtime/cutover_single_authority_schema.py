@@ -15,51 +15,19 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "tools/runtime/conversation-runtime.sql"
 SINGLE_AUTHORITY_MARKER = "-- Current single-authority workflow slice."
-SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v15"
+SINGLE_AUTHORITY_MIGRATION_ID = "single-authority-workflow.v23"
 SINGLE_AUTHORITY_MIGRATION_DIGEST = (
-    "8bac54f39a1573aead3b1d2be4aaac4f88102c0952d664113f44e8fcf023e305"
+    "5d63799f71fb49f0c898554573592bb2885059a026f395576de3a04bfa588feb"
 )
 SOURCE_MIGRATION_ID = "single-authority-workflow.v7"
 SOURCE_MIGRATION_DIGEST = (
     "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
 )
-IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v14"
+IN_PLACE_SOURCE_MIGRATION_ID = "single-authority-workflow.v17"
 IN_PLACE_SOURCE_MIGRATION_DIGEST = (
-    "7d361b82a893bc9747b3fdbb6c632e4e1305c964f8a62b9ef6615283897aba9c"
+    "76a80e5f454b02b0a494c9e470a8d837caa19e96823cc1fd68bc0e988e39dd31"
 )
 IN_PLACE_SOURCE_CONTRACTS = {
-    (
-        "single-authority-workflow.v9",
-        "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1",
-    ): frozenset(
-        {
-            "agent_task_resume_outbox",
-            "agent_thread_summaries",
-            "agent_generated_artifacts",
-        }
-    ),
-    (
-        "single-authority-workflow.v10",
-        "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044",
-    ): frozenset(
-        {
-            "agent_task_resume_outbox",
-            "agent_thread_summaries",
-            "agent_generated_artifacts",
-        }
-    ),
-    (
-        "single-authority-workflow.v11",
-        "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3",
-    ): frozenset({"agent_thread_summaries", "agent_generated_artifacts"}),
-    (
-        "single-authority-workflow.v12",
-        "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3",
-    ): frozenset(),
-    (
-        "single-authority-workflow.v13",
-        "9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af",
-    ): frozenset({"narrative_quality_audit_results"}),
     (
         IN_PLACE_SOURCE_MIGRATION_ID,
         IN_PLACE_SOURCE_MIGRATION_DIGEST,
@@ -75,12 +43,14 @@ IN_PLACE_BACKFILL_PREDICATES = {
     "analysis_runs": "run_attempt_id IS NULL OR run_attempt_id = ''",
     "decision_records": "run_attempt_id IS NULL OR run_attempt_id = ''",
     "block_verification_reports": "audit_status IS NULL",
+    "insight_quality_evaluations": "rubric_ref IS NULL",
 }
 IN_PLACE_METADATA_BACKFILLS = frozenset(
     {
         "conversation_messages",
         "investigation_threads",
         "block_verification_reports",
+        "insight_quality_evaluations",
     }
 )
 IN_PLACE_ADDITIVE_TABLES = frozenset(
@@ -88,6 +58,8 @@ IN_PLACE_ADDITIVE_TABLES = frozenset(
         "agent_thread_summaries",
         "agent_generated_artifacts",
         "narrative_quality_audit_results",
+        "controlled_investigation_operations",
+        "controlled_investigation_dispatches",
     }
 )
 OBSOLETE_TABLES = (
@@ -598,6 +570,43 @@ def _validate_current_runtime_schema(connection: Any) -> None:
     ).fetchone()
     if nullable != ("NO",):
         raise SchemaCutoverError("run_dispatch_message_contract_invalid")
+    quality_columns = {
+        str(column_name): (str(is_nullable), str(data_type))
+        for column_name, is_nullable, data_type in connection.execute(
+            """
+            SELECT column_name, is_nullable, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'waje_runtime'
+              AND table_name = 'insight_quality_evaluations'
+              AND column_name IN (
+                'rubric_ref',
+                'rubric_digest',
+                'rubric',
+                'evaluation_case_ref',
+                'evaluation_case_digest',
+                'evaluation_case',
+                'model_profile_ref',
+                'model_profile_digest',
+                'model_profile',
+                'human_reasons'
+              )
+            """
+        ).fetchall()
+    }
+    expected_quality_columns = {
+        "rubric_ref": ("NO", "text"),
+        "rubric_digest": ("NO", "text"),
+        "rubric": ("NO", "jsonb"),
+        "evaluation_case_ref": ("NO", "text"),
+        "evaluation_case_digest": ("NO", "text"),
+        "evaluation_case": ("NO", "jsonb"),
+        "model_profile_ref": ("NO", "text"),
+        "model_profile_digest": ("NO", "text"),
+        "model_profile": ("NO", "jsonb"),
+        "human_reasons": ("NO", "jsonb"),
+    }
+    if quality_columns != expected_quality_columns:
+        raise SchemaCutoverError("insight_quality_evaluation_schema_invalid")
     index_rows = connection.execute(
         """
         SELECT indexname, indexdef

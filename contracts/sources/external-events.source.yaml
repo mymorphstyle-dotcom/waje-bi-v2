@@ -54,7 +54,7 @@ sheet_contracts:
   节假日: {business_use: holiday_context, native_headers: [日期, 节假日/节庆, 覆盖区域, 影响判断], header_row: 4, date_column: 日期, type_column: 节假日/节庆, description_column: 影响判断, scope_column: 覆盖区域}
 
 runtime_binding:
-  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@20
+  binding_ref: contracts/runtime/clickhouse-analysis-bindings.yaml@23
   dataset_id: external_event
   physical_table_prefix: business_events__
   grain: [snapshot_id, load_revision, source_family, event_id]

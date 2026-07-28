@@ -146,9 +146,12 @@ execution. It is not a capability task and produces no analytical evidence.
 
 ### 5.1 Intent revision
 
-`IntentRevision` records original user text, goal and metric bindings, scope,
-time specification, direction premise, requested axes, desired decisions,
-ambiguity slots, source spans, prompt/model versions, and content digest.
+`IntentRevision` records original user text, its customer-facing
+`business_summary`, goal and metric bindings, scope, time specification,
+direction premise, requested axes, desired decisions, ambiguity slots, source
+spans, prompt/model versions, and content digest. The LLM returns the summary
+and typed binding together. The UI displays it only after the revision is
+accepted and bound to the run.
 
 Observed direction cannot enter intent. It becomes a claim only after target and
 baseline evidence is complete.

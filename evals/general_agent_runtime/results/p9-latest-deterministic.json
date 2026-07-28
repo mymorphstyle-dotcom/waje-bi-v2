@@ -1,0 +1,200 @@
+{
+  "adapterCounts": {
+    "pytest": 9
+  },
+  "caseCount": 9,
+  "cases": [
+    {
+      "adapter": "pytest",
+      "caseId": "p9_controlled_investigation_authority_contract",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_controlled_investigation_authority_contract",
+          "durationSeconds": 1.031,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "...........                                                              [100%]\n11 passed in 0.41s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_controlled_investigation_fault_recovery",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_controlled_investigation_fault_recovery",
+          "durationSeconds": 0.479,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "....                                                                     [100%]\n4 passed in 0.03s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_controlled_investigation_schema",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_controlled_investigation_schema",
+          "durationSeconds": 0.735,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "...                                                                      [100%]\n3 passed in 0.21s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_controlled_investigation_projection",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_controlled_investigation_projection",
+          "durationSeconds": 0.829,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "...                                                                      [100%]\n3 passed in 0.34s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_controlled_investigation_narrative_delta",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_controlled_investigation_narrative_delta",
+          "durationSeconds": 0.837,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.33s\n"
+        }
+      ],
+      "riskTier": "high"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_workbench_parent_child_trace",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_workbench_parent_child_trace",
+          "durationSeconds": 0.409,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.01s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_single_publication_authority",
+      "category": "runtime",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_single_publication_authority",
+          "durationSeconds": 2.206,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "...............                                                          [100%]\n15 passed in 1.44s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_deepseek_only_outbound",
+      "category": "security",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_deepseek_only_outbound",
+          "durationSeconds": 3.417,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": "................................                                         [100%]\n32 passed in 2.50s\n"
+        }
+      ],
+      "riskTier": "critical"
+    },
+    {
+      "adapter": "pytest",
+      "caseId": "p9_browser_customer_and_workbench",
+      "category": "experience",
+      "hardStatus": "passed",
+      "repeatCount": 1,
+      "repeats": [
+        {
+          "adapter": "pytest",
+          "artifactRefs": [],
+          "caseId": "p9_browser_customer_and_workbench",
+          "durationSeconds": 0.549,
+          "exitCode": 0,
+          "failures": [],
+          "hardStatus": "passed",
+          "output": ".                                                                        [100%]\n1 passed in 0.01s\n"
+        }
+      ],
+      "riskTier": "critical"
+    }
+  ],
+  "generatedAt": "2026-07-24T09:20:11.199174+00:00",
+  "mode": "execution",
+  "model": "",
+  "openAiApiKeyPresent": false,
+  "openAiHostedRequestCount": 0,
+  "outboundOrigin": null,
+  "passedCaseCount": 9,
+  "profile": "smoke",
+  "provider": "",
+  "schemaVersion": "waje-standard-pack-run.v1",
+  "standardPackVersion": "v1",
+  "status": "passed"
+}

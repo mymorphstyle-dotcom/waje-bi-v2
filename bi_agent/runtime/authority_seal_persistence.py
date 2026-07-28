@@ -776,7 +776,7 @@ def _validate_active_chain(
             or lifecycle.evidence_state != expected_evidence_state
             or lifecycle.publication_state != "not_ready"
             or lifecycle.delivery_state != "pending"
-            or lifecycle.retry_state != "idle"
+            or lifecycle.retry_state not in {"idle", "running"}
         ):
             raise AuthoritySealPersistenceError("authority_seal_lifecycle_not_ready")
         return lifecycle, True

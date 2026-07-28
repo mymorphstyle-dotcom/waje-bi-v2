@@ -12,6 +12,10 @@ import type {
   TraceLifecycleOutcome,
   TraceMessage,
   TraceNode,
+  TraceReasoning,
+  TraceReasoningClaim,
+  TraceReasoningIssue,
+  TraceReasoningTask,
   TraceRun,
   TraceRunOutcome,
 } from "./contracts";
@@ -22,6 +26,23 @@ type TodoStatus = "pending" | "in_progress" | "completed" | "failed" | "waiting"
 type PlaybackState = "snapshot" | "ready" | "playing" | "completed";
 type AcceptedTaskStatus = "not_started" | "unsettled" | TraceCapabilityOutcomeStatus;
 type RunsResponse = { runs: TraceRun[] };
+type ReasoningResponse = { reasoning: TraceReasoning | null };
+type ControlledInvestigationChildView = {
+  key: string;
+  question: string;
+  axisRefs: string[];
+  sourceCount: number;
+  expectedOutputKind: string;
+  dispatchState: string;
+  terminalStatus: string;
+  leaseEpoch?: number;
+};
+type ControlledInvestigationView = {
+  status: string;
+  planRevisionId: string;
+  childCount: number;
+  children: ControlledInvestigationChildView[];
+};
 
 const WorkflowCanvasModal = dynamic(() => import("./WorkflowCanvasModal").then((module) => module.WorkflowCanvasModal), {
   ssr: false,
@@ -37,6 +58,9 @@ export function AgentRunWorkbench() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [reasoning, setReasoning] = useState<TraceReasoning>();
+  const [reasoningLoading, setReasoningLoading] = useState(false);
+  const [reasoningError, setReasoningError] = useState("");
   const timers = useRef<number[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
 
@@ -62,6 +86,36 @@ export function AgentRunWorkbench() {
   useEffect(() => {
     messageListRef.current?.scrollTo({ top: 0, behavior: "auto" });
   }, [activeId]);
+
+  useEffect(() => {
+    if (!active?.runId) {
+      setReasoning(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    setReasoning(undefined);
+    setReasoningError("");
+    setReasoningLoading(true);
+    void fetch(
+      `/api/agent-runs/${encodeURIComponent(active.runId)}/reasoning`,
+      { cache: "no-store", signal: controller.signal },
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`run_reasoning_api_${response.status}`);
+        const data = await response.json() as ReasoningResponse;
+        setReasoning(data.reasoning ?? undefined);
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) return;
+        setReasoningError(
+          caught instanceof Error ? caught.message : "run_reasoning_api_failed",
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setReasoningLoading(false);
+      });
+    return () => controller.abort();
+  }, [active?.runId]);
 
   async function loadRuns(preferredRunId?: string) {
     preferredRunId ? setRefreshing(true) : setLoading(true);
@@ -192,24 +246,44 @@ export function AgentRunWorkbench() {
               <RunOverview run={active} />
               <RunBadge active={active} playbackState={playbackState} visible={visibleCount} />
               <div className={styles.workbenchGrid}>
-                <section className={styles.chatTranscript}>
-                  <div className={styles.sectionHeader}>
-                    <h2>线性对话</h2>
-                    <p>从用户问题到最终回答，只展示业务可读的判断和系统动作。</p>
-                  </div>
-                  <ChatTranscript
-                    messages={visibleMessages}
-                    selectedNodeId={selectedNodeId}
-                    onSelectNode={(nodeId) => {
-                      setSelectedNodeId(nodeId);
-                      setCanvasOpen(true);
-                    }}
-                  />
+                <section className={styles.reasoningColumn}>
+                  {reasoningLoading ? (
+                    <div className={styles.reasoningLoading}>
+                      <Loader2 className={styles.spin} size={13} />
+                      正在读取这条历史记录的完整分析链路…
+                    </div>
+                  ) : null}
+                  {reasoningError ? (
+                    <p className={styles.error}>分析链路读取失败：{reasoningError}</p>
+                  ) : null}
+                  {reasoning ? <ReasoningTrace reasoning={reasoning} /> : null}
+                  <details className={styles.processArchive}>
+                    <summary>
+                      历史运行节点
+                      <span>{visibleMessages.length} 条</span>
+                      <ChevronDown size={13} />
+                    </summary>
+                    <ChatTranscript
+                      messages={visibleMessages}
+                      selectedNodeId={selectedNodeId}
+                      onSelectNode={(nodeId) => {
+                        setSelectedNodeId(nodeId);
+                        setCanvasOpen(true);
+                      }}
+                    />
+                  </details>
+                  {showingFinal && reasoning?.answerBlocks.length ? (
+                    <HistoricalAnswer reasoning={reasoning} run={active} />
+                  ) : showingFinal && active.answer ? (
+                    <AnswerCard
+                      answer={active.answer}
+                      cards={active.summaryCards}
+                      run={active}
+                    />
+                  ) : null}
                 </section>
+                {reasoning ? <PlannerStatusCard issues={reasoning.issues} /> : null}
               </div>
-              {showingFinal && active.answer ? (
-                <AnswerCard answer={active.answer} cards={active.summaryCards} run={active} />
-              ) : null}
             </>
           ) : null}
         </div>
@@ -286,11 +360,156 @@ function RunOverview({ run }: { run: TraceRun }) {
           <pre>{JSON.stringify(run.factorCoverage, null, 2)}</pre>
         </details>
       ) : null}
+      {run.controlledInvestigation ? (
+        <details className={styles.auditDetails} open>
+          <summary>
+            受控多 Agent 调查轨迹
+            <ChevronDown size={13} />
+          </summary>
+          <ControlledInvestigationTrace
+            value={run.controlledInvestigation}
+          />
+        </details>
+      ) : null}
       <p className={styles.runNarrative}>
         当前记录以{runModeLabel(run.runMode)}呈现；{lifecycleSummary(run)}。计划内能力任务：{graph}。
       </p>
     </section>
   );
+}
+
+function ControlledInvestigationTrace({
+  value,
+}: {
+  value: Record<string, unknown>;
+}) {
+  const trace = controlledInvestigationView(value);
+  return (
+    <div className={styles.controlledTrace}>
+      <div className={styles.controlledTraceHeader}>
+        <div>
+          <small>父级编排状态</small>
+          <strong>{controlledStatusLabel(trace.status)}</strong>
+        </div>
+        <div>
+          <small>受控子调查</small>
+          <strong>{trace.childCount} / 3</strong>
+        </div>
+        <div>
+          <small>Accepted Plan</small>
+          <strong>{trace.planRevisionId || "未记录"}</strong>
+        </div>
+      </div>
+      <p className={styles.controlledBoundary}>
+        子调查只读取父级投影的来源闭包；Plan、Evidence、Claim、Publication 与客户交付仍由父级持有。
+      </p>
+      <div className={styles.controlledChildGrid}>
+        {trace.children.map((child, index) => (
+          <article className={styles.controlledChild} key={child.key}>
+            <div className={styles.controlledChildHeader}>
+              <strong>子调查 {index + 1}</strong>
+              <span data-status={child.terminalStatus || child.dispatchState}>
+                {controlledChildStatusLabel(
+                  child.terminalStatus || child.dispatchState,
+                )}
+              </span>
+            </div>
+            <p>{child.question || "调查问题未记录"}</p>
+            <dl>
+              <div>
+                <dt>分析轴</dt>
+                <dd>{child.axisRefs.join("、") || "未记录"}</dd>
+              </div>
+              <div>
+                <dt>预期产物</dt>
+                <dd>{child.expectedOutputKind || "未记录"}</dd>
+              </div>
+              <div>
+                <dt>来源闭包</dt>
+                <dd>{child.sourceCount} 项父级材料</dd>
+              </div>
+              <div>
+                <dt>恢复租约</dt>
+                <dd>
+                  {child.leaseEpoch === undefined
+                    ? "未记录"
+                    : `epoch ${child.leaseEpoch}`}
+                </dd>
+              </div>
+            </dl>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function controlledInvestigationView(
+  value: Record<string, unknown>,
+): ControlledInvestigationView {
+  const rawChildren = Array.isArray(value.children) ? value.children : [];
+  const children = rawChildren.flatMap((item, index) => {
+    const child = recordValue(item);
+    if (!child) return [];
+    return [{
+      key: stringValue(child.investigationKey) || `child-${index + 1}`,
+      question: stringValue(child.question),
+      axisRefs: stringArray(child.axisRefs),
+      sourceCount: stringArray(child.allowedSourceRefs).length,
+      expectedOutputKind: stringValue(child.expectedOutputKind),
+      dispatchState: stringValue(child.dispatchState),
+      terminalStatus: stringValue(child.terminalStatus),
+      leaseEpoch: numberValue(child.leaseEpoch),
+    }];
+  });
+  return {
+    status: stringValue(value.status),
+    planRevisionId: stringValue(value.planRevisionId),
+    childCount: numberValue(value.childCount) ?? children.length,
+    children,
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function controlledStatusLabel(status: string) {
+  return ({
+    completed: "全部完成",
+    completed_with_limits: "完成 · 有边界",
+    failed: "编排失败",
+    running: "调查进行中",
+  } as Record<string, string>)[status] ?? (status || "未记录");
+}
+
+function controlledChildStatusLabel(status: string) {
+  return ({
+    accepted: "已采纳",
+    limited: "完成 · 有边界",
+    failed: "失败隔离",
+    running: "进行中",
+    pending: "等待执行",
+    terminal: "已结束",
+  } as Record<string, string>)[status] ?? (status || "未记录");
 }
 
 function SummaryTile({ card }: { card: TraceCard }) {
@@ -327,6 +546,328 @@ function RunBadge({
       <RunOutcomeIcon outcome={active.runOutcome} playing={playing} />
       <span>{mode} · {runOutcomeLabel(active.runOutcome)} · {lifecycleSummary(active)} · {runTimingLabel(active)}</span>
     </div>
+  );
+}
+
+export function ReasoningTrace({
+  reasoning,
+  showBusinessUnderstanding = true,
+}: {
+  reasoning: TraceReasoning;
+  showBusinessUnderstanding?: boolean;
+}) {
+  return (
+    <section className={styles.reasoningTrace}>
+      {showBusinessUnderstanding ? (
+        <div className={styles.businessUnderstanding}>
+          <small>业务理解</small>
+          <p>{reasoning.businessUnderstanding || "这条历史记录没有保存业务理解。"}</p>
+        </div>
+      ) : null}
+
+      <div className={styles.reasoningSummary}>
+        <div>
+          <strong>{reasoning.issues.length}</strong>
+          <span>待解决问题</span>
+        </div>
+        <div>
+          <strong>{reasoning.counts.taskCompleted}/{reasoning.counts.taskTotal}</strong>
+          <span>任务已结算</span>
+        </div>
+        <div>
+          <strong>{reasoning.counts.queryTotal}</strong>
+          <span>查询结果</span>
+        </div>
+        <div>
+          <strong>{reasoning.counts.evidenceTotal}</strong>
+          <span>证据记录</span>
+        </div>
+        <div>
+          <strong>{reasoning.counts.claimUsedInAnswer}/{reasoning.counts.claimTotal}</strong>
+          <span>Claim 进入回答</span>
+        </div>
+      </div>
+
+      <section className={styles.reasoningSection}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2>Planner 待解决问题</h2>
+            <p>每个问题都保留任务、Claim 和最终回答的对应关系。</p>
+          </div>
+          <span>{reasoning.planRevisionId}</span>
+        </div>
+        <div className={styles.issueList}>
+          {reasoning.issues.map((issue, index) => (
+            <PlannerIssueRow
+              index={index + 1}
+              issue={issue}
+              key={issue.issueId}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.reasoningSection}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2>执行任务</h2>
+            <p>Planner 生成的全部任务均保留；展开可看查询、证据、Claim 和边界。</p>
+          </div>
+          <span>{reasoning.tasks.length} 项</span>
+        </div>
+        <div className={styles.taskList}>
+          {reasoning.tasks.map((task) => (
+            <ReasoningTaskRow
+              claims={reasoning.claims.filter((claim) =>
+                claim.taskIds.includes(task.taskId)
+              )}
+              key={task.taskId}
+              task={task}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.reasoningSection}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2>Claim 结算</h2>
+            <p>
+              模型从受限证据中提出候选机制，系统直接形成事实类 Claim；全部
+              Claim 都经过语义校验，再由系统投影到最终回答。
+            </p>
+          </div>
+          <span>{reasoning.claims.length} 条</span>
+        </div>
+        <div className={styles.claimList}>
+          {reasoning.claims.map((claim, index) => (
+            <ReasoningClaimRow
+              claim={claim}
+              index={index + 1}
+              key={claim.proposedClaimRef}
+            />
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function PlannerIssueRow({
+  index,
+  issue,
+}: {
+  index: number;
+  issue: TraceReasoningIssue;
+}) {
+  return (
+    <article className={styles.issueRow} id={`issue-${issue.issueId}`}>
+      <div className={styles.issueIndex}>{index}</div>
+      <div className={styles.issueBody}>
+        <div className={styles.issueTitle}>
+          <p>{issue.question}</p>
+          <span data-status={issue.status}>{reasoningIssueStatusLabel(issue.status)}</span>
+        </div>
+        {issue.answerText ? <small>{issue.answerText}</small> : (
+          <small>{reasoningIssueGapLabel(issue)}</small>
+        )}
+        <div className={styles.issueMeta}>
+          <span>{issue.taskIds.length} 个任务</span>
+          <span>{issue.claimRefs.length} 条通过校验的 Claim</span>
+          <span>{issue.usedClaimRefs.length} 条进入回答</span>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function ReasoningTaskRow({
+  task,
+  claims,
+}: {
+  task: TraceReasoningTask;
+  claims: TraceReasoningClaim[];
+}) {
+  return (
+    <details className={styles.taskRow}>
+      <summary>
+        <span className={styles.taskRank}>{String(task.rank).padStart(2, "0")}</span>
+        <span className={styles.taskName}>
+          <strong>{capabilityLabel(task.capabilityId)}</strong>
+          <small>{task.taskKey}</small>
+        </span>
+        <span className={styles.taskQuery} data-status={task.queryStatus}>
+          {taskQueryLabel(task)}
+        </span>
+        <span className={styles.taskStatus} data-status={task.status}>
+          {taskStatusLabel(task.status)}
+        </span>
+        <ChevronDown size={13} />
+      </summary>
+      <div className={styles.taskDetail}>
+        <div className={styles.traceCounts}>
+          <span>结果 {task.resultRefs.length}</span>
+          <span>证据 {task.evidenceRefs.length}</span>
+          <span>Claim {task.claimRefs.length}</span>
+          <span>依赖 {task.dependencyTaskIds.length}</span>
+        </div>
+        {claims.length ? (
+          <div className={styles.taskClaims}>
+            {claims.map((claim) => (
+              <div key={claim.claimRef}>
+                <span data-used={claim.usedInAnswer}>
+                  {claim.usedInAnswer ? "已进入回答" : "未进入回答"}
+                </span>
+                <p>{claim.summary}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className={styles.traceEmpty}>该任务没有形成 Claim。</p>
+        )}
+        {task.failure ? (
+          <p className={styles.taskBoundary}>
+            {task.failure.businessBoundary} · {task.failure.kind}
+          </p>
+        ) : null}
+        {task.limitationRefs.length ? (
+          <div className={styles.traceTags}>
+            {task.limitationRefs.map((limitation) => (
+              <span key={limitation}>{limitation}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function ReasoningClaimRow({
+  claim,
+  index,
+}: {
+  claim: TraceReasoningClaim;
+  index: number;
+}) {
+  return (
+    <details
+      className={styles.claimRow}
+      id={`claim-${index}`}
+    >
+      <summary>
+        <span className={styles.claimIndex}>C{String(index).padStart(2, "0")}</span>
+        <span className={styles.claimSummary}>
+          <strong>{claimKindLabel(claim.claimKind)}</strong>
+          <small>{claim.summary}</small>
+        </span>
+        <span className={styles.claimSource}>
+          {claim.source === "llm_proposed" ? "模型候选" : "系统直接形成"}
+        </span>
+        <span
+          className={styles.claimUsage}
+          data-status={claim.usedInAnswer ? "used" : "omitted"}
+        >
+          {claim.usedInAnswer ? "已进入回答" : "未进入回答"}
+        </span>
+        <ChevronDown size={13} />
+      </summary>
+      <div className={styles.claimDetail}>
+        <div className={styles.traceCounts}>
+          <span>{verificationStatusLabel(claim.verificationStatus)}</span>
+          <span>{claimClassLabel(claim.claimClass)}</span>
+          <span>任务 {claim.taskIds.length}</span>
+          <span>证据 {claim.evidenceRefs.length}</span>
+        </div>
+        {claim.facts.length ? (
+          <dl className={styles.claimFacts}>
+            {claim.facts.map((fact) => (
+              <div key={`${fact.name}-${fact.value}`}>
+                <dt>{factLabel(fact.name)}</dt>
+                <dd>{factValue(fact.name, fact.value)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        <small className={styles.traceRef}>Claim ref · {claim.claimRef}</small>
+        {claim.limitationRefs.length ? (
+          <div className={styles.traceTags}>
+            {claim.limitationRefs.map((limitation) => (
+              <span key={limitation}>{limitation}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function PlannerStatusCard({ issues }: { issues: TraceReasoningIssue[] }) {
+  const settled = issues.filter((issue) => issue.status === "answered").length;
+  return (
+    <aside className={styles.plannerStatus}>
+      <div className={styles.plannerStatusHeader}>
+        <div>
+          <strong>待解决问题</strong>
+          <small>{settled}/{issues.length} 已完整进入回答</small>
+        </div>
+        <span>{issues.length}</span>
+      </div>
+      <div className={styles.plannerStatusRows}>
+        {issues.map((issue) => (
+          <a href={`#issue-${issue.issueId}`} key={issue.issueId}>
+            <span data-status={issue.status} />
+            <p>{issue.question}</p>
+            <small>{reasoningIssueStatusLabel(issue.status)}</small>
+          </a>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function HistoricalAnswer({
+  reasoning,
+  run,
+}: {
+  reasoning: TraceReasoning;
+  run: TraceRun;
+}) {
+  return (
+    <article className={styles.historicalAnswer}>
+      <div className={styles.answerHeader}>
+        <div>
+          <strong>历史最终回答</strong>
+          <small>原样读取，不重新生成</small>
+        </div>
+        <span className={styles.passBadge}>{answerAuthorityLabel(run)}</span>
+      </div>
+      <div className={styles.answerBlocks}>
+        {reasoning.answerBlocks.map((block) => (
+          <section key={block.blockId}>
+            <small>{answerRoleLabel(block.role)}</small>
+            <div>
+              {block.text.split(/\n+/).filter(Boolean).map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+            {block.claimRefs.length ? (
+              <div className={styles.inlineClaims}>
+                {block.claimRefs.map((claimRef) => {
+                  const claim = reasoning.claims.find(
+                    (candidate) => candidate.claimRef === claimRef,
+                  );
+                  return (
+                    <span key={claimRef}>
+                      {claim ? claimKindLabel(claim.claimKind) : "Claim"} · {shortRef(claimRef)}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+          </section>
+        ))}
+      </div>
+    </article>
   );
 }
 
@@ -783,6 +1324,135 @@ function capabilityLabel(value: string) {
       joint_attribution: "组合归因检查",
     } as Record<string, string>
   )[value] ?? value;
+}
+
+function reasoningIssueStatusLabel(status: TraceReasoningIssue["status"]) {
+  return ({
+    answered: "已完整回答",
+    partial: "回答不完整",
+    unresolved: "本次尚未解决",
+    omitted: "有结论但未写入",
+  } satisfies Record<TraceReasoningIssue["status"], string>)[status];
+}
+
+function reasoningIssueGapLabel(issue: TraceReasoningIssue) {
+  if (issue.status === "omitted") {
+    return "已经形成并校验结论，但最终回答没有引用这些 Claim。";
+  }
+  if (issue.status === "unresolved") {
+    return "关联任务没有形成可发布 Claim，本次尚未解决。";
+  }
+  if (issue.status === "partial") {
+    return "部分结论已进入回答，仍有证据边界或遗漏项。";
+  }
+  return "该问题已经形成明确回答。";
+}
+
+function taskStatusLabel(status: TraceReasoningTask["status"]) {
+  return ({
+    succeeded: "查询完成",
+    unavailable: "数据不可用",
+    integrity_failed: "完整性失败",
+    technical_failed: "技术失败",
+    skipped: "依赖未满足",
+    superseded: "计划已替代",
+    not_started: "尚未执行",
+    unsettled: "尚未结算",
+  } satisfies Record<TraceReasoningTask["status"], string>)[status];
+}
+
+function taskQueryLabel(task: TraceReasoningTask) {
+  if (task.queryStatus === "completed") return `${task.queryCount} 个查询完成`;
+  if (task.queryStatus === "partial") return `${task.queryCount} 个查询部分完成`;
+  if (task.queryStatus === "failed") return `${task.queryCount} 个查询失败`;
+  return "未形成查询结果";
+}
+
+function claimKindLabel(value: string) {
+  return ({
+    recurring_pattern_existence: "周期模式是否成立",
+    baseline_stability: "周期模式稳定性",
+    comparative_change: "阶段比较",
+    candidate_mechanism: "候选解释因素",
+    cross_source_statistical_association: "跨来源统计关联",
+    contract_coverage_and_trust_boundary: "数据可靠性边界",
+  } as Record<string, string>)[value] ?? value;
+}
+
+function claimClassLabel(value: string) {
+  return ({
+    observed_fact: "观测事实",
+    accounting_identity_contribution: "公式贡献",
+    dimension_localization: "维度定位",
+    statistical_association: "统计关联",
+    candidate_mechanism: "候选机制",
+    causal_effect: "因果效果",
+    scenario: "情景推演",
+    boundary: "证据边界",
+  } as Record<string, string>)[value] ?? value;
+}
+
+function verificationStatusLabel(status: TraceReasoningClaim["verificationStatus"]) {
+  return ({
+    accepted: "语义校验通过",
+    vetoed: "语义校验未通过",
+    unsettled: "尚未完成校验",
+  } satisfies Record<TraceReasoningClaim["verificationStatus"], string>)[status];
+}
+
+function factLabel(value: string) {
+  const normalized = value.split(".").at(-1) ?? value;
+  return ({
+    business_readout: "业务读数",
+    direction_consistency_ratio: "方向一致率",
+    direction_ratio: "方向一致率",
+    comparable_periods: "可比较月份",
+    median_uplift: "中位变化",
+    target_value: "目标组金额",
+    baseline_value: "对照组金额",
+    best_correlation: "最高相关系数",
+    best_sample_size: "有效样本数",
+    share_delta: "占比变化",
+    event_occurrence_count: "事件窗口数",
+    covered_dataset_count: "覆盖数据集",
+    country_scope_violation_count: "范围异常记录",
+  } as Record<string, string>)[normalized] ?? normalized;
+}
+
+function factValue(name: string, value: string) {
+  const normalized = name.split(".").at(-1) ?? name;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  if (
+    [
+      "direction_consistency_ratio",
+      "direction_ratio",
+      "median_uplift",
+      "share_delta",
+      "best_correlation",
+    ].includes(normalized)
+  ) {
+    return `${(numeric * 100).toFixed(1)}%`;
+  }
+  return new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: Math.abs(numeric) >= 1000 ? 0 : 2,
+  }).format(numeric);
+}
+
+function answerRoleLabel(role: string) {
+  return ({
+    executive_answer: "结论",
+    direction: "方向与驱动",
+    accounting_drivers: "公式拆解",
+    dimension_localization: "结构定位",
+    contextual_pattern: "背景因素",
+    boundary: "数据边界",
+    next_action: "下一步",
+  } as Record<string, string>)[role] ?? role;
+}
+
+function shortRef(value: string) {
+  return value.slice(-8);
 }
 
 function evidenceTypeLabel(value: string) {

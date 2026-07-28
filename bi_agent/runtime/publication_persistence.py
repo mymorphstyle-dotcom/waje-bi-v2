@@ -1466,14 +1466,14 @@ def _persist_publication_lifecycle(
         state = state.transition(
             publication_state="composing",
             retry_state=(
-                "succeeded" if state.retry_state == "exhausted" else state.retry_state
+                "succeeded" if state.retry_state != "idle" else state.retry_state
             ),
         )
         _insert_lifecycle(connection, state)
     ready = state.transition(
         publication_state="ready",
         retry_state=(
-            "succeeded" if state.retry_state == "exhausted" else state.retry_state
+            "succeeded" if state.retry_state != "idle" else state.retry_state
         ),
     )
     _insert_lifecycle(connection, ready)

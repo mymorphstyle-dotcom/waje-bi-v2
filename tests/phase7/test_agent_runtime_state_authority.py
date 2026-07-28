@@ -1166,7 +1166,7 @@ def test_schema_extends_existing_conversation_history_without_second_ledger() ->
     assert "idx_conversation_messages_operation_key" in schema
 
     gateway = (ROOT / "app/api/_conversationStore.ts").read_text(encoding="utf-8")
-    assert "AND customer_visible = true" in gateway
+    assert "AND message.customer_visible = true" in gateway
     assert "const operationKey = `user:${normalized.requestIdentity}`" in gateway
     assert 'item_type: "user_message"' in gateway
     assert "SET active_task_id = $2, customer_state = 'working'" in gateway

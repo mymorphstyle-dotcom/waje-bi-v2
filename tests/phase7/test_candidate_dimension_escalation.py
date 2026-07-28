@@ -132,6 +132,11 @@ def test_candidate_dimension_screen_contract_is_independent_and_sample_aware():
         "candidate_dimension_screen"
         in registry.analysis_axis("dimension_localization")["capability_refs"]
     )
+    joint = registry.capability_inputs("joint_attribution")
+    assert joint["task_dependencies"] == ["candidate_dimension_screen"]
+    assert joint["dynamic_dimension_combination_policy"]["source_dependency"] == (
+        "candidate_dimension_screen"
+    )
 
 
 def test_paid_amount_candidate_dimensions_have_distinct_business_meanings():

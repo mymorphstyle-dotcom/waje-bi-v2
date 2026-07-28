@@ -6,6 +6,7 @@ from hashlib import sha256
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -38,6 +39,12 @@ from bi_agent.runtime.plan_authority import (
     ProposalAdmissionRecord,
 )
 from bi_agent.runtime.plan_compiler import AuthoritativePlanCompiler
+from bi_agent.runtime.query_ir import (
+    QueryBundle,
+    compile_query_bundle,
+    compile_task_query_routes,
+    settle_query_bundle,
+)
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -84,6 +91,7 @@ def _intent_revision(
     return IntentRevision.create(
         run_attempt_id="run-attempt-phase02",
         original_user_text=original_user_text,
+        business_summary=f"你希望分析{TARGET_DATE}付费金额上涨的业务驱动。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -126,7 +134,7 @@ def _intent_revision(
                 "text": TARGET_DATE,
             },
         ),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="single-authority-intent.v2",
         model_version="deepseek-v4-flash",
         known_goal_ids=set(registry.analysis_goal_ids),
@@ -312,6 +320,11 @@ def test_calendar_partition_canonicalizes_member_sets_and_maps_same_month_phase(
         "target_members": ["start"],
         "baseline_members": ["end", "mid"],
         "aggregation": "mean_of_complete_days",
+        "member_definitions": [
+            {"member": "start", "day_start": 1, "day_end": 10},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 21, "day_end": 31},
+        ],
     }
     paraphrase_spec = {
         **base_spec,
@@ -340,6 +353,11 @@ def test_calendar_partition_canonicalizes_member_sets_and_maps_same_month_phase(
         "target_members": ("start",),
         "baseline_members": ("mid", "end"),
         "aggregation": "mean_of_complete_days",
+        "member_definitions": (
+            {"member": "start", "day_start": 1, "day_end": 10},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 21, "day_end": 31},
+        ),
     }
     assert first.content_digest == second.content_digest
     assert first.authority_ref == second.authority_ref
@@ -349,7 +367,7 @@ def test_calendar_partition_canonicalizes_member_sets_and_maps_same_month_phase(
             "pattern_mode": "intra_period",
         }
     }
-    assert capability_supports_temporal_authority(pattern_contract, first) is False
+    assert capability_supports_temporal_authority(pattern_contract, first) is True
     assert (
         capability_supports_temporal_authority(
             _registry().capability_inputs("compare_period_phases"),
@@ -367,12 +385,38 @@ def test_calendar_partition_canonicalizes_member_sets_and_maps_same_month_phase(
     )
 
 
+def test_month_phase_comparison_rejects_implicit_sql_boundaries() -> None:
+    with pytest.raises(
+        TemporalComparisonContractError,
+        match="temporal_comparison_spec_invalid",
+    ):
+        resolve_effective_comparison(
+            time_spec={
+                "kind": "date_range",
+                "start": "2024-01-01",
+                "end": "2026-05-31",
+            },
+            comparison_spec={
+                "kind": "calendar_partition",
+                "baseline_class": "same_month_phase",
+                "period_grain": "month",
+                "partition_field": "month_phase",
+                "target_members": ["start"],
+                "baseline_members": ["mid", "end"],
+                "aggregation": "mean_of_complete_days",
+            },
+            decision_ledger=DecisionLedger(),
+            require_physical_baseline=False,
+        )
+
+
 def test_only_required_primary_baseline_axis_forces_a_physical_window_pair() -> None:
     registry = _registry()
     base = _intent_revision(registry)
     intent = IntentRevision.create(
         run_attempt_id=base.run_attempt_id,
         original_user_text=base.original_user_text,
+        business_summary="你希望分析2024年1月至2026年6月月初付费金额相对月中和月末的表现。",
         goal_bindings=({"goal_id": "pattern_explanation", "role": "primary"},),
         target_metric_refs=base.target_metric_refs,
         scope=base.scope,
@@ -389,6 +433,11 @@ def test_only_required_primary_baseline_axis_forces_a_physical_window_pair() -> 
             "target_members": ["start"],
             "baseline_members": ["mid", "end"],
             "aggregation": "mean_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
         },
         direction_premise="unknown",
         requested_factor_refs=(),
@@ -422,6 +471,312 @@ def test_only_required_primary_baseline_axis_forces_a_physical_window_pair() -> 
             decision_ledger=DecisionLedger(),
             goal_axes={"change_validation": {"role": "required"}},
         )
+
+
+def test_month_phase_pattern_uses_one_dynamic_explanation_route_and_daily_frame() -> None:
+    registry = _registry()
+    base = _intent_revision(registry)
+    user_text = (
+        "请分析2024年1月至2026年5月全量样本中，每月月初付费金额"
+        "是否稳定高于月中和月末，同时检查异常月份、因素解释，"
+        "并判断数据是否可靠、说明数据质量边界。"
+    )
+    intent = IntentRevision.create(
+        run_attempt_id=base.run_attempt_id,
+        original_user_text=user_text,
+        business_summary=(
+            "分析2024年1月至2026年5月全量样本中月初付费金额相对"
+            "月中和月末的稳定性、异常、候选因素与数据质量边界。"
+        ),
+        goal_bindings=({"goal_id": "pattern_explanation", "role": "primary"},),
+        target_metric_refs=("paid_amount",),
+        scope={"scope_type": "full_sample", "filters": []},
+        time_spec={
+            "kind": "date_range",
+            "start": "2024-01-01",
+            "end": "2026-05-31",
+        },
+        comparison_spec={
+            "kind": "calendar_partition",
+            "baseline_class": "same_month_phase",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ["start"],
+            "baseline_members": ["mid", "end"],
+            "aggregation": "mean_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
+        },
+        direction_premise="unknown",
+        requested_analysis_axes=(
+            "anomaly_validation",
+            "data_quality",
+            "metric_coverage",
+        ),
+        requested_factor_refs=(),
+        desired_decisions=(),
+        ambiguity_slots=(),
+        source_spans=(
+            {
+                "field": "original_user_text",
+                "start": 0,
+                "end": len(user_text),
+                "text": user_text,
+            },
+        ),
+        schema_version=base.schema_version,
+        prompt_version=base.prompt_version,
+        model_version=base.model_version,
+        known_goal_ids=set(registry.analysis_goal_ids),
+        known_metric_ids=set(registry.metric_ids),
+        known_analysis_axis_ids=set(registry.analysis_axis_ids),
+        known_scope_types=set(registry.public_scope_types),
+    )
+    context = _authority_context(registry)
+    base_proposal = _planner_proposal(intent, context, ())
+    proposal = PlannerProposal.create(
+        run_attempt_id=intent.run_attempt_id,
+        intent_revision_id=intent.intent_revision_id,
+        decision_refs=(),
+        authority_context_ref=context.authority_context_ref,
+        issue_tree=(
+            {
+                "issue_id": "issue-month-phase",
+                "parent_issue_id": None,
+                "question": "完成月内周期、异常、因素和数据质量分析。",
+                "target_claim_kind": "comparative_change",
+            },
+            {
+                "issue_id": "issue-pattern",
+                "parent_issue_id": "issue-month-phase",
+                "question": "验证月初付费金额是否稳定高于月中和月末。",
+                "target_claim_kind": "comparative_change",
+            },
+            {
+                "issue_id": "issue-anomaly",
+                "parent_issue_id": "issue-month-phase",
+                "question": "识别偏离整体规律的异常月份。",
+                "target_claim_kind": "external_shock_candidate_or_anomaly",
+            },
+            {
+                "issue_id": "issue-factor",
+                "parent_issue_id": "issue-month-phase",
+                "question": "检验可用业务因素与月内周期的关联。",
+                "target_claim_kind": "cross_source_statistical_association",
+            },
+            {
+                "issue_id": "issue-quality",
+                "parent_issue_id": "issue-month-phase",
+                "question": "检查日期覆盖、缺失值和样本完整性。",
+                "target_claim_kind": "contract_coverage_and_trust_boundary",
+            },
+        ),
+        auxiliary_axes=(
+            *base_proposal.auxiliary_axes,
+            {
+                "proposal_item_id": "proposal-axis-formula-pattern",
+                "axis_id": "formula_tree",
+                "rationale": "拆解付费金额的组成因素。",
+                "supports_claim_kinds": (
+                    "cross_source_statistical_association",
+                ),
+            },
+            {
+                "proposal_item_id": "proposal-axis-dimension-pattern",
+                "axis_id": "dimension_localization",
+                "rationale": "定位周期差异集中在哪些业务分群。",
+                "supports_claim_kinds": (
+                    "cross_source_statistical_association",
+                ),
+            },
+        ),
+        hypotheses=(),
+        priority_proposals=base_proposal.priority_proposals,
+        assumption_proposals=base_proposal.assumption_proposals,
+        raw_provider_response_ref=base_proposal.raw_provider_response_ref,
+        schema_version=base_proposal.schema_version,
+        prompt_version=base_proposal.prompt_version,
+        model_version=base_proposal.model_version,
+    )
+
+    compiled = AuthoritativePlanCompiler(runtime_registry=registry).compile(
+        intent_revision=intent,
+        decision_ledger=DecisionLedger(),
+        authority_context=context,
+        planner_proposal=proposal,
+    )
+    plan = compiled.plan_revision
+
+    assert tuple(item.issue_ref for item in plan.accepted_question_graph) == (
+        "issue-month-phase",
+        "issue-pattern",
+        "issue-anomaly",
+        "issue-factor",
+        "issue-quality",
+    )
+    assert plan.accepted_question_graph[0].role == "primary"
+    assert all(
+        item.answer_contract["blocking"] is False
+        and item.answer_contract["completion_policy"]
+        == "direct_answer_or_explicitly_unresolved"
+        for item in plan.accepted_question_graph
+    )
+    issue_obligations = {
+        str(obligation.success_policy["issue_ref"]): obligation
+        for obligation in plan.claim_obligations
+        if obligation.role == "user_required"
+        and obligation.success_policy.get("issue_ref") is not None
+    }
+    assert set(issue_obligations) == {
+        "issue-month-phase",
+        "issue-pattern",
+        "issue-anomaly",
+        "issue-factor",
+        "issue-quality",
+    }
+    assert all(
+        obligation.success_policy["business_question"]
+        and obligation.success_policy["answer_contract"]["blocking"] is False
+        for obligation in issue_obligations.values()
+    )
+
+    candidate_routes = [
+        decision
+        for obligation in plan.claim_obligations
+        for decision in obligation.success_policy.get("route_decisions", ())
+        if decision["outcome_ref"] == "candidate_explanations"
+    ]
+    assert len(candidate_routes) == 1
+    assert candidate_routes[0]["route_policy"] == "best_available"
+    assert candidate_routes[0]["selected_claim_kind"] == (
+        "cross_source_statistical_association"
+    )
+    cross_source_frame = next(
+        spec
+        for spec in plan.context_window_specs
+        if spec.capability_id == "cross_source_association"
+    )
+    assert cross_source_frame.relation == "evaluation_range"
+    assert cross_source_frame.unit == "day"
+    assert cross_source_frame.count == 882
+    assert any(
+        task.capability_id == "cross_source_association"
+        for task in plan.capability_tasks
+    )
+    query_routes = compile_task_query_routes(
+        planner_proposal=proposal,
+        analysis_axes=plan.analysis_axes,
+        temporal_authority=plan.temporal_authority,
+        runtime_registry=registry,
+    )
+    assert "issue-factor" in query_routes[
+        ("formula_tree", "formula_decompose")
+    ]["issue_ids"]
+    assert all(
+        len(
+            tuple(
+                ref
+                for ref in task.normalized_input_refs
+                if ref.startswith("capability-query-route:")
+            )
+        )
+        == 1
+        for task in plan.capability_tasks
+    )
+    query_bundle = compile_query_bundle(
+        plan_revision=plan,
+        planner_proposal=proposal,
+        runtime_registry=registry,
+    )
+    planned_task_ids = {task.task_id for task in plan.capability_tasks}
+    projected_task_ids = {
+        task_id
+        for node in query_bundle.query_nodes
+        for task_id in node.task_ids
+    }
+    assert projected_task_ids == planned_task_ids
+    root_query = next(
+        item
+        for item in query_bundle.query_nodes
+        if item.issue_id == "issue-month-phase"
+    )
+    child_task_ids = {
+        task_id
+        for item in query_bundle.query_nodes
+        if item.parent_issue_id == "issue-month-phase"
+        for task_id in item.task_ids
+    }
+    assert set(root_query.task_ids) > child_task_ids
+    assert QueryBundle.from_dict(query_bundle.to_dict()) == query_bundle
+    assert query_bundle.stage == "compiled"
+    assert [item.issue_id for item in query_bundle.query_nodes] == [
+        "issue-month-phase",
+        "issue-pattern",
+        "issue-anomaly",
+        "issue-factor",
+        "issue-quality",
+    ]
+    factor_query = next(
+        item
+        for item in query_bundle.query_nodes
+        if item.issue_id == "issue-factor"
+    )
+    assert "cross_source_association" in factor_query.capability_ids
+    assert "formula_decompose" in factor_query.capability_ids
+    assert "candidate_dimension_screen" in factor_query.capability_ids
+    assert all(
+        item["action"] != "bind_planner_axis_supported_route"
+        for item in factor_query.repair_records
+    )
+    assert any(
+        item["action"] == "derive_observation_frame"
+        for item in factor_query.repair_records
+    )
+    assert factor_query.observation_frame_refs
+    assert all(
+        len(query_slice["query_input_route_refs"]) == 1
+        for node in query_bundle.query_nodes
+        for query_slice in node.query_slices
+    )
+    projection = query_bundle.customer_projection()
+    assert [item["status"] for item in projection["issues"]] == [
+        "querying",
+        "querying",
+        "querying",
+        "querying",
+        "querying",
+    ]
+    task_ids = tuple(
+        dict.fromkeys(
+            task_id
+            for node in query_bundle.query_nodes
+            for task_id in node.task_ids
+        )
+    )
+    settled_bundle = settle_query_bundle(
+        query_bundle,
+        tuple(
+            (
+                None,
+                SimpleNamespace(
+                    task_id=task_id,
+                    status="succeeded",
+                    evidence_refs=(f"evidence:{task_id}",),
+                ),
+                (),
+                (),
+            )
+            for task_id in task_ids
+        ),
+    )
+    assert settled_bundle.stage == "settled"
+    assert {
+        item["status"]
+        for item in settled_bundle.customer_projection()["issues"]
+    } == {"evidenced"}
 
 
 def test_event_decision_slot_can_supply_the_only_physical_window_authority() -> None:
@@ -514,7 +869,7 @@ def test_multi_day_window_pair_requires_explicit_aggregate_window_contract() -> 
     )
     binding = {"task_input_binding": {"payload_kind": "formula_graph"}}
 
-    assert capability_supports_temporal_authority(binding, authority) is False
+    assert capability_supports_temporal_authority(binding, authority) is True
     assert (
         capability_supports_temporal_authority(
             _registry().capability_inputs("formula_decompose"),
@@ -615,6 +970,7 @@ def _planner_proposal(
         hypotheses=(
             {
                 "proposal_item_id": "hypothesis-event-overlap",
+                "issue_ref": "issue-primary-change",
                 "statement": "运营活动可能与变化窗口重叠，但需要事件证据验证。",
                 "target_claim_kind": "candidate_mechanism",
                 "requested_axis_ids": (
@@ -655,7 +1011,7 @@ def _planner_proposal(
         ),
         assumption_proposals=(),
         raw_provider_response_ref="restricted-provider-response:phase02",
-        schema_version="planner-proposal.v1",
+        schema_version="planner-proposal.v2",
         prompt_version="single-authority-plan-proposal.v1",
         model_version="deepseek-v4-flash",
     )
@@ -1174,37 +1530,14 @@ def test_planner_proposal_is_additive_and_cannot_remove_mandatory_obligations() 
     )
 
 
-def test_primary_and_supporting_goals_merge_into_one_plan_revision() -> None:
+def test_primary_goal_contract_merges_companion_goals_into_plan_revision() -> None:
     registry = _registry()
-    base = _intent_revision(registry)
-    intent = IntentRevision.create(
-        run_attempt_id=base.run_attempt_id,
-        original_user_text=base.original_user_text,
-        goal_bindings=(
-            {"goal_id": "explain_change", "role": "primary"},
-            {
-                "goal_id": "data_quality_or_evidence_review",
-                "role": "supporting",
-            },
-        ),
-        target_metric_refs=base.target_metric_refs,
-        scope=base.scope,
-        time_spec=base.time_spec,
-        comparison_spec=base.comparison_spec,
-        direction_premise=base.direction_premise,
-        requested_factor_refs=base.requested_factor_refs,
-        requested_analysis_axes=(),
-        desired_decisions=base.desired_decisions,
-        ambiguity_slots=base.ambiguity_slots,
-        source_spans=base.source_spans,
-        schema_version=base.schema_version,
-        prompt_version=base.prompt_version,
-        model_version=base.model_version,
-        known_goal_ids=set(registry.analysis_goal_ids),
-        known_metric_ids=set(registry.metric_ids),
-        known_analysis_axis_ids=set(registry.analysis_axis_ids),
-        known_scope_types=set(registry.public_scope_types),
-    )
+    intent = _intent_revision(registry)
+    assert len(intent.goal_bindings) == 1
+    assert dict(intent.goal_bindings[0]) == {
+        "goal_id": "explain_change",
+        "role": "primary",
+    }
     ledger = _decision_ledger(intent)
     context = _authority_context(registry)
     proposal = _planner_proposal(
@@ -1232,10 +1565,11 @@ def test_primary_and_supporting_goals_merge_into_one_plan_revision() -> None:
         for obligation in plan.claim_obligations
         if obligation.claim_kind == "contract_coverage_and_trust_boundary"
     )
-    assert set(trust_obligation.subject["goal_refs"]) == {
-        "explain_change",
-        "data_quality_or_evidence_review",
-    }
+    assert set(trust_obligation.subject["goal_refs"]) == {"explain_change"}
+    metric_coverage_axis = next(
+        axis for axis in plan.analysis_axes if axis.axis_id == "metric_coverage"
+    )
+    assert "data_quality_or_evidence_review" in metric_coverage_axis.goal_refs
 
 
 def test_auxiliary_proposals_are_admitted_or_omitted_without_clarification() -> None:
@@ -1261,6 +1595,291 @@ def test_auxiliary_proposals_are_admitted_or_omitted_without_clarification() -> 
     assert restored.hypotheses[0]["statement"] == hypothesis_text
     assert plan.planner_proposal_ref == proposal.planner_proposal_id
     assert plan.proposal_admission_ref == admission.proposal_admission_id
+
+
+def test_planner_issue_refs_drive_priority_and_assumption_admission() -> None:
+    registry = _registry()
+    intent = _intent_revision(registry)
+    context = _authority_context(registry)
+    ledger = _decision_ledger(intent)
+    decision_refs = tuple(record.decision_id for record in ledger.records)
+    base = _planner_proposal(intent, context, decision_refs)
+    proposal = PlannerProposal.create(
+        run_attempt_id=base.run_attempt_id,
+        intent_revision_id=base.intent_revision_id,
+        decision_refs=base.decision_refs,
+        authority_context_ref=base.authority_context_ref,
+        issue_tree=base.issue_tree,
+        auxiliary_axes=base.auxiliary_axes,
+        hypotheses=base.hypotheses,
+        priority_proposals=(
+            {
+                "proposal_item_id": "priority-primary-issue",
+                "target_ref": "issue-primary-change",
+                "rationale": "优先关闭用户提出的核心业务问题。",
+            },
+        ),
+        assumption_proposals=(
+            {
+                "proposal_item_id": "assumption-primary-issue",
+                "statement": "比较窗口中的数据口径保持一致，需由查询结果验证。",
+                "affected_refs": ("issue-primary-change",),
+            },
+        ),
+        raw_provider_response_ref=base.raw_provider_response_ref,
+        schema_version=base.schema_version,
+        prompt_version=base.prompt_version,
+        model_version=base.model_version,
+    )
+
+    compiled = AuthoritativePlanCompiler(runtime_registry=registry).compile(
+        intent_revision=intent,
+        decision_ledger=ledger,
+        authority_context=context,
+        planner_proposal=proposal,
+    )
+    admissions = {
+        item["proposal_item_ref"]: item
+        for item in compiled.proposal_admission.admission_entries
+    }
+
+    assert admissions["priority-primary-issue"]["status"] == "admitted"
+    assert admissions["priority-primary-issue"]["normalized_execution_ref"] == (
+        "issue:issue-primary-change"
+    )
+    assert admissions["assumption-primary-issue"]["status"] == "admitted"
+    assert admissions["assumption-primary-issue"]["contract_refs"] == (
+        "issue-primary-change",
+    )
+    assert "assumption:assumption-primary-issue" in (
+        compiled.plan_revision.assumption_refs
+    )
+
+
+def test_hypothesis_binds_composable_evidence_routes_without_direct_claim_match() -> (
+    None
+):
+    registry = _registry()
+    intent = _intent_revision(registry)
+    context = _authority_context(registry)
+    ledger = _decision_ledger(intent)
+    decision_refs = tuple(record.decision_id for record in ledger.records)
+    base = _planner_proposal(intent, context, decision_refs)
+    hypothesis_id = "hypothesis-composed-driver"
+    proposal = PlannerProposal.create(
+        run_attempt_id=base.run_attempt_id,
+        intent_revision_id=base.intent_revision_id,
+        decision_refs=base.decision_refs,
+        authority_context_ref=base.authority_context_ref,
+        issue_tree=(
+            *base.issue_tree,
+            {
+                "issue_id": "issue-driver",
+                "parent_issue_id": "issue-primary-change",
+                "question": "哪些业务结构可能解释付费金额变化？",
+                "target_claim_kind": "cross_source_statistical_association",
+            },
+        ),
+        auxiliary_axes=base.auxiliary_axes,
+        hypotheses=(
+            {
+                "proposal_item_id": hypothesis_id,
+                "issue_ref": "issue-driver",
+                "statement": (
+                    "付费人数或高价值用户结构可能共同解释付费金额变化。"
+                ),
+                "target_claim_kind": "candidate_mechanism",
+                "requested_axis_ids": (
+                    "formula_tree",
+                    "dimension_localization",
+                ),
+                "assumption_refs": (),
+            },
+        ),
+        priority_proposals=base.priority_proposals,
+        assumption_proposals=(),
+        raw_provider_response_ref=base.raw_provider_response_ref,
+        schema_version=base.schema_version,
+        prompt_version=base.prompt_version,
+        model_version=base.model_version,
+    )
+
+    compiled = AuthoritativePlanCompiler(runtime_registry=registry).compile(
+        intent_revision=intent,
+        decision_ledger=ledger,
+        authority_context=context,
+        planner_proposal=proposal,
+    )
+    admission = next(
+        item
+        for item in compiled.proposal_admission.admission_entries
+        if item["proposal_item_ref"] == hypothesis_id
+    )
+    assert admission["status"] == "admitted"
+    assert admission["reason_code"] == "hypothesis_evidence_routes_bound"
+
+    obligation = next(
+        item
+        for item in compiled.plan_revision.claim_obligations
+        if item.subject.get("proposal_item_ref") == hypothesis_id
+    )
+    assert obligation.claim_kind == "candidate_mechanism"
+    assert obligation.success_policy["issue_ref"] == "issue-driver"
+    assert obligation.success_policy["investigation_mode"] == "hypothesis_test"
+    assert obligation.success_policy["settlement_policy"] == (
+        "support_refute_or_explicit_boundary"
+    )
+    assert "derived" in obligation.evidence_requirement.evidence_kinds
+
+    bound_tasks = tuple(
+        task
+        for task in compiled.plan_revision.capability_tasks
+        if obligation.obligation_id in task.supports_obligation_ids
+    )
+    assert bound_tasks
+    assert {task.task_key.split(":", 1)[0] for task in bound_tasks} == {
+        "formula_tree",
+        "dimension_localization",
+    }
+    assert any(
+        obligation.claim_kind
+        not in set(
+            registry.capability_inputs(task.capability_id)[
+                "supported_claim_types"
+            ]
+        )
+        for task in bound_tasks
+    )
+    for axis in compiled.plan_revision.analysis_axes:
+        if axis.axis_id in {"formula_tree", "dimension_localization"}:
+            assert hypothesis_id in axis.proposal_refs
+    query_routes = compile_task_query_routes(
+        planner_proposal=proposal,
+        analysis_axes=compiled.plan_revision.analysis_axes,
+        temporal_authority=compiled.plan_revision.temporal_authority,
+        runtime_registry=registry,
+    )
+    assert "issue-driver" in query_routes[
+        ("formula_tree", "formula_decompose")
+    ]["issue_ids"]
+    query_bundle = compile_query_bundle(
+        plan_revision=compiled.plan_revision,
+        planner_proposal=proposal,
+        runtime_registry=registry,
+    )
+    driver_query = next(
+        item for item in query_bundle.query_nodes if item.issue_id == "issue-driver"
+    )
+    assert "formula_decompose" in driver_query.capability_ids
+    assert "candidate_dimension_screen" in driver_query.capability_ids
+
+
+def test_hypothesis_must_reference_one_existing_business_issue() -> None:
+    registry = _registry()
+    intent = _intent_revision(registry)
+    context = _authority_context(registry)
+    base = _planner_proposal(intent, context, ())
+
+    with pytest.raises(
+        PlanAuthorityContractError,
+        match="planner_proposal_hypothesis_issue_ref_invalid",
+    ):
+        PlannerProposal.create(
+            run_attempt_id=base.run_attempt_id,
+            intent_revision_id=base.intent_revision_id,
+            decision_refs=base.decision_refs,
+            authority_context_ref=base.authority_context_ref,
+            issue_tree=base.issue_tree,
+            auxiliary_axes=base.auxiliary_axes,
+            hypotheses=tuple(
+                {**dict(item), "issue_ref": "issue-missing"}
+                for item in base.hypotheses
+            ),
+            priority_proposals=base.priority_proposals,
+            assumption_proposals=base.assumption_proposals,
+            raw_provider_response_ref=base.raw_provider_response_ref,
+            schema_version=base.schema_version,
+            prompt_version=base.prompt_version,
+            model_version=base.model_version,
+        )
+
+
+def test_priority_items_share_scheduled_axes_and_only_duplicate_targets_dedupe() -> (
+    None
+):
+    registry = _registry()
+    intent = _intent_revision(registry)
+    context = _authority_context(registry)
+    ledger = _decision_ledger(intent)
+    decision_refs = tuple(record.decision_id for record in ledger.records)
+    base = _planner_proposal(intent, context, decision_refs)
+    proposal = PlannerProposal.create(
+        run_attempt_id=base.run_attempt_id,
+        intent_revision_id=base.intent_revision_id,
+        decision_refs=base.decision_refs,
+        authority_context_ref=base.authority_context_ref,
+        issue_tree=(
+            {
+                "issue_id": "issue-root",
+                "parent_issue_id": None,
+                "question": "确认变化并解释原因。",
+                "target_claim_kind": "comparative_change",
+            },
+            {
+                "issue_id": "issue-pattern",
+                "parent_issue_id": "issue-root",
+                "question": "先确认变化方向和幅度。",
+                "target_claim_kind": "comparative_change",
+            },
+        ),
+        auxiliary_axes=base.auxiliary_axes,
+        hypotheses=tuple(
+            {**dict(item), "issue_ref": "issue-root"}
+            for item in base.hypotheses
+        ),
+        priority_proposals=(
+            {
+                "proposal_item_id": "priority-root",
+                "target_ref": "issue-root",
+                "rationale": "优先完成主问题。",
+            },
+            {
+                "proposal_item_id": "priority-pattern",
+                "target_ref": "issue-pattern",
+                "rationale": "先形成可复核的方向判断。",
+            },
+            {
+                "proposal_item_id": "priority-pattern-duplicate",
+                "target_ref": "issue-pattern",
+                "rationale": "重复表达同一优先目标。",
+            },
+        ),
+        assumption_proposals=(),
+        raw_provider_response_ref=base.raw_provider_response_ref,
+        schema_version=base.schema_version,
+        prompt_version=base.prompt_version,
+        model_version=base.model_version,
+    )
+
+    compiled = AuthoritativePlanCompiler(runtime_registry=registry).compile(
+        intent_revision=intent,
+        decision_ledger=ledger,
+        authority_context=context,
+        planner_proposal=proposal,
+    )
+    admissions = {
+        item["proposal_item_ref"]: item
+        for item in compiled.proposal_admission.admission_entries
+    }
+    assert admissions["priority-root"]["status"] == "admitted"
+    assert admissions["priority-pattern"]["status"] == "admitted"
+    assert set(admissions["priority-pattern"]["contract_refs"]) < set(
+        admissions["priority-root"]["contract_refs"]
+    )
+    assert admissions["priority-pattern-duplicate"]["status"] == "rejected"
+    assert admissions["priority-pattern-duplicate"]["reason_code"] == (
+        "duplicate_priority_target_ref"
+    )
 
 
 def test_capability_tasks_form_a_dag_and_requiredness_lives_on_edges() -> None:
@@ -1913,6 +2532,7 @@ def test_every_launch_goal_compiles_to_one_executable_plan(
     intent = IntentRevision.create(
         run_attempt_id=f"run-phase02-goal-{goal_id}",
         original_user_text=f"验证 {goal['business_name']} 的完整分析计划。",
+        business_summary=f"你希望验证{goal['business_name']}的完整分析计划。",
         goal_bindings=({"goal_id": goal_id, "role": "primary"},),
         target_metric_refs=base.target_metric_refs,
         scope=base.scope,
@@ -1992,7 +2612,7 @@ def test_every_launch_goal_compiles_to_one_executable_plan(
         priority_proposals=(),
         assumption_proposals=(),
         raw_provider_response_ref="restricted-provider-response:test",
-        schema_version="planner-proposal.v1",
+        schema_version="planner-proposal.v2",
         prompt_version="phase02-goal-coverage-test",
         model_version="typed-test-model",
     )

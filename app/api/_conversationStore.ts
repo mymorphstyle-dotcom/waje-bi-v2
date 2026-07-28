@@ -7,6 +7,7 @@ import {
   type CustomerPublication,
 } from "./_customerPublicationContract";
 import {
+  isTerminalAnalysisCheckpoint,
   projectCustomerAnalysisSnapshot,
   type CustomerAnalysisSnapshot,
   type CustomerMainStatus,
@@ -266,6 +267,7 @@ export type PersistedPublicationRun = {
   verifierStatus: Record<string, unknown>;
   humanReview: Record<string, unknown>;
   factorCoverage?: Record<string, unknown>;
+  controlledInvestigation?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };
@@ -282,6 +284,7 @@ export type PersistedRuntimeRun = {
   evidenceRefs?: Record<string, unknown>[];
   acceptedGraph?: Record<string, unknown>[];
   factorCoverage?: Record<string, unknown>;
+  controlledInvestigation?: Record<string, unknown>;
   llmCallCount?: number;
   technicalTrace?: {
     runtime: "general_agent";
@@ -292,6 +295,21 @@ export type PersistedRuntimeRun = {
   };
   createdAt: string;
   updatedAt: string;
+};
+
+export type PersistedRunReasoning = {
+  runId: string;
+  request: Record<string, unknown>;
+  planRevisionId: string;
+  plan: Record<string, unknown>;
+  plannerProposal: Record<string, unknown>;
+  claimSettlement: Record<string, unknown>;
+  materialProjection: Record<string, unknown>;
+  customerPublication: Record<string, unknown>;
+  taskOutcomes: Record<string, unknown>[];
+  evidenceEntries: Record<string, unknown>[];
+  supportEdges: Record<string, unknown>[];
+  queryRuns: Record<string, unknown>[];
 };
 
 type ReadQueryClient = Pick<PoolClient, "query">;
@@ -414,7 +432,9 @@ export async function listCustomerThreadSummaries(
         thread.thread_id,
         thread.created_at,
         thread.customer_state,
+        thread.active_task_id,
         COALESCE(first_message.text, '新分析') AS title,
+        latest_run.run_id AS run_id,
         latest_run.status AS run_status,
         latest_run.request AS run_request,
         COALESCE(publication.limitation_count, 0) AS limitation_count,
@@ -464,6 +484,8 @@ export async function listCustomerThreadSummaries(
       title: customerThreadTitle(String(row.title ?? "")),
       status: customerThreadSummaryStatus(
         row.customer_state,
+        row.active_task_id,
+        row.run_id,
         row.run_status,
         isGatewayRecord(row.run_request) ? row.run_request : {},
         Number(row.limitation_count ?? 0),
@@ -512,20 +534,61 @@ export async function loadCustomerAnalysisSnapshot(input: {
         `
         SELECT recent.message_id, recent.role, recent.text,
                recent.item_sequence, recent.item_type,
-               recent.operation_key, recent.payload, recent.created_at
+               recent.operation_key, recent.payload, recent.created_at,
+               recent.producer_kind
         FROM (
-          SELECT message_id, role, text, item_sequence, item_type,
-                 operation_key, payload, created_at
-          FROM waje_runtime.conversation_messages
-          WHERE thread_id = $1
-            AND role IN ('user', 'assistant')
-            AND customer_visible = true
+          SELECT message.message_id, message.role, message.text,
+                 message.item_sequence, message.item_type,
+                 message.operation_key, message.payload, message.created_at,
+                 (
+                   SELECT dispatch.producer_kind
+                   FROM waje_runtime.run_dispatches dispatch
+                   WHERE dispatch.message_id = message.message_id
+                   ORDER BY dispatch.created_at DESC
+                   LIMIT 1
+                 ) AS producer_kind
+          FROM waje_runtime.conversation_messages message
+          WHERE message.thread_id = $1
+            AND message.role IN ('user', 'assistant')
+            AND message.customer_visible = true
+            AND NOT EXISTS (
+              SELECT 1
+              FROM waje_runtime.run_dispatches hidden_dispatch
+              WHERE hidden_dispatch.message_id = message.message_id
+                AND (
+                  hidden_dispatch.request_identity LIKE 'material-revision:%'
+                  OR (
+                    hidden_dispatch.producer_kind = 'clarification_resolution'
+                    AND (
+                      hidden_dispatch.dispatch_state <> 'terminal'
+                      OR hidden_dispatch.failure_reason IS NOT NULL
+                      OR hidden_dispatch.terminal_status = 'failed'
+                    )
+                  )
+                )
+            )
+            AND (
+              $3::text IS NULL
+              OR message.message_id IN (
+                SELECT dispatch.message_id
+                FROM waje_runtime.run_dispatches dispatch
+                WHERE dispatch.run_id = $3
+              )
+              OR message.operation_key IN (
+                SELECT 'assistant:' || substring(source.operation_key FROM 6)
+                FROM waje_runtime.run_dispatches dispatch
+                JOIN waje_runtime.conversation_messages source
+                  ON source.message_id = dispatch.message_id
+                WHERE dispatch.run_id = $3
+                  AND source.operation_key LIKE 'user:%'
+              )
+            )
           ORDER BY item_sequence DESC
           LIMIT $2
         ) recent
         ORDER BY recent.item_sequence DESC
         `,
-        [thread.id, CUSTOMER_MESSAGE_PAGE_SIZE + 1],
+        [thread.id, CUSTOMER_MESSAGE_PAGE_SIZE + 1, input.runId ?? null],
       ),
       input.runId
         ? pool().query(
@@ -571,7 +634,9 @@ export async function loadCustomerAnalysisSnapshot(input: {
         | "user",
       text: String(message.text),
       createdAt: new Date(message.created_at).toISOString(),
-      itemType: String(message.item_type),
+      itemType: message.producer_kind === "clarification_resolution"
+        ? "clarification_resolution"
+        : String(message.item_type),
       operationKey: typeof message.operation_key === "string"
         ? String(message.operation_key)
         : null,
@@ -686,6 +751,11 @@ export async function loadCustomerAnalysisSnapshot(input: {
     ]);
     const request = isGatewayRecord(row.request) ? row.request : {};
     const version = versionResult.rows[0];
+    const runScopedSnapshot = input.runId !== undefined;
+    const runConfirmedAt = new Date(row.updated_at).toISOString();
+    const runEventCursor = String(
+      Math.floor(new Date(row.updated_at).getTime() * 1000),
+    );
     return projectCustomerAnalysisSnapshot({
       thread: { id: thread.id, createdAt: thread.createdAt },
       messages,
@@ -714,13 +784,21 @@ export async function loadCustomerAnalysisSnapshot(input: {
         ...dispatchResult.rows.map((dispatch) => String(dispatch.request_identity)),
       ],
       progressPhase: progressResult.rows[0]?.customer_phase as CustomerPhase,
-      agentHead: agentHeadFromVersionRow(version),
-      agentTerminal,
-      pendingAction,
-      confirmedAt: new Date(version.confirmed_at).toISOString(),
-      stateVersion: String(version.state_version),
-      eventCursor: String(version.event_cursor),
-      latestItemSequence: Number(version.latest_item_sequence),
+      agentHead: runScopedSnapshot ? undefined : agentHeadFromVersionRow(version),
+      agentTerminal: runScopedSnapshot ? null : agentTerminal,
+      pendingAction: runScopedSnapshot ? null : pendingAction,
+      confirmedAt: runScopedSnapshot
+        ? runConfirmedAt
+        : new Date(version.confirmed_at).toISOString(),
+      stateVersion: runScopedSnapshot
+        ? `${runId}:${runEventCursor}`
+        : String(version.state_version),
+      eventCursor: runScopedSnapshot
+        ? runEventCursor
+        : String(version.event_cursor),
+      latestItemSequence: runScopedSnapshot
+        ? Number(messageRows.at(-1)?.item_sequence ?? 0)
+        : Number(version.latest_item_sequence),
       messageHistory,
     });
   }
@@ -731,8 +809,18 @@ export async function loadCustomerAnalysisSnapshot(input: {
     : [...store.runs.values()]
       .filter((candidate) => candidate.threadId === thread.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+  const runMessageIds = input.runId
+    ? new Set(
+        [...store.runDispatches.values()]
+          .filter((dispatch) => dispatch.runId === input.runId)
+          .flatMap((dispatch) => dispatch.messageId ? [dispatch.messageId] : []),
+      )
+    : null;
   const allMessages = thread.messages
-    .filter((message) => message.role !== "system")
+    .filter((message) =>
+      message.role !== "system"
+      && (!runMessageIds || runMessageIds.has(message.id))
+    )
     .map((message) => ({
       key: message.id,
       role: message.role as "user" | "assistant",
@@ -973,6 +1061,7 @@ function customerSummaryStatus(
   if (!runStatus) return "idle";
   const status = String(runStatus);
   if (status === "waiting_for_clarification") return "needs_input";
+  if (isTerminalAnalysisCheckpoint(status, request)) return "checkpoint";
   if (status === "interaction_completed") {
     const interaction = projectInteractionResultForCustomer(
       request.interaction_result,
@@ -1006,11 +1095,21 @@ function customerSummaryStatus(
 
 function customerThreadSummaryStatus(
   threadState: unknown,
+  activeTaskId: unknown,
+  runId: unknown,
   runStatus: unknown,
   request: Record<string, unknown>,
   limitationCount: number,
 ): CustomerMainStatus {
   if (runStatus === "waiting_for_clarification") return "needs_input";
+  if (isTerminalAnalysisCheckpoint(runStatus, request)) return "checkpoint";
+  if (
+    typeof activeTaskId === "string"
+    && activeTaskId
+    && activeTaskId === runId
+  ) {
+    return customerSummaryStatus(runStatus, request, limitationCount);
+  }
   const status = String(threadState ?? "idle");
   if ([
     "working",
@@ -1779,6 +1878,7 @@ export async function observeOwnedRunDispatchExit(input: {
       const result = await client.query(
         `SELECT dispatch.producer_kind, dispatch.dispatch_state,
                 dispatch.owner_id, dispatch.lease_epoch,
+                dispatch.request_payload,
                 run.run_id, run.thread_id, run.status, run.request,
                 run.created_at
          FROM waje_runtime.run_dispatches dispatch
@@ -1824,6 +1924,48 @@ export async function observeOwnedRunDispatchExit(input: {
               dispatchId: input.dispatchId,
               failureReason: input.failureReason ?? "agent_core_worker_exited",
               leaseEpoch: input.leaseEpoch,
+            }),
+          ],
+        );
+        await client.query("COMMIT");
+        return current;
+      }
+      const resumeRequest = row.request_payload?.resumeRequest;
+      if (
+        row.producer_kind === "clarification_resolution"
+        && ["running", "running_workflow"].includes(current.status)
+        && resumeRequest
+        && typeof resumeRequest === "object"
+        && !Array.isArray(resumeRequest)
+        && ["leased", "running"].includes(String(row.dispatch_state))
+        && row.owner_id === input.ownerId
+        && Number(row.lease_epoch) === input.leaseEpoch
+      ) {
+        const expired = await client.query(
+          `UPDATE waje_runtime.run_dispatches
+           SET lease_expires_at = now(), heartbeat_at = now(), updated_at = now()
+           WHERE dispatch_id = $1 AND run_id = $2
+             AND owner_id = $3 AND lease_epoch = $4
+             AND dispatch_state IN ('leased', 'running')
+           RETURNING dispatch_id`,
+          [input.dispatchId, input.runId, input.ownerId, input.leaseEpoch],
+        );
+        if (!expired.rows[0]) throw gatewayError("run_dispatch_lease_lost");
+        await client.query(
+          `INSERT INTO waje_runtime.audit_events(
+             event_type, actor_id, thread_id, run_id, ref, payload
+           ) VALUES (
+             'run_dispatch_recovery_requested', 'system', $1, $2, $3, $4::jsonb
+           )`,
+          [
+            current.threadId,
+            input.runId,
+            input.dispatchId,
+            JSON.stringify({
+              dispatchId: input.dispatchId,
+              failureReason: input.failureReason ?? "agent_core_worker_exited",
+              leaseEpoch: input.leaseEpoch,
+              resumeMode: "post_authority",
             }),
           ],
         );
@@ -2070,6 +2212,161 @@ export async function requireRun(runId: string, actorId: string): Promise<RunRec
   if (!thread) throw gatewayError("thread_not_found");
   if (thread.ownerId !== actorId) throw gatewayError("run_owner_mismatch");
   return run;
+}
+
+export type CustomerCapabilityObservationSet = {
+  taskHandle: string;
+  capability: string;
+  status: "succeeded" | "unavailable";
+  evidenceType: string | null;
+  strength: string | null;
+  wordingLimit: string | null;
+  payload: Record<string, unknown>;
+  resultRefs: string[];
+  limitationRefs: string[];
+};
+
+export async function loadCustomerCapabilityObservations(
+  runId: string,
+  actorId: string,
+): Promise<CustomerCapabilityObservationSet[]> {
+  await requireRun(runId, actorId);
+  if (conversationStoreMode() !== "postgres") return [];
+  const { rows } = await pool().query(
+    `
+    SELECT
+      attempt.task_id,
+      call.operation_name AS capability_id,
+      outcome.status,
+      acceptance.output_payload AS adapter_output
+    FROM waje_runtime.capability_task_attempts attempt
+    JOIN waje_runtime.capability_outcomes outcome
+      ON outcome.run_attempt_id = attempt.run_attempt_id
+     AND outcome.plan_revision_id = attempt.plan_revision_id
+     AND outcome.task_id = attempt.task_id
+     AND outcome.attempt_id = attempt.attempt_id
+    JOIN waje_runtime.durable_call_attempts call
+      ON call.run_attempt_id = attempt.run_attempt_id
+     AND call.attempt_ref = attempt.attempt_id
+     AND call.call_kind = 'capability'
+    JOIN waje_runtime.durable_call_acceptances acceptance
+      ON acceptance.run_attempt_id = call.run_attempt_id
+     AND acceptance.accepted_attempt_ref = call.attempt_ref
+    JOIN waje_runtime.plan_revisions plan
+      ON plan.run_attempt_id = attempt.run_attempt_id
+     AND plan.plan_revision_id = attempt.plan_revision_id
+    JOIN waje_runtime.durable_stage_attempt_bindings stage_binding
+      ON stage_binding.run_attempt_id = attempt.run_attempt_id
+     AND stage_binding.accepted_attempt_ref = attempt.attempt_id
+     AND stage_binding.stage_name = 'execute_capability_dag'
+    JOIN waje_runtime.workflow_transition_attempts transition
+      ON transition.run_attempt_id = stage_binding.run_attempt_id
+     AND transition.attempt_id = stage_binding.transition_attempt_id
+     AND transition.node_name = 'execute_capability_dag'
+     AND transition.acceptance_state = 'accepted'
+     AND transition.status = 'succeeded'
+    JOIN waje_runtime.capability_execution_snapshots snapshot
+      ON snapshot.run_attempt_id = transition.run_attempt_id
+     AND snapshot.plan_revision_id = attempt.plan_revision_id
+     AND snapshot.execution_snapshot_ref = (
+       transition.output_payload #>> '{execution_snapshot,execution_snapshot_ref}'
+     )
+     AND (snapshot.payload -> 'outcome_refs') ? outcome.outcome_ref
+    WHERE attempt.run_attempt_id = $1
+      AND outcome.status IN ('succeeded', 'unavailable')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM waje_runtime.plan_revision_supersessions supersession
+        WHERE supersession.superseded_plan_revision_id = plan.plan_revision_id
+      )
+    ORDER BY call.created_at, attempt.task_id
+    `,
+    [runId],
+  );
+  return rows.map(projectCustomerCapabilityObservationSet);
+}
+
+export async function loadCustomerThreadCapabilityObservations(
+  threadId: string,
+  actorId: string,
+): Promise<{
+  runHandle: string | null;
+  observationSets: CustomerCapabilityObservationSet[];
+}> {
+  await requireThread(threadId, actorId);
+  let runHandle: string | null = null;
+  if (conversationStoreMode() === "postgres") {
+    const { rows } = await pool().query(
+      `
+      SELECT run_id
+      FROM waje_runtime.analysis_runs
+      WHERE thread_id = $1
+      ORDER BY created_at DESC, run_id DESC
+      LIMIT 1
+      `,
+      [threadId],
+    );
+    runHandle = rows[0] ? String(rows[0].run_id) : null;
+  } else {
+    runHandle = [...memoryStore().runs.values()]
+      .filter((run) => run.threadId === threadId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.id
+      ?? null;
+  }
+  return {
+    runHandle,
+    observationSets: runHandle
+      ? await loadCustomerCapabilityObservations(runHandle, actorId)
+      : [],
+  };
+}
+
+function projectCustomerCapabilityObservationSet(
+  row: Record<string, unknown>,
+): CustomerCapabilityObservationSet {
+  const adapterOutput = row.adapter_output;
+  if (!isGatewayRecord(adapterOutput)) {
+    throw gatewayError("customer_capability_observation_invalid");
+  }
+  const payload = adapterOutput.output_payload;
+  if (!isGatewayRecord(payload)) {
+    throw gatewayError("customer_capability_observation_invalid");
+  }
+  const status = row.status;
+  if (status !== "succeeded" && status !== "unavailable") {
+    throw gatewayError("customer_capability_observation_invalid");
+  }
+  const evidence = adapterOutput.evidence;
+  if (!Array.isArray(evidence) || evidence.some((item) => !isGatewayRecord(item))) {
+    throw gatewayError("customer_capability_observation_invalid");
+  }
+  const resultRefs = uniqueStrings(
+    evidence.flatMap((item) =>
+      Array.isArray(item.result_refs)
+        ? item.result_refs.filter(isNonEmptyGatewayString)
+        : []
+    ),
+  );
+  const limitationRefs = Array.isArray(adapterOutput.limitation_refs)
+    ? adapterOutput.limitation_refs.filter(isNonEmptyGatewayString)
+    : [];
+  return {
+    taskHandle: requiredProjectionString(
+      row.task_id,
+      "customer_capability_observation_invalid",
+    ),
+    capability: requiredProjectionString(
+      row.capability_id,
+      "customer_capability_observation_invalid",
+    ),
+    status,
+    evidenceType: optionalProjectionString(payload.evidence_type),
+    strength: optionalProjectionString(payload.strength),
+    wordingLimit: optionalProjectionString(payload.wording_limit),
+    payload: structuredClone(payload),
+    resultRefs,
+    limitationRefs: uniqueStrings(limitationRefs),
+  };
 }
 
 export function recordCustomerRunStateFromAgentResult(
@@ -3173,6 +3470,231 @@ export async function listPersistedAgentRunCandidates(
   }
 }
 
+export async function loadPersistedRunReasoning(
+  runId: string,
+): Promise<PersistedRunReasoning | null> {
+  if (conversationStoreMode() !== "postgres") return null;
+  const client = await isolatedTransactionPool().connect();
+  let transactionOpen = false;
+  try {
+    await client.query(
+      "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+    );
+    transactionOpen = true;
+    const { rows: authorityRows } = await client.query(
+      `
+      SELECT
+        r.request,
+        plan.plan_revision_id,
+        plan.payload AS plan,
+        proposal.payload AS planner_proposal,
+        settlement.payload AS claim_settlement,
+        material.payload AS material_projection,
+        customer.customer_payload
+      FROM waje_runtime.analysis_runs r
+      JOIN LATERAL (
+        SELECT active_plan.*
+        FROM waje_runtime.plan_revisions active_plan
+        WHERE active_plan.run_attempt_id = r.run_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM waje_runtime.plan_revision_supersessions supersession
+            WHERE supersession.superseded_plan_revision_id
+              = active_plan.plan_revision_id
+          )
+        ORDER BY active_plan.created_at DESC
+        LIMIT 1
+      ) plan ON true
+      JOIN waje_runtime.planner_proposals proposal
+        ON proposal.planner_proposal_id = plan.planner_proposal_ref
+      LEFT JOIN waje_runtime.claim_settlements settlement
+        ON settlement.run_attempt_id = r.run_id
+      LEFT JOIN LATERAL (
+        SELECT projection.*
+        FROM waje_runtime.narrative_material_projections projection
+        WHERE projection.run_attempt_id = r.run_id
+        ORDER BY projection.created_at DESC
+        LIMIT 1
+      ) material ON true
+      LEFT JOIN LATERAL (
+        SELECT publication.*
+        FROM waje_runtime.publication_customer_payloads publication
+        WHERE publication.run_attempt_id = r.run_id
+        ORDER BY publication.created_at DESC
+        LIMIT 1
+      ) customer ON true
+      WHERE r.run_id = $1
+      `,
+      [runId],
+    );
+    const authority = authorityRows[0];
+    if (!authority) {
+      await client.query("COMMIT");
+      transactionOpen = false;
+      return null;
+    }
+    const planRevisionId = String(authority.plan_revision_id);
+    const [
+      { rows: taskOutcomes },
+      { rows: evidenceEntries },
+      { rows: supportEdges },
+      { rows: queryRuns },
+    ] = await Promise.all([
+      client.query(
+        `
+        SELECT
+          outcome.task_id,
+          outcome.status,
+          outcome.retryability,
+          outcome.payload,
+          CASE
+            WHEN failure.failure_ref IS NULL THEN NULL
+            ELSE jsonb_build_object(
+              'layer', failure.layer,
+              'kind', failure.kind,
+              'integrity_level', failure.integrity_level,
+              'business_boundary', failure.payload ->> 'business_boundary'
+            )
+          END AS failure
+        FROM waje_runtime.capability_outcomes outcome
+        LEFT JOIN waje_runtime.capability_failure_records failure
+          ON failure.failure_ref = outcome.failure_ref
+         AND failure.run_attempt_id = outcome.run_attempt_id
+         AND failure.plan_revision_id = outcome.plan_revision_id
+         AND failure.task_id = outcome.task_id
+        WHERE outcome.run_attempt_id = $1
+          AND outcome.plan_revision_id = $2
+        ORDER BY outcome.created_at, outcome.task_id
+        `,
+        [runId, planRevisionId],
+      ),
+      client.query(
+        `
+        SELECT
+          entry.entry_ref,
+          entry.evidence_ref,
+          entry.task_id,
+          entry.execution_state,
+          entry.evidence_kind,
+          entry.data_contract_state,
+          entry.maximum_claim_strength,
+          entry.payload
+        FROM waje_runtime.capability_evidence_ledger_entries entry
+        WHERE entry.run_attempt_id = $1
+          AND entry.plan_revision_id = $2
+        ORDER BY entry.created_at, entry.entry_ref
+        `,
+        [runId, planRevisionId],
+      ),
+      client.query(
+        `
+        SELECT
+          edge.support_edge_ref,
+          edge.target_claim_key,
+          edge.source_type,
+          edge.source_ref,
+          edge.edge_kind
+        FROM waje_runtime.claim_support_edges edge
+        WHERE edge.run_attempt_id = $1
+        ORDER BY edge.created_at, edge.support_edge_ref
+        `,
+        [runId],
+      ),
+      client.query(
+        `
+        SELECT
+          query_run.result_ref,
+          query_run.query_contract_id,
+          query_run.execution_status,
+          query_run.created_at,
+          query_contract.payload AS query_contract,
+          rows_metadata.row_count,
+          completeness.completeness_status,
+          completeness.analysis_readiness
+        FROM waje_runtime.query_runs query_run
+        JOIN waje_runtime.query_contracts query_contract
+          ON query_contract.query_contract_id = query_run.query_contract_id
+        LEFT JOIN waje_runtime.rows_metadata_authority rows_metadata
+          ON rows_metadata.rows_ref = query_run.rows_ref
+        LEFT JOIN waje_runtime.query_completeness_reports completeness
+          ON completeness.run_id = query_run.run_id
+         AND completeness.result_ref = query_run.result_ref
+        WHERE query_run.run_id = $1
+        ORDER BY query_run.created_at, query_run.result_ref
+        `,
+        [runId],
+      ),
+    ]);
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return {
+      runId,
+      request: isGatewayRecord(authority.request) ? authority.request : {},
+      planRevisionId,
+      plan: isGatewayRecord(authority.plan) ? authority.plan : {},
+      plannerProposal: isGatewayRecord(authority.planner_proposal)
+        ? authority.planner_proposal
+        : {},
+      claimSettlement: isGatewayRecord(authority.claim_settlement)
+        ? authority.claim_settlement
+        : {},
+      materialProjection: isGatewayRecord(authority.material_projection)
+        ? authority.material_projection
+        : {},
+      customerPublication: isGatewayRecord(authority.customer_payload)
+        ? authority.customer_payload
+        : {},
+      taskOutcomes: taskOutcomes.map((row) => ({
+        task_id: row.task_id,
+        status: row.status,
+        retryability: row.retryability,
+        payload: isGatewayRecord(row.payload) ? row.payload : {},
+        ...(isGatewayRecord(row.failure) ? { failure: row.failure } : {}),
+      })),
+      evidenceEntries: evidenceEntries.map((row) => ({
+        entry_ref: row.entry_ref,
+        evidence_ref: row.evidence_ref,
+        task_id: row.task_id,
+        execution_state: row.execution_state,
+        evidence_kind: row.evidence_kind,
+        data_contract_state: row.data_contract_state,
+        maximum_claim_strength: row.maximum_claim_strength,
+        payload: isGatewayRecord(row.payload) ? row.payload : {},
+      })),
+      supportEdges: supportEdges.map((row) => ({
+        support_edge_ref: row.support_edge_ref,
+        target_claim_key: row.target_claim_key,
+        source_type: row.source_type,
+        source_ref: row.source_ref,
+        edge_kind: row.edge_kind,
+      })),
+      queryRuns: queryRuns.map((row) => ({
+        result_ref: row.result_ref,
+        query_contract_id: row.query_contract_id,
+        execution_status: row.execution_status,
+        created_at: row.created_at,
+        query_contract: isGatewayRecord(row.query_contract)
+          ? row.query_contract
+          : {},
+        row_count: row.row_count,
+        completeness_status: row.completeness_status,
+        analysis_readiness: row.analysis_readiness,
+      })),
+    };
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original read failure.
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function listPersistedPublicationRuns(
   limit = 20,
   readClient: ReadQueryClient = pool(),
@@ -3209,6 +3731,7 @@ export async function listPersistedPublicationRuns(
       plan_trace.accepted_graph,
       verifier.verifier_status,
       factor_coverage.factor_coverage,
+      controlled.controlled_investigation,
       COALESCE(human_review.review_state, jsonb_build_object(
         'status', 'pending',
         'evaluationCount', 0
@@ -3636,6 +4159,64 @@ export async function listPersistedPublicationRuns(
     ) factor_coverage ON true
     LEFT JOIN LATERAL (
       SELECT jsonb_build_object(
+        'operationRef', operation.operation_ref,
+        'parentTransitionId', operation.parent_transition_id,
+        'planRevisionId', operation.plan_revision_id,
+        'authorityBundleRef', operation.authority_bundle_ref,
+        'sourceMaterialProjectionRef',
+          operation.source_material_projection_ref,
+        'sourceMaterialProjectionDigest',
+          operation.source_material_projection_digest,
+        'inputDigest', operation.input_digest,
+        'status', CASE
+          WHEN count(dispatch.investigation_ref) = 0 THEN 'completed_with_limits'
+          WHEN count(*) FILTER (
+            WHERE dispatch.dispatch_state <> 'terminal'
+          ) > 0 THEN 'running'
+          WHEN count(*) FILTER (
+            WHERE dispatch.terminal_status IN ('failed', 'cancelled', 'limited')
+          ) > 0 THEN 'completed_with_limits'
+          ELSE 'completed'
+        END,
+        'childCount', count(dispatch.investigation_ref),
+        'children', COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'investigationRef', dispatch.investigation_ref,
+              'childRunId', dispatch.child_run_id,
+              'investigationKey', dispatch.investigation_key,
+              'question', dispatch.question,
+              'axisRefs', dispatch.axis_refs,
+              'allowedSourceRefs', dispatch.allowed_source_refs,
+              'expectedOutputKind', dispatch.expected_output_kind,
+              'inputDigest', dispatch.input_digest,
+              'dispatchState', dispatch.dispatch_state,
+              'terminalStatus', dispatch.terminal_status,
+              'leaseEpoch', dispatch.lease_epoch,
+              'acceptedAttemptRef', dispatch.accepted_attempt_ref,
+              'acceptedArtifactRef', dispatch.accepted_artifact_ref,
+              'outputDigest', dispatch.output_digest,
+              'failureCode', dispatch.failure_code,
+              'retryability', dispatch.retryability,
+              'technicalDetailRef', dispatch.technical_detail_ref,
+              'createdAt', dispatch.created_at,
+              'updatedAt', dispatch.updated_at
+            ) ORDER BY dispatch.created_at, dispatch.investigation_ref
+          ) FILTER (WHERE dispatch.investigation_ref IS NOT NULL),
+          '[]'::jsonb
+        ),
+        'createdAt', operation.created_at
+      ) AS controlled_investigation
+      FROM waje_runtime.controlled_investigation_operations operation
+      LEFT JOIN waje_runtime.controlled_investigation_dispatches dispatch
+        ON dispatch.operation_ref = operation.operation_ref
+      WHERE operation.run_attempt_id = r.run_attempt_id
+      GROUP BY operation.operation_ref
+      ORDER BY operation.created_at DESC
+      LIMIT 1
+    ) controlled ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object(
         'status', CASE
           WHEN latest.result = 'request_independent_narrative_attempt'
           THEN 'revision_requested'
@@ -3651,7 +4232,10 @@ export async function listPersistedPublicationRuns(
         'latest', jsonb_build_object(
           'reviewerRef', latest.reviewer_ref,
           'scores', latest.scores,
-          'humanReasons', latest.human_reasons,
+          'humanReasons', COALESCE(
+            latest.payload -> 'human_reasons',
+            '{}'::jsonb
+          ),
           'result', latest.result,
           'reviewedAt', latest.reviewed_at
         )
@@ -3725,6 +4309,9 @@ export async function listPersistedPublicationRuns(
         : { status: "pending", evaluationCount: 0 },
       ...(isGatewayRecord(row.factor_coverage)
         ? { factorCoverage: row.factor_coverage }
+        : {}),
+      ...(isGatewayRecord(row.controlled_investigation)
+        ? { controlledInvestigation: row.controlled_investigation }
         : {}),
       createdAt: row.run_created_at,
       updatedAt: row.run_updated_at,
@@ -3813,7 +4400,8 @@ export async function listPersistedRuntimeRuns(
       COALESCE(stage_timing.stage_timings, '[]'::jsonb) AS stage_timings,
       COALESCE(evidence.evidence_refs, '[]'::jsonb) AS evidence_refs,
       plan_trace.accepted_graph,
-      factor_coverage.factor_coverage
+      factor_coverage.factor_coverage,
+      controlled.controlled_investigation
     FROM waje_runtime.analysis_runs r
     LEFT JOIN LATERAL (
       SELECT jsonb_agg(
@@ -4125,6 +4713,64 @@ export async function listPersistedRuntimeRuns(
       ORDER BY event.audit_id DESC
       LIMIT 1
     ) factor_coverage ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object(
+        'operationRef', operation.operation_ref,
+        'parentTransitionId', operation.parent_transition_id,
+        'planRevisionId', operation.plan_revision_id,
+        'authorityBundleRef', operation.authority_bundle_ref,
+        'sourceMaterialProjectionRef',
+          operation.source_material_projection_ref,
+        'sourceMaterialProjectionDigest',
+          operation.source_material_projection_digest,
+        'inputDigest', operation.input_digest,
+        'status', CASE
+          WHEN count(dispatch.investigation_ref) = 0 THEN 'completed_with_limits'
+          WHEN count(*) FILTER (
+            WHERE dispatch.dispatch_state <> 'terminal'
+          ) > 0 THEN 'running'
+          WHEN count(*) FILTER (
+            WHERE dispatch.terminal_status IN ('failed', 'cancelled', 'limited')
+          ) > 0 THEN 'completed_with_limits'
+          ELSE 'completed'
+        END,
+        'childCount', count(dispatch.investigation_ref),
+        'children', COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'investigationRef', dispatch.investigation_ref,
+              'childRunId', dispatch.child_run_id,
+              'investigationKey', dispatch.investigation_key,
+              'question', dispatch.question,
+              'axisRefs', dispatch.axis_refs,
+              'allowedSourceRefs', dispatch.allowed_source_refs,
+              'expectedOutputKind', dispatch.expected_output_kind,
+              'inputDigest', dispatch.input_digest,
+              'dispatchState', dispatch.dispatch_state,
+              'terminalStatus', dispatch.terminal_status,
+              'leaseEpoch', dispatch.lease_epoch,
+              'acceptedAttemptRef', dispatch.accepted_attempt_ref,
+              'acceptedArtifactRef', dispatch.accepted_artifact_ref,
+              'outputDigest', dispatch.output_digest,
+              'failureCode', dispatch.failure_code,
+              'retryability', dispatch.retryability,
+              'technicalDetailRef', dispatch.technical_detail_ref,
+              'createdAt', dispatch.created_at,
+              'updatedAt', dispatch.updated_at
+            ) ORDER BY dispatch.created_at, dispatch.investigation_ref
+          ) FILTER (WHERE dispatch.investigation_ref IS NOT NULL),
+          '[]'::jsonb
+        ),
+        'createdAt', operation.created_at
+      ) AS controlled_investigation
+      FROM waje_runtime.controlled_investigation_operations operation
+      LEFT JOIN waje_runtime.controlled_investigation_dispatches dispatch
+        ON dispatch.operation_ref = operation.operation_ref
+      WHERE operation.run_attempt_id = r.run_attempt_id
+      GROUP BY operation.operation_ref
+      ORDER BY operation.created_at DESC
+      LIMIT 1
+    ) controlled ON true
     ORDER BY r.created_at DESC
     LIMIT $1
     `,
@@ -4149,6 +4795,9 @@ export async function listPersistedRuntimeRuns(
         : [],
       ...(isGatewayRecord(row.factor_coverage)
         ? { factorCoverage: row.factor_coverage }
+        : {}),
+      ...(isGatewayRecord(row.controlled_investigation)
+        ? { controlledInvestigation: row.controlled_investigation }
         : {}),
       createdAt: row.run_created_at,
       updatedAt: row.run_updated_at,
@@ -6675,20 +7324,19 @@ function filterAgentCoreFailure(
 
 function filterBusinessClarification(value: unknown) {
   if (!isGatewayRecord(value)) return null;
-  const question = businessString(value.question);
   const status = businessString(value.status);
-  const rawOptions = Array.isArray(value.options) ? value.options : null;
-  if (!question || !status || !rawOptions || !rawOptions.length) return null;
-  const options = rawOptions.flatMap(filterBusinessClarificationOutcomeOption);
-  if (options.length !== rawOptions.length) return null;
+  const rawQuestions = Array.isArray(value.questions) ? value.questions : null;
+  if (!status || !rawQuestions || !rawQuestions.length) return null;
+  const questions = rawQuestions.flatMap(filterBusinessClarificationQuestion);
+  if (questions.length !== rawQuestions.length) return null;
   return {
-    question,
     status,
-    allow_freeform: options.some(
-      (option) => option.option_id === "tell_agent_differently"
+    allow_freeform: questions.some(
+      (question) => question.options.some(
+        (option) => option.option_id === "tell_agent_differently"
+      )
     ),
-    options,
-    recommendation_reason: businessString(value.recommendation_reason),
+    questions,
   };
 }
 
@@ -6699,6 +7347,7 @@ function filterBusinessClarificationState(value: unknown) {
   const question = businessString(value.question);
   const status = businessString(value.status);
   const rawOptions = Array.isArray(value.options) ? value.options : null;
+  const rawQuestions = Array.isArray(value.questions) ? value.questions : null;
   if (
     !runId
     || !topicId
@@ -6706,16 +7355,53 @@ function filterBusinessClarificationState(value: unknown) {
     || !status
     || !rawOptions
     || !rawOptions.length
+    || !rawQuestions
+    || !rawQuestions.length
   ) return null;
   const options = rawOptions.flatMap(filterBusinessClarificationStateOption);
-  if (options.length !== rawOptions.length) return null;
+  const questions = rawQuestions.flatMap(filterBusinessClarificationQuestion);
+  if (
+    options.length !== rawOptions.length
+    || questions.length !== rawQuestions.length
+  ) return null;
   return compactGatewayRecord({
     run_id: runId,
     topic_id: topicId,
     question,
     status,
     options,
+    questions,
   });
+}
+
+function filterBusinessClarificationQuestion(
+  value: unknown,
+): Array<{
+  slot_id: string;
+  question: string;
+  options: Record<string, unknown>[];
+  recommendation_reason: string;
+}> {
+  if (!isGatewayRecord(value)) return [];
+  const slotId = businessString(value.slot_id);
+  const question = businessString(value.question);
+  const recommendationReason = businessString(value.recommendation_reason);
+  const rawOptions = Array.isArray(value.options) ? value.options : null;
+  if (
+    !slotId
+    || !question
+    || !recommendationReason
+    || !rawOptions
+    || !rawOptions.length
+  ) return [];
+  const options = rawOptions.flatMap(filterBusinessClarificationOutcomeOption);
+  if (options.length !== rawOptions.length) return [];
+  return [{
+    slot_id: slotId,
+    question,
+    options,
+    recommendation_reason: recommendationReason,
+  }];
 }
 
 function filterBusinessClarificationStateOption(

@@ -5,6 +5,7 @@ from importlib.metadata import version as package_version
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -20,8 +21,11 @@ from bi_agent.runtime.agent_sdk_contracts import (
     WajeAgentTool,
 )
 from bi_agent.runtime.agent_tool_discovery import (
+    AgentTurnActionBinding,
     DynamicAgentToolResolver,
     WajeToolSelectionGenerator,
+    _catalog,
+    _input_digest,
 )
 from bi_agent.runtime.agent_turn_runtime import AgentTurnRequest, AgentTurnRuntime
 from bi_agent.runtime.agents_sdk_adapter import WajeAgentsSdkAdapter
@@ -195,9 +199,6 @@ class DeploymentDatabaseAuditor:
             ORDER BY migration_id
             """,
         ).fetchall()
-        expected_migration = [
-            (SINGLE_AUTHORITY_MIGRATION_ID, SINGLE_AUTHORITY_MIGRATION_DIGEST)
-        ]
         normalized_migrations = [
             (
                 str(_field(row, "migration_id", 0)),
@@ -205,7 +206,26 @@ class DeploymentDatabaseAuditor:
             )
             for row in migration_rows
         ]
-        if normalized_migrations != expected_migration:
+        current_match = (
+            SINGLE_AUTHORITY_MIGRATION_ID,
+            SINGLE_AUTHORITY_MIGRATION_DIGEST,
+        )
+        current_version = _single_authority_migration_version(
+            SINGLE_AUTHORITY_MIGRATION_ID
+        )
+        migration_versions = tuple(
+            _single_authority_migration_version(migration_id)
+            for migration_id, _ in normalized_migrations
+        )
+        if (
+            current_match not in normalized_migrations
+            or len(set(normalized_migrations)) != len(normalized_migrations)
+            or any(version > current_version for version in migration_versions)
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for _, digest in normalized_migrations
+            )
+        ):
             raise DeploymentValidationError("deployment_database_migration_invalid")
 
         table_rows = self.connection.execute(
@@ -530,13 +550,31 @@ class GeneralAgentLiveDeploymentProbe:
     async def _application_action_smoke(self) -> dict[str, Any]:
         ledger = InMemoryThreadItemLedger()
         ledger.create_thread("deployment-action-probe-thread")
+        user_message = (
+            "List the available WAJE analysis capabilities using the capability tool."
+        )
+        permission_scope = {"probe": "read_only"}
         tools = (
             _probe_tool("ask_user", "Ask for material user input."),
             _probe_tool("request_approval", "Request approval for a controlled action."),
-            _probe_tool(
-                "list_available_capabilities",
-                "List reviewed WAJE business analysis capabilities.",
+            WajeAgentTool(
+                name="list_available_capabilities",
+                description="List reviewed WAJE business analysis capabilities.",
+                input_model=_NoArguments,
+                handler=lambda _arguments: {"ok": True},
+                prebinding_policy="read_only",
             ),
+        )
+        catalog, _ = _catalog(tools)
+        action_binding = AgentTurnActionBinding.create(
+            catalog_digest=canonical_digest(catalog),
+            input_digest=_input_digest(user_message, permission_scope),
+            action_context_digest=canonical_digest({}),
+            selected_tools=tuple(tool.name for tool in tools),
+            initial_action="call_tool",
+            required_tool_name="list_available_capabilities",
+            required_tool_arguments={},
+            material_decision_topics=(),
         )
         runtime = AgentTurnRuntime(
             ledger=ledger,
@@ -545,11 +583,6 @@ class GeneralAgentLiveDeploymentProbe:
                 artifact_index=InMemoryArtifactIndex(),
             ),
             adapter=self._adapter,
-            tool_resolver=DynamicAgentToolResolver(
-                generator=WajeToolSelectionGenerator(self._adapter),
-                mandatory_tool_names=("ask_user", "request_approval"),
-                max_optional_tools=1,
-            ),
         )
         result = await runtime.run(
             AgentTurnRequest(
@@ -557,18 +590,17 @@ class GeneralAgentLiveDeploymentProbe:
                 run_id="deployment-action-probe-run",
                 operation_id="deployment-action-probe-operation",
                 user_item_id="deployment-action-probe-message",
-                user_message=(
-                    "List the available WAJE analysis capabilities using the capability tool."
-                ),
+                user_message=user_message,
                 expected_state_version=0,
                 instructions=(
                     "Call list_available_capabilities once, then return a concise typed "
                     "answer. Do not claim any BI analysis was completed."
                 ),
                 tools=tools,
-                permission_scope={"probe": "read_only"},
+                permission_scope=permission_scope,
                 agent_name="WAJE Deployment Action Probe",
                 max_turns=4,
+                action_binding=action_binding,
             )
         )
         admission = result.terminal_admission
@@ -832,6 +864,13 @@ def _field(row: Any, name: str, index: int) -> Any:
     if isinstance(row, Mapping):
         return row.get(name)
     return row[index]
+
+
+def _single_authority_migration_version(migration_id: str) -> int:
+    match = re.fullmatch(r"single-authority-workflow\.v([1-9][0-9]*)", migration_id)
+    if match is None:
+        raise DeploymentValidationError("deployment_database_migration_invalid")
+    return int(match.group(1))
 
 
 __all__ = (

@@ -252,10 +252,7 @@ def _build(
 ) -> dict:
     persisted = _persisted() if persisted is None else persisted
     if event is _EVENT_UNSET:
-        event = {
-            "customer_publication": persisted["customer_publication"],
-            "publication": persisted["safe_publication"],
-        }
+        event = _event_projection(persisted)
     return live_acceptance.build_acceptance_summary(
         case=_case(),
         dependency_health=_health(),
@@ -267,6 +264,34 @@ def _build(
         llm_call_audits=_audits(),
         human_decisions=[],
     )
+
+
+def _event_projection(persisted: dict) -> dict:
+    customer_publication = persisted["customer_publication"]
+    role_kinds = {
+        "executive_answer": "summary",
+        "direction": "finding",
+        "accounting_drivers": "finding",
+        "dimension_localization": "finding",
+        "contextual_pattern": "context",
+        "boundary": "limitation",
+        "next_action": "recommendation",
+    }
+    return {
+        "projection_kind": "customer_conversation_snapshot",
+        "answer": {
+            "blocks": [
+                {
+                    "kind": role_kinds[block["role"]],
+                    "text": block["text"],
+                }
+                for block in customer_publication["blocks"]
+            ],
+            "warnings": list(dict.fromkeys(customer_publication["warnings"])),
+            "evidenceCount": len(customer_publication["claim_refs"]),
+            "limitationCount": len(customer_publication["limitation_refs"]),
+        },
+    }
 
 
 def test_acceptance_summary_passes_only_on_exact_persisted_customer_publication():
@@ -384,10 +409,7 @@ def test_deepseek_evidence_must_be_a_succeeded_accepted_transition():
             run_ids=("run-one",),
             authority_records=_authority(),
             persisted_publication=_persisted(),
-            event_publication={
-                "customer_publication": _customer_publication(),
-                "publication": _safe_publication(),
-            },
+            event_publication=_event_projection(_persisted()),
             llm_call_audits=audits,
             human_decisions=[],
         )
@@ -438,10 +460,7 @@ def test_claimable_required_obligation_must_reach_customer_publication():
             }
         ],
     }
-    event = {
-        "customer_publication": persisted["customer_publication"],
-        "publication": persisted["safe_publication"],
-    }
+    event = _event_projection(persisted)
 
     summary = live_acceptance.build_acceptance_summary(
         case=_case(),
@@ -497,10 +516,7 @@ def test_limitation_only_obligation_closes_through_coverage_and_customer_payload
         "claim_refs": [],
         "limitation_refs": ["limitation:unavailable"],
     }
-    event = {
-        "customer_publication": persisted["customer_publication"],
-        "publication": persisted["safe_publication"],
-    }
+    event = _event_projection(persisted)
 
     summary = live_acceptance.build_acceptance_summary(
         case=_case(),
@@ -534,10 +550,7 @@ def test_limitation_only_obligation_closes_through_coverage_and_customer_payload
             broken_persisted["customer_publication"]["blocks"][0][
                 "limitation_refs"
             ] = []
-        broken_event = {
-            "customer_publication": broken_persisted["customer_publication"],
-            "publication": broken_persisted["safe_publication"],
-        }
+        broken_event = _event_projection(broken_persisted)
         broken = live_acceptance.build_acceptance_summary(
             case=_case(),
             dependency_health=_health(),
@@ -560,6 +573,58 @@ def test_limitation_only_obligation_closes_through_coverage_and_customer_payload
         assert broken["terminal_state"]["reason"] == (
             "required_obligation_publication_closure_missing"
         )
+
+
+def test_mixed_obligation_can_close_through_complete_unavailable_boundaries():
+    authority = _authority()
+    authority["required_obligation_publication_closure"] = {
+        "authority_mode": "claim_bearing",
+        "verified_claim_refs": [],
+        "obligations": [
+            {
+                "obligation_id": "obligation-one",
+                "proposed_claim_refs": ["proposed-claim-one"],
+                "unavailable_limitation_refs": ["limitation:unavailable"],
+                "coverage_claim_refs": ["claim-unverified"],
+                "coverage_limitation_refs": ["limitation:unavailable"],
+                "coverage_state": "mixed",
+            }
+        ],
+    }
+    authority["pair_material_snapshot"] = _pair_material_snapshot(
+        authority["required_obligation_publication_closure"]["obligations"]
+    )
+    persisted = _persisted()
+    persisted["customer_publication"] = {
+        **persisted["customer_publication"],
+        "blocks": [
+            {
+                "role": "boundary",
+                "text": "候选机制证据未通过 verifier，只发布数据边界。",
+                "statement_role": "limitation",
+                "claim_refs": [],
+                "recommendation_refs": [],
+                "limitation_refs": ["limitation:unavailable"],
+                "material_fact_bindings": [],
+            }
+        ],
+        "claim_refs": [],
+        "limitation_refs": ["limitation:unavailable"],
+    }
+
+    summary = live_acceptance.build_acceptance_summary(
+        case=_case(),
+        dependency_health=_health(),
+        snapshot={**_snapshot(), "evidence_state": "boundary_only"},
+        run_ids=("run-one",),
+        authority_records=authority,
+        persisted_publication=persisted,
+        event_publication=_event_projection(persisted),
+        llm_call_audits=_audits(),
+        human_decisions=[],
+    )
+
+    assert summary["terminal_state"]["acceptance_status"] == "passed"
 
 
 def test_verifier_vetoed_obligation_closes_with_published_explicit_boundary():
@@ -812,13 +877,8 @@ def test_failed_delivery_contract_violation_cannot_pass():
 
 def test_event_and_persistence_mismatch_is_a_contract_failure():
     persisted = _persisted()
-    event_publication = {
-        "customer_publication": {
-            **persisted["customer_publication"],
-            "warnings": ["changed"],
-        },
-        "publication": persisted["safe_publication"],
-    }
+    event_publication = _event_projection(persisted)
+    event_publication["answer"]["warnings"] = ["changed"]
 
     summary = _build(persisted=persisted, event=event_publication)
 
@@ -885,7 +945,7 @@ def test_gateway_submission_sends_only_the_natural_language_question():
             None,
             {
                 "answer": "comparison_baseline.previous_day",
-                "selectedOptionId": "comparison_baseline.previous_day",
+                "selectedOptionIds": ["comparison_baseline.previous_day"],
                 "requestIdentity": "acceptance-one",
             },
         ),
@@ -894,7 +954,7 @@ def test_gateway_submission_sends_only_the_natural_language_question():
             "改为比较最近七个完整自然日",
             {
                 "answer": "改为比较最近七个完整自然日",
-                "selectedOptionId": None,
+                "selectedOptionIds": [],
                 "requestIdentity": "acceptance-one",
             },
         ),
@@ -933,7 +993,7 @@ def test_clarification_submission_uses_the_exact_async_command_contract(
     )
 
 
-def test_clarification_continuation_rejects_implicit_or_ambiguous_input():
+def test_existing_run_can_be_polled_without_a_second_clarification_input():
     kwargs = {
         "base_url": "http://gateway.test",
         "user_id": "human-test",
@@ -942,12 +1002,32 @@ def test_clarification_continuation_rejects_implicit_or_ambiguous_input():
         "source_run_id": "run-one",
         "request_identity": "acceptance-one",
     }
-    with pytest.raises(ValueError, match="human_clarification_input_mode_invalid"):
-        live_acceptance._submit_gateway_operation(
+    with patch.object(
+        live_acceptance.gateway_once,
+        "_poll_existing_run",
+        return_value={"run": {"id": "run-one"}},
+    ) as poll:
+        response, source_run_id, decision = live_acceptance._submit_gateway_operation(
             **kwargs,
             selected_option_id=None,
             free_text=None,
         )
+
+    assert response == {"run": {"id": "run-one"}}
+    assert source_run_id == "run-one"
+    assert decision is None
+    assert poll.call_args.kwargs["run_id"] == "run-one"
+
+
+def test_clarification_continuation_rejects_ambiguous_input():
+    kwargs = {
+        "base_url": "http://gateway.test",
+        "user_id": "human-test",
+        "case": _case(),
+        "thread_id": None,
+        "source_run_id": "run-one",
+        "request_identity": "acceptance-one",
+    }
     with pytest.raises(ValueError, match="human_clarification_input_mode_invalid"):
         live_acceptance._submit_gateway_operation(
             **kwargs,

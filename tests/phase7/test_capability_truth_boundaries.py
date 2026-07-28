@@ -16,6 +16,7 @@ def _high_value(rows):
     return high_value_user_contribution(
         rows,
         threshold_policy={"type": "top_percentile", "value": 0.95},
+        high_value_users_aggregation="window_distinct_count",
         group_key="window_role",
         total_amount_key="paid_amount",
         high_value_amount_key="high_value_amount",
@@ -56,6 +57,33 @@ def test_high_value_share_is_compared_per_window_without_cross_window_sum() -> N
     ]
     assert "同一批稳定用户" in payload["claim_boundary"]
     assert "total_amount" not in payload
+
+
+def test_high_value_daily_mean_allows_fractional_user_observation() -> None:
+    evidence = high_value_user_contribution(
+        (
+            {
+                "window_role": "baseline",
+                "paid_amount": 100.0,
+                "high_value_amount": 40.0,
+                "high_value_paid_users": 2.25,
+                "high_value_threshold": 20.0,
+            },
+        ),
+        threshold_policy={"type": "top_percentile", "value": 0.95},
+        high_value_users_aggregation="mean_per_complete_day",
+        group_key="window_role",
+        total_amount_key="paid_amount",
+        high_value_amount_key="high_value_amount",
+        high_value_users_key="high_value_paid_users",
+        threshold_key="high_value_threshold",
+    )
+
+    assert evidence.typed_payload["rows"][0]["high_value_paid_users"] == 2.25
+    assert (
+        evidence.typed_payload["high_value_paid_users_measure"]
+        == "average_users_per_complete_day"
+    )
 
 
 def test_high_value_duplicate_window_role_is_rejected() -> None:

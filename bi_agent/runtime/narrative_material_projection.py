@@ -936,6 +936,11 @@ class ProjectedPublicationRequirement:
     obligation_coverage_digest: str
     status: str
     coverage_semantics: str
+    issue_ref: str | None
+    parent_issue_ref: str | None
+    business_question: str | None
+    question_role: str | None
+    answer_contract: Mapping[str, Any]
     claim_kind: str
     assertion_scope: Mapping[str, Any]
     required_claim_strength: str
@@ -1043,6 +1048,55 @@ class ProjectedPublicationRequirement:
             raise NarrativeMaterialProjectionContractError(
                 "narrative_material_projection_requirement_limitation_closure_invalid"
             ) from exc
+        raw_issue_ref = basis.success_policy.get("issue_ref")
+        if raw_issue_ref is None:
+            issue_ref = None
+            parent_issue_ref = None
+            business_question = None
+            question_role = None
+            answer_contract: Mapping[str, Any] = {}
+        else:
+            issue_ref = _required_string(
+                raw_issue_ref,
+                "narrative_material_projection_requirement_issue_invalid",
+            )
+            raw_parent = basis.success_policy.get("parent_issue_ref")
+            parent_issue_ref = (
+                None
+                if raw_parent is None
+                else _required_string(
+                    raw_parent,
+                    "narrative_material_projection_requirement_issue_invalid",
+                )
+            )
+            business_question = _required_string(
+                basis.success_policy.get("business_question"),
+                "narrative_material_projection_requirement_issue_invalid",
+            )
+            question_role = _required_string(
+                basis.success_policy.get("question_role"),
+                "narrative_material_projection_requirement_issue_invalid",
+            )
+            if question_role not in {"primary", "supporting"}:
+                raise NarrativeMaterialProjectionContractError(
+                    "narrative_material_projection_requirement_issue_invalid"
+                )
+            raw_contract = basis.success_policy.get("answer_contract")
+            if not isinstance(raw_contract, Mapping):
+                raise NarrativeMaterialProjectionContractError(
+                    "narrative_material_projection_requirement_issue_invalid"
+                )
+            answer_contract = canonical_value(raw_contract)
+            if (
+                answer_contract.get("contract_version")
+                != "question-answer-contract.v1"
+                or answer_contract.get("completion_policy")
+                != "direct_answer_or_explicitly_unresolved"
+                or answer_contract.get("blocking") is not False
+            ):
+                raise NarrativeMaterialProjectionContractError(
+                    "narrative_material_projection_requirement_issue_invalid"
+                )
         body = {
             "obligation_id": basis.obligation_id,
             "obligation_basis_ref": basis.basis_ref,
@@ -1051,6 +1105,11 @@ class ProjectedPublicationRequirement:
             "obligation_coverage_digest": coverage.content_digest,
             "status": coverage.status,
             "coverage_semantics": _COVERAGE_SEMANTICS_BY_STATUS[coverage.status],
+            "issue_ref": issue_ref,
+            "parent_issue_ref": parent_issue_ref,
+            "business_question": business_question,
+            "question_role": question_role,
+            "answer_contract": answer_contract,
             "claim_kind": _required_string(
                 claim_kind,
                 "narrative_material_projection_requirement_claim_kind_invalid",
@@ -1118,6 +1177,11 @@ class ProjectedPublicationRequirement:
             "obligation_coverage_digest": self.obligation_coverage_digest,
             "status": self.status,
             "coverage_semantics": self.coverage_semantics,
+            "issue_ref": self.issue_ref,
+            "parent_issue_ref": self.parent_issue_ref,
+            "business_question": self.business_question,
+            "question_role": self.question_role,
+            "answer_contract": self.answer_contract,
             "claim_kind": self.claim_kind,
             "assertion_scope": self.assertion_scope,
             "required_claim_strength": self.required_claim_strength,
@@ -1186,6 +1250,11 @@ class ProjectedPublicationRequirement:
             "obligation_id": self.obligation_id,
             "status": self.status,
             "coverage_semantics": self.coverage_semantics,
+            "issue_ref": self.issue_ref,
+            "parent_issue_ref": self.parent_issue_ref,
+            "business_question": self.business_question,
+            "question_role": self.question_role,
+            "answer_contract": canonical_value(self.answer_contract),
             "claim_kind": self.claim_kind,
             "assertion_scope": canonical_value(self.assertion_scope),
             "required_claim_strength": self.required_claim_strength,

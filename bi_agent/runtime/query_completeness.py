@@ -33,6 +33,11 @@ from bi_agent.runtime.evidence_authority import (
     runtime_evidence_record_integrity_errors,
 )
 from bi_agent.runtime.query_audit import query_audit_refs
+from bi_agent.runtime.temporal_comparison import (
+    TemporalComparisonContractError,
+    calendar_partition_role_for_date,
+    validate_calendar_partition_role_frame,
+)
 
 
 ASSERTIONS = (
@@ -603,10 +608,11 @@ def _complete_days_assertion(
     reasons = list(membership_reasons)
     for window in contract.resolved_windows:
         actual = counts.get(window.window_id, 0)
-        if actual < window.required_complete_days:
+        required_days = _required_window_days(contract, window)
+        if actual < required_days:
             reasons.append(
                 f"incomplete_window:{window.window_id}:"
-                f"{actual}/{window.required_complete_days}"
+                f"{actual}/{required_days}"
             )
     return _assertion(
         "complete_window_days",
@@ -1156,7 +1162,11 @@ def _paired_windows_assertion(
             (),
             details={"applicable": False, "dimension_presence_policy": policy},
         )
-    contract_roles = {window.role for window in contract.resolved_windows}
+    contract_roles = (
+        {"target", "baseline"}
+        if _calendar_partition_role_frame(contract) is not None
+        else {window.role for window in contract.resolved_windows}
+    )
     if not {"target", "baseline"}.issubset(contract_roles):
         return _assertion(
             "paired_target_baseline",
@@ -1275,14 +1285,15 @@ def _reconciliation_assertion_name(contract: QueryContract) -> str:
 def _metric_values(
     rows: Iterable[Mapping[str, Any]],
     metric_id: str,
-) -> dict[tuple[str, str], float | int]:
-    values: dict[tuple[str, str], float | int] = {}
+) -> dict[tuple[str, str, str], float | int]:
+    values: dict[tuple[str, str, str], float | int] = {}
     for row in rows:
         value = row.get(metric_id)
         if not _finite_number(value):
             continue
         key = (
             str(row.get("window_id") or ""),
+            str(row.get("window_role") or ""),
             str(row.get("observation_key") or ""),
         )
         values[key] = values.get(key, 0) + value
@@ -1341,6 +1352,7 @@ def _window_membership(
     if contract.result_shape.result_semantics == "complete_window_aggregate":
         return _aggregate_window_membership(contract, tuple(rows))
     windows = {window.window_id: window for window in contract.resolved_windows}
+    partition_frame = _calendar_partition_role_frame(contract)
     observations: dict[str, set[str]] = {}
     reasons = []
     for row in rows:
@@ -1356,7 +1368,21 @@ def _window_membership(
             continue
         valid = True
         observed_role = str(row.get("window_role") or "")
-        if observed_role != window.role:
+        if partition_frame is not None:
+            try:
+                expected_role = calendar_partition_role_for_date(
+                    date.fromisoformat(observation_key),
+                    partition_frame,
+                )
+            except (TemporalComparisonContractError, ValueError):
+                expected_role = None
+            if observed_role != expected_role:
+                reasons.append(
+                    f"partition_role_mismatch:{window_id}:"
+                    f"{observation_key}:{observed_role or 'missing'}"
+                )
+                valid = False
+        elif observed_role != window.role:
             reasons.append(
                 f"window_role_mismatch:{window_id}:"
                 f"{observed_role or 'missing'}:{window.role}"
@@ -1393,7 +1419,9 @@ def _aggregate_window_membership(
     rows: tuple[Mapping[str, Any], ...],
 ) -> tuple[dict[str, int], tuple[str, ...]]:
     windows = {window.window_id: window for window in contract.resolved_windows}
+    partition_frame = _calendar_partition_role_frame(contract)
     observed_days: dict[str, int] = {}
+    observed_role_days: dict[tuple[str, str], int] = {}
     reasons: list[str] = []
     for row in rows:
         window_id = str(row.get("window_id") or "")
@@ -1401,7 +1429,13 @@ def _aggregate_window_membership(
         if window is None:
             reasons.append(f"unexpected_window:{window_id or 'missing'}")
             continue
-        if str(row.get("window_role") or "") != window.role:
+        observed_role = str(row.get("window_role") or "")
+        if partition_frame is not None and observed_role not in {
+            "target",
+            "baseline",
+        }:
+            reasons.append(f"partition_role_invalid:{window_id}")
+        elif partition_frame is None and observed_role != window.role:
             reasons.append(f"window_role_mismatch:{window_id}")
         if str(row.get("observation_key") or "") != window_id:
             reasons.append(f"invalid_window_aggregate_identity:{window_id}")
@@ -1413,10 +1447,64 @@ def _aggregate_window_membership(
         ):
             reasons.append(f"invalid_source_complete_days:{window_id}")
             continue
-        previous = observed_days.setdefault(window_id, complete_days)
-        if previous != complete_days:
-            reasons.append(f"inconsistent_source_complete_days:{window_id}")
+        if partition_frame is not None:
+            role_key = (window_id, observed_role)
+            previous = observed_role_days.setdefault(role_key, complete_days)
+            if previous != complete_days:
+                reasons.append(
+                    f"inconsistent_source_complete_days:{window_id}:{observed_role}"
+                )
+        else:
+            previous = observed_days.setdefault(window_id, complete_days)
+            if previous != complete_days:
+                reasons.append(f"inconsistent_source_complete_days:{window_id}")
+    if partition_frame is not None:
+        roles_by_window: dict[str, set[str]] = {}
+        for window_id, role in observed_role_days:
+            roles_by_window.setdefault(window_id, set()).add(role)
+        for window_id, roles in roles_by_window.items():
+            if roles != {"target", "baseline"}:
+                reasons.append(f"partition_roles_incomplete:{window_id}")
+            observed_days[window_id] = sum(
+                observed_role_days[(window_id, role)] for role in roles
+            )
     return observed_days, _canonical_membership_reasons(reasons)
+
+
+def _calendar_partition_role_frame(
+    contract: QueryContract,
+) -> Mapping[str, Any] | None:
+    raw = contract.query_parameters.get("calendar_partition_role_frame")
+    if raw is None:
+        return None
+    try:
+        return validate_calendar_partition_role_frame(raw)
+    except TemporalComparisonContractError as exc:
+        raise EvidenceIntegrityError(
+            "query_calendar_partition_role_frame_invalid"
+        ) from exc
+
+
+def _required_window_days(contract: QueryContract, window: Any) -> int:
+    frame = _calendar_partition_role_frame(contract)
+    if frame is None:
+        return int(window.required_complete_days)
+    try:
+        start = date.fromisoformat(window.start_inclusive)
+        end = date.fromisoformat(window.end_exclusive)
+    except ValueError as exc:
+        raise EvidenceIntegrityError(
+            "query_calendar_partition_window_invalid"
+        ) from exc
+    return sum(
+        1
+        for offset in range((end - start).days)
+        if calendar_partition_role_for_date(
+            start + timedelta(days=offset),
+            frame,
+        )
+        is not None
+    )
 
 
 def _context_window_membership(

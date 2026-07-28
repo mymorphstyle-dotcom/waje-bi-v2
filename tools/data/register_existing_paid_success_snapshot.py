@@ -37,7 +37,7 @@ from tools.data.source_loader_common import (
 SOURCE_CONTRACT_PATH = ROOT / "contracts" / "sources" / "paid-order-detail.source.yaml"
 DATASET_ID = "paid_order_success"
 CONTRACT_REF = "contracts/sources/paid-order-detail.source.yaml@0.4"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@20"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@23"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

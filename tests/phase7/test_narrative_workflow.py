@@ -100,6 +100,7 @@ _TEST_ACCEPTED_INTENT_CONTEXT = {
     ),
 }
 _TEST_ACCEPTED_PLAN_CONTEXT = {
+    "accepted_question_graph": (),
     "user_required_obligations": (
         {
             "obligation_id": "claim-obligation:test",
@@ -162,7 +163,7 @@ class _FakeNarrativeLLM:
             == "compact-narrative-blocks.v1"
         ):
             output = _compact_fake_writer_output(output)
-        validator = kwargs["output_validator"]
+        validator = kwargs.get("output_validator")
         if validator is not None:
             validator(output)
         self.calls.append(
@@ -755,9 +756,14 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     assert set(writer_requirements[0]) == {
         "requirement_handle",
         "obligation_id",
-        "status",
-        "coverage_semantics",
-        "claim_kind",
+            "status",
+            "coverage_semantics",
+            "issue_ref",
+            "parent_issue_ref",
+            "business_question",
+            "question_role",
+            "answer_contract",
+            "claim_kind",
         "assertion_scope",
             "required_claim_strength",
             "claim_handles",

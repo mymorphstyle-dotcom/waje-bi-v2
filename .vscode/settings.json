@@ -1,0 +1,16 @@
+{
+  "files.watcherExclude": {
+    "**/data/clickhouse/**": true,
+    "**/data/postgres/**": true,
+    "**/.next/**": true,
+    "**/.turbo/**": true,
+    "**/node_modules/**": true
+  },
+  "search.exclude": {
+    "**/data/clickhouse/**": true,
+    "**/data/postgres/**": true,
+    "**/.next/**": true,
+    "**/.turbo/**": true,
+    "**/node_modules/**": true
+  }
+}

@@ -85,13 +85,40 @@ CLEAN_COLUMNS = """
 """
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--zip", default=str(DEFAULT_ZIP))
     parser.add_argument("--container", default="waje-bi-clickhouse")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--skip-load", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--rebuild-derived",
+        action="store_true",
+        help=(
+            "explicitly TRUNCATE and rebuild derived tables when --skip-load "
+            "reuses the existing raw table"
+        ),
+    )
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.skip_load and args.replace and not args.rebuild_derived:
+        parser.error(
+            "--replace with --skip-load requires --rebuild-derived because "
+            "--replace drops the derived tables"
+        )
+    return args
+
+
+def should_rebuild_derived(args: argparse.Namespace) -> bool:
+    return not args.skip_load or bool(args.rebuild_derived)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     zip_path = Path(args.zip).expanduser()
     if not zip_path.exists():
@@ -107,7 +134,14 @@ def main() -> int:
         for member in CSV_MEMBERS:
             load_member(args.container, zip_path, member)
 
-    rebuild_clean_tables(args.container)
+    if should_rebuild_derived(args):
+        rebuild_clean_tables(args.container)
+    else:
+        print(
+            "reusing existing raw and derived tables; pass --rebuild-derived "
+            "to authorize TRUNCATE and full derived rebuild",
+            flush=True,
+        )
     profile = collect_profile(args.container, zip_path)
     write_outputs(profile)
     print(json.dumps(profile["summary"], ensure_ascii=False, indent=2, sort_keys=True))

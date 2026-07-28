@@ -110,7 +110,7 @@ def test_workflow_rejects_noncurrent_request_shapes_before_execution(
         run_single_authority_workflow(request)
 
 
-def test_langgraph_always_binds_validator_to_durable_wrapper() -> None:
+def test_langgraph_output_contract_failure_gets_one_diagnostic_repair() -> None:
     provider = _PoisonThenValidProvider()
     store = SimpleNamespace(attempt_journal=InMemoryDurableCallJournal())
     state = {
@@ -135,6 +135,9 @@ def test_langgraph_always_binds_validator_to_durable_wrapper() -> None:
     assert output == {"decision": "accepted"}
     assert len(provider.calls) == 2
     assert all("output_validator" not in call for call in provider.calls)
+    repair = provider.calls[1]["messages"][-1]["content"]
+    assert '"validation_error":"planner_contract_rejected"' in repair
+    assert '"previous_output":{"decision":"poison"}' in repair
     assert len(state["provider_attempt_refs"]["compile_authoritative_plan"]) == 1
 
 

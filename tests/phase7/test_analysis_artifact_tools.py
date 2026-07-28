@@ -667,6 +667,76 @@ def test_artifact_batch_enforces_provider_input_budget_and_reports_omissions() -
     )
 
 
+def test_large_publication_keeps_bounded_summary_and_claim_inventory() -> None:
+    registry = InMemoryAnalysisArtifactRegistry()
+    artifact_ref = "publication-large"
+    claims = [
+        {
+            "claimRef": f"claim-{index}",
+            "claimClass": "dimension_localization",
+            "claimKind": "comparative_change",
+            "subject": "维度成员" * 40,
+            "scope": "全量样本",
+            "grain": "member",
+            "dimensionPath": ["dimension"],
+            "factNames": [f"fact-{item}" for item in range(12)],
+            "evidenceMaterialRefs": [f"evidence-{index}"],
+            "limitationRefs": [],
+        }
+        for index in range(40)
+    ]
+    registry.add(
+        "thread-large-publication",
+        ArtifactDescriptor(
+            artifact_ref=artifact_ref,
+            artifact_type="bi_publication",
+            version="publication-v1",
+            digest="digest-publication",
+            source_refs=("run-1",),
+            visibility_policy_ref="visibility:customer-safe",
+            customer_summary="完整业务结论。" * 4_000,
+            created_at="2026-07-24T00:00:00+00:00",
+        ),
+        {
+            "artifactType": "bi_publication",
+            "publication": {"blocks": []},
+            "availableClaims": claims,
+            "materialRefs": ["run-1"],
+            "limitationRefs": [],
+        },
+    )
+    inspect, _ = analysis_artifact_tools(
+        registry=registry,
+        thread_id="thread-large-publication",
+    )
+
+    result = inspect.handler({"artifact_refs": [artifact_ref]})
+    contract = result.model_dump(mode="json", by_alias=True)
+    content = contract["output"]["content"]
+    publication = content["items"][0]["content"]
+
+    assert result.status == "limited"
+    assert content["includedCount"] == 1
+    assert content["omittedRefs"] == []
+    assert publication["projectionTruncated"] is True
+    assert publication["customerSummaryTruncated"] is True
+    assert publication["availableClaimsTruncated"] is True
+    assert publication["availableClaimCount"] == 40
+    assert 0 < publication["includedAvailableClaimCount"] < 40
+    assert publication["customerSummary"].endswith("…")
+    assert (
+        len(
+            json.dumps(
+                content["items"],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        <= 32 * 1024
+    )
+
+
 def test_formula_evidence_exposes_compact_customer_safe_calculation_context() -> None:
     registry = InMemoryAnalysisArtifactRegistry()
     registry.add(

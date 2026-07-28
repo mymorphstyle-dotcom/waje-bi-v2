@@ -16,6 +16,7 @@ from bi_agent.conversation.material_revision_continuation import (
 )
 from bi_agent.conversation.models import (
     ClarificationOption,
+    ClarificationQuestion,
     ClarificationState,
     TopicChoiceInteractionResponse,
 )
@@ -310,7 +311,7 @@ class ConversationAgentCore:
             claim_dispatch = getattr(self.store, "claim_run_dispatch", None)
             if not callable(claim_dispatch):
                 raise EvidenceIntegrityError("run_dispatch_claim_resolver_missing")
-            claim_dispatch(
+            claimed_dispatch = claim_dispatch(
                 dispatch_id=str(run_dispatch.get("dispatch_id") or ""),
                 run_id=run_id,
                 thread_id=thread_id,
@@ -343,6 +344,11 @@ class ConversationAgentCore:
                 artifact_root=artifact_root,
                 decision_result=decision_result,
                 stop_after_phase=stop_after_phase,
+                immutable_resume_request=(
+                    claimed_dispatch.get("resume_request")
+                    if isinstance(claimed_dispatch, Mapping)
+                    else None
+                ),
             )
         if run_dispatch:
             claim_dispatch = getattr(self.store, "claim_run_dispatch", None)
@@ -413,6 +419,7 @@ class ConversationAgentCore:
             interaction_request: dict[str, Any] = {
                 "interaction_result": interaction_result,
                 "conversation_entry": canonical_value(turn.entry_command),
+                "conversation_business_summary": turn.turn_intent.business_summary,
             }
             if interaction_result.get("schema_version") == "typed-topic-choice.v1":
                 source_user_message = (
@@ -647,10 +654,16 @@ class ConversationAgentCore:
         artifact_root: str,
         decision_result: Mapping[str, Any],
         stop_after_phase: str | None,
+        immutable_resume_request: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         run_state = self.store.get_run_state(run_id)
-        waiting_request = (
+        persisted_progress_request = (
             run_state.get("request") if isinstance(run_state, Mapping) else None
+        )
+        waiting_request = (
+            immutable_resume_request
+            if isinstance(immutable_resume_request, Mapping)
+            else persisted_progress_request
         )
         expected_waiting_fields = {
             "schema_version",
@@ -671,6 +684,7 @@ class ConversationAgentCore:
             not isinstance(run_state, Mapping)
             or str(run_state.get("thread_id") or "") != thread_id
             or str(run_state.get("status") or "") != "waiting_for_clarification"
+            or not isinstance(persisted_progress_request, Mapping)
             or not isinstance(waiting_request, Mapping)
             or set(waiting_request) != expected_waiting_fields
             or waiting_request.get("schema_version")
@@ -698,6 +712,16 @@ class ConversationAgentCore:
             record.decision_id: record.to_dict() for record in ledger.active_records()
         }
         decision_payload = decision_result.get("decision")
+        decision_payloads = decision_result.get("decisions")
+        if not isinstance(decision_payloads, list) or not decision_payloads:
+            decision_payloads = (
+                [decision_payload] if isinstance(decision_payload, Mapping) else []
+            )
+        decision_ids = {
+            str(item.get("decision_id") or "")
+            for item in decision_payloads
+            if isinstance(item, Mapping)
+        }
         decision_id = (
             str(decision_payload.get("decision_id") or "")
             if isinstance(decision_payload, Mapping)
@@ -705,6 +729,22 @@ class ConversationAgentCore:
         )
         prior_ledger_position = waiting_request.get("decision_ledger_position")
         latest_transition_id = self.store.latest_accepted_transition_id(run_id)
+        lifecycle_resolver = getattr(self.store, "latest_lifecycle_state", None)
+        recovery_lifecycle = (
+            lifecycle_resolver(run_id) if callable(lifecycle_resolver) else None
+        )
+        resuming_post_authority_recovery = (
+            recovery_lifecycle is not None
+            and recovery_lifecycle.execution_state == "complete"
+            and recovery_lifecycle.interaction_state == "active"
+            and recovery_lifecycle.evidence_state
+            in {"complete", "boundary_only"}
+            and recovery_lifecycle.publication_state == "not_ready"
+            and recovery_lifecycle.delivery_state == "pending"
+            and recovery_lifecycle.retry_state == "running"
+            and recovery_lifecycle.cancellation_state == "active"
+            and recovery_lifecycle.supersession_state == "active"
+        )
         if (
             decision_result.get("status") != "decision_recorded"
             or decision_result.get("run_id") != run_id
@@ -714,20 +754,30 @@ class ConversationAgentCore:
             != active_revision.intent_revision_id
             or isinstance(prior_ledger_position, bool)
             or not isinstance(prior_ledger_position, int)
-            or ledger.position != prior_ledger_position + 1
+            or ledger.position != prior_ledger_position + len(decision_payloads)
             or decision_checkpoint.run_attempt_id != run_id
             or decision_checkpoint.intent_revision_id
             != active_revision.intent_revision_id
             or decision_checkpoint.decision_ledger_position != ledger.position
             or decision_checkpoint.node_name
-            not in {"accept_material_decision", "bind_free_text_decision"}
+            not in {"accept_material_decision", "bind_free_text_submission"}
             or decision_checkpoint.status != "succeeded"
             or decision_checkpoint.acceptance_state != "accepted"
             or decision_checkpoint.next_transition != "compile_authoritative_plan"
-            or latest_transition_id != decision_checkpoint.transition_id
-            or decision_id not in active_decisions
-            or canonical_value(decision_payload)
-            != canonical_value(active_decisions.get(decision_id))
+            or (
+                not resuming_post_authority_recovery
+                and latest_transition_id != decision_checkpoint.transition_id
+            )
+            or decision_id not in decision_ids
+            or decision_ids.difference(active_decisions)
+            or any(
+                canonical_value(item)
+                != canonical_value(
+                    active_decisions.get(str(item.get("decision_id") or ""))
+                )
+                for item in decision_payloads
+                if isinstance(item, Mapping)
+            )
         ):
             raise EvidenceIntegrityError("single_authority_decision_resume_mismatch")
 
@@ -738,13 +788,15 @@ class ConversationAgentCore:
             )
         context_manifest = runtime_descriptors.get("context_manifest")
         persisted_artifact_root = runtime_descriptors.get("artifact_root")
+        persisted_stop_after_phase = runtime_descriptors.get("stop_after_phase")
         if (
             runtime_descriptors.get("run_id") != run_id
             or runtime_descriptors.get("run_attempt_id") != run_id
             or runtime_descriptors.get("question") != active_revision.original_user_text
             or not isinstance(persisted_artifact_root, str)
             or not persisted_artifact_root
-            or persisted_artifact_root != artifact_root
+            or persisted_stop_after_phase
+            not in {None, "phase02", "phase03", "phase04", "phase05"}
             or not isinstance(context_manifest, Mapping)
             or not str(context_manifest.get("manifest_id") or "")
             or waiting_request.get("context_manifest_ref")
@@ -767,14 +819,23 @@ class ConversationAgentCore:
             "context_manifest": canonical_value(context_manifest),
             "authority_store": self.store,
         }
-        if stop_after_phase is not None:
-            request["stop_after_phase"] = stop_after_phase
+        for authority_ref_field in (
+            "plan_result_refs",
+            "execution_result_refs",
+            "claim_coverage_refs",
+        ):
+            if authority_ref_field in persisted_progress_request:
+                request[authority_ref_field] = canonical_value(
+                    persisted_progress_request[authority_ref_field]
+                )
+        if persisted_stop_after_phase is not None:
+            request["stop_after_phase"] = persisted_stop_after_phase
         for field in ("recursion_limit",):
             if field in runtime_descriptors:
                 request[field] = canonical_value(runtime_descriptors[field])
         if self.conversation_llm_client is not None:
             request["llm_client"] = self.conversation_llm_client
-        if _requires_post_execution_runtime(stop_after_phase):
+        if _requires_post_execution_runtime(persisted_stop_after_phase):
             thread = self.store.get_thread(thread_id)
             request.update(
                 self._post_execution_runtime_bindings(
@@ -930,6 +991,13 @@ class ConversationAgentCore:
             **values,
             "authority_connection": connection,
             "delivery_transport": self.delivery_transport,
+            "controlled_investigation_enabled": (
+                os.environ.get(
+                    "WAJE_CONTROLLED_INVESTIGATION_ENABLED",
+                    "0",
+                ).strip()
+                == "1"
+            ),
         }
 
     @classmethod
@@ -1734,45 +1802,74 @@ def _finalize_single_authority_waiting(
         or not isinstance(ledger, Mapping)
     ):
         raise EvidenceIntegrityError("single_authority_waiting_result_invalid")
-    raw_options = clarification.get("options")
-    if not isinstance(raw_options, list) or not raw_options:
+    raw_questions = clarification.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
         raise EvidenceIntegrityError("single_authority_clarification_invalid")
-    options: list[ClarificationOption] = []
-    for raw_option in raw_options:
-        if not isinstance(raw_option, Mapping) or set(raw_option) not in (
-            {"option_id", "label", "description", "recommended"},
-            {
-                "option_id",
-                "label",
-                "description",
-                "recommended",
-                "typed_value",
-            },
+    questions: list[ClarificationQuestion] = []
+    for raw_question in raw_questions:
+        if (
+            not isinstance(raw_question, Mapping)
+            or set(raw_question)
+            != {
+                "slot_id",
+                "slot_kind",
+                "question",
+                "options",
+                "recommendation_reason",
+            }
+            or not isinstance(raw_question.get("options"), list)
+            or not raw_question["options"]
         ):
             raise EvidenceIntegrityError(
-                "single_authority_clarification_option_invalid"
+                "single_authority_clarification_invalid"
             )
-        option_id = str(raw_option.get("option_id") or "")
-        label = str(raw_option.get("label") or "")
-        description = str(raw_option.get("description") or "")
-        recommended = raw_option.get("recommended")
-        if not option_id or not label or not isinstance(recommended, bool):
-            raise EvidenceIntegrityError(
-                "single_authority_clarification_option_invalid"
+        options: list[ClarificationOption] = []
+        for raw_option in raw_question["options"]:
+            if not isinstance(raw_option, Mapping) or set(raw_option) not in (
+                {"option_id", "label", "description", "recommended"},
+                {
+                    "option_id",
+                    "label",
+                    "description",
+                    "recommended",
+                    "typed_value",
+                },
+            ):
+                raise EvidenceIntegrityError(
+                    "single_authority_clarification_option_invalid"
+                )
+            option_id = str(raw_option.get("option_id") or "")
+            label = str(raw_option.get("label") or "")
+            description = str(raw_option.get("description") or "")
+            recommended = raw_option.get("recommended")
+            if not option_id or not label or not isinstance(recommended, bool):
+                raise EvidenceIntegrityError(
+                    "single_authority_clarification_option_invalid"
+                )
+            options.append(
+                ClarificationOption(
+                    option_id=option_id,
+                    label=label,
+                    description=description,
+                    recommended=recommended,
+                )
             )
-        options.append(
-            ClarificationOption(
-                option_id=option_id,
-                label=label,
-                description=description,
-                recommended=recommended,
+        questions.append(
+            ClarificationQuestion(
+                slot_id=str(raw_question.get("slot_id") or ""),
+                question=str(raw_question.get("question") or ""),
+                options=options,
+                recommendation_reason=str(
+                    raw_question.get("recommendation_reason") or ""
+                ),
             )
         )
     clarification_state = ClarificationState(
         run_id=run_id,
         topic_id=topic_id,
-        question=str(clarification.get("question") or ""),
-        options=options,
+        question=questions[0].question,
+        options=questions[0].options,
+        questions=questions,
     )
     authority_refs = interaction_result.get("authority_refs") or {}
     waiting_request = {
@@ -1928,6 +2025,7 @@ def _validated_topic_choice_source(
         "interaction_result",
         "interaction_context",
         "conversation_entry",
+        "conversation_business_summary",
     }:
         raise EvidenceIntegrityError("topic_selection_source_invalid")
     entry = source_request.get("conversation_entry")
@@ -1970,6 +2068,7 @@ def _validated_topic_choice_source(
         or not isinstance(business_summary, str)
         or not business_summary.strip()
         or business_summary != business_summary.strip()
+        or source_request.get("conversation_business_summary") != business_summary
         or isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not 0.0 <= float(confidence) <= 1.0
@@ -1999,15 +2098,20 @@ def _is_single_authority_clarification_submission(
         "resolutionId",
         "attemptRunId",
         "answer",
-        "selectedOptionId",
+        "selectedOptionIds",
         "source",
         "retryAttempt",
     }
     if set(clarification) != expected_keys:
         raise EvidenceIntegrityError("clarification_attempt_envelope_invalid")
-    selected_option_id = clarification.get("selectedOptionId")
-    if selected_option_id is not None and (
-        not isinstance(selected_option_id, str) or not selected_option_id.strip()
+    selected_option_ids = clarification.get("selectedOptionIds")
+    if (
+        not isinstance(selected_option_ids, list)
+        or any(
+            not isinstance(option_id, str) or not option_id.strip()
+            for option_id in selected_option_ids
+        )
+        or len(selected_option_ids) != len(set(selected_option_ids))
     ):
         raise EvidenceIntegrityError("clarification_attempt_envelope_invalid")
     if (
@@ -2041,15 +2145,50 @@ def _record_single_authority_clarification_submission(
     active_revision = store.resolve_active_intent_revision(run_id)
     if active_revision is None:
         raise EvidenceIntegrityError("decision_intent_not_active")
-    selected_option_id = clarification.get("selectedOptionId")
+    selected_option_ids = clarification.get("selectedOptionIds")
     llm_calls: list[dict[str, Any]] = []
     raw_binding: dict[str, Any] = {}
-    if isinstance(selected_option_id, str):
-        accepted = store.accept_decision_option(
-            run_attempt_id=run_id,
-            option_id=selected_option_id.strip(),
-            source="user",
+    accepted_results: list[Mapping[str, Any]] = []
+    if isinstance(selected_option_ids, list) and selected_option_ids:
+        material_slot_ids = tuple(
+            str(slot.get("slot_id") or "")
+            for slot in active_revision.ambiguity_slots
+            if slot.get("materiality") == "material"
+            and slot.get("status") == "unresolved"
         )
+        decision_options = {
+            str(option.get("option_id") or ""): option
+            for option in store.load_decision_options(
+                active_revision.intent_revision_id
+            )
+        }
+        selected_by_slot: dict[str, str] = {}
+        for raw_option_id in selected_option_ids:
+            option_id = raw_option_id.strip()
+            option = decision_options.get(option_id)
+            if option is None:
+                raise EvidenceIntegrityError(
+                    "clarification_selected_option_unknown"
+                )
+            slot_id = str(option.get("slot_id") or "")
+            if slot_id in selected_by_slot:
+                raise EvidenceIntegrityError(
+                    "clarification_selected_slot_duplicated"
+                )
+            selected_by_slot[slot_id] = option_id
+        if set(selected_by_slot) != set(material_slot_ids):
+            raise EvidenceIntegrityError(
+                "clarification_selected_slot_coverage_invalid"
+            )
+        for slot_id in material_slot_ids:
+            accepted_results.append(
+                store.accept_decision_option(
+                    run_attempt_id=run_id,
+                    option_id=selected_by_slot[slot_id],
+                    source="user",
+                )
+            )
+        accepted = accepted_results[-1]
     else:
         accepted, raw_binding, audit = _bind_single_authority_free_text(
             store=store,
@@ -2116,20 +2255,24 @@ def _record_single_authority_clarification_submission(
             }
     ledger = store.load_decision_ledger(active_revision.intent_revision_id)
     store.clear_pending_clarification(thread_id)
-    store.add_audit_event(
-        "single_authority_decision_recorded",
-        thread_id=thread_id,
-        topic_id=str(run_state.get("topic_id") or ""),
-        run_id=run_id,
-        ref=str(accepted["decision"]["decision_id"]),
-        payload={
-            "intent_revision_id": active_revision.intent_revision_id,
-            "option_id": str(accepted["decision"].get("option_id") or ""),
-            "decision_ledger_position": accepted["decision_ledger_position"],
-            "accepted_transition_id": accepted["durable_checkpoint"]["transition_id"],
-            "replayed": accepted["replayed"],
-        },
-    )
+    recorded_results = accepted_results or [accepted]
+    for recorded in recorded_results:
+        store.add_audit_event(
+            "single_authority_decision_recorded",
+            thread_id=thread_id,
+            topic_id=str(run_state.get("topic_id") or ""),
+            run_id=run_id,
+            ref=str(recorded["decision"]["decision_id"]),
+            payload={
+                "intent_revision_id": active_revision.intent_revision_id,
+                "option_id": str(recorded["decision"].get("option_id") or ""),
+                "decision_ledger_position": recorded["decision_ledger_position"],
+                "accepted_transition_id": recorded["durable_checkpoint"][
+                    "transition_id"
+                ],
+                "replayed": recorded["replayed"],
+            },
+        )
     return {
         "status": "decision_recorded",
         "run_id": run_id,
@@ -2137,6 +2280,10 @@ def _record_single_authority_clarification_submission(
         "topic_id": str(run_state.get("topic_id") or "") or None,
         "intent_revision_id": active_revision.intent_revision_id,
         "decision": canonical_value(accepted["decision"]),
+        "decisions": [
+            canonical_value(recorded["decision"])
+            for recorded in recorded_results
+        ],
         "decision_ledger": {
             "position": ledger.position,
             "records": [record.to_dict() for record in ledger.records],
@@ -2372,7 +2519,7 @@ def _bind_single_authority_free_text(
         "raw_provider_output": canonical_value(raw_binding),
     }
     transition = DurableTransition.create(
-        node_name="bind_free_text_directive",
+        node_name="bind_free_text_submission",
         parent_transition_id=store.latest_accepted_transition_id(run_id),
         run_attempt_id=run_id,
         intent_revision_id=active_revision.intent_revision_id,
@@ -2612,11 +2759,25 @@ def _record_workflow_failure_llm_audits(
 def _conversation_llm_from_env(*, circuit_connection: Any = None) -> Any:
     from bi_agent.runtime.llm_client import LLMConfigurationError
     from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
+    from bi_agent.runtime.recorded_plan_proposal import (
+        RecordedPlanProposalClient,
+    )
 
     try:
-        return MainlandModelProvider.structured_client_from_env(
+        client = MainlandModelProvider.structured_client_from_env(
             circuit_connection=circuit_connection,
         )
+        source_run_id = os.environ.get(
+            "WAJE_RECORDED_PLAN_PROPOSAL_SOURCE_RUN_ID",
+            "",
+        ).strip()
+        if source_run_id:
+            return RecordedPlanProposalClient(
+                client,
+                connection=circuit_connection,
+                source_run_id=source_run_id,
+            )
+        return client
     except LLMConfigurationError:
         raise
     except Exception as exc:

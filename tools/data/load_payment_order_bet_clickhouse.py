@@ -45,7 +45,7 @@ DEFAULT_SOURCE = Path("/Users/luka/Downloads/支付订单关联下注金额.csv"
 DATASET_ID = "payment_order_bet_link"
 TABLE_PREFIX = "payment_order_bet_link"
 CONTRACT_REF = "contracts/sources/payment-order-bet-link.source.yaml@0.1"
-RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@20"
+RUNTIME_BINDING_REF = "contracts/runtime/clickhouse-analysis-bindings.yaml@23"
 TABLE_ENGINE = "MergeTree"
 ORDER_BY = (
     "snapshot_id",

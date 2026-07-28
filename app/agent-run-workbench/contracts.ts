@@ -1,3 +1,29 @@
+import type {
+  TraceCapabilityFailure,
+  TraceCapabilityOutcomeStatus,
+  TraceReasoning,
+  TraceReasoningAnswerBlock,
+  TraceReasoningClaim,
+  TraceReasoningFact,
+  TraceReasoningIssue,
+  TraceReasoningIssueStatus,
+  TraceReasoningQuery,
+  TraceReasoningTask,
+} from "../run-reasoning-contracts";
+
+export type {
+  TraceCapabilityFailure,
+  TraceCapabilityOutcomeStatus,
+  TraceReasoning,
+  TraceReasoningAnswerBlock,
+  TraceReasoningClaim,
+  TraceReasoningFact,
+  TraceReasoningIssue,
+  TraceReasoningIssueStatus,
+  TraceReasoningQuery,
+  TraceReasoningTask,
+} from "../run-reasoning-contracts";
+
 export type TraceOwner = "LLM" | "本地系统" | "混合" | "用户" | "未知";
 
 export type TraceCompleteness = "known" | "unknown" | "incomplete";
@@ -55,25 +81,10 @@ export type TraceEvidenceExecutionState =
 export type TraceEvidencePlanState = "active" | "superseded";
 export type TraceEvidenceBindingState = "bound" | "unsettled";
 
-export type TraceCapabilityOutcomeStatus =
-  | "succeeded"
-  | "unavailable"
-  | "integrity_failed"
-  | "technical_failed"
-  | "skipped"
-  | "superseded";
-
 export type TraceCapabilityRetryability =
   | "never"
   | "same_input"
   | "replan_required";
-
-export type TraceCapabilityFailure = {
-  layer: "query" | "capability" | "evidence" | "persistence";
-  kind: string;
-  integrityLevel: "expected_boundary" | "task" | "shared_authority";
-  businessBoundary: string;
-};
 
 type TraceAcceptedTaskIdentity = {
   taskId: string;
@@ -190,6 +201,7 @@ export type TraceRun = {
     records: Record<string, unknown>[];
   };
   factorCoverage?: Record<string, unknown>;
+  controlledInvestigation?: Record<string, unknown>;
   traceClaims: TraceClaim[];
   traceEvidence: TraceEvidence[];
   messages?: TraceMessage[];

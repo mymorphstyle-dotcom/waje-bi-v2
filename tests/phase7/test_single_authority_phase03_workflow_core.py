@@ -41,6 +41,7 @@ from bi_agent.runtime.evidence_authority import (
 from bi_agent.runtime.evidence_taxonomy import publication_evidence_kinds
 from bi_agent.runtime.factor_coverage import FactorCoveragePlan, FactorCoverageResult
 from bi_agent.runtime.durable_call_journal import InMemoryDurableCallJournal
+from bi_agent.runtime.query_ir import QueryBundle
 from bi_agent.runtime.single_authority import DecisionLedger, DurableTransition
 from bi_agent.runtime.runtime_persistence import CapabilitySettlementAuthority
 from tests.phase7.test_single_authority_phase02 import (
@@ -463,14 +464,20 @@ def test_default_compile_route_executes_and_rebuilds_result_from_store(
 
     assert wired.state["workflow_status"] == "evidence_ready"
     assert result.status == "evidence_ready"
-    wired.materializer.assert_called_once_with(
-        plan_revision=plan,
-        intent_revision=wired.intent,
-        decision_ledger=wired.ledger,
-        authority_context=wired.store.authority_context,
-        analysis_runtime=wired.state["request"]["analysis_runtime"],
-        attempt_journal=wired.store.attempt_journal,
-    )
+    wired.materializer.assert_called_once()
+    materializer_args = wired.materializer.call_args.kwargs
+    compiled_query_bundle = materializer_args.pop("query_bundle")
+    assert isinstance(compiled_query_bundle, QueryBundle)
+    assert compiled_query_bundle.stage == "compiled"
+    assert compiled_query_bundle.plan_revision_id == plan.plan_revision_id
+    assert materializer_args == {
+        "plan_revision": plan,
+        "intent_revision": wired.intent,
+        "decision_ledger": wired.ledger,
+        "authority_context": wired.store.authority_context,
+        "analysis_runtime": wired.state["request"]["analysis_runtime"],
+        "attempt_journal": wired.store.attempt_journal,
+    }
     assert wired.adapter_registry.bind_calls == [(plan, wired.runtime_inputs)]
     assert set(wired.adapter_registry.executed_task_ids) == {
         task.task_id for task in plan.capability_tasks
@@ -776,6 +783,7 @@ def test_clarification_resume_accepts_evidence_ready_and_rebinds_runtime(
             "run_attempt_id": intent.run_attempt_id,
             "question": intent.original_user_text,
             "artifact_root": artifact_root,
+            "stop_after_phase": "phase03",
             "analysis_context": {},
             "context_manifest": context_manifest,
         },
@@ -785,6 +793,22 @@ def test_clarification_resume_accepts_evidence_ready_and_rebinds_runtime(
         ledger=ledger,
         transition=transition,
         waiting_request=waiting_request,
+        progress_request={
+            **waiting_request,
+            "plan_result_refs": {
+                "plan_revision_id": "plan-revision-recovery"
+            },
+            "execution_result_refs": {
+                "authoritative_execution_result_ref": (
+                    "execution-result-recovery"
+                )
+            },
+            "claim_coverage_refs": {
+                "claim_coverage_checkpoint_ref": (
+                    "claim-coverage-checkpoint-recovery"
+                )
+            },
+        },
     )
     analysis_runtime = object()
     captured: dict[str, Any] = {}
@@ -838,10 +862,20 @@ def test_clarification_resume_accepts_evidence_ready_and_rebinds_runtime(
             artifact_root=artifact_root,
             decision_result=decision_result,
             stop_after_phase="phase03",
+            immutable_resume_request=waiting_request,
         )
 
     assert result == finalized
     assert captured["analysis_runtime"] is analysis_runtime
+    assert store.run_updates[-1]["request"]["plan_result_refs"] == {
+        "plan_revision_id": "plan-revision-recovery"
+    }
+    assert store.run_updates[-1]["request"]["execution_result_refs"] == {
+        "authoritative_execution_result_ref": "execution-result-recovery"
+    }
+    assert store.run_updates[-1]["request"]["claim_coverage_refs"] == {
+        "claim_coverage_checkpoint_ref": "claim-coverage-checkpoint-recovery"
+    }
     assert captured["stop_after_phase"] == "phase03"
     assert finalize.call_count == 1
     assert (

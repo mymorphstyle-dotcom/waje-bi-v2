@@ -1,8 +1,6 @@
 import type {
   TraceAcceptedTask,
   TraceAcceptedTaskExecution,
-  TraceCapabilityFailure,
-  TraceCapabilityOutcomeStatus,
   TraceCapabilityRetryability,
   TraceClaim,
   TraceCompleteness,
@@ -19,6 +17,10 @@ import type {
   TraceRun,
   TraceRunOutcome,
 } from "../agent-run-workbench/contracts";
+import type {
+  TraceCapabilityFailure,
+  TraceCapabilityOutcomeStatus,
+} from "../run-reasoning-contracts";
 
 import type { SafePublicationRefs } from "./_conversationStore";
 import {
@@ -43,6 +45,7 @@ type ProjectionRows = {
   llmCallCount?: number;
   technicalTrace?: TraceRun["technicalTrace"];
   factorCoverage?: TraceRun["factorCoverage"];
+  controlledInvestigation?: TraceRun["controlledInvestigation"];
 };
 
 export type RuntimeTraceProjectionInput = ProjectionRows & {
@@ -225,6 +228,9 @@ export function traceRunFromCustomerPublication(
     },
     humanReview,
     ...(options.factorCoverage ? { factorCoverage: options.factorCoverage } : {}),
+    ...(options.controlledInvestigation
+      ? { controlledInvestigation: options.controlledInvestigation }
+      : {}),
     lifecycle,
     traceCompleteness: traceCompleteness({
       trace,
@@ -279,6 +285,9 @@ export function traceRunFromRuntimeState(
     timing: trace.timing,
     ...(input.technicalTrace ? { technicalTrace: input.technicalTrace } : {}),
     ...(input.factorCoverage ? { factorCoverage: input.factorCoverage } : {}),
+    ...(input.controlledInvestigation
+      ? { controlledInvestigation: input.controlledInvestigation }
+      : {}),
     processSummary: {
       checkpointCount: trace.nodes.length,
       llmCallCount: trace.llmCallCount,

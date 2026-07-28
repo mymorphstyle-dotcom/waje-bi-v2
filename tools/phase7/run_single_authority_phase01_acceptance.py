@@ -19,6 +19,10 @@ from bi_agent.conversation.agent_core import ConversationAgentCore
 from bi_agent.conversation.postgres_store import PostgresConversationStore
 from bi_agent.runtime.langgraph_workflow import _understand_business_intent
 from bi_agent.runtime.mainland_model_provider import MainlandModelProvider
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 
 
 QUESTION = "2026年6月1日付费金额为什么上涨？主要由哪些指标变化导致？"
@@ -31,6 +35,9 @@ def main() -> int:
     stability = subparsers.add_parser("intent-stability")
     stability.add_argument("--count", type=int, default=10)
     stability.add_argument("--artifact-root", type=Path, default=DEFAULT_ROOT)
+    intent_once = subparsers.add_parser("intent-once")
+    intent_once.add_argument("--question", required=True)
+    intent_once.add_argument("--artifact-root", type=Path, default=DEFAULT_ROOT)
     case_b = subparsers.add_parser("case-b")
     case_b.add_argument("--artifact-root", type=Path, default=DEFAULT_ROOT)
     reassess = subparsers.add_parser("intent-stability-reassess")
@@ -38,9 +45,82 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "intent-stability":
         return run_intent_stability(args.count, args.artifact_root)
+    if args.command == "intent-once":
+        return run_intent_once(args.question, args.artifact_root)
     if args.command == "intent-stability-reassess":
         return reassess_intent_stability(args.artifact_directory)
     return run_case_b(args.artifact_root)
+
+
+def run_intent_once(question: str, artifact_root: Path) -> int:
+    if not question.strip() or question != question.strip():
+        raise ValueError("intent_once_question_invalid")
+    acceptance_id = _acceptance_id("intent-once")
+    output_dir = _new_directory(artifact_root / acceptance_id)
+    store = PostgresConversationStore.from_env()
+    client = MainlandModelProvider.structured_client_from_env()
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+    run_id = f"phase01-live-intent-{uuid4().hex}"
+    thread_id = f"phase01-live-thread-{uuid4().hex}"
+    store.create_thread(thread_id, owner_id="phase01-live-acceptance")
+    store.upsert_run(run_id, thread_id=thread_id, status="running")
+    state: dict[str, Any] = {
+        "run_id": run_id,
+        "request": {
+            "question": question,
+            "run_attempt_id": run_id,
+            "authority_store": store,
+            "runtime_registry": registry,
+        },
+        "llm_client": client,
+        "llm_calls": [],
+        "checkpoint_events": [],
+        "validator_results": [],
+    }
+    try:
+        try:
+            output = _understand_business_intent(state)
+        except Exception as exc:
+            _write_new_json(
+                output_dir / "intent-failed.json",
+                {
+                    "acceptance_id": acceptance_id,
+                    "question": question,
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "failure_type": type(exc).__name__,
+                    "failure_code": str(exc),
+                    "llm_calls": list(state.get("llm_calls") or ()),
+                    "artifact_directory": str(output_dir.resolve()),
+                },
+            )
+            raise
+        audit = next(
+            item
+            for item in reversed(output["llm_calls"])
+            if item.get("task") == "single_authority_intent"
+        )
+        record = {
+            "acceptance_id": acceptance_id,
+            "question": question,
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "prompt_version": audit.get("prompt_version"),
+            "provider": audit.get("provider"),
+            "model": audit.get("model"),
+            "response_id": audit.get("response_id"),
+            "attempt_count": audit.get("attempt_count"),
+            "raw_structured_output": output["raw_intent_output"],
+            "intent_revision": output["intent_revision"],
+            "decision_ledger": output["decision_ledger"],
+            "durable_checkpoint": output["durable_checkpoint"],
+            "artifact_directory": str(output_dir.resolve()),
+        }
+        _write_new_json(output_dir / "intent-result.json", record)
+        print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        return 0
+    finally:
+        store.connection.close()
 
 
 def run_intent_stability(count: int, artifact_root: Path) -> int:

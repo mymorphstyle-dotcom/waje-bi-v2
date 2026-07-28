@@ -56,7 +56,9 @@ _GOVERNOR_INPUT_VALUES = {
     ),
     "statistical_risk": frozenset({"contract_bounded", "multiplicity_sensitive"}),
 }
-_CONTEXT_WINDOW_RELATIONS = frozenset({"trailing_complete_periods"})
+_CONTEXT_WINDOW_RELATIONS = frozenset(
+    {"trailing_complete_periods", "evaluation_range"}
+)
 _CONTEXT_WINDOW_UNITS = frozenset({"day", "week", "month", "quarter"})
 _CONTEXT_WINDOW_SPEC_REF_PREFIX = "context-window-spec:sha256:"
 
@@ -558,6 +560,7 @@ class PlannerProposal:
         for item in hypotheses_value:
             if set(item) != {
                 "proposal_item_id",
+                "issue_ref",
                 "statement",
                 "target_claim_kind",
                 "requested_axis_ids",
@@ -571,6 +574,10 @@ class PlannerProposal:
                 _freeze(
                     {
                         "proposal_item_id": item_id,
+                        "issue_ref": _required_string(
+                            item.get("issue_ref"),
+                            "planner_proposal_hypotheses_invalid",
+                        ),
                         "statement": _required_string(
                             item.get("statement"),
                             "planner_proposal_hypotheses_invalid",
@@ -590,6 +597,10 @@ class PlannerProposal:
                     }
                 )
             )
+            if normalized_hypotheses[-1]["issue_ref"] not in issue_ids:
+                raise PlanAuthorityContractError(
+                    "planner_proposal_hypothesis_issue_ref_invalid"
+                )
         normalized_assumptions: list[Mapping[str, Any]] = []
         for item in assumptions:
             if set(item) != {"proposal_item_id", "statement", "affected_refs"}:
@@ -963,6 +974,97 @@ class ClaimObligation:
 
 
 @dataclass(frozen=True)
+class AcceptedQuestionIssue:
+    """One accepted Planner question and its non-blocking answer contract."""
+
+    issue_ref: str
+    parent_issue_ref: str | None
+    business_question: str
+    role: str
+    target_claim_kind: str
+    answer_contract: Mapping[str, Any]
+    content_digest: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        issue_ref: str,
+        parent_issue_ref: str | None,
+        business_question: str,
+        role: str,
+        target_claim_kind: str,
+        answer_contract: Mapping[str, Any],
+    ) -> "AcceptedQuestionIssue":
+        issue_ref = _required_string(
+            issue_ref, "accepted_question_issue_ref_invalid"
+        )
+        parent_issue_ref = _optional_string(
+            parent_issue_ref, "accepted_question_parent_ref_invalid"
+        )
+        if role not in {"primary", "supporting"}:
+            raise PlanAuthorityContractError("accepted_question_role_invalid")
+        if not isinstance(answer_contract, Mapping):
+            raise PlanAuthorityContractError(
+                "accepted_question_answer_contract_invalid"
+            )
+        contract = _freeze(answer_contract)
+        required_elements = _string_tuple(
+            contract.get("required_elements"),
+            "accepted_question_answer_contract_invalid",
+            allow_empty=False,
+        )
+        if (
+            contract.get("contract_version") != "question-answer-contract.v1"
+            or contract.get("completion_policy")
+            != "direct_answer_or_explicitly_unresolved"
+            or contract.get("blocking") is not False
+            or required_elements
+            != (
+                "direct_answer",
+                "evidence_basis",
+                "local_boundary_when_limited",
+            )
+        ):
+            raise PlanAuthorityContractError(
+                "accepted_question_answer_contract_invalid"
+            )
+        body = {
+            "issue_ref": issue_ref,
+            "parent_issue_ref": parent_issue_ref,
+            "business_question": _required_string(
+                business_question, "accepted_question_business_question_invalid"
+            ),
+            "role": role,
+            "target_claim_kind": _required_string(
+                target_claim_kind, "accepted_question_claim_kind_invalid"
+            ),
+            "answer_contract": contract,
+        }
+        return cls(content_digest=canonical_digest(body), **body)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "AcceptedQuestionIssue":
+        fields = set(cls.__dataclass_fields__)
+        if not isinstance(payload, Mapping) or set(payload) != fields:
+            raise PlanAuthorityContractError("accepted_question_shape_invalid")
+        rebuilt = cls.create(
+            issue_ref=payload["issue_ref"],
+            parent_issue_ref=payload["parent_issue_ref"],
+            business_question=payload["business_question"],
+            role=payload["role"],
+            target_claim_kind=payload["target_claim_kind"],
+            answer_contract=payload["answer_contract"],
+        )
+        if rebuilt.to_dict() != _plain(payload):
+            raise PlanAuthorityContractError("accepted_question_integrity_invalid")
+        return rebuilt
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+
+@dataclass(frozen=True)
 class AnalysisAxis:
     analysis_axis_ref: str
     axis_id: str
@@ -1309,6 +1411,7 @@ class PlanRevision:
     resolved_window_refs: tuple[str, ...]
     context_window_specs: tuple[PlanContextWindowSpec, ...]
     claim_obligations: tuple[ClaimObligation, ...]
+    accepted_question_graph: tuple[AcceptedQuestionIssue, ...]
     analysis_axes: tuple[AnalysisAxis, ...]
     capability_tasks: tuple[CapabilityTask, ...]
     assumption_refs: tuple[str, ...]
@@ -1336,6 +1439,9 @@ class PlanRevision:
         assumption_refs: Sequence[str],
         budget_policy_ref: str,
         contract_versions: Mapping[str, str],
+        accepted_question_graph: Sequence[
+            AcceptedQuestionIssue | Mapping[str, Any]
+        ] = (),
     ) -> "PlanRevision":
         run_attempt_id = _required_string(
             run_attempt_id, "plan_revision_run_attempt_id_invalid"
@@ -1381,7 +1487,9 @@ class PlanRevision:
             raise PlanAuthorityContractError(
                 "plan_revision_temporal_window_refs_mismatch"
             )
-        if temporal.source == "decision" and temporal.decision_id not in decisions:
+        if temporal.source == "decision" and not set(
+            temporal.decision_refs
+        ).issubset(decisions):
             raise PlanAuthorityContractError(
                 "plan_revision_temporal_decision_ref_missing"
             )
@@ -1405,6 +1513,40 @@ class PlanRevision:
             obligations
         ):
             raise PlanAuthorityContractError("plan_revision_obligations_invalid")
+        question_graph = tuple(
+            item
+            if isinstance(item, AcceptedQuestionIssue)
+            else AcceptedQuestionIssue.from_dict(item)
+            for item in accepted_question_graph
+        )
+        if len({item.issue_ref for item in question_graph}) != len(question_graph):
+            raise PlanAuthorityContractError(
+                "plan_revision_question_graph_duplicated"
+            )
+        accepted_issue_refs: set[str] = set()
+        for index, issue in enumerate(question_graph):
+            if index == 0:
+                if issue.role != "primary" or issue.parent_issue_ref is not None:
+                    raise PlanAuthorityContractError(
+                        "plan_revision_question_graph_root_invalid"
+                    )
+            elif (
+                issue.role != "supporting"
+                or issue.parent_issue_ref not in accepted_issue_refs
+            ):
+                raise PlanAuthorityContractError(
+                    "plan_revision_question_graph_parent_invalid"
+                )
+            accepted_issue_refs.add(issue.issue_ref)
+        obligation_issue_refs = {
+            str(item.success_policy["issue_ref"])
+            for item in obligations
+            if item.success_policy.get("issue_ref") is not None
+        }
+        if question_graph and obligation_issue_refs - accepted_issue_refs:
+            raise PlanAuthorityContractError(
+                "plan_revision_obligation_issue_ref_invalid"
+            )
         axes = tuple(
             item if isinstance(item, AnalysisAxis) else AnalysisAxis.from_dict(item)
             for item in analysis_axes
@@ -1441,6 +1583,9 @@ class PlanRevision:
             "resolved_window_refs": windows,
             "context_window_specs": tuple(item.to_dict() for item in context_specs),
             "claim_obligations": tuple(item.to_dict() for item in obligations),
+            "accepted_question_graph": tuple(
+                item.to_dict() for item in question_graph
+            ),
             "analysis_axes": tuple(item.to_dict() for item in axes),
             "capability_task_specs": normalized_specs,
             "assumption_refs": assumptions,
@@ -1482,7 +1627,10 @@ class PlanRevision:
         )
         _validate_task_dag(tasks)
         required_obligations = {
-            item.obligation_id for item in obligations if item.role == "user_required"
+            item.obligation_id
+            for item in obligations
+            if item.role == "user_required"
+            and item.success_policy.get("execution_route_available", True) is not False
         }
         required_edges = {
             str(edge["obligation_id"])
@@ -1506,6 +1654,7 @@ class PlanRevision:
             "resolved_window_refs": windows,
             "context_window_specs": context_specs,
             "claim_obligations": obligations,
+            "accepted_question_graph": question_graph,
             "analysis_axes": axes,
             "capability_tasks": tasks,
             "assumption_refs": assumptions,
@@ -1576,6 +1725,7 @@ class PlanRevision:
             assumption_refs=payload["assumption_refs"],
             budget_policy_ref=payload["budget_policy_ref"],
             contract_versions=versions,
+            accepted_question_graph=payload["accepted_question_graph"],
         )
         if rebuilt.plan_revision_id != payload.get("plan_revision_id"):
             raise PlanAuthorityContractError("plan_revision_id_invalid")

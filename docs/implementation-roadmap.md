@@ -283,10 +283,10 @@ the original narrative text remains unchanged. Completeness, depth,
 readability and actionability stay in the post-delivery advisory record and
 cannot alter the gate or publication.
 
-Case B and further multi-Agent expansion remain subsequent stages. They do not
-change Phase 8 completion or the advisory-only answer-quality decision.
+Phase 8 remains the accepted first-answer performance baseline. P9 extends it
+without changing the advisory-only answer-quality decision.
 
-## Proposed Phase 9: Current Case B and controlled multi-Agent investigation
+## Phase 9: Current Case B and controlled multi-Agent investigation
 
 Phase 9 first creates a fresh single-Agent Case B reference on the current P8
 contracts, data releases and performance path. It then extends the existing
@@ -308,3 +308,39 @@ default, while remaining unable to block or mutate any customer publication.
 
 The executable plan is
 [P9 Case B and controlled multi-Agent investigation](./superpowers/plans/2026-07-24-p9-case-b-controlled-multi-agent.md).
+
+Deliver:
+
+- PostgreSQL v16 parent operation and child dispatch records with stable
+  identity, input digest, source allowlist, lease epoch and accepted artifact;
+- PostgreSQL v17 advisory-quality schema repair, which verifies the physical
+  columns before advancing the migration ledger and preserves immutable
+  publication rows during an in-place development upgrade;
+- typed LLM investigation proposals followed by deterministic admission over
+  accepted axes, disjoint work, allowed materials and Provider input budget;
+- at most three concurrent, tool-free DeepSeek child workers;
+- source-closed candidate artifacts that cannot create BI queries, Evidence,
+  Claim, ThreadHead, Publication, Delivery or customer state;
+- parent synthesis through the existing single narrative, publication,
+  delivery and customer-payload path;
+- Workbench parent-child trace inside the existing repeatable-read run model;
+- P9 catalog, deterministic, fault-injection, live A/B and browser evidence.
+
+The completed live Case B comparison is recorded in
+[P9 Case B controlled multi-Agent review](./reviews/2026-07-24-p9-controlled-multi-agent.md).
+The first-answer ceiling is an acceptance guard only. The review preserves the
+measured stage breakdown, Provider failures and the no-terminal-event diagnosis
+for the long-running planner sample so latency work starts from causes.
+
+Gate:
+
+- child failure, expired lease, process restart and duplicate dispatch preserve
+  the accepted parent authority and logical idempotency;
+- the child source view is customer-safe and lossless for every admitted source;
+- single and controlled runs use the same Case B question, recorded baseline
+  choice and pinned release/snapshot authority;
+- exactly one narrative, publication, delivery and customer payload can win;
+- the customer DOM contains no child identity, Provider payload, technical
+  error, SQL or raw row;
+- answer depth, readability and actionability remain post-delivery human
+  advisory records.

@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.phase7 import run_gateway_conversation_once as gateway_once  # noqa: E402
+from bi_agent.runtime.clickhouse_runtime import ClickHouseRuntime  # noqa: E402
 
 
 DEFAULT_CASES_PATH = ROOT / "evals" / "phase7" / "business_question_expectations.yaml"
@@ -1086,19 +1087,51 @@ def _iso(value: Any) -> str | None:
 
 
 def _dependency_health(base_url: str, user_id: str) -> dict[str, Any]:
-    payload = gateway_once._json_request(
+    liveness = gateway_once._json_request(
         base_url,
         "/api/health",
         user_id=user_id,
     )
-    raw_checks = payload.get("checks")
+    readiness = gateway_once._json_request(
+        base_url,
+        "/api/health?mode=readiness",
+        user_id=user_id,
+    )
+    liveness_checks = liveness.get("checks")
+    readiness_checks = readiness.get("checks")
     if (
-        payload.get("status") not in {"ok", "degraded"}
-        or not isinstance(raw_checks, list)
-        or any(not isinstance(item, Mapping) for item in raw_checks)
+        liveness.get("status") not in {"ok", "degraded"}
+        or readiness.get("status") not in {"ok", "degraded"}
+        or not isinstance(liveness_checks, list)
+        or not isinstance(readiness_checks, list)
+        or any(
+            not isinstance(item, Mapping)
+            for item in (*liveness_checks, *readiness_checks)
+        )
     ):
         raise RuntimeError("gateway_health_contract_invalid")
-    by_name = {str(item.get("name") or ""): item for item in raw_checks}
+    by_name = {
+        str(item.get("name") or ""): item
+        for item in (*liveness_checks, *readiness_checks)
+    }
+    runtime_configuration = by_name.get("runtime_configuration")
+    if not isinstance(runtime_configuration, Mapping):
+        raise RuntimeError("gateway_health_check_missing:runtime_configuration")
+    clickhouse_result = ClickHouseRuntime.from_env().show_tables()
+    by_name["clickhouse_access"] = {
+        "name": "clickhouse_access",
+        "status": "ok" if clickhouse_result.ok else "failed",
+        "detail": (
+            "read_only_catalog_query_passed"
+            if clickhouse_result.ok
+            else "read_only_catalog_query_failed"
+        ),
+    }
+    by_name["llm_access"] = {
+        "name": "llm_access",
+        "status": str(runtime_configuration.get("status") or "failed"),
+        "detail": str(runtime_configuration.get("detail") or ""),
+    }
     required = (
         ("gateway", "frontend_gateway"),
         ("postgres", "postgres_runtime_store"),
@@ -1123,7 +1156,11 @@ def _dependency_health(base_url: str, user_id: str) -> dict[str, Any]:
         )
     health = {
         "checked_at": _utc_now(),
-        "overall_status": str(payload["status"]),
+        "overall_status": (
+            "ok"
+            if liveness["status"] == readiness["status"] == "ok"
+            else "degraded"
+        ),
         "checks": checks,
     }
     if health["overall_status"] != "ok" or any(
@@ -1496,7 +1533,15 @@ def _required_obligation_publication_closed(
             return False
         coverage_state = obligation.get("coverage_state")
         if coverage_state in {"satisfied", "mixed", "contradicted"}:
-            if not (coverage_claim_refs & verified_claim_refs & published_claim_refs):
+            verified_publication_claims = (
+                coverage_claim_refs & verified_claim_refs & published_claim_refs
+            )
+            limitation_only_mixed_closure = (
+                coverage_state == "mixed"
+                and bool(unavailable_limitation_refs)
+                and unavailable_limitation_refs <= published_limitation_refs
+            )
+            if not verified_publication_claims and not limitation_only_mixed_closure:
                 return False
             if not coverage_limitation_refs <= published_limitation_refs:
                 return False
@@ -1761,7 +1806,75 @@ def _event_publication(
         f"/api/runs/{run_id}/events",
         user_id=user_id,
     )
-    return gateway_once._customer_publication_ready(events)
+    if len(events) != 1:
+        return None
+    snapshot = gateway_once._customer_snapshot(events[0])
+    state = snapshot.get("state")
+    if not isinstance(state, Mapping) or state.get("status") not in {
+        "completed",
+        "completed_with_limits",
+    }:
+        return None
+    answer = state.get("answer")
+    if not isinstance(answer, Mapping):
+        return None
+    return {
+        "projection_kind": "customer_conversation_snapshot",
+        "answer": dict(answer),
+    }
+
+
+_CUSTOMER_BLOCK_KIND_BY_ROLE = {
+    "executive_answer": "summary",
+    "direction": "finding",
+    "accounting_drivers": "finding",
+    "dimension_localization": "finding",
+    "contextual_pattern": "context",
+    "boundary": "limitation",
+    "next_action": "recommendation",
+}
+
+
+def _customer_snapshot_matches_persisted_publication(
+    event_publication: Mapping[str, Any],
+    persisted_publication: Mapping[str, Any],
+) -> bool:
+    if event_publication.get("projection_kind") != "customer_conversation_snapshot":
+        return False
+    answer = event_publication.get("answer")
+    customer_publication = persisted_publication.get("customer_publication")
+    if not isinstance(answer, Mapping) or not isinstance(
+        customer_publication, Mapping
+    ):
+        return False
+    projected_blocks = answer.get("blocks")
+    persisted_blocks = customer_publication.get("blocks")
+    if not isinstance(projected_blocks, list) or not isinstance(
+        persisted_blocks, list
+    ):
+        return False
+    if len(projected_blocks) != len(persisted_blocks):
+        return False
+    for projected, persisted in zip(projected_blocks, persisted_blocks, strict=True):
+        if not isinstance(projected, Mapping) or not isinstance(persisted, Mapping):
+            return False
+        role = str(persisted.get("role") or "")
+        if (
+            projected.get("kind") != _CUSTOMER_BLOCK_KIND_BY_ROLE.get(role)
+            or projected.get("text") != persisted.get("text")
+        ):
+            return False
+    claim_refs = customer_publication.get("claim_refs")
+    limitation_refs = customer_publication.get("limitation_refs")
+    warnings = customer_publication.get("warnings")
+    return (
+        isinstance(claim_refs, list)
+        and isinstance(limitation_refs, list)
+        and isinstance(warnings, list)
+        and answer.get("evidenceCount") == len(claim_refs)
+        and answer.get("limitationCount") == len(limitation_refs)
+        and answer.get("warnings") == list(dict.fromkeys(warnings))
+    )
 
 
 def _acceptance_status(
@@ -1829,11 +1942,11 @@ def _acceptance_status(
             or persisted_publication.get("customer_publication_ref") is not None
         ):
             return "contract_failed", "failed_delivery_ref_closure_invalid"
-        if event_publication is not None and (
-            persisted_publication.get("customer_publication")
-            != event_publication.get("customer_publication")
-            or persisted_publication.get("safe_publication")
-            != event_publication.get("publication")
+        if event_publication is not None and not (
+            _customer_snapshot_matches_persisted_publication(
+                event_publication,
+                persisted_publication,
+            )
         ):
             return (
                 "contract_failed",
@@ -1846,10 +1959,9 @@ def _acceptance_status(
         return "contract_failed", "publication_delivery_state_mismatch"
     if persisted_publication is None or event_publication is None:
         return "contract_failed", "customer_publication_ready_missing"
-    if persisted_publication.get("customer_publication") != event_publication.get(
-        "customer_publication"
-    ) or persisted_publication.get("safe_publication") != event_publication.get(
-        "publication"
+    if not _customer_snapshot_matches_persisted_publication(
+        event_publication,
+        persisted_publication,
     ):
         return "contract_failed", "customer_publication_event_persistence_mismatch"
     safe_publication = persisted_publication["safe_publication"]
@@ -1883,10 +1995,7 @@ def _acceptance_status(
         authority_records,
         persisted_publication,
     ):
-        return (
-            "contract_failed",
-            "required_obligation_publication_closure_missing",
-        )
+        return "contract_failed", "required_obligation_publication_closure_missing"
     if not llm_call_audits:
         return "contract_failed", "llm_call_audits_missing"
     if not _deepseek_audit_observed(llm_call_audits):
@@ -2150,6 +2259,15 @@ def _submit_gateway_operation(
             expected_status=202,
         )
         return response, None, None
+    if selected_option_id is None and free_text is None:
+        response = gateway_once._poll_existing_run(
+            base_url=base_url,
+            user_id=user_id,
+            run_id=source_run_id,
+            timeout_seconds=request_timeout_seconds,
+            poll_interval_seconds=1.0,
+        )
+        return response, source_run_id, None
     if bool(selected_option_id) == bool(free_text):
         raise ValueError("human_clarification_input_mode_invalid")
     answer = selected_option_id or free_text
@@ -2157,7 +2275,9 @@ def _submit_gateway_operation(
         raise ValueError("human_clarification_input_required")
     payload: dict[str, Any] = {
         "answer": answer,
-        "selectedOptionId": selected_option_id,
+        "selectedOptionIds": (
+            [selected_option_id] if selected_option_id is not None else []
+        ),
         "requestIdentity": request_identity,
     }
     response = gateway_once._json_request(
@@ -2236,11 +2356,6 @@ def main(argv: list[str] | None = None) -> int:
         args.selected_option_id = args.selected_option_id.strip()
     if args.clarification_free_text is not None:
         args.clarification_free_text = args.clarification_free_text.strip()
-    if args.run_id and not (args.selected_option_id or args.clarification_free_text):
-        parser.error(
-            "--run-id requires explicit --selected-option-id or "
-            "--clarification-free-text"
-        )
     if not args.run_id and (args.selected_option_id or args.clarification_free_text):
         parser.error("clarification input requires --run-id")
 
@@ -2262,7 +2377,13 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout_seconds,
         ),
     )
-    final_run_id = gateway_once._gateway_run_id(response)
+    final_run_id = (
+        source_run_id
+        if source_run_id is not None
+        and args.selected_option_id is None
+        and args.clarification_free_text is None
+        else gateway_once._gateway_run_id(response)
+    )
     run_ids = tuple(
         dict.fromkeys(
             run_id

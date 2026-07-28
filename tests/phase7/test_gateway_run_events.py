@@ -11,6 +11,9 @@ class CustomerRunStateStreamTest(unittest.TestCase):
         cls.route = (
             ROOT / "app" / "api" / "threads" / "[threadId]" / "events" / "route.ts"
         ).read_text(encoding="utf-8")
+        cls.run_route = (
+            ROOT / "app" / "api" / "runs" / "[runId]" / "events" / "route.ts"
+        ).read_text(encoding="utf-8")
         cls.store = (ROOT / "app" / "api" / "_conversationStore.ts").read_text(
             encoding="utf-8"
         )
@@ -58,6 +61,15 @@ class CustomerRunStateStreamTest(unittest.TestCase):
         self.assertIn('run.status === "waiting_for_clarification"', contract)
         self.assertIn("currentClarification", contract)
         self.assertNotIn('event === "clarification_state_saved"', contract)
+
+    def test_run_stream_snapshot_is_stable_after_later_thread_messages(self):
+        self.assertIn("runId,", self.run_route)
+        self.assertIn("dispatch.run_id = $3", self.store)
+        self.assertIn("dispatch.message_id", self.store)
+        self.assertIn("'assistant:' || substring(source.operation_key FROM 6)", self.store)
+        self.assertIn("runScopedSnapshot ? undefined", self.store)
+        self.assertIn("runScopedSnapshot ? null", self.store)
+        self.assertIn("runEventCursor", self.store)
 
     def test_complete_technical_chronology_remains_in_audit_layer(self):
         self.assertIn("export async function runEvents", self.store)

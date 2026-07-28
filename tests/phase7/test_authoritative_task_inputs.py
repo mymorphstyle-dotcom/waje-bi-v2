@@ -146,6 +146,7 @@ def _records():
     intent = IntentRevision.create(
         run_attempt_id="run-authoritative-input",
         original_user_text=f"{TARGET_DATE}付费金额为什么上涨？",
+        business_summary=f"你希望分析{TARGET_DATE}付费金额上涨的业务驱动。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -171,7 +172,7 @@ def _records():
             },
         ),
         source_spans=(),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="single-authority-intent.v2",
         model_version="test-model",
     )

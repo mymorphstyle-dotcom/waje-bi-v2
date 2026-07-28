@@ -197,7 +197,8 @@ CREATE TABLE IF NOT EXISTS waje_runtime.agent_generated_artifacts (
   artifact_version text NOT NULL,
   content_digest text NOT NULL,
   source_refs jsonb NOT NULL CHECK (jsonb_typeof(source_refs) = 'array'),
-  visibility_policy_ref text NOT NULL,
+  visibility_policy_ref text NOT NULL
+    CHECK (visibility_policy_ref = 'visibility:customer-safe'),
   customer_summary text NOT NULL,
   detail jsonb NOT NULL CHECK (jsonb_typeof(detail) = 'object'),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -800,12 +801,18 @@ CREATE TABLE IF NOT EXISTS waje_runtime.decision_options (
   display_label text NOT NULL,
   display_description text NOT NULL DEFAULT '',
   recommended boolean NOT NULL DEFAULT false,
+  display_position integer NOT NULL CHECK (display_position > 0),
   option_set_digest text NOT NULL CHECK (length(option_set_digest) = 64),
   content_digest text NOT NULL CHECK (length(content_digest) = 64),
   payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (intent_revision_id, slot_id, option_id)
 );
+
+ALTER TABLE waje_runtime.decision_options
+  ADD COLUMN IF NOT EXISTS display_position integer NOT NULL DEFAULT 1;
+ALTER TABLE waje_runtime.decision_options
+  ALTER COLUMN display_position DROP DEFAULT;
 
 CREATE TABLE IF NOT EXISTS waje_runtime.decision_records (
   ledger_position bigint NOT NULL,
@@ -1165,7 +1172,8 @@ ALTER TABLE waje_runtime.durable_call_attempts
     'conversation_provider', 'topic_selection', 'intent_provider',
     'clarification_provider',
     'planner_provider', 'plan_patch_provider', 'query', 'capability',
-    'semantic_provider', 'narrative_provider'
+    'semantic_provider', 'controlled_investigation_provider',
+    'narrative_provider'
   ));
 ALTER TABLE waje_runtime.durable_call_attempts
   ADD CONSTRAINT durable_call_attempts_scope_check CHECK (
@@ -1178,7 +1186,8 @@ ALTER TABLE waje_runtime.durable_call_attempts
       AND plan_revision_id IS NULL
       AND task_id IS NULL)
     OR (call_kind IN (
-        'plan_patch_provider', 'semantic_provider', 'narrative_provider'
+        'plan_patch_provider', 'semantic_provider',
+        'controlled_investigation_provider', 'narrative_provider'
       )
       AND intent_revision_id IS NOT NULL
       AND plan_revision_id IS NOT NULL
@@ -2230,6 +2239,181 @@ CREATE TABLE IF NOT EXISTS waje_runtime.narrative_material_projections (
     ) ON DELETE RESTRICT
 );
 
+-- Controlled investigation is an advisory, read-only child lifecycle between
+-- the sealed authority bundle and the one customer narrative. Operations are
+-- immutable authority bindings. Dispatch rows contain an immutable child
+-- command envelope plus mutable lease and terminal coordination.
+CREATE TABLE IF NOT EXISTS waje_runtime.controlled_investigation_operations (
+  operation_ref text PRIMARY KEY,
+  owner_ref text NOT NULL,
+  thread_ref text NOT NULL
+    REFERENCES waje_runtime.investigation_threads(thread_id) ON DELETE RESTRICT,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  intent_revision_id text NOT NULL
+    REFERENCES waje_runtime.intent_revisions(intent_revision_id) ON DELETE RESTRICT,
+  plan_revision_id text NOT NULL
+    REFERENCES waje_runtime.plan_revisions(plan_revision_id) ON DELETE RESTRICT,
+  authority_context_ref text NOT NULL
+    REFERENCES waje_runtime.authority_contexts(authority_context_ref) ON DELETE RESTRICT,
+  authority_bundle_ref text NOT NULL,
+  parent_transition_id text NOT NULL
+    REFERENCES waje_runtime.workflow_transition_attempts(attempt_id)
+      ON DELETE RESTRICT,
+  source_material_projection_ref text NOT NULL,
+  source_material_projection_digest text NOT NULL
+    CHECK (length(source_material_projection_digest) = 64),
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  content_digest text NOT NULL CHECK (length(content_digest) = 64),
+  payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(operation_ref, thread_ref),
+  UNIQUE(run_attempt_id, input_digest),
+  FOREIGN KEY (owner_ref, run_attempt_id, authority_bundle_ref)
+    REFERENCES waje_runtime.authority_bundles(
+      owner_ref, run_attempt_id, bundle_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_ref, run_attempt_id, source_material_projection_ref)
+    REFERENCES waje_runtime.narrative_material_projections(
+      owner_ref, run_attempt_id, projection_ref
+    ) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS waje_runtime.controlled_investigation_dispatches (
+  investigation_ref text PRIMARY KEY,
+  operation_ref text NOT NULL,
+  thread_ref text NOT NULL,
+  run_attempt_id text NOT NULL
+    REFERENCES waje_runtime.analysis_runs(run_id) ON DELETE RESTRICT,
+  child_run_id text NOT NULL UNIQUE,
+  investigation_key text NOT NULL,
+  question text NOT NULL,
+  axis_refs jsonb NOT NULL CHECK (jsonb_typeof(axis_refs) = 'array'),
+  allowed_source_refs jsonb NOT NULL
+    CHECK (jsonb_typeof(allowed_source_refs) = 'array'),
+  allowed_source_set_digest text NOT NULL
+    CHECK (length(allowed_source_set_digest) = 64),
+  expected_output_kind text NOT NULL CHECK (
+    expected_output_kind IN (
+      'mechanism_explanation',
+      'structure_concentration',
+      'alternative_explanation'
+    )
+  ),
+  input_digest text NOT NULL CHECK (length(input_digest) = 64),
+  idempotency_key text NOT NULL CHECK (length(idempotency_key) = 64),
+  command_payload jsonb NOT NULL CHECK (jsonb_typeof(command_payload) = 'object'),
+  dispatch_state text NOT NULL DEFAULT 'planned' CHECK (
+    dispatch_state IN ('planned', 'leased', 'running', 'terminal')
+  ),
+  terminal_status text CHECK (
+    terminal_status IN ('completed', 'limited', 'failed', 'cancelled')
+  ),
+  lease_owner_id text,
+  lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+  lease_expires_at timestamptz,
+  heartbeat_at timestamptz,
+  accepted_attempt_ref text,
+  accepted_artifact_ref text,
+  output_digest text CHECK (
+    output_digest IS NULL OR length(output_digest) = 64
+  ),
+  failure_code text,
+  retryability text CHECK (
+    retryability IN ('retryable', 'not_retryable')
+  ),
+  technical_detail_ref text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(operation_ref, investigation_key),
+  UNIQUE(run_attempt_id, input_digest),
+  UNIQUE(run_attempt_id, idempotency_key),
+  FOREIGN KEY (operation_ref, thread_ref)
+    REFERENCES waje_runtime.controlled_investigation_operations(
+      operation_ref, thread_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (run_attempt_id, accepted_attempt_ref)
+    REFERENCES waje_runtime.durable_call_acceptances(
+      run_attempt_id, accepted_attempt_ref
+    ) ON DELETE RESTRICT,
+  FOREIGN KEY (thread_ref, accepted_artifact_ref)
+    REFERENCES waje_runtime.agent_generated_artifacts(
+      thread_id, artifact_ref
+    ) ON DELETE RESTRICT,
+  CHECK (
+    (dispatch_state = 'planned'
+      AND lease_owner_id IS NULL AND lease_expires_at IS NULL
+      AND terminal_status IS NULL)
+    OR (dispatch_state IN ('leased', 'running')
+      AND lease_owner_id IS NOT NULL AND lease_expires_at IS NOT NULL
+      AND terminal_status IS NULL)
+    OR (dispatch_state = 'terminal'
+      AND lease_owner_id IS NULL AND lease_expires_at IS NULL
+      AND terminal_status IS NOT NULL)
+  ),
+  CHECK (
+    (terminal_status IN ('completed', 'limited')
+      AND accepted_attempt_ref IS NOT NULL
+      AND accepted_artifact_ref IS NOT NULL
+      AND output_digest IS NOT NULL
+      AND failure_code IS NULL)
+    OR (terminal_status = 'failed'
+      AND accepted_attempt_ref IS NULL
+      AND accepted_artifact_ref IS NULL
+      AND output_digest IS NULL
+      AND failure_code IS NOT NULL
+      AND retryability IS NOT NULL)
+    OR (terminal_status = 'cancelled'
+      AND accepted_attempt_ref IS NULL
+      AND accepted_artifact_ref IS NULL
+      AND output_digest IS NULL)
+    OR terminal_status IS NULL
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_controlled_investigation_dispatch_recovery
+  ON waje_runtime.controlled_investigation_dispatches(
+    dispatch_state, lease_expires_at, updated_at, investigation_ref
+  )
+  WHERE dispatch_state IN ('planned', 'leased', 'running');
+
+CREATE OR REPLACE FUNCTION
+waje_runtime.controlled_investigation_dispatch_identity_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.investigation_ref IS DISTINCT FROM OLD.investigation_ref
+     OR NEW.operation_ref IS DISTINCT FROM OLD.operation_ref
+     OR NEW.thread_ref IS DISTINCT FROM OLD.thread_ref
+     OR NEW.run_attempt_id IS DISTINCT FROM OLD.run_attempt_id
+     OR NEW.child_run_id IS DISTINCT FROM OLD.child_run_id
+     OR NEW.investigation_key IS DISTINCT FROM OLD.investigation_key
+     OR NEW.question IS DISTINCT FROM OLD.question
+     OR NEW.axis_refs IS DISTINCT FROM OLD.axis_refs
+     OR NEW.allowed_source_refs IS DISTINCT FROM OLD.allowed_source_refs
+     OR NEW.allowed_source_set_digest IS DISTINCT FROM OLD.allowed_source_set_digest
+     OR NEW.expected_output_kind IS DISTINCT FROM OLD.expected_output_kind
+     OR NEW.input_digest IS DISTINCT FROM OLD.input_digest
+     OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+     OR NEW.command_payload IS DISTINCT FROM OLD.command_payload
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
+  THEN
+    RAISE EXCEPTION 'controlled_investigation_dispatch_identity_immutable'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS controlled_investigation_dispatch_identity_immutable
+  ON waje_runtime.controlled_investigation_dispatches;
+CREATE TRIGGER controlled_investigation_dispatch_identity_immutable
+  BEFORE UPDATE ON waje_runtime.controlled_investigation_dispatches
+  FOR EACH ROW
+  EXECUTE FUNCTION
+    waje_runtime.controlled_investigation_dispatch_identity_immutable();
+
 CREATE TABLE IF NOT EXISTS waje_runtime.narrative_writer_attempts (
   writer_attempt_ref text PRIMARY KEY,
   owner_ref text NOT NULL,
@@ -3092,6 +3276,54 @@ CREATE TABLE IF NOT EXISTS waje_runtime.insight_quality_evaluations (
   )
 );
 
+-- v23 repairs development databases where CREATE TABLE IF NOT EXISTS kept the
+-- pre-rubric advisory table shape while the migration ledger advanced.
+DROP TRIGGER IF EXISTS insight_quality_evaluations_append_only
+  ON waje_runtime.insight_quality_evaluations;
+
+ALTER TABLE waje_runtime.insight_quality_evaluations
+  ADD COLUMN IF NOT EXISTS rubric_ref text,
+  ADD COLUMN IF NOT EXISTS rubric_digest text
+    CHECK (length(rubric_digest) = 64),
+  ADD COLUMN IF NOT EXISTS rubric jsonb
+    CHECK (jsonb_typeof(rubric) = 'object'),
+  ADD COLUMN IF NOT EXISTS evaluation_case_digest text
+    CHECK (length(evaluation_case_digest) = 64),
+  ADD COLUMN IF NOT EXISTS evaluation_case jsonb
+    CHECK (jsonb_typeof(evaluation_case) = 'object'),
+  ADD COLUMN IF NOT EXISTS model_profile_digest text
+    CHECK (length(model_profile_digest) = 64),
+  ADD COLUMN IF NOT EXISTS model_profile jsonb
+    CHECK (jsonb_typeof(model_profile) = 'object'),
+  ADD COLUMN IF NOT EXISTS human_reasons jsonb
+    CHECK (jsonb_typeof(human_reasons) = 'object');
+
+UPDATE waje_runtime.insight_quality_evaluations
+SET rubric_ref = COALESCE(rubric_ref, payload ->> 'rubric_ref'),
+    rubric_digest = COALESCE(rubric_digest, payload ->> 'rubric_digest'),
+    rubric = COALESCE(rubric, payload -> 'rubric'),
+    evaluation_case_digest = COALESCE(
+      evaluation_case_digest,
+      payload ->> 'evaluation_case_digest'
+    ),
+    evaluation_case = COALESCE(evaluation_case, payload -> 'evaluation_case'),
+    model_profile_digest = COALESCE(
+      model_profile_digest,
+      payload ->> 'model_profile_digest'
+    ),
+    model_profile = COALESCE(model_profile, payload -> 'model_profile'),
+    human_reasons = COALESCE(human_reasons, payload -> 'human_reasons');
+
+ALTER TABLE waje_runtime.insight_quality_evaluations
+  ALTER COLUMN rubric_ref SET NOT NULL,
+  ALTER COLUMN rubric_digest SET NOT NULL,
+  ALTER COLUMN rubric SET NOT NULL,
+  ALTER COLUMN evaluation_case_digest SET NOT NULL,
+  ALTER COLUMN evaluation_case SET NOT NULL,
+  ALTER COLUMN model_profile_digest SET NOT NULL,
+  ALTER COLUMN model_profile SET NOT NULL,
+  ALTER COLUMN human_reasons SET NOT NULL;
+
 CREATE TABLE IF NOT EXISTS waje_runtime.guardrail_promotion_records (
   promotion_ref text PRIMARY KEY,
   governance_scope_ref text NOT NULL,
@@ -3187,6 +3419,7 @@ BEGIN
     'public_recommendations',
     'public_limitations',
     'narrative_material_projections',
+    'controlled_investigation_operations',
     'narrative_writer_attempts',
     'narrative_documents',
     'narrative_blocks',
@@ -3337,7 +3570,7 @@ $$;
 
 INSERT INTO waje_runtime.schema_migrations(migration_id, migration_digest)
 VALUES (
-  'single-authority-workflow.v15',
-  '8bac54f39a1573aead3b1d2be4aaac4f88102c0952d664113f44e8fcf023e305'
+  'single-authority-workflow.v23',
+  '5d63799f71fb49f0c898554573592bb2885059a026f395576de3a04bfa588feb'
 )
 ON CONFLICT (migration_id) DO NOTHING;

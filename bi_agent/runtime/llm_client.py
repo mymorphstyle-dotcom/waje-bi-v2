@@ -49,12 +49,16 @@ class LLMOutputError(RuntimeError):
         *,
         retryable: bool = True,
         audit: Mapping[str, Any] | None = None,
+        invalid_output: Mapping[str, Any] | None = None,
     ):
         if type(retryable) is not bool:
             raise ValueError("llm_output_failure_retryability_invalid")
         super().__init__(message)
         self.retryable = retryable
         self.audit = dict(audit or {})
+        self.invalid_output = (
+            dict(invalid_output) if isinstance(invalid_output, Mapping) else None
+        )
 
 
 class LLMTimeoutError(RuntimeError):
@@ -282,6 +286,7 @@ class OpenAICompatibleLLMClient:
                     str(exc),
                     retryable=exc.retryable,
                     audit=audit,
+                    invalid_output=parsed_output,
                 ) from exc
             if isinstance(exc, LLMProviderError):
                 raise LLMProviderError(

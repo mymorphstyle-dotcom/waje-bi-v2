@@ -78,7 +78,7 @@ def test_explain_change_contract_schedules_breadth_axes_and_active_funnel() -> N
         },
     )
 
-    assert goal_plan["schema_version"] == "analysis_goal_plan.v3"
+    assert goal_plan["schema_version"] == "analysis_goal_plan.v4"
     assert goal_plan["factor_domain_refs"] == list(P4_FACTOR_DOMAINS)
     by_axis = {item["axis_id"]: item for item in goal_plan["analysis_axes"]}
     assert by_axis["acquisition_funnel"]["metric_refs"] == [

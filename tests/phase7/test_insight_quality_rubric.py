@@ -6,6 +6,7 @@ import pytest
 
 from bi_agent.runtime.insight_quality_rubric import (
     INSIGHT_QUALITY_DIMENSIONS,
+    InsightEvaluationCaseSnapshot,
     InsightQualityRubric,
     InsightQualityRubricContractError,
 )
@@ -46,6 +47,54 @@ def test_v1_rubric_rejects_content_drift_under_the_same_version() -> None:
         match="insight_quality_rubric_integrity_invalid",
     ):
         InsightQualityRubric.from_dict(payload)
+
+
+def test_additional_case_can_remain_unclassified_in_advisory_review() -> None:
+    publication = _context().publication
+    snapshot = InsightEvaluationCaseSnapshot.create(
+        acceptance_summary_version="phase7-customer-publication-acceptance-summary.v2",
+        acceptance_source="persisted_customer_publication",
+        acceptance_summary_digest="1" * 64,
+        acceptance_status="passed",
+        case_id="additional-case",
+        question_family=None,
+        variant="additional",
+        user_message="一个额外的自然语言验收问题",
+        review_focus="记录回答质量，不改变交付。",
+        run_attempt_id=publication.run_attempt_id,
+        publication_ref=publication.publication_ref,
+        publication_digest=publication.publication_digest,
+        customer_payload_ref="customer-payload:additional-case",
+        customer_payload_digest="2" * 64,
+    )
+
+    assert snapshot.question_family is None
+    assert InsightEvaluationCaseSnapshot.from_dict(snapshot.to_dict()) == snapshot
+
+
+def test_paired_case_requires_a_question_family() -> None:
+    publication = _context().publication
+
+    with pytest.raises(
+        InsightQualityRubricContractError,
+        match="insight_evaluation_case_question_family_invalid",
+    ):
+        InsightEvaluationCaseSnapshot.create(
+            acceptance_summary_version="phase7-customer-publication-acceptance-summary.v2",
+            acceptance_source="persisted_customer_publication",
+            acceptance_summary_digest="1" * 64,
+            acceptance_status="passed",
+            case_id="paired-case",
+            question_family=None,
+            variant="original",
+            user_message="一个成对验收问题",
+            review_focus="验证同一问题家族。",
+            run_attempt_id=publication.run_attempt_id,
+            publication_ref=publication.publication_ref,
+            publication_digest=publication.publication_digest,
+            customer_payload_ref="customer-payload:paired-case",
+            customer_payload_digest="2" * 64,
+        )
 
 
 def test_scores_remain_human_advisory_without_an_automatic_threshold() -> None:

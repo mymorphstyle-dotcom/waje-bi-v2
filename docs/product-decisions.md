@@ -1570,6 +1570,48 @@ Discussion note on 21st Agent SDK:
 - 21st tools should call WAJE-owned capability endpoints or local service APIs, not raw SQL execution.
 - WAJE run ids, evidence ids, contract versions, and verifier results should remain in WAJE/Postgres even when 21st provides the surrounding runtime infrastructure.
 
+## P9 controlled investigation authority
+
+- Confirmed parent authority: one accepted `IntentRevision` and `PlanRevision`
+  continue through execution, Evidence, Claim, sealed `AuthorityBundle`,
+  narrative, Publication, Delivery and customer payload.
+- Confirmed child scope: a child receives one or more disjoint accepted analysis
+  axes plus an allowlist of customer-safe material refs. It has no BI tool,
+  query, Evidence, Claim, ThreadHead, Publication, Delivery or customer-state
+  capability.
+- Confirmed scheduling: the parent may admit zero to three child investigations.
+  LLM output proposes work; deterministic admission validates accepted axes,
+  non-overlap, source membership and Provider read budget. Agent count is never
+  a completion target.
+- Confirmed persistence: parent operation, child dispatch, stable input digest,
+  lease epoch, accepted Provider attempt, candidate artifact and typed failure
+  are WAJE-owned records. Expired work can be reclaimed and accepted results are
+  replayed by identity.
+- Confirmed source transport: the planning directory and evidence facts use
+  typed columnar projections. Every admitted source view is lossless; oversized
+  source combinations are rejected during admission and remain available to the
+  parent authority chain.
+- Confirmed synthesis transport: complete child artifacts remain durable audit
+  records. The narrative writer receives only typed incremental findings with
+  source refs and a preferred single placement. Child titles, summaries and
+  repeated limitation lists do not enter the narrative context; exact duplicate
+  deltas are removed by canonical identity, and a delta may be omitted when the
+  sealed parent material already covers the decision point.
+- Confirmed failure boundary: child failure is local. The parent may publish
+  from sealed single-Agent material when no candidate investigation succeeds.
+  Child output can organize mechanisms, offsets, concentration, competing
+  explanations and priorities, while factual publication remains limited to
+  existing claim, material and limitation handles.
+- Confirmed quality boundary: completeness, insight depth, readability,
+  actionability, expression and hallucination risk stay in post-delivery human
+  advisory review. They cannot trigger writer retry, auto-rewrite, warning,
+  status change, withdrawal or delivery delay.
+- Confirmed Case B data boundary: cross-source completeness ends at Lagos
+  business day 2026-06-02. External event records can support temporal
+  coincidence, candidate mechanisms and context. Internal operation/ad detail
+  and payment-failure process evidence remain separate local gaps. Payment-to-bet
+  linkage remains observational.
+
 ## Guardrail Case
 
 The question `全量样本看，为什么从 2024 年 1 月开始到 2026 年 5 月结束，为什么每个月月初的付费金额都比月中月末高一些` must be classified as full-sample intra-month periodic pattern analysis.

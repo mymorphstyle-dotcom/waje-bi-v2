@@ -26,10 +26,10 @@ def _decision_options() -> list[dict[str, object]]:
         },
         {
             "slot_id": "comparison_baseline",
-            "option_id": "comparison_baseline.previous_period",
-            "typed_value": {"baseline_id": "previous_period"},
-            "display_label": "跟上一周期比较",
-            "display_description": "用于观察周期变化。",
+            "option_id": "comparison_baseline.same_weekday_last_week",
+            "typed_value": {"baseline_id": "same_weekday_last_week"},
+            "display_label": "跟上周同日比较",
+            "display_description": "用于观察同星期位置的变化。",
             "recommended": False,
         },
     ]
@@ -48,7 +48,7 @@ def _signed_decision_option_rows():
     options = _decision_options()
     option_set_digest = canonical_digest(options)
     rows = []
-    for option in options:
+    for display_position, option in enumerate(options, start=1):
         body = canonical_value(
             {
                 "intent_revision_id": intent_revision_id,
@@ -66,6 +66,7 @@ def _signed_decision_option_rows():
                 option["display_label"],
                 option["display_description"],
                 option["recommended"],
+                display_position,
                 option_set_digest,
                 content_digest,
                 {**body, "content_digest": content_digest},
@@ -110,53 +111,48 @@ class _ClarificationReader(PostgresConversationStore):
             "materiality": "material",
             "status": "unresolved",
             "question": "需要按哪个基线比较？",
-            "allowed_value_refs": ("previous_day", "previous_period"),
+            "allowed_value_refs": ("previous_day", "same_weekday_last_week"),
         }
         self.intent = SimpleNamespace(
             intent_revision_id=self.intent_revision_id,
             ambiguity_slots=(self.slot,),
+            time_spec={"kind": "date", "target": "2026-06-19"},
         )
         self.options = _decision_options()
         self.outcome = {
             "status": "question_tool_opened",
             "boundary_status": "needs_question",
-            "slot_id": "comparison_baseline",
-            "slot_kind": "baseline",
-            "question": "本次付费金额变化需要按哪个业务基线比较？",
             "questions": [
                 {
+                    "slot_id": "comparison_baseline",
+                    "slot_kind": "baseline",
                     "question": "本次付费金额变化需要按哪个业务基线比较？",
                     "options": [
-                        "跟前一天比较（推荐）",
-                        "跟上一周期比较",
-                        CLARIFICATION_ESCAPE_OPTION,
+                        {
+                            "option_id": option["option_id"],
+                            "label": option["display_label"],
+                            "description": option["display_description"],
+                            "recommended": option["recommended"],
+                            "typed_value": option["typed_value"],
+                        }
+                        for option in self.options
+                    ]
+                    + [
+                        {
+                            "option_id": "tell_agent_differently",
+                            "label": CLARIFICATION_ESCAPE_OPTION,
+                            "description": "自己说明当前业务选择，或明确修改分析目标。",
+                            "recommended": False,
+                        }
                     ],
+                    "recommendation_reason": "相邻日期最贴近当前业务问题。",
                 }
             ],
-            "options": [
-                {
-                    "option_id": option["option_id"],
-                    "label": option["display_label"],
-                    "description": option["display_description"],
-                    "recommended": option["recommended"],
-                    "typed_value": option["typed_value"],
-                }
-                for option in self.options
-            ]
-            + [
-                {
-                    "option_id": "tell_agent_differently",
-                    "label": CLARIFICATION_ESCAPE_OPTION,
-                    "description": "自己说明当前业务选择，或明确修改分析目标。",
-                    "recommended": False,
-                }
-            ],
-            "recommendation_reason": "相邻日期最贴近当前业务问题。",
             "status_message": "等待确认比较基线。",
         }
         self.generate_input = {
             "intent_revision_ref": self.intent_revision_id,
-            "ambiguity_slot": self.slot,
+            "clarification_slots": [{"slot": self.slot}],
         }
         self.generate_output = {
             "decision_options": self.options,
@@ -285,10 +281,10 @@ def test_open_clarification_reads_only_closed_single_authority_records():
     state = store.get_open_clarification(store.thread_id)
 
     assert state is not None
-    assert state.question == store.outcome["question"]
+    assert state.question == store.outcome["questions"][0]["question"]
     assert [option.option_id for option in state.options] == [
         "comparison_baseline.previous_day",
-        "comparison_baseline.previous_period",
+        "comparison_baseline.same_weekday_last_week",
         "tell_agent_differently",
     ]
 

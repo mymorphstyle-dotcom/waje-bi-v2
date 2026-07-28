@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bi_agent.runtime.llm_prompts import (
     CLAIM_COVERAGE_EXPANSION_PROMPT_VERSION,
+    SINGLE_AUTHORITY_PLAN_PROMPT_VERSION,
     SINGLE_AUTHORITY_PLAN_PATCH_PROMPT_VERSION,
     build_prompt,
     validate_prompt_specs,
@@ -11,6 +12,19 @@ from bi_agent.runtime.llm_prompts import (
 def _user_prompt(task: str) -> str:
     spec = build_prompt(task, {"contract_check": True})
     return spec.messages[1]["content"]
+
+
+def test_planner_prompt_binds_each_hypothesis_to_one_business_issue() -> None:
+    spec = build_prompt("single_authority_plan_proposal", {"contract_check": True})
+
+    assert spec.prompt_version == SINGLE_AUTHORITY_PLAN_PROMPT_VERSION
+    prompt = spec.messages[1]["content"]
+    assert "{proposal_item_id, issue_ref, statement, target_claim_kind" in prompt
+    assert "issue_ref must reference exactly one issue_id" in prompt
+    assert (
+        "even when target_claim_kind describes a different evidence claim"
+        in prompt
+    )
 
 
 def test_claim_coverage_decision_prompt_has_exact_typed_output() -> None:
@@ -68,6 +82,7 @@ def test_plan_patch_prompt_is_full_successor_with_selected_axis_boundary() -> No
     assert "full successor proposal" in prompt
     assert "every newly introduced axis_id must be" in prompt
     assert "source plan or be selected by the PlanPatch" in prompt
+    assert "{proposal_item_id, issue_ref, statement, target_claim_kind" in prompt
     assert "analytical framing, emphasis, and business wording" in prompt
 
 

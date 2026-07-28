@@ -199,6 +199,150 @@ def test_plan_requires_temporal_decision_source_in_decision_refs() -> None:
     )
 
 
+def test_plan_preserves_every_atomic_temporal_decision_ref() -> None:
+    intent_revision_id = "intent-plan-temporal-authority"
+    boundary_decision = DecisionRecord.create(
+        intent_revision_id=intent_revision_id,
+        slot_id="month_phase_definition",
+        value={
+            "value_ref": "definition_1",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
+        },
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=(
+            "comparison_spec.member_definitions",
+            "resolved_window_refs",
+        ),
+        option_id="month_phase_definition.definition_1",
+    )
+    aggregation_decision = DecisionRecord.create(
+        intent_revision_id=intent_revision_id,
+        slot_id="phase_aggregation",
+        value={"aggregation": "mean_of_complete_days"},
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=(
+            "comparison_spec.aggregation",
+            "resolved_window_refs",
+        ),
+        option_id="phase_aggregation.mean_of_complete_days",
+    )
+    ledger = DecisionLedger().append(boundary_decision).append(
+        aggregation_decision
+    )
+    authority = resolved_test_temporal_authority(
+        time_spec={
+            "kind": "date_range",
+            "start": "2024-01-01",
+            "end": "2026-05-31",
+        },
+        comparison_spec={
+            "kind": "calendar_partition",
+            "baseline_class": "same_month_phase",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ["start"],
+            "baseline_members": ["mid", "end"],
+            "aggregation": "sum_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 7},
+                {"member": "mid", "day_start": 8, "day_end": 21},
+                {"member": "end", "day_start": 22, "day_end": 31},
+            ],
+        },
+        decision_ledger=ledger,
+        require_physical_baseline=False,
+    )
+    expected_refs = (
+        boundary_decision.decision_id,
+        aggregation_decision.decision_id,
+    )
+
+    assert set(authority.decision_refs) == set(expected_refs)
+    assert _plan(authority, decision_refs=expected_refs).temporal_authority == authority
+    with pytest.raises(
+        PlanAuthorityContractError,
+        match="plan_revision_temporal_decision_ref_missing",
+    ):
+        _plan(authority, decision_refs=(boundary_decision.decision_id,))
+
+
+def test_plan_roundtrips_confirmed_calendar_partition_values_unchanged() -> None:
+    intent_revision_id = "intent-plan-temporal-authority"
+    definitions = [
+        {"member": "start", "day_start": 1, "day_end": 10},
+        {"member": "mid", "day_start": 11, "day_end": 20},
+        {"member": "end", "day_start": 21, "day_end": 31},
+    ]
+    boundary_decision = DecisionRecord.create(
+        intent_revision_id=intent_revision_id,
+        slot_id="month_phase_definition",
+        value={
+            "value_ref": "definition_1",
+            "member_definitions": definitions,
+        },
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=(
+            "comparison_spec.member_definitions",
+            "resolved_window_refs",
+        ),
+        option_id="month_phase_definition.definition_1",
+    )
+    aggregation_decision = DecisionRecord.create(
+        intent_revision_id=intent_revision_id,
+        slot_id="phase_aggregation",
+        value={"aggregation": "sum_of_complete_days"},
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=(
+            "comparison_spec.aggregation",
+            "resolved_window_refs",
+        ),
+        option_id="phase_aggregation.sum_of_complete_days",
+    )
+    ledger = DecisionLedger().append(boundary_decision).append(
+        aggregation_decision
+    )
+    authority = resolved_test_temporal_authority(
+        time_spec={
+            "kind": "date_range",
+            "start": "2024-01-01",
+            "end": "2026-05-31",
+        },
+        comparison_spec={
+            "kind": "calendar_partition",
+            "baseline_class": "same_month_phase",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ["start"],
+            "baseline_members": ["mid", "end"],
+            "aggregation": "sum_of_complete_days",
+            "member_definitions": definitions,
+        },
+        decision_ledger=ledger,
+        require_physical_baseline=False,
+    )
+    decision_refs = (
+        boundary_decision.decision_id,
+        aggregation_decision.decision_id,
+    )
+    plan = _plan(authority, decision_refs=decision_refs)
+
+    assert authority.source == "decision"
+    assert set(authority.decision_refs) == set(decision_refs)
+    assert PlanRevision.from_dict(plan.to_dict()) == plan
+
+
 def test_plan_rejects_unresolved_temporal_authority() -> None:
     authority = resolved_test_temporal_authority(
         time_spec={

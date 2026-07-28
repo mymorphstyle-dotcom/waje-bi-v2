@@ -43,6 +43,7 @@ from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
     CURRENT_DATA_ASSERTIONS,
     _event_recurrence_occurs_in_window,
+    _metric_values,
     validate_query_result as _validate_query_result,
     validate_query_set,
 )
@@ -497,6 +498,33 @@ def complete_rows(*, metric_id="paid_amount", target=120.0, baseline=100.0):
 
 
 class QueryCompletenessTest(unittest.TestCase):
+    def test_metric_reconciliation_keeps_calendar_partition_roles_separate(self):
+        values = _metric_values(
+            (
+                {
+                    "window_id": "evaluation_range",
+                    "window_role": "target",
+                    "observation_key": "evaluation_range",
+                    "payment_success_rate": 0.55,
+                },
+                {
+                    "window_id": "evaluation_range",
+                    "window_role": "baseline",
+                    "observation_key": "evaluation_range",
+                    "payment_success_rate": 0.45,
+                },
+            ),
+            "payment_success_rate",
+        )
+
+        self.assertEqual(
+            values,
+            {
+                ("evaluation_range", "target", "evaluation_range"): 0.55,
+                ("evaluation_range", "baseline", "evaluation_range"): 0.45,
+            },
+        )
+
     def test_window_aggregate_coverage_is_window_level_and_tamper_evident(self):
         base = baseline_contract(
             query_id="query:window-aggregate:1",
@@ -1109,6 +1137,53 @@ class QueryCompletenessTest(unittest.TestCase):
 
         self.assertEqual(envelope.execution_status, "failed")
         self.assertEqual(envelope.failure_reason, "context_row_bound_exceeded:5000")
+
+    def test_executor_blocks_aggregate_rows_when_provider_ignores_bound(self):
+        contract = reviewed_contract()
+        snapshot = reviewed_snapshot("paid_order_success")
+
+        class OverflowRuntime:
+            def aggregate(self, sql, query_id, **kwargs):
+                return ClickHouseQueryResult(
+                    ok=True,
+                    rows=(
+                        {"window_id": "target_day"},
+                        {"window_id": "previous_day"},
+                    ),
+                    query_hash="hash:aggregate-overflow",
+                    query_id=query_id,
+                    provider_stats={"result_overflow_mode": "throw"},
+                    execution_attempt_ref=kwargs.get("execution_attempt_ref", ""),
+                )
+
+            def bounded_context(self, *args, **kwargs):
+                raise AssertionError("aggregate path required")
+
+        compiled = CompiledQuery(
+            sql_text="SELECT count() FROM paid_success GROUP BY window_id",
+            parameters={},
+            settings={
+                "readonly": 2,
+                "result_overflow_mode": "throw",
+                "max_result_rows": 1,
+            },
+            query_contract_ref=contract.query_contract_id,
+        )
+        with patch(
+            "bi_agent.runtime.query_executor.compile_clickhouse_query",
+            return_value=compiled,
+        ):
+            envelope = ClickHouseQueryExecutor(OverflowRuntime()).execute(
+                contract,
+                {snapshot.snapshot_ref: snapshot},
+                execution_attempt_ref="attempt:aggregate-overflow",
+            )
+
+        self.assertEqual(envelope.execution_status, "failed")
+        self.assertEqual(
+            envelope.failure_reason,
+            "provider_result_row_bound_exceeded",
+        )
 
     def test_event_context_zero_rows_are_explicit_complete_window_sentinels(self):
         windows = (window("target_day"), window("rolling_7_day_baseline"))

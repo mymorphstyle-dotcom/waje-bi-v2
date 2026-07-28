@@ -240,6 +240,11 @@ def _dimension_coverage_cases(
         dimension_id
         for dimension_id in registry.dimension_ids
         if dataset_id in registry.dimension_sources(dimension_id)
+        and registry.dimension(
+            dimension_id,
+            dataset_id=dataset_id,
+        ).get("decision_use", "business_candidate")
+        == "business_candidate"
     )
     if not dimensions:
         return []
@@ -263,10 +268,10 @@ def _dimension_coverage_cases(
         dimension_groups = (
             tuple((dimension_id,) for dimension_id in dimensions)
             if topology == "independent"
-            else tuple(
-                tuple(group)
-                for size in range(1, len(dimensions) + 1)
-                for group in combinations(dimensions, size)
+            else _joint_coverage_groups(
+                registry,
+                query_family=supported_family,
+                dimensions=dimensions,
             )
         )
         output.extend(
@@ -282,6 +287,45 @@ def _dimension_coverage_cases(
             for dimension_ids in dimension_groups
         )
     return output
+
+
+def _joint_coverage_groups(
+    registry: RuntimeContractRegistry,
+    *,
+    query_family: str,
+    dimensions: tuple[str, ...],
+) -> tuple[tuple[str, ...], ...]:
+    dynamic_policies = tuple(
+        contract["dynamic_dimension_combination_policy"]
+        for capability_id in registry.capability_ids
+        for contract in (registry.capability_inputs(capability_id),)
+        if query_family in tuple(contract.get("query_families") or ())
+        and isinstance(
+            contract.get("dynamic_dimension_combination_policy"),
+            Mapping,
+        )
+    )
+    if not dynamic_policies:
+        return tuple(
+            tuple(group)
+            for size in range(1, len(dimensions) + 1)
+            for group in combinations(dimensions, size)
+        )
+    if len(dynamic_policies) != 1:
+        raise ValueError(
+            f"current_data_dynamic_joint_policy_ambiguous:{query_family}"
+        )
+    depth_budgets = tuple(dynamic_policies[0]["depth_budgets"])
+    groups = tuple(
+        tuple(
+            dimensions[(start + offset) % len(dimensions)]
+            for offset in range(int(item["depth"]))
+        )
+        for item in depth_budgets
+        if len(dimensions) >= int(item["depth"])
+        for start in range(len(dimensions))
+    )
+    return tuple(dict.fromkeys(groups))
 
 
 def _dimension_case(

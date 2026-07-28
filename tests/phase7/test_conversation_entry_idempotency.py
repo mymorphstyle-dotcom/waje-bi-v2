@@ -381,7 +381,9 @@ class _FreeTextCancelClient:
             "replacement_user_text": "",
             "status_message": "已取消当前分析。",
         }
-        kwargs["output_validator"](output)
+        validator = kwargs.get("output_validator")
+        if callable(validator):
+            validator(output)
         return SimpleNamespace(
             output=output,
             audit={

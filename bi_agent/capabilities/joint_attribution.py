@@ -20,6 +20,7 @@ def joint_attribution(
     residual: float = 0.0,
     fit: float = 1.0,
     force_run: bool = False,
+    missing_group_policy: str = "exclude",
     result_refs: tuple[str, ...] = (),
 ):
     rows = tuple(rows)
@@ -133,13 +134,14 @@ def joint_attribution(
             result_refs=result_refs,
         )
 
-    combinations, skipped = _combination_deltas(
+    combinations, skipped, zero_filled = _combination_deltas(
         safe_rows,
         dimension_keys=dimension_keys,
         group_key=group_key,
         target_group=target_group,
         baseline_group=baseline_group,
         amount_key=amount_key,
+        missing_group_policy=missing_group_policy,
     )
     if not combinations:
         return make_evidence_envelope(
@@ -152,6 +154,7 @@ def joint_attribution(
                 "residual": residual,
                 "fit": fit,
                 "skipped_rows_or_combinations": skipped,
+                "zero_filled_missing_groups": zero_filled,
             },
             limitations=("no_comparable_joint_combinations",),
             result_refs=result_refs,
@@ -195,11 +198,13 @@ def joint_attribution(
             "marginal_contributions": marginals,
             "dimension_decision": decision,
             "skipped_rows_or_combinations": skipped,
+            "zero_filled_missing_groups": zero_filled,
         },
         limitations=tuple(
             reason
             for reason, present in (
                 ("skipped_incomplete_joint_combinations", bool(skipped)),
+                ("zero_filled_missing_groups", bool(zero_filled)),
                 ("sparse_cell", bool(skipped_sparse)),
                 ("segment_bridge_not_supplied", segment_evidence is None),
             )
@@ -234,9 +239,13 @@ def _combination_deltas(
     target_group: str,
     baseline_group: str,
     amount_key: str,
-) -> tuple[list[dict[str, Any]], int]:
+    missing_group_policy: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    if missing_group_policy not in {"exclude", "additive_zero"}:
+        raise ValueError("joint_attribution_missing_group_policy_invalid")
     pairs: dict[tuple[str, ...], dict[str, float]] = {}
     skipped = 0
+    zero_filled = 0
     for row in rows:
         values = tuple(
             str(row.get(key))
@@ -253,10 +262,12 @@ def _combination_deltas(
     combinations = []
     for values, groups in pairs.items():
         if baseline_group not in groups or target_group not in groups:
-            skipped += 1
-            continue
-        baseline = groups[baseline_group]
-        target = groups[target_group]
+            if missing_group_policy == "exclude":
+                skipped += 1
+                continue
+            zero_filled += 1
+        baseline = groups.get(baseline_group, 0.0)
+        target = groups.get(target_group, 0.0)
         delta = target - baseline
         combinations.append(
             {
@@ -267,7 +278,7 @@ def _combination_deltas(
                 "delta_ratio": delta / abs(baseline) if baseline else None,
             }
         )
-    return combinations, skipped
+    return combinations, skipped, zero_filled
 
 
 def _marginal_contributions(

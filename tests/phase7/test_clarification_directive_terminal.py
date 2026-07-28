@@ -165,7 +165,7 @@ def _directive(kind: str) -> InteractionDirective:
 
 def _transition(directive: InteractionDirective) -> DurableTransition:
     return DurableTransition.create(
-        node_name="bind_free_text_directive",
+        node_name="bind_free_text_submission",
         parent_transition_id="transition-waiting",
         run_attempt_id=directive.run_attempt_id,
         intent_revision_id=directive.intent_revision_id,
@@ -351,7 +351,7 @@ def test_cancel_submission_returns_the_typed_terminal_to_agent_core(monkeypatch)
         thread_id="thread-source",
         run_id="run-source",
         user_message="取消当前分析",
-        clarification={"selectedOptionId": None},
+        clarification={"selectedOptionIds": []},
     )
 
     assert result["status"] == "interaction_completed"
@@ -360,3 +360,123 @@ def test_cancel_submission_returns_the_typed_terminal_to_agent_core(monkeypatch)
     assert "source_terminal" not in result
     assert result["directive"] == directive.to_dict()
     assert store.audit_events[0][0] == "single_authority_directive_recorded"
+
+
+def test_clarification_batch_requires_one_option_per_material_slot() -> None:
+    class _Record:
+        def __init__(self, decision_id: str) -> None:
+            self.decision_id = decision_id
+
+        def to_dict(self):
+            return {"decision_id": self.decision_id}
+
+    class _Store:
+        def __init__(self) -> None:
+            self.accepted: list[str] = []
+            self.audit_events: list[tuple[str, dict]] = []
+            self.cleared = False
+
+        def get_run_state(self, _run_id):
+            return {
+                "thread_id": "thread-source",
+                "turn_id": "turn-source",
+                "topic_id": "topic-source",
+                "status": "waiting_for_clarification",
+            }
+
+        def resolve_active_intent_revision(self, _run_id):
+            return SimpleNamespace(
+                intent_revision_id="intent-source",
+                ambiguity_slots=(
+                    {
+                        "slot_id": "month_phase_definition",
+                        "materiality": "material",
+                        "status": "unresolved",
+                    },
+                    {
+                        "slot_id": "phase_aggregation",
+                        "materiality": "material",
+                        "status": "unresolved",
+                    },
+                ),
+            )
+
+        def load_decision_options(self, _intent_revision_id):
+            return (
+                {
+                    "slot_id": "month_phase_definition",
+                    "option_id": "definition.ten-day",
+                },
+                {
+                    "slot_id": "phase_aggregation",
+                    "option_id": "aggregation.daily-mean",
+                },
+            )
+
+        def accept_decision_option(self, *, option_id, **_kwargs):
+            self.accepted.append(option_id)
+            position = len(self.accepted)
+            return {
+                "decision": {
+                    "decision_id": f"decision-{position}",
+                    "option_id": option_id,
+                },
+                "decision_ledger_position": position,
+                "durable_checkpoint": {
+                    "transition_id": f"transition-{position}",
+                },
+                "replayed": False,
+            }
+
+        def load_decision_ledger(self, _intent_revision_id):
+            return SimpleNamespace(
+                position=len(self.accepted),
+                records=tuple(
+                    _Record(f"decision-{index}")
+                    for index in range(1, len(self.accepted) + 1)
+                ),
+            )
+
+        def clear_pending_clarification(self, _thread_id):
+            self.cleared = True
+
+        def add_audit_event(self, event_type, **kwargs):
+            self.audit_events.append((event_type, kwargs))
+
+    store = _Store()
+    result = agent_core._record_single_authority_clarification_submission(
+        store=store,
+        llm_client=None,
+        thread_id="thread-source",
+        run_id="run-source",
+        user_message="采用十天分段并比较日均金额",
+        clarification={
+            "selectedOptionIds": [
+                "aggregation.daily-mean",
+                "definition.ten-day",
+            ]
+        },
+    )
+
+    assert store.accepted == [
+        "definition.ten-day",
+        "aggregation.daily-mean",
+    ]
+    assert store.cleared is True
+    assert result["decision_ledger"]["position"] == 2
+    assert [item["option_id"] for item in result["decisions"]] == (
+        store.accepted
+    )
+
+    with pytest.raises(
+        EvidenceIntegrityError,
+        match="clarification_selected_slot_coverage_invalid",
+    ):
+        agent_core._record_single_authority_clarification_submission(
+            store=_Store(),
+            llm_client=None,
+            thread_id="thread-source",
+            run_id="run-source",
+            user_message="只回答一个问题",
+            clarification={"selectedOptionIds": ["definition.ten-day"]},
+        )

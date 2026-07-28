@@ -174,6 +174,35 @@ class ClickHouseQueryExecutor:
                 )
             )
 
+        max_result_rows = compiled.settings.get("max_result_rows")
+        if (
+            isinstance(max_result_rows, bool)
+            or not isinstance(max_result_rows, int)
+            or max_result_rows <= 0
+        ):
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=result.query_id or query_id,
+                    query_hash=effective_hash,
+                    reason="provider_result_row_bound_missing",
+                    provider_stats=result.provider_stats,
+                    execution_status="blocked",
+                    execution_attempt_ref=attempt_ref,
+                )
+            )
+        if len(result.rows) > max_result_rows:
+            return finish(
+                _failed_envelope(
+                    contract,
+                    query_id=result.query_id or query_id,
+                    query_hash=effective_hash,
+                    reason="provider_result_row_bound_exceeded",
+                    provider_stats=result.provider_stats,
+                    execution_status="failed",
+                    execution_attempt_ref=attempt_ref,
+                )
+            )
         if (
             bounded_context
             and compiled.max_context_rows > 0

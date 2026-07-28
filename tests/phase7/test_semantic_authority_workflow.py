@@ -37,9 +37,11 @@ from bi_agent.runtime.semantic_authority_workflow import (
     SemanticAuthorityWorkflowError,
     _decode_semantic_projection,
     _encode_semantic_projection,
-    run_semantic_authority_workflow,
+    run_semantic_authority_workflow as _run_semantic_authority_workflow,
 )
+from bi_agent.runtime.claim_coverage import ClaimCoverageCheckpoint
 from bi_agent.runtime.single_authority import DurableTransition
+from tests.support.claim_coverage import resolved_test_claim_coverage_checkpoint
 from tests.support.temporal_authority import resolved_test_temporal_authority
 
 
@@ -47,6 +49,9 @@ from tests.support.temporal_authority import resolved_test_temporal_authority
 class _ExecutionSpec:
     claim_kind: str
     evidence_kinds: str | tuple[str, ...]
+    obligation_role: str = "user_required"
+    investigation_mode: str | None = None
+    required_claim_strength: str | None = None
     status: str = "succeeded"
     evidence_kind: str = "observed"
     maximum_claim_strength: str = "directional"
@@ -57,15 +62,40 @@ class _ExecutionSpec:
 
 
 def _execution(spec: _ExecutionSpec) -> AuthoritativeExecutionResult:
-    obligation = ClaimObligation.create(
-        claim_kind=spec.claim_kind,
-        role="user_required",
-        subject={
+    subject = (
+        {
             "target_metric_ref": "paid_amount",
             "scope": {"market": "all"},
             "outcome_refs": ("outcome:explain_change",),
             "goal_refs": ("goal:explain",),
-        },
+        }
+        if spec.obligation_role == "user_required"
+        else {
+            "planner_proposal_ref": "planner-proposal:semantic-authority",
+            "proposal_item_ref": "hypothesis:semantic-authority",
+            "target_metric_refs": ("paid_amount",),
+            "scope": {"market": "all"},
+            "goal_refs": ("goal:explain",),
+        }
+    )
+    success_policy = {
+        "policy": "verified_or_explicit_boundary",
+        "minimum_claim_strength": (
+            spec.required_claim_strength or spec.maximum_claim_strength
+        ),
+    }
+    if spec.investigation_mode is not None:
+        success_policy.update(
+            {
+                "investigation_mode": spec.investigation_mode,
+                "settlement_policy": "support_refute_or_explicit_boundary",
+                "requested_axis_ids": ("semantic_authority",),
+            }
+        )
+    obligation = ClaimObligation.create(
+        claim_kind=spec.claim_kind,
+        role=spec.obligation_role,
+        subject=subject,
         evidence_requirement=EvidenceRequirement.create(
             operator="any_of",
             evidence_kinds=(
@@ -74,10 +104,7 @@ def _execution(spec: _ExecutionSpec) -> AuthoritativeExecutionResult:
                 else spec.evidence_kinds
             ),
         ),
-        success_policy={
-            "policy": "verified_or_explicit_boundary",
-            "minimum_claim_strength": spec.maximum_claim_strength,
-        },
+        success_policy=success_policy,
     )
     axis = AnalysisAxis.create(
         axis_id="semantic_authority",
@@ -128,14 +155,25 @@ def _execution(spec: _ExecutionSpec) -> AuthoritativeExecutionResult:
                 ),
                 "dependency_task_keys": (),
                 "obligation_edges": (
-                    {"obligation_id": obligation.obligation_id, "required": True},
+                    {
+                        "obligation_id": obligation.obligation_id,
+                        "required": spec.obligation_role == "user_required",
+                    },
                 ),
                 "execution_rank": 1,
                 "declared_budget_units": 1,
                 "governor_inputs": {
-                    "expected_information_gain": "obligation_closing",
-                    "materiality": "user_required",
-                    "actionability": "decision_supporting",
+                    "expected_information_gain": (
+                        "obligation_closing"
+                        if spec.obligation_role == "user_required"
+                        else "hypothesis_testing"
+                    ),
+                    "materiality": spec.obligation_role,
+                    "actionability": (
+                        "decision_supporting"
+                        if spec.obligation_role == "user_required"
+                        else "explanation_supporting"
+                    ),
                     "statistical_risk": "contract_bounded",
                 },
                 "execution_policy": {
@@ -254,6 +292,35 @@ def _namespace(execution: AuthoritativeExecutionResult) -> ClaimAuthorityNamespa
     )
 
 
+def run_semantic_authority_workflow(
+    execution_result: AuthoritativeExecutionResult,
+    *,
+    authority_namespace: ClaimAuthorityNamespace,
+    llm_client: Any,
+    claim_coverage_checkpoint: ClaimCoverageCheckpoint | None = None,
+) -> SemanticAuthorityResult:
+    return _run_semantic_authority_workflow(
+        execution_result,
+        authority_namespace=authority_namespace,
+        claim_coverage_checkpoint=(
+            claim_coverage_checkpoint
+            or resolved_test_claim_coverage_checkpoint(execution_result)
+        ),
+        llm_client=llm_client,
+    )
+
+
+def _projection(
+    execution_result: AuthoritativeExecutionResult,
+) -> RestrictedExecutionProjection:
+    return RestrictedExecutionProjection.create(
+        execution_result,
+        claim_coverage_checkpoint=resolved_test_claim_coverage_checkpoint(
+            execution_result
+        ),
+    )
+
+
 Responder = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
@@ -274,7 +341,7 @@ class _FakeLLM:
             raise AssertionError("unexpected_llm_call")
         call_input = json.loads(kwargs["messages"][1]["content"])
         output = dict(self.responders[call_index](call_input))
-        validator = kwargs["output_validator"]
+        validator = kwargs.get("output_validator")
         if validator is not None:
             validator(output)
         self.calls.append({**kwargs, "call_input": call_input, "output": output})
@@ -1011,6 +1078,56 @@ def test_candidate_claim_is_one_typed_proposal_call_bound_to_known_refs() -> Non
     )
 
 
+def test_candidate_hypothesis_composes_evidence_from_a_different_source_claim() -> (
+    None
+):
+    execution = _execution(
+        _ExecutionSpec(
+            "candidate_mechanism",
+            "derived",
+            obligation_role="analyst_auxiliary",
+            investigation_mode="hypothesis_test",
+            required_claim_strength="candidate_mechanism",
+            evidence_kind="derived",
+            maximum_claim_strength="quantified_contribution",
+            supported_claim_kinds=("formula_component_contribution",),
+            observation_value={"paid_users_contribution": 0.72},
+        )
+    )
+
+    def propose(call_input: Mapping[str, Any]) -> Mapping[str, Any]:
+        obligation = call_input["payload"]["obligations"][0]
+        return {
+            "candidate_claim_proposals": [
+                {
+                    "obligation_id": obligation["obligation_id"],
+                    "subject": "付费人数增长是候选解释。",
+                    "factual_payload": {
+                        "candidate": "paid_users_growth",
+                        "interpretation": "candidate_only",
+                    },
+                    "assumption_refs": [],
+                    "limitation_refs": ["limitation:aggregate"],
+                }
+            ]
+        }
+
+    client = _FakeLLM((propose, _accept_claims, _no_recommendations))
+    result = run_semantic_authority_workflow(
+        execution,
+        authority_namespace=_namespace(execution),
+        llm_client=client,
+    )
+
+    assert len(result.candidate_proposals) == 1
+    assert result.candidate_proposals[0].evidence_support[
+        0
+    ].source_claim_kind == "formula_component_contribution"
+    assert result.settlement.accepted_claims[0].claim_class == (
+        "candidate_mechanism"
+    )
+
+
 def test_zero_candidate_proposals_do_not_trigger_a_local_claim_fallback() -> None:
     execution = _execution(
         _ExecutionSpec(
@@ -1096,7 +1213,7 @@ def test_claim_verifier_requires_one_decision_for_every_proposed_subject() -> No
 
 def test_claim_verification_input_exposes_only_claim_relative_references() -> None:
     execution = _execution(_ExecutionSpec("comparative_change", "observed"))
-    projection = RestrictedExecutionProjection.create(execution)
+    projection = _projection(execution)
     checkpoint = prepare_claim_settlement(
         execution,
         authority_namespace=_namespace(execution),
@@ -1131,7 +1248,7 @@ def test_any_of_evidence_requirement_is_claim_local_for_cross_kind_claims() -> N
             ),
         )
     )
-    projection = RestrictedExecutionProjection.create(execution)
+    projection = _projection(execution)
     checkpoint = prepare_claim_settlement(
         execution,
         authority_namespace=_namespace(execution),
@@ -1207,7 +1324,7 @@ def test_claim_verifier_rejects_limitation_outside_subject_closure() -> None:
         semantic_workflow._claim_verification_output_validator(
             output,
             checkpoint=checkpoint,
-            projection=RestrictedExecutionProjection.create(execution),
+            projection=_projection(execution),
         )
 
 
@@ -1232,7 +1349,7 @@ def test_claim_verifier_allows_reasoned_veto_without_borrowed_limitation() -> No
             }
         },
         checkpoint=checkpoint,
-        projection=RestrictedExecutionProjection.create(execution),
+        projection=_projection(execution),
     )
 
 
@@ -1351,7 +1468,7 @@ def test_restricted_projection_rejects_forbidden_nested_row_material() -> None:
         SemanticAuthorityWorkflowError,
         match="restricted_aggregate_evidence_forbidden_field:raw_rows",
     ):
-        RestrictedExecutionProjection.create(execution)
+        _projection(execution)
 
 
 def test_semantic_authority_checkpoint_round_trips_every_child_and_audit() -> None:

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from datetime import datetime, timezone
 
+import re
+
 from time import perf_counter
 
 from typing import Any, Callable, Mapping, Optional, Sequence, TypedDict
@@ -76,6 +78,10 @@ from bi_agent.runtime.claim_coverage import (
 )
 
 from bi_agent.runtime.llm_client import LLMOutputError
+from bi_agent.runtime.llm_contract_projection import (
+    ContractProjection,
+    project_mapping_fields,
+)
 
 from bi_agent.runtime.llm_prompts import build_prompt
 
@@ -98,6 +104,12 @@ from bi_agent.runtime.post_execution_workflow import (
 
 from bi_agent.runtime.publication_safety import FixedSensitiveOutputInspector
 
+from bi_agent.runtime.query_ir import (
+    QueryIRContractError,
+    compile_query_bundle,
+    settle_query_bundle,
+)
+
 from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
@@ -113,7 +125,11 @@ from bi_agent.runtime.single_authority import (
 
 from bi_agent.runtime.temporal_comparison import (
     COMPARISON_WINDOW_VALUE_REFS,
+    MONTH_PHASE_DEFINITION_VALUE_REFS,
+    PHASE_AGGREGATION_VALUE_REFS,
     TemporalComparisonContractError,
+    calendar_partition_llm_contracts,
+    normalize_temporal_decision_value,
     resolve_effective_comparison,
     target_bounds,
     temporal_decision_option_id,
@@ -121,6 +137,11 @@ from bi_agent.runtime.temporal_comparison import (
 )
 
 DEFAULT_LLM_TASK_PROFILE = ("default", "disabled")
+_COMPARISON_INTERPRETATION_VALUE_REFS = (
+    "interpretation_1",
+    "interpretation_2",
+    "interpretation_3",
+)
 
 LLM_TASK_PROFILES: dict[str, tuple[str, str]] = {
     "single_authority_intent": ("default", "enabled"),
@@ -174,6 +195,7 @@ WORKFLOW_REQUEST_FIELDS = frozenset(
         "destination_ref",
         "publication_channel",
         "delivery_transport",
+        "controlled_investigation_enabled",
     }
 )
 _WORKFLOW_REQUIRED_REQUEST_FIELDS = frozenset({"question", "authority_store"})
@@ -205,6 +227,7 @@ class WorkflowState(TypedDict, total=False):
     llm_calls: list[dict[str, Any]]
     llm_client: Any
     provider_attempt_refs: dict[str, tuple[str, ...]]
+    raw_provider_outputs: dict[str, dict[str, Any]]
     intent: dict[str, Any]
     intent_revision: dict[str, Any]
     raw_intent_output: dict[str, Any]
@@ -221,6 +244,7 @@ class WorkflowState(TypedDict, total=False):
     proposal_admission_record: dict[str, Any]
     plan_revision: dict[str, Any]
     plan_result: dict[str, Any]
+    query_bundle: dict[str, Any]
     execution_snapshot: dict[str, Any]
     exploration_stop_record: dict[str, Any]
     execution_result: dict[str, Any]
@@ -398,6 +422,7 @@ def _validated_workflow_request(request: Any) -> dict[str, Any]:
             )
             or not callable(getattr(request["authority_connection"], "execute", None))
             or not callable(request["delivery_transport"])
+            or type(request.get("controlled_investigation_enabled", False)) is not bool
         ):
             raise WorkflowFailure(
                 "single_authority_runtime_dependency_invalid",
@@ -627,9 +652,37 @@ def _understand_business_intent(state: WorkflowState) -> WorkflowState:
         if supersedes_intent_revision_id is not None
         else "intent_binding"
     )
+    source_intent_revision = None
+    if supersedes_intent_revision_id is not None:
+        load_intent_revision = getattr(authority_store, "load_intent_revision", None)
+        if not callable(load_intent_revision):
+            raise WorkflowFailure(
+                "single_authority_source_intent_resolver_missing",
+                failure_type="contract",
+            )
+        try:
+            source_intent_revision = load_intent_revision(
+                supersedes_intent_revision_id
+            )
+        except Exception as exc:
+            raise WorkflowFailure(
+                f"single_authority_source_intent_lookup_failed:{_exception_reason(exc)}",
+                failure_type="persistence",
+            ) from exc
+        if (
+            source_intent_revision is None
+            or source_intent_revision.intent_revision_id
+            != supersedes_intent_revision_id
+        ):
+            raise WorkflowFailure(
+                "single_authority_source_intent_missing",
+                failure_type="persistence",
+            )
     intent_payload = _single_authority_intent_payload(
         question=question,
         registry=registry,
+        source_intent_revision=source_intent_revision,
+        superseded_plan_fields=superseded_plan_fields,
     )
     input_digest = canonical_digest(intent_payload)
     accepted = authority_store.load_accepted_transition(
@@ -768,10 +821,12 @@ def _single_authority_intent_payload(
     *,
     question: str,
     registry: RuntimeContractRegistry,
+    source_intent_revision: IntentRevision | None = None,
+    superseded_plan_fields: Sequence[str] = (),
 ) -> dict[str, Any]:
     desired_decision_catalog = _single_authority_desired_decision_catalog(registry)
     ambiguity_slot_catalog = _single_authority_ambiguity_slot_catalog()
-    return {
+    payload = {
         "original_user_text": question,
         "goal_catalog": [
             _intent_goal_catalog_item(
@@ -813,7 +868,8 @@ def _single_authority_intent_payload(
         "comparison_spec_contract": {
             "authority_rule": (
                 "Copy an explicit user comparison into comparison_spec. Use a "
-                "decision_slot only when a material comparison reference is absent."
+                "decision_slot when a material comparison reference or its "
+                "SQL-affecting interpretation remains unresolved."
             ),
             "variants": {
                 "none": {"kind": "none"},
@@ -837,12 +893,14 @@ def _single_authority_intent_payload(
                 },
                 "calendar_partition": {
                     "kind": "calendar_partition",
-                    "baseline_class": [
-                        "prior_period",
-                        "same_month_phase",
-                        "custom_control_window",
-                    ],
-                    "period_grain": ["year", "month", "week"],
+                    "baseline_class": (
+                        "calendar_partition_contracts[partition_field]."
+                        "baseline_classes"
+                    ),
+                    "period_grain": (
+                        "calendar_partition_contracts[partition_field]."
+                        "period_grain"
+                    ),
                     "partition_field": [
                         "quarter_of_year",
                         "month_of_year",
@@ -855,6 +913,10 @@ def _single_authority_intent_payload(
                         "sum_of_complete_days",
                         "mean_of_complete_days",
                     ],
+                    "member_definitions": (
+                        "required only for month_phase: three explicit contiguous "
+                        "{member, day_start, day_end} ranges covering days 1..31"
+                    ),
                 },
                 "event_relative_window": {
                     "kind": "event_relative_window",
@@ -869,12 +931,7 @@ def _single_authority_intent_payload(
                     ],
                 },
             },
-            "calendar_member_contracts": {
-                "quarter_of_year": ["Q1", "Q2", "Q3", "Q4"],
-                "month_of_year": list(range(1, 13)),
-                "month_phase": ["start", "mid", "end"],
-                "iso_weekday": list(range(1, 8)),
-            },
+            "calendar_partition_contracts": calendar_partition_llm_contracts(),
             "target_authority_by_kind": {
                 "fixed_window": "time_spec",
                 "calendar_partition": "time_spec.date_range evaluation window",
@@ -891,6 +948,15 @@ def _single_authority_intent_payload(
                     "typed_value_kind": "fixed_window_or_calendar_partition",
                 }
                 for value_ref in COMPARISON_WINDOW_VALUE_REFS
+            ],
+            "comparison_interpretation": [
+                {
+                    "id": value_ref,
+                    "typed_value_kind": (
+                        "complete_fixed_window_or_calendar_partition"
+                    ),
+                }
+                for value_ref in _COMPARISON_INTERPRETATION_VALUE_REFS
             ],
         },
         "ambiguity_slot_catalog": ambiguity_slot_catalog,
@@ -918,6 +984,43 @@ def _single_authority_intent_payload(
             ]
         },
     }
+    if source_intent_revision is not None:
+        if not isinstance(source_intent_revision, IntentRevision):
+            raise ValueError("source_intent_revision_invalid")
+        payload["revision_context"] = {
+            "source_original_user_text": (
+                source_intent_revision.original_user_text
+            ),
+            "source_business_summary": source_intent_revision.business_summary,
+            "source_intent_binding": {
+                "goal_bindings": canonical_value(
+                    source_intent_revision.goal_bindings
+                ),
+                "target_metric_refs": canonical_value(
+                    source_intent_revision.target_metric_refs
+                ),
+                "scope": canonical_value(source_intent_revision.scope),
+                "time_spec": canonical_value(source_intent_revision.time_spec),
+                "comparison_spec": canonical_value(
+                    source_intent_revision.comparison_spec
+                ),
+                "direction_premise": source_intent_revision.direction_premise,
+                "requested_analysis_axes": canonical_value(
+                    source_intent_revision.requested_analysis_axes
+                ),
+                "requested_factor_refs": canonical_value(
+                    source_intent_revision.requested_factor_refs
+                ),
+                "desired_decisions": canonical_value(
+                    source_intent_revision.desired_decisions
+                ),
+                "ambiguity_slots": canonical_value(
+                    source_intent_revision.ambiguity_slots
+                ),
+            },
+            "superseded_plan_fields": list(superseded_plan_fields),
+        }
+    return payload
 
 
 def _intent_goal_catalog_item(
@@ -996,6 +1099,29 @@ def _single_authority_ambiguity_slot_catalog() -> list[dict[str, Any]]:
             "time_spec_kinds": ["date_range"],
         },
         {
+            "slot_id": "comparison_interpretation",
+            "slot_kind": "comparison_interpretation",
+            "materiality": "material",
+            "allowed_value_refs": list(
+                _COMPARISON_INTERPRETATION_VALUE_REFS
+            ),
+            "time_spec_kinds": ["date_range"],
+        },
+        {
+            "slot_id": "month_phase_definition",
+            "slot_kind": "month_phase_definition",
+            "materiality": "material",
+            "allowed_value_refs": list(MONTH_PHASE_DEFINITION_VALUE_REFS),
+            "time_spec_kinds": ["date_range"],
+        },
+        {
+            "slot_id": "phase_aggregation",
+            "slot_kind": "phase_aggregation",
+            "materiality": "material",
+            "allowed_value_refs": list(PHASE_AGGREGATION_VALUE_REFS),
+            "time_spec_kinds": ["date_range"],
+        },
+        {
             "slot_id": "event_relative_window",
             "slot_kind": "event_relative_window",
             "materiality": "material",
@@ -1039,7 +1165,8 @@ def _validated_single_authority_intent_output(
             run_attempt_id=run_attempt_id,
             supersedes_intent_revision_id=supersedes_intent_revision_id,
             original_user_text=question,
-            schema_version="intent-revision.v2",
+            business_summary=output["business_summary"].strip(),
+            schema_version="intent-revision.v3",
             prompt_version=prompt_version,
             model_version=model_version,
             known_goal_ids=set(registry.analysis_goal_ids),
@@ -1050,6 +1177,9 @@ def _validated_single_authority_intent_output(
             known_ambiguity_value_refs={
                 *CANONICAL_BASELINE_IDS,
                 *COMPARISON_WINDOW_VALUE_REFS,
+                *_COMPARISON_INTERPRETATION_VALUE_REFS,
+                *MONTH_PHASE_DEFINITION_VALUE_REFS,
+                *PHASE_AGGREGATION_VALUE_REFS,
             },
             known_desired_decision_kinds={
                 item["decision_kind"]
@@ -1202,8 +1332,10 @@ def _intent_revision_phase2_projection(
     return {
         "question_family": question_family,
         "primary_question_family": question_family,
-        "question_families": [question_family],
-        "secondary_question_families": [],
+        "question_families": list(plan["question_family_refs"]),
+        "secondary_question_families": list(
+            plan["merged_question_family_refs"]
+        ),
         "target_metric": revision.target_metric_refs[0],
         "pattern_family": "custom_baseline",
         "pattern_params": {},
@@ -1213,7 +1345,7 @@ def _intent_revision_phase2_projection(
         "baseline_candidates": baseline_refs,
         "baseline_binding": {
             "confirmed": bool(baseline_refs),
-            "decision_id": temporal_authority.decision_id or "",
+            "decision_refs": list(temporal_authority.decision_refs),
         },
         "temporal_authority": temporal_authority.to_dict(),
         "sub_intents": [],
@@ -1267,14 +1399,14 @@ def _decide_question_boundary(state: WorkflowState) -> WorkflowState:
     if material:
         state["boundary_decision"] = {
             "boundary_status": "needs_question",
-            "ambiguity_slot": material[0],
+            "ambiguity_slots": material,
             "remaining_ambiguity_slot_ids": [str(slot["slot_id"]) for slot in material],
             "decision_summary": "当前仍有会改变分析计划的业务选择需要确认。",
         }
     else:
         state["boundary_decision"] = {
             "boundary_status": "clear",
-            "ambiguity_slot": {},
+            "ambiguity_slots": [],
             "remaining_ambiguity_slot_ids": [],
             "decision_summary": "当前 material 决定已绑定，可以进入下一节点。",
         }
@@ -1296,8 +1428,8 @@ def _clarification_policy_gate(state: WorkflowState) -> WorkflowState:
     state["clarification_outcome"] = {
         "status": "pending" if status == "needs_question" else "resolved",
         "boundary_status": status,
-        "ambiguity_slot": canonical_value(
-            state["boundary_decision"].get("ambiguity_slot") or {}
+        "ambiguity_slots": canonical_value(
+            state["boundary_decision"].get("ambiguity_slots") or []
         ),
     }
     _current_event(state)["route"] = status
@@ -1338,6 +1470,61 @@ def _single_authority_clarification_allowed_values(
             }
             for value_ref in allowed_refs
         ]
+    if slot_kind == "comparison_interpretation":
+        if tuple(allowed_refs) != _COMPARISON_INTERPRETATION_VALUE_REFS:
+            raise WorkflowFailure(
+                "single_authority_clarification_value_ref_unknown",
+                failure_type="contract",
+            )
+        return [
+            {
+                "id": value_ref,
+                "admissible_typed_value_kinds": [
+                    "fixed_window",
+                    "calendar_partition",
+                ],
+                "semantics": (
+                    "one complete business interpretation whose SQL-affecting "
+                    "dates, member ranges, and aggregation are explicit"
+                ),
+            }
+            for value_ref in allowed_refs
+        ]
+    if slot_kind == "month_phase_definition":
+        if tuple(allowed_refs) != MONTH_PHASE_DEFINITION_VALUE_REFS:
+            raise WorkflowFailure(
+                "single_authority_clarification_value_ref_unknown",
+                failure_type="contract",
+            )
+        return [
+            {
+                "id": value_ref,
+                "typed_value_kind": "month_phase_definition",
+                "semantics": (
+                    "one explicit start, mid, end day-of-month partition "
+                    "covering days 1 through 31"
+                ),
+            }
+            for value_ref in allowed_refs
+        ]
+    if slot_kind == "phase_aggregation":
+        if tuple(allowed_refs) != PHASE_AGGREGATION_VALUE_REFS:
+            raise WorkflowFailure(
+                "single_authority_clarification_value_ref_unknown",
+                failure_type="contract",
+            )
+        semantics = {
+            "sum_of_complete_days": "compare each phase's total amount",
+            "mean_of_complete_days": "compare the daily mean inside each phase",
+        }
+        return [
+            {
+                "id": value_ref,
+                "typed_value_kind": "phase_aggregation",
+                "semantics": semantics[value_ref],
+            }
+            for value_ref in allowed_refs
+        ]
     if slot_kind == "event_relative_window" and not allowed_refs:
         return []
     raise WorkflowFailure(
@@ -1355,7 +1542,13 @@ def _single_authority_decision_option_record(
     slot_id = str(slot["slot_id"])
     typed_value = (
         option["typed_value"]
-        if slot.get("slot_kind") == "comparison_window"
+        if slot.get("slot_kind")
+        in {
+            "comparison_window",
+            "comparison_interpretation",
+            "month_phase_definition",
+            "phase_aggregation",
+        }
         else {"baseline_id": option["value_ref"]}
     )
     return {
@@ -1372,101 +1565,168 @@ def _single_authority_decision_option_record(
     }
 
 
+def _single_authority_clarification_slot_contract(
+    *,
+    slot: Mapping[str, Any],
+    comparison_spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    allowed_refs = tuple(slot.get("allowed_value_refs") or ())
+    allowed_values = _single_authority_clarification_allowed_values(slot)
+    slot_kind = str(slot.get("slot_kind") or "")
+    recommended_value_ref = ""
+    required_recommended_typed_value: Mapping[str, Any] | None = None
+    required_recommended_label = ""
+    if slot_kind == "baseline" and "previous_day" in allowed_refs:
+        baseline_catalog = {
+            str(item["id"]): dict(item) for item in baseline_llm_semantics()
+        }
+        recommended_value_ref = "previous_day"
+        required_recommended_label = (
+            f"跟{baseline_catalog[recommended_value_ref]['label']}比较（推荐）"
+        )
+    elif slot_kind == "month_phase_definition":
+        recommended_value_ref = "definition_1"
+        required_recommended_typed_value = {
+            "value_ref": recommended_value_ref,
+            "member_definitions": canonical_value(
+                comparison_spec.get("member_definitions") or ()
+            ),
+        }
+    elif slot_kind == "phase_aggregation":
+        recommended_value_ref = str(comparison_spec.get("aggregation") or "")
+        required_recommended_typed_value = {
+            "aggregation": recommended_value_ref,
+        }
+
+    if slot_kind in {"comparison_window", "comparison_interpretation"}:
+        option_output_contract = {
+            "required_keys": [
+                "value_ref",
+                "typed_value",
+                "label",
+                "description",
+                "recommended",
+            ],
+            "typed_value_authority": "complete_comparison_spec",
+            "typed_value_variants": {
+                "fixed_window": {
+                    "kind": "fixed_window",
+                    "baseline_class": "value_ref",
+                    "baseline_start": "YYYY-MM-DD",
+                    "baseline_end": "YYYY-MM-DD",
+                    "aggregation": list(PHASE_AGGREGATION_VALUE_REFS),
+                },
+                "calendar_partition": {
+                    "kind": "calendar_partition",
+                    "baseline_class": "contract value",
+                    "period_grain": "contract value",
+                    "partition_field": [
+                        "quarter_of_year",
+                        "month_of_year",
+                        "month_phase",
+                        "iso_weekday",
+                    ],
+                    "target_members": "non-empty contract member set",
+                    "baseline_members": "non-empty disjoint contract member set",
+                    "aggregation": list(PHASE_AGGREGATION_VALUE_REFS),
+                    "member_definitions": (
+                        "required for month_phase: three contiguous ranges "
+                        "covering days 1 through 31"
+                    ),
+                },
+            },
+            "calendar_partition_contracts": calendar_partition_llm_contracts(),
+        }
+    elif slot_kind == "month_phase_definition":
+        option_output_contract = {
+            "required_keys": [
+                "value_ref",
+                "typed_value",
+                "label",
+                "description",
+                "recommended",
+            ],
+            "typed_value_authority": "month_phase_definition",
+            "typed_value_shape": {
+                "value_ref": "must equal option value_ref",
+                "member_definitions": (
+                    "three contiguous {member, day_start, day_end} ranges "
+                    "covering days 1 through 31"
+                ),
+            },
+        }
+    elif slot_kind == "phase_aggregation":
+        option_output_contract = {
+            "required_keys": [
+                "value_ref",
+                "typed_value",
+                "label",
+                "description",
+                "recommended",
+            ],
+            "typed_value_authority": "phase_aggregation",
+            "typed_value_shape": {
+                "aggregation": list(PHASE_AGGREGATION_VALUE_REFS),
+            },
+        }
+    else:
+        option_output_contract = {
+            "required_keys": [
+                "value_ref",
+                "label",
+                "description",
+                "recommended",
+            ],
+            "typed_value_authority": "runtime_catalog_mapping",
+        }
+    return {
+        "slot": canonical_value(slot),
+        "allowed_values": allowed_values,
+        "recommended_value_ref": recommended_value_ref,
+        "required_recommended_display_label": required_recommended_label,
+        "required_recommended_typed_value": canonical_value(
+            required_recommended_typed_value
+        ),
+        "option_output_contract": option_output_contract,
+    }
+
+
 def _generate_clarification(state: WorkflowState) -> WorkflowState:
     if state.get("intent_revision"):
-        slot = state.get("boundary_decision", {}).get("ambiguity_slot") or {}
-        if not isinstance(slot, Mapping) or not slot:
+        slots = state.get("boundary_decision", {}).get("ambiguity_slots") or []
+        if (
+            not isinstance(slots, list)
+            or not slots
+            or any(not isinstance(slot, Mapping) for slot in slots)
+        ):
             raise WorkflowFailure(
                 "single_authority_clarification_slot_missing",
                 failure_type="contract",
             )
-        allowed_refs = tuple(slot.get("allowed_value_refs") or ())
-        allowed_values = _single_authority_clarification_allowed_values(slot)
-        baseline_catalog = {
-            str(item["id"]): dict(item) for item in baseline_llm_semantics()
-        }
-        recommended_value_ref = (
-            "previous_day"
-            if slot.get("slot_kind") == "baseline" and "previous_day" in allowed_refs
-            else ""
-        )
-        recommended_label = ""
-        if recommended_value_ref:
-            recommended_label = (
-                f"跟{baseline_catalog[recommended_value_ref]['label']}比较（推荐）"
+        comparison_spec = state["intent_revision"]["comparison_spec"]
+        slot_contracts = [
+            _single_authority_clarification_slot_contract(
+                slot=slot,
+                comparison_spec=comparison_spec,
             )
+            for slot in slots
+        ]
         clarification_payload = {
             "intent_revision_ref": state["intent_revision"]["intent_revision_id"],
             "goal_bindings": state["intent_revision"]["goal_bindings"],
             "target_metric_refs": state["intent_revision"]["target_metric_refs"],
             "time_spec": state["intent_revision"]["time_spec"],
-            "ambiguity_slot": canonical_value(slot),
-            "allowed_values": allowed_values,
-            "recommended_value_ref": recommended_value_ref,
-            "required_recommended_display_label": recommended_label,
-            "option_output_contract": (
-                {
-                    "required_keys": [
-                        "value_ref",
-                        "typed_value",
-                        "label",
-                        "description",
-                        "recommended",
-                    ],
-                    "typed_value_kinds": [
-                        "fixed_window",
-                        "calendar_partition",
-                    ],
-                    "typed_value_authority": "complete_comparison_spec",
-                    "typed_value_variants": {
-                        "fixed_window": {
-                            "kind": "fixed_window",
-                            "baseline_class": "value_ref",
-                            "baseline_start": "YYYY-MM-DD",
-                            "baseline_end": "YYYY-MM-DD",
-                            "aggregation": [
-                                "sum_of_complete_days",
-                                "mean_of_complete_days",
-                            ],
-                        },
-                        "calendar_partition": {
-                            "kind": "calendar_partition",
-                            "baseline_class": "value_ref",
-                            "period_grain": ["year", "month", "week"],
-                            "partition_field": [
-                                "quarter_of_year",
-                                "month_of_year",
-                                "month_phase",
-                                "iso_weekday",
-                            ],
-                            "target_members": "non-empty contract member set",
-                            "baseline_members": (
-                                "non-empty disjoint contract member set"
-                            ),
-                            "aggregation": [
-                                "sum_of_complete_days",
-                                "mean_of_complete_days",
-                            ],
-                        },
-                    },
-                    "calendar_member_contracts": {
-                        "quarter_of_year": ["Q1", "Q2", "Q3", "Q4"],
-                        "month_of_year": list(range(1, 13)),
-                        "month_phase": ["start", "mid", "end"],
-                        "iso_weekday": list(range(1, 8)),
-                    },
-                }
-                if slot.get("slot_kind") == "comparison_window"
-                else {
-                    "required_keys": [
-                        "value_ref",
-                        "label",
-                        "description",
-                        "recommended",
-                    ],
-                    "typed_value_authority": "runtime_catalog_mapping",
-                }
-            ),
+            "comparison_spec": comparison_spec,
+            "clarification_slots": slot_contracts,
+            "question_output_contract": {
+                "required_keys": [
+                    "slot_id",
+                    "question",
+                    "options",
+                    "recommendation_reason",
+                ],
+                "one_question_per_slot": True,
+            },
         }
         authority_store = state["request"].get("authority_store")
         input_digest = canonical_digest(clarification_payload)
@@ -1504,30 +1764,50 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
             state,
             "single_authority_clarification",
             clarification_payload,
-            output_validator=lambda candidate: (
-                _validate_single_authority_clarification_output(
+            output_projector=lambda candidate: (
+                _project_single_authority_clarification_output(
                     candidate,
-                    slot=slot,
+                    slot_contracts=slot_contracts,
+                )
+            ),
+            output_validator=lambda candidate: (
+                _validate_single_authority_clarification_batch_output(
+                    candidate,
+                    slot_contracts=slot_contracts,
                     time_spec=state["intent_revision"]["time_spec"],
-                    required_recommended_value_ref=recommended_value_ref,
-                    required_recommended_label=recommended_label,
                 )
             ),
         )
-        options = _validate_single_authority_clarification_output(
+        questions = _validate_single_authority_clarification_batch_output(
             output,
-            slot=slot,
+            slot_contracts=slot_contracts,
             time_spec=state["intent_revision"]["time_spec"],
-            required_recommended_value_ref=recommended_value_ref,
-            required_recommended_label=recommended_label,
         )
+        public_language_issues = _clarification_public_language_issues(
+            output=output,
+            slot_contracts=slot_contracts,
+        )
+        if public_language_issues:
+            authority_store.add_audit_event(
+                "llm_public_language_quality_recorded",
+                thread_id=str(state["request"].get("thread_id") or ""),
+                topic_id=str(state["request"].get("topic_id") or ""),
+                run_id=state["run_id"],
+                ref=state["intent_revision"]["intent_revision_id"],
+                payload={
+                    "task": "single_authority_clarification",
+                    "policy": "record_only",
+                    "issues": public_language_issues,
+                },
+            )
         option_records = [
             _single_authority_decision_option_record(
-                slot=slot,
+                slot=question["slot"],
                 time_spec=state["intent_revision"]["time_spec"],
                 option=option,
             )
-            for option in options
+            for question in questions
+            for option in question["options"]
         ]
         escape_option = {
             "option_id": "tell_agent_differently",
@@ -1539,34 +1819,41 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
         state["clarification_outcome"] = {
             "status": "question_tool_opened",
             "boundary_status": "needs_question",
-            "slot_id": str(slot["slot_id"]),
-            "slot_kind": str(slot["slot_kind"]),
-            "question": str(output["question"]),
             "questions": [
                 {
-                    "question": str(output["question"]),
-                    "options": [option["display_label"] for option in option_records]
-                    + [CLARIFICATION_ESCAPE_OPTION],
+                    "slot_id": str(question["slot"]["slot_id"]),
+                    "slot_kind": str(question["slot"]["slot_kind"]),
+                    "question": str(question["question"]),
+                    "options": [
+                        {
+                            "option_id": record["option_id"],
+                            "label": record["display_label"],
+                            "description": record["display_description"],
+                            "recommended": record["recommended"],
+                            "typed_value": record["typed_value"],
+                        }
+                        for record in option_records
+                        if record["slot_id"] == question["slot"]["slot_id"]
+                    ]
+                    + [escape_option],
+                    "recommendation_reason": str(
+                        question["recommendation_reason"]
+                    ),
                 }
+                for question in questions
             ],
-            "options": [
-                {
-                    "option_id": option["option_id"],
-                    "label": option["display_label"],
-                    "description": option["display_description"],
-                    "recommended": option["recommended"],
-                    "typed_value": option["typed_value"],
-                }
-                for option in option_records
-            ]
-            + [escape_option],
-            "recommendation_reason": str(output["recommendation_reason"]),
             "status_message": str(output["status_message"]),
         }
         output_payload = {
             "decision_options": canonical_value(option_records),
             "clarification_outcome": canonical_value(state["clarification_outcome"]),
-            "raw_provider_output": canonical_value(output),
+            "public_language_issues": canonical_value(public_language_issues),
+            "raw_provider_output": canonical_value(
+                state.get("raw_provider_outputs", {}).get(
+                    "generate_clarification",
+                    output,
+                )
+            ),
         }
         last_audit = next(
             (
@@ -1609,11 +1896,188 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
                 f"clarification_checkpoint_persistence_failed:{_exception_reason(exc)}",
                 failure_type="persistence",
             ) from exc
-        state["raw_clarification_output"] = canonical_value(output)
+        state["raw_clarification_output"] = canonical_value(
+            output_payload["raw_provider_output"]
+        )
         state["durable_transition_id"] = transition.transition_id
         state["durable_checkpoint"] = transition.to_dict()
         return state
     raise WorkflowFailure("single_authority_intent_missing", failure_type="contract")
+
+
+def _validate_single_authority_clarification_batch_output(
+    output: Mapping[str, Any],
+    *,
+    slot_contracts: Sequence[Mapping[str, Any]],
+    time_spec: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not isinstance(output, Mapping) or set(output) != {
+        "questions",
+        "status_message",
+    }:
+        raise LLMOutputError("single_authority_clarification_shape_invalid")
+    status_message = output.get("status_message")
+    raw_questions = output.get("questions")
+    if (
+        not isinstance(status_message, str)
+        or not status_message.strip()
+        or not isinstance(raw_questions, list)
+        or len(raw_questions) != len(slot_contracts)
+        or any(not isinstance(item, Mapping) for item in raw_questions)
+    ):
+        raise LLMOutputError("single_authority_clarification_questions_invalid")
+    normalized: list[dict[str, Any]] = []
+    for raw_question, contract in zip(
+        raw_questions,
+        slot_contracts,
+        strict=True,
+    ):
+        if set(raw_question) != {
+            "slot_id",
+            "question",
+            "options",
+            "recommendation_reason",
+        }:
+            raise LLMOutputError(
+                "single_authority_clarification_question_shape_invalid"
+            )
+        slot = contract.get("slot")
+        if (
+            not isinstance(slot, Mapping)
+            or raw_question.get("slot_id") != slot.get("slot_id")
+        ):
+            raise LLMOutputError(
+                "single_authority_clarification_question_slot_invalid"
+            )
+        options = _validate_single_authority_clarification_output(
+            {
+                "question": raw_question.get("question"),
+                "options": raw_question.get("options"),
+                "recommendation_reason": raw_question.get(
+                    "recommendation_reason"
+                ),
+                "status_message": status_message,
+            },
+            slot=slot,
+            time_spec=time_spec,
+            required_recommended_value_ref=str(
+                contract.get("recommended_value_ref") or ""
+            ),
+            required_recommended_label=str(
+                contract.get("required_recommended_display_label") or ""
+            ),
+            required_recommended_typed_value=contract.get(
+                "required_recommended_typed_value"
+            ),
+        )
+        normalized.append(
+            {
+                "slot": canonical_value(slot),
+                "question": str(raw_question["question"]).strip(),
+                "options": options,
+                "recommendation_reason": str(
+                    raw_question["recommendation_reason"]
+                ).strip(),
+            }
+        )
+    return normalized
+
+
+def _project_single_authority_clarification_output(
+    output: Mapping[str, Any],
+    *,
+    slot_contracts: Sequence[Mapping[str, Any]],
+) -> ContractProjection:
+    mutations: list[Mapping[str, str]] = []
+    projected = project_mapping_fields(
+        output,
+        allowed_fields=("questions", "status_message"),
+        path="",
+        mutations=mutations,
+    )
+    if not isinstance(projected, dict):
+        return ContractProjection.create(output=output)
+    raw_questions = projected.get("questions")
+    if not isinstance(raw_questions, list):
+        return ContractProjection.create(output=projected, mutations=mutations)
+    projected_questions: list[Any] = []
+    for index, raw_question in enumerate(raw_questions):
+        question_path = f"questions[{index}]"
+        question = project_mapping_fields(
+            raw_question,
+            allowed_fields=(
+                "slot_id",
+                "question",
+                "options",
+                "recommendation_reason",
+            ),
+            path=question_path,
+            mutations=mutations,
+        )
+        if not isinstance(question, dict):
+            projected_questions.append(question)
+            continue
+        contract = slot_contracts[index] if index < len(slot_contracts) else {}
+        option_contract = contract.get("option_output_contract")
+        required_option_fields = (
+            option_contract.get("required_keys")
+            if isinstance(option_contract, Mapping)
+            else None
+        )
+        raw_options = question.get("options")
+        if not isinstance(raw_options, list) or not isinstance(
+            required_option_fields, list
+        ):
+            projected_questions.append(question)
+            continue
+        projected_options: list[Any] = []
+        for option_index, raw_option in enumerate(raw_options):
+            option_path = f"{question_path}.options[{option_index}]"
+            option = project_mapping_fields(
+                raw_option,
+                allowed_fields=tuple(str(item) for item in required_option_fields),
+                path=option_path,
+                mutations=mutations,
+            )
+            if not isinstance(option, dict):
+                projected_options.append(option)
+                continue
+            typed_value = option.get("typed_value")
+            if isinstance(typed_value, Mapping):
+                typed_path = f"{option_path}.typed_value"
+                typed_shape = option_contract.get("typed_value_shape")
+                typed_variants = option_contract.get("typed_value_variants")
+                allowed_typed_fields: tuple[str, ...] | None = None
+                if isinstance(typed_shape, Mapping):
+                    allowed_typed_fields = tuple(str(key) for key in typed_shape)
+                elif isinstance(typed_variants, Mapping):
+                    variant = typed_variants.get(typed_value.get("kind"))
+                    if isinstance(variant, Mapping):
+                        allowed_typed_fields = tuple(str(key) for key in variant)
+                if allowed_typed_fields is not None:
+                    if (
+                        contract.get("slot", {}).get("slot_kind")
+                        == "phase_aggregation"
+                        and "value_ref" in typed_value
+                    ):
+                        duplicate_ref = typed_value.get("value_ref")
+                        option_ref = option.get("value_ref")
+                        if duplicate_ref != option_ref:
+                            raise LLMOutputError(
+                                "single_authority_clarification_projection_conflict:"
+                                f"{typed_path}.value_ref"
+                            )
+                    option["typed_value"] = project_mapping_fields(
+                        typed_value,
+                        allowed_fields=allowed_typed_fields,
+                        path=typed_path,
+                        mutations=mutations,
+                    )
+            projected_options.append(option)
+        question["options"] = projected_options
+        projected_questions.append(question)
+    projected["questions"] = projected_questions
+    return ContractProjection.create(output=projected, mutations=mutations)
 
 
 def _validate_single_authority_clarification_output(
@@ -1623,6 +2087,7 @@ def _validate_single_authority_clarification_output(
     time_spec: Mapping[str, Any],
     required_recommended_value_ref: str,
     required_recommended_label: str,
+    required_recommended_typed_value: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(output, Mapping) or set(output) != {
         "question",
@@ -1647,8 +2112,16 @@ def _validate_single_authority_clarification_output(
         "description",
         "recommended",
     }
-    comparison_window = slot.get("slot_kind") == "comparison_window"
-    if comparison_window:
+    slot_kind = str(slot.get("slot_kind") or "")
+    typed_comparison = slot_kind in {
+        "comparison_window",
+        "comparison_interpretation",
+    }
+    typed_decision = typed_comparison or slot_kind in {
+        "month_phase_definition",
+        "phase_aggregation",
+    }
+    if typed_decision:
         expected_fields.add("typed_value")
     allowed_refs = set(slot.get("allowed_value_refs") or ())
     normalized: list[dict[str, Any]] = []
@@ -1670,7 +2143,7 @@ def _validate_single_authority_clarification_output(
         ):
             raise LLMOutputError("single_authority_clarification_option_invalid")
         normalized_option = dict(option)
-        if comparison_window:
+        if typed_comparison:
             typed_value = option.get("typed_value")
             try:
                 normalized_typed_value = validate_comparison_spec(
@@ -1679,17 +2152,52 @@ def _validate_single_authority_clarification_output(
                 )
             except (TypeError, ValueError) as exc:
                 raise LLMOutputError(
-                    "single_authority_clarification_typed_value_invalid"
+                    _clarification_typed_value_failure_code(
+                        slot=slot,
+                        typed_value=typed_value,
+                        cause=exc,
+                    )
                 ) from exc
+            if normalized_typed_value["kind"] not in {
+                "fixed_window",
+                "calendar_partition",
+            }:
+                raise LLMOutputError(
+                    "single_authority_clarification_typed_value_invalid"
+                )
             if (
-                normalized_typed_value["kind"]
-                not in {"fixed_window", "calendar_partition"}
-                or normalized_typed_value["baseline_class"] != value_ref
+                slot_kind == "comparison_window"
+                and normalized_typed_value["baseline_class"] != value_ref
             ):
                 raise LLMOutputError(
                     "single_authority_clarification_typed_value_invalid"
                 )
             normalized_option["typed_value"] = canonical_value(normalized_typed_value)
+        elif typed_decision:
+            typed_value = option.get("typed_value")
+            try:
+                normalized_typed_value, normalized_value_ref = (
+                    normalize_temporal_decision_value(
+                        slot_id=str(slot["slot_id"]),
+                        value=typed_value,
+                        time_spec=time_spec,
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise LLMOutputError(
+                    _clarification_typed_value_failure_code(
+                        slot=slot,
+                        typed_value=typed_value,
+                        cause=exc,
+                    )
+                ) from exc
+            if normalized_value_ref != value_ref:
+                raise LLMOutputError(
+                    "single_authority_clarification_typed_value_invalid"
+                )
+            normalized_option["typed_value"] = canonical_value(
+                normalized_typed_value
+            )
         if recommended != label.endswith("（推荐）"):
             raise LLMOutputError(
                 "single_authority_clarification_recommendation_label_invalid"
@@ -1700,15 +2208,170 @@ def _validate_single_authority_clarification_output(
         or sum(bool(option["recommended"]) for option in normalized) != 1
     ):
         raise LLMOutputError("single_authority_clarification_recommendation_invalid")
+    if typed_decision and len(
+        {
+            canonical_digest(option["typed_value"])
+            for option in normalized
+        }
+    ) != len(normalized):
+        raise LLMOutputError(
+            "single_authority_clarification_typed_value_duplicate"
+        )
     recommended = next(option for option in normalized if option["recommended"])
     if required_recommended_value_ref and (
         recommended["value_ref"] != required_recommended_value_ref
-        or recommended["label"] != required_recommended_label
+        or (
+            required_recommended_label
+            and recommended["label"] != required_recommended_label
+        )
     ):
         raise LLMOutputError(
             "single_authority_clarification_recommendation_contract_invalid"
         )
+    if required_recommended_typed_value is not None:
+        try:
+            normalized_required, _ = normalize_temporal_decision_value(
+                slot_id=str(slot["slot_id"]),
+                value=required_recommended_typed_value,
+                time_spec=time_spec,
+            )
+        except (TypeError, ValueError) as exc:
+            raise LLMOutputError(
+                "single_authority_clarification_recommendation_contract_invalid"
+            ) from exc
+        if canonical_value(recommended.get("typed_value")) != canonical_value(
+            normalized_required
+        ):
+            raise LLMOutputError(
+                "single_authority_clarification_recommendation_contract_invalid"
+            )
     return normalized
+
+
+def _clarification_typed_value_failure_code(
+    *,
+    slot: Mapping[str, Any],
+    typed_value: Any,
+    cause: BaseException,
+) -> str:
+    slot_id = str(slot.get("slot_id") or "unknown")
+    detail = _exception_reason(cause)
+    if not isinstance(typed_value, Mapping):
+        detail = "typed_value_mapping_required"
+    else:
+        kind = typed_value.get("kind")
+        if kind == "calendar_partition":
+            member_definitions = typed_value.get("member_definitions")
+            if not isinstance(member_definitions, (list, tuple)):
+                detail = "member_definitions_list_required"
+            else:
+                target_members = typed_value.get("target_members")
+                baseline_members = typed_value.get("baseline_members")
+                if not isinstance(target_members, (list, tuple)):
+                    detail = "target_members_list_required"
+                elif not isinstance(baseline_members, (list, tuple)):
+                    detail = "baseline_members_list_required"
+                elif set(target_members).intersection(baseline_members):
+                    detail = "target_baseline_members_must_be_disjoint"
+        elif str(slot.get("slot_kind") or "") == "month_phase_definition":
+            member_definitions = typed_value.get("member_definitions")
+            if not isinstance(member_definitions, (list, tuple)):
+                detail = "member_definitions_list_required"
+    return (
+        "single_authority_clarification_typed_value_invalid:"
+        f"slot={slot_id},detail={detail}"
+    )
+
+
+def _clarification_public_language_issues(
+    *,
+    output: Mapping[str, Any],
+    slot_contracts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    raw_questions = output.get("questions")
+    if not isinstance(raw_questions, list):
+        return []
+    issues: list[dict[str, Any]] = []
+    for raw_question, contract in zip(
+        raw_questions,
+        slot_contracts,
+        strict=False,
+    ):
+        slot = contract.get("slot")
+        if not isinstance(raw_question, Mapping) or not isinstance(slot, Mapping):
+            continue
+        raw_options = raw_question.get("options")
+        if not isinstance(raw_options, list):
+            continue
+        machine_identifiers: set[str] = set()
+        for value in (
+            slot.get("slot_id"),
+            slot.get("slot_kind"),
+            *(slot.get("allowed_value_refs") or ()),
+        ):
+            _collect_machine_identifiers(value, machine_identifiers)
+        for option in raw_options:
+            if not isinstance(option, Mapping):
+                continue
+            _collect_machine_identifiers(
+                option.get("value_ref"),
+                machine_identifiers,
+            )
+            _collect_machine_identifiers(
+                option.get("typed_value"),
+                machine_identifiers,
+            )
+        visible_fields = {
+            "question": raw_question.get("question"),
+            "recommendation_reason": raw_question.get("recommendation_reason"),
+            "status_message": output.get("status_message"),
+            **{
+                f"options[{index}].{field}": option.get(field)
+                for index, option in enumerate(raw_options)
+                if isinstance(option, Mapping)
+                for field in ("label", "description")
+            },
+        }
+        exposed_fields = sorted(
+            field
+            for field, text in visible_fields.items()
+            if isinstance(text, str)
+            and any(
+                re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(identifier)}"
+                    rf"(?![A-Za-z0-9_])",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                for identifier in machine_identifiers
+            )
+        )
+        if exposed_fields:
+            issues.append(
+                {
+                    "issue_code": "machine_identifier_exposed",
+                    "slot_id": str(slot.get("slot_id") or ""),
+                    "visible_fields": exposed_fields,
+                }
+            )
+    return issues
+
+
+def _collect_machine_identifiers(value: Any, target: set[str]) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            _collect_machine_identifiers(key, target)
+            _collect_machine_identifiers(nested, target)
+        return
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            _collect_machine_identifiers(nested, target)
+        return
+    if isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_]*",
+        value,
+    ):
+        target.add(value)
 
 
 def _persist_clarification(state: WorkflowState) -> WorkflowState:
@@ -2167,7 +2830,7 @@ def _planner_proposal_from_provider_output(
                 or "restricted-provider-response:validation:sha256:"
                 + canonical_digest(output)
             ),
-            schema_version="planner-proposal.v1",
+            schema_version="planner-proposal.v2",
             prompt_version=prompt_version,
             model_version=model_version,
         )
@@ -2431,6 +3094,7 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
         plan_revision = PlanRevision.from_dict(state["plan_revision"])
         intent_revision = IntentRevision.from_dict(state["intent_revision"])
         authority_context = AuthorityContext.from_dict(state["authority_context"])
+        planner_proposal = PlannerProposal.from_dict(state["planner_proposal"])
     except (KeyError, TypeError, ValueError) as exc:
         raise WorkflowFailure(
             "single_authority_execution_bundle_invalid",
@@ -2478,6 +3142,31 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
         raise WorkflowFailure(
             "capability_execution_plan_empty", failure_type="contract"
         )
+    try:
+        query_bundle = compile_query_bundle(
+            plan_revision=plan_revision,
+            planner_proposal=planner_proposal,
+            runtime_registry=registry,
+        )
+    except QueryIRContractError as exc:
+        raise WorkflowFailure(
+            f"query_bundle_compile_failed:{_exception_reason(exc)}",
+            failure_type="contract",
+        ) from exc
+    save_query_projection = getattr(
+        authority_store, "save_query_bundle_projection", None
+    )
+    if callable(save_query_projection):
+        try:
+            save_query_projection(
+                run_attempt_id=plan_revision.run_attempt_id,
+                projection=query_bundle.customer_projection(),
+            )
+        except Exception as exc:
+            raise WorkflowFailure(
+                f"query_bundle_projection_persistence_failed:{_exception_reason(exc)}",
+                failure_type="persistence",
+            ) from exc
     hard_budget_limit = budget_policy.effective_hard_budget_limit(plan_revision)
     max_workers = min(4, len(plan_revision.capability_tasks))
     parent_transition_id = str(state.get("durable_transition_id") or "")
@@ -2511,6 +3200,7 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
             authority_context=authority_context,
             analysis_runtime=analysis_runtime,
             attempt_journal=attempt_journal,
+            query_bundle=query_bundle,
         )
         if state.get("checkpoint_events"):
             _current_event(state)["capability_substages"] = [
@@ -2597,6 +3287,21 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
         capability_outcome_bundles=tuple(bundles),
         durable_transition=transition,
     )
+    settled_query_bundle = settle_query_bundle(
+        query_bundle,
+        execution_result.capability_outcome_bundles,
+    )
+    if callable(save_query_projection):
+        try:
+            save_query_projection(
+                run_attempt_id=plan_revision.run_attempt_id,
+                projection=settled_query_bundle.customer_projection(),
+            )
+        except Exception as exc:
+            raise WorkflowFailure(
+                f"query_bundle_projection_persistence_failed:{_exception_reason(exc)}",
+                failure_type="persistence",
+            ) from exc
     try:
         coverage_plan = compile_factor_coverage_plan(
             plan_revision=plan_revision,
@@ -2626,6 +3331,7 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
     state["durable_checkpoint"] = transition.to_dict()
     state["execution_result"] = execution_result.to_dict()
     state["authoritative_execution_result"] = execution_result
+    state["query_bundle"] = settled_query_bundle.to_dict()
     state["factor_coverage_plan"] = coverage_plan.to_dict()
     state["factor_coverage_result"] = coverage_result.to_dict()
     state["investigation_branches"] = [
@@ -3308,6 +4014,9 @@ def _run_post_execution_stage(
         prior_result=prior_result,
         factor_coverage_plan=factor_coverage_plan,
         factor_coverage_result=factor_coverage_result,
+        controlled_investigation_enabled=bool(
+            request.get("controlled_investigation_enabled", False)
+        ),
     )
     if type(result) is not PostExecutionWorkflowResult:
         raise WorkflowFailure(
@@ -3377,6 +4086,9 @@ def _invoke_llm(
     task: str,
     payload: dict[str, Any],
     *,
+    output_projector: (
+        Callable[[Mapping[str, Any]], ContractProjection] | None
+    ) = None,
     output_validator: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     spec = build_prompt(task, payload)
@@ -3410,6 +4122,8 @@ def _invoke_llm(
         }
         if output_validator is not None:
             invoke_kwargs["output_validator"] = output_validator
+        if output_projector is not None:
+            invoke_kwargs["output_projector"] = output_projector
         model_tier, thinking = LLM_TASK_PROFILES.get(
             task,
             DEFAULT_LLM_TASK_PROFILE,
@@ -3426,6 +4140,9 @@ def _invoke_llm(
             raise DurableCallJournalError("provider_stage_attempt_cardinality_invalid")
         state.setdefault("provider_attempt_refs", {})[stage_name] = (
             accepted_attempt_refs
+        )
+        state.setdefault("raw_provider_outputs", {})[stage_name] = dict(
+            canonical_value(result.raw_output)
         )
     except WorkflowFailure:
         raise

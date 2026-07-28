@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bi_agent.runtime.analysis_contracts import (
     DIMENSION_PRESENCE_POLICIES,
+    QUERY_RESULT_SEMANTICS,
     DimensionBinding,
     JoinExpectation,
     MetricBinding,
@@ -27,6 +28,11 @@ from bi_agent.runtime.dataset_catalog import (
     snapshot_matches_release_authority,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+from bi_agent.runtime.temporal_comparison import (
+    TemporalComparisonContractError,
+    validate_calendar_partition_role_frame,
+    validate_month_phase_member_definitions,
+)
 
 
 _RUNTIME_BINDINGS_PATH = (
@@ -94,13 +100,6 @@ _DATE_FUNCTIONS = frozenset(
 )
 
 
-_WINDOW_AGGREGATE_QUERY_INTENTS = frozenset(
-    {
-        "component_driver_scan",
-        "dimension_contribution_scan",
-        "joint_candidate_scan",
-    }
-)
 _WINDOW_AGGREGATE_NORMALIZED_METRIC_KINDS = frozenset(
     {"sum", "sum_if", "distinct_count", "distinct_count_if"}
 )
@@ -156,8 +155,12 @@ def _compile_clickhouse_query_with_registry(
     _validate_runtime_types(contract, snapshots)
     _verify_contract_signature(contract)
     _verify_window_consistency(contract)
-    _verify_reviewed_query_shape(contract, registry)
     snapshot = _single_snapshot(contract, snapshots)
+    _verify_reviewed_query_shape(
+        contract,
+        registry,
+        dataset_id=snapshot.dataset_id,
+    )
     _verify_dataset_snapshot_binding(
         snapshot,
         registry=registry,
@@ -216,8 +219,9 @@ def _compile_clickhouse_query_with_registry(
             snapshot,
             date_expression=date_expression,
             filter_sql=filter_sql,
+            parameters=parameters,
         )
-    elif contract.query_intent in _WINDOW_AGGREGATE_QUERY_INTENTS:
+    elif contract.result_shape.result_semantics == "complete_window_aggregate":
         sql_text = _compile_window_aggregate_query(
             contract,
             snapshot,
@@ -245,8 +249,8 @@ def _compile_clickhouse_query_with_registry(
         # turn a valid derived ratio into a nested aggregate.
         "prefer_column_name_to_alias": 1,
     }
+    reviewed_shape = registry.query_shape(contract.query_intent)
     if contract.result_shape.result_semantics == "complete_context_rows":
-        reviewed_shape = registry.query_shape(contract.query_intent)
         max_context_rows = reviewed_shape.get("max_context_rows")
         if (
             isinstance(max_context_rows, bool)
@@ -257,6 +261,17 @@ def _compile_clickhouse_query_with_registry(
                 f"reviewed_context_row_bound_invalid:{contract.query_intent}"
             )
         settings["max_result_rows"] = max_context_rows + 1
+    else:
+        max_result_rows = reviewed_shape.get("max_result_rows")
+        if (
+            isinstance(max_result_rows, bool)
+            or not isinstance(max_result_rows, int)
+            or not 0 < max_result_rows <= 100000
+        ):
+            raise ValueError(
+                f"reviewed_aggregate_row_bound_invalid:{contract.query_intent}"
+            )
+        settings["max_result_rows"] = max_result_rows
     if contract.join_expectation is not None:
         settings["join_use_nulls"] = 1
     return CompiledQuery(
@@ -312,14 +327,38 @@ def _compile_grouped_query(
         parameters=parameters,
         registry=registry,
     )
-    metrics = _metric_selects(contract, snapshot)
+    metrics = _metric_selects(
+        contract,
+        snapshot,
+        registry=registry,
+    )
     intent_selects, intent_groups = _intent_selects(
         contract.query_intent,
         date_expression=date_expression,
+        query_parameters=contract.query_parameters,
+    )
+    if contract.query_intent == "data_quality_probe":
+        intent_selects = (
+            *intent_selects,
+            *_scope_invariant_quality_selects(
+                contract,
+                snapshot,
+                parameters=parameters,
+                registry=registry,
+            ),
+        )
+    partition_role = _calendar_partition_role_sql(
+        contract,
+        date_expression=date_expression,
+        parameters=parameters,
     )
     select_parts = (
         "tupleElement(analysis_window, 1) AS `window_id`",
-        "tupleElement(analysis_window, 2) AS `window_role`",
+        (
+            f"{partition_role} AS `window_role`"
+            if partition_role is not None
+            else "tupleElement(analysis_window, 2) AS `window_role`"
+        ),
         f"toString({date_expression}) AS `observation_key`",
         *(item[0] for item in dimensions),
         *intent_selects,
@@ -339,6 +378,8 @@ def _compile_grouped_query(
         *intent_groups,
     )
     predicates = _window_predicates(date_expression, filter_sql)
+    if partition_role is not None:
+        predicates = (*predicates, f"{partition_role} != 'excluded'")
     return "\n".join(
         (
             f"WITH [{_window_tuples(contract.resolved_windows)}] AS analysis_windows",
@@ -388,10 +429,22 @@ def _compile_window_aggregate_query(
         parameters=parameters,
         registry=registry,
     )
-    metrics = _window_aggregate_metric_selects(contract)
+    partition_role = _calendar_partition_role_sql(
+        contract,
+        date_expression=date_expression,
+        parameters=parameters,
+    )
+    metrics = _window_aggregate_metric_selects(
+        contract,
+        snapshot=snapshot,
+        registry=registry,
+        partition_role_frame=partition_role is not None,
+    )
     if not metrics:
         raise ValueError(f"query_contract_metrics_required:{contract.query_intent}")
     predicates = _window_predicates(date_expression, filter_sql)
+    if partition_role is not None:
+        predicates = (*predicates, f"{partition_role} != 'excluded'")
     aggregate_selects = (
         "`__window_id` AS `window_id`",
         "`__window_role` AS `window_role`",
@@ -416,7 +469,11 @@ def _compile_window_aggregate_query(
                 (
                     "source.*",
                     "tupleElement(analysis_window, 1) AS `__window_id`",
-                    "tupleElement(analysis_window, 2) AS `__window_role`",
+                    (
+                        f"{partition_role} AS `__window_role`"
+                        if partition_role is not None
+                        else "tupleElement(analysis_window, 2) AS `__window_role`"
+                    ),
                     "tupleElement(analysis_window, 3) AS `__window_start`",
                     "tupleElement(analysis_window, 4) AS `__window_end`",
                     "tupleElement(analysis_window, 5) AS `__window_aggregation`",
@@ -453,10 +510,18 @@ def _compile_window_aggregate_query(
 
 def _window_aggregate_metric_selects(
     contract: QueryContract,
+    *,
+    snapshot: DatasetSnapshot,
+    registry: RuntimeContractRegistry,
+    partition_role_frame: bool = False,
 ) -> tuple[str, ...]:
     selected = []
     seen: set[str] = set()
-    complete_days = "dateDiff('day', `__window_start`, `__window_end`)"
+    complete_days = (
+        "uniqExact(`__observation_date`)"
+        if partition_role_frame
+        else "dateDiff('day', `__window_start`, `__window_end`)"
+    )
     for binding in contract.metric_bindings:
         if binding.metric_id in seen:
             raise ValueError(f"duplicate_metric_binding:{binding.metric_id}")
@@ -469,7 +534,12 @@ def _window_aggregate_metric_selects(
                 f"{normalized_expression})"
             )
         elif binding.aggregation == "ratio":
-            expression = binding.expression
+            expression = _compiled_metric_expression(
+                binding,
+                contract=contract,
+                snapshot=snapshot,
+                registry=registry,
+            )
         else:
             raise ValueError(
                 "window_aggregate_metric_aggregation_unsupported:"
@@ -602,6 +672,7 @@ def _compile_high_value_query(
     *,
     date_expression: str,
     filter_sql: tuple[str, ...],
+    parameters: dict[str, Any],
 ) -> str:
     if snapshot.dataset_id != "paid_order_success":
         raise ValueError(f"high_value_scan_unsupported_dataset:{snapshot.dataset_id}")
@@ -620,7 +691,14 @@ def _compile_high_value_query(
         for window in contract.resolved_windows
     ):
         raise ValueError("high_value_window_aggregation_unsupported")
+    partition_role = _calendar_partition_role_sql(
+        contract,
+        date_expression=date_expression,
+        parameters=parameters,
+    )
     predicates = _window_predicates(date_expression, filter_sql)
+    if partition_role is not None:
+        predicates = (*predicates, f"{partition_role} != 'excluded'")
     partition_fields = (
         "`__window_id`",
         "`__window_role`",
@@ -638,7 +716,11 @@ def _compile_high_value_query(
     pre_join_audit_join = " AND ".join(
         f"joined_rows.{field} = pre_join_audit.{field}" for field in partition_fields
     )
-    complete_days = "dateDiff('day', `__window_start`, `__window_end`)"
+    complete_days = (
+        "max(`source_complete_days`)"
+        if partition_role is not None
+        else "dateDiff('day', `__window_start`, `__window_end`)"
+    )
     normalized_total = (
         "if(`__window_aggregation` = 'mean_of_complete_days', "
         f"sum(`user_metric_value`) / nullIf({complete_days}, 0), "
@@ -683,7 +765,11 @@ def _compile_high_value_query(
                 (
                     "source.*",
                     "tupleElement(analysis_window, 1) AS `__window_id`",
-                    "tupleElement(analysis_window, 2) AS `__window_role`",
+                    (
+                        f"{partition_role} AS `__window_role`"
+                        if partition_role is not None
+                        else "tupleElement(analysis_window, 2) AS `__window_role`"
+                    ),
                     "tupleElement(analysis_window, 3) AS `__window_start`",
                     "tupleElement(analysis_window, 4) AS `__window_end`",
                     "tupleElement(analysis_window, 5) AS `__window_aggregation`",
@@ -788,15 +874,26 @@ def _intent_selects(
     query_intent: str,
     *,
     date_expression: str,
+    query_parameters: Mapping[str, Any],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if query_intent == "time_bucket_scan":
+        try:
+            definitions = validate_month_phase_member_definitions(
+                query_parameters.get("month_phase_member_definitions")
+            )
+        except TemporalComparisonContractError as exc:
+            raise ValueError(
+                "month_phase_member_definitions_invalid"
+            ) from exc
+        start_end = int(definitions[0]["day_end"])
+        mid_end = int(definitions[1]["day_end"])
         return (
             (
                 f"toMonday({date_expression}) AS `calendar_week`",
                 f"toDayOfWeek({date_expression}) AS `weekday`",
                 "multiIf("
-                f"toDayOfMonth({date_expression}) <= 10, 'start', "
-                f"toDayOfMonth({date_expression}) <= 20, 'mid', 'end'"
+                f"toDayOfMonth({date_expression}) <= {start_end}, 'start', "
+                f"toDayOfMonth({date_expression}) <= {mid_end}, 'mid', 'end'"
                 ") AS `month_phase`",
             ),
             ("`calendar_week`", "`weekday`", "`month_phase`"),
@@ -806,6 +903,91 @@ def _intent_selects(
     if query_intent == "event_context_probe":
         return (("count() AS `event_count`",), ())
     return (), ()
+
+
+def _scope_invariant_quality_selects(
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    *,
+    parameters: dict[str, Any],
+    registry: RuntimeContractRegistry,
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for index, dimension_id in enumerate(registry.dimension_ids):
+        try:
+            dimension = registry.dimension(
+                dimension_id,
+                dataset_id=snapshot.dataset_id,
+            )
+        except KeyError:
+            continue
+        if dimension.get("decision_use") != "scope_invariant":
+            continue
+        invariant = dimension.get("scope_invariant")
+        if not isinstance(invariant, Mapping):
+            raise ValueError(
+                f"scope_invariant_contract_invalid:{dimension_id}"
+            )
+        source_field = str(dimension.get("source_field") or "")
+        if source_field not in snapshot.schema_fields:
+            raise ValueError(f"scope_invariant_field_missing:{source_field}")
+        parameter_name = f"scope_invariant_values_{index}"
+        parameters[parameter_name] = [
+            str(item).casefold().strip()
+            for item in invariant["accepted_source_values"]
+        ]
+        normalized_source = (
+            f"lowerUTF8(trim(toString({_quote_identifier(source_field)})))"
+        )
+        alias = _quote_identifier(
+            f"{dimension_id}_scope_violation_count"
+        )
+        selected.append(
+            f"countIf(NOT has(%({parameter_name})s, {normalized_source})) AS {alias}"
+        )
+    return tuple(selected)
+
+
+def _calendar_partition_role_sql(
+    contract: QueryContract,
+    *,
+    date_expression: str,
+    parameters: dict[str, Any],
+) -> str | None:
+    raw_frame = contract.query_parameters.get("calendar_partition_role_frame")
+    if raw_frame is None:
+        return None
+    try:
+        frame = validate_calendar_partition_role_frame(raw_frame)
+    except TemporalComparisonContractError as exc:
+        raise ValueError("calendar_partition_role_frame_invalid") from exc
+    partition_field = str(frame["partition_field"])
+    if partition_field == "quarter_of_year":
+        member_expression = (
+            f"concat('Q', toString(toQuarter({date_expression})))"
+        )
+    elif partition_field == "month_of_year":
+        member_expression = f"toMonth({date_expression})"
+    elif partition_field == "iso_weekday":
+        member_expression = f"toDayOfWeek({date_expression})"
+    else:
+        definitions = tuple(frame["member_definitions"])
+        start_end = int(definitions[0]["day_end"])
+        mid_end = int(definitions[1]["day_end"])
+        member_expression = (
+            "multiIf("
+            f"toDayOfMonth({date_expression}) <= {start_end}, 'start', "
+            f"toDayOfMonth({date_expression}) <= {mid_end}, 'mid', 'end'"
+            ")"
+        )
+    parameters["partition_target_members"] = list(frame["target_members"])
+    parameters["partition_baseline_members"] = list(frame["baseline_members"])
+    return (
+        "multiIf("
+        f"has(%(partition_target_members)s, {member_expression}), 'target', "
+        f"has(%(partition_baseline_members)s, {member_expression}), 'baseline', "
+        "'excluded')"
+    )
 
 
 def _validate_runtime_types(
@@ -1023,6 +1205,11 @@ def _validate_result_shape_types(result_shape: ResultShape) -> None:
         result_shape.result_semantics,
         "result_shape.result_semantics",
     )
+    if result_shape.result_semantics not in QUERY_RESULT_SEMANTICS:
+        raise ValueError(
+            "result_shape.result_semantics_invalid:"
+            f"{result_shape.result_semantics or 'missing'}"
+        )
     _require_runtime_string(
         result_shape.dimension_presence_policy,
         "result_shape.dimension_presence_policy",
@@ -1451,9 +1638,37 @@ def _dimension_selects(
         )
         transformation = reviewed.get("transformation")
         if transformation is not None:
-            if not isinstance(transformation, Mapping) or transformation.get(
-                "kind"
-            ) != "numeric_bucket":
+            if not isinstance(transformation, Mapping):
+                raise ValueError(
+                    f"dimension_transformation_unsupported:{binding.dimension_id}"
+                )
+            if transformation.get("kind") == "categorical_map":
+                normalized_source = f"lowerUTF8(trim(toString({source})))"
+                clauses: list[str] = []
+                for member_index, (raw_value, label) in enumerate(
+                    transformation["value_map"].items()
+                ):
+                    value_parameter = (
+                        f"dimension_map_{index}_value_{member_index}"
+                    )
+                    label_parameter = (
+                        f"dimension_map_{index}_label_{member_index}"
+                    )
+                    parameters[value_parameter] = raw_value
+                    parameters[label_parameter] = label
+                    clauses.extend(
+                        (
+                            f"{normalized_source} = %({value_parameter})s",
+                            f"%({label_parameter})s",
+                        )
+                    )
+                default_parameter = f"dimension_map_{index}_default_label"
+                parameters[default_parameter] = transformation["default_label"]
+                clauses.append(f"%({default_parameter})s")
+                normalized = f"multiIf({', '.join(clauses)})"
+                selected.append((f"{normalized} AS {alias}", normalized))
+                continue
+            if transformation.get("kind") != "numeric_bucket":
                 raise ValueError(
                     f"dimension_transformation_unsupported:{binding.dimension_id}"
                 )
@@ -1481,22 +1696,23 @@ def _dimension_selects(
                     )
                 )
             clauses.append(f"%({overflow_parameter})s")
-            selected.append(
-                (f"multiIf({', '.join(clauses)}) AS {alias}", alias)
-            )
+            normalized = f"multiIf({', '.join(clauses)})"
+            selected.append((f"{normalized} AS {alias}", normalized))
             continue
         parameter_name = f"dimension_null_bucket_{index}"
         parameters[parameter_name] = binding.null_bucket
         normalized = (
             f"ifNull(nullIf(trim(toString({source})), ''), %({parameter_name})s)"
         )
-        selected.append((f"{normalized} AS {alias}", alias))
+        selected.append((f"{normalized} AS {alias}", normalized))
     return tuple(selected)
 
 
 def _metric_selects(
     contract: QueryContract,
     snapshot: DatasetSnapshot,
+    *,
+    registry: RuntimeContractRegistry,
 ) -> tuple[str, ...]:
     selected = []
     seen: set[str] = set()
@@ -1504,10 +1720,82 @@ def _metric_selects(
         if binding.metric_id in seen:
             raise ValueError(f"duplicate_metric_binding:{binding.metric_id}")
         seen.add(binding.metric_id)
+        expression = _compiled_metric_expression(
+            binding,
+            contract=contract,
+            snapshot=snapshot,
+            registry=registry,
+        )
         selected.append(
-            f"{binding.expression} AS {_quote_identifier(binding.metric_id)}"
+            f"{expression} AS {_quote_identifier(binding.metric_id)}"
         )
     return tuple(selected)
+
+
+def _compiled_metric_expression(
+    binding: MetricBinding,
+    *,
+    contract: QueryContract,
+    snapshot: DatasetSnapshot,
+    registry: RuntimeContractRegistry,
+) -> str:
+    """Compile ratios from their reviewed components with floating semantics.
+
+    Source expressions remain the authority for additive metrics.  Ratio
+    contracts already name their numerator and denominator metrics; compiling
+    those components directly avoids integer or fixed-scale Decimal division
+    silently collapsing a valid ratio to zero.
+    """
+
+    if binding.reconciliation_strategy != "ratio_from_components":
+        return binding.expression
+    if binding.zero_denominator_policy != "null":
+        raise ValueError(
+            "ratio_zero_denominator_policy_unsupported:"
+            f"{binding.metric_id}:{binding.zero_denominator_policy}"
+        )
+    selected_by_id = {
+        item.metric_id: item
+        for item in contract.metric_bindings
+        if item.dataset_id == binding.dataset_id
+    }
+
+    def component_expression(metric_id: str) -> str:
+        selected = selected_by_id.get(metric_id)
+        if selected is not None:
+            return selected.expression
+        try:
+            reviewed = registry.metric(metric_id, dataset_id=binding.dataset_id)
+        except KeyError as exc:
+            raise ValueError(
+                "ratio_component_binding_missing:"
+                f"{binding.metric_id}:{metric_id}"
+            ) from exc
+        expression = reviewed.get("expression")
+        required_fields = reviewed.get("required_fields")
+        if (
+            type(expression) is not str
+            or not expression
+            or not _safe_expression(expression)
+            or isinstance(required_fields, (str, bytes))
+            or not isinstance(required_fields, Sequence)
+            or any(
+                type(field) is not str or field not in snapshot.schema_fields
+                for field in required_fields
+            )
+        ):
+            raise ValueError(
+                "ratio_component_binding_invalid:"
+                f"{binding.metric_id}:{metric_id}"
+            )
+        return expression
+
+    numerator = component_expression(binding.numerator_metric)
+    denominator = component_expression(binding.denominator_metric)
+    return (
+        f"toFloat64({numerator}) / "
+        f"nullIf(toFloat64({denominator}), 0)"
+    )
 
 
 def _safe_expression(expression: str) -> bool:
@@ -1529,6 +1817,8 @@ def _verify_contract_signature(contract: QueryContract) -> None:
 def _verify_reviewed_query_shape(
     contract: QueryContract,
     registry: RuntimeContractRegistry,
+    *,
+    dataset_id: str,
 ) -> None:
     try:
         reviewed = registry.query_shape(contract.query_intent)
@@ -1537,23 +1827,69 @@ def _verify_reviewed_query_shape(
             f"reviewed_query_shape_missing:{contract.query_intent}"
         ) from exc
     reviewed_parameters = _freeze_contract_value(reviewed.get("query_parameters") or {})
+    runtime_parameter_keys = set(
+        _string_tuple(reviewed.get("runtime_query_parameter_keys"))
+    )
     source_field_policy = str(reviewed.get("source_field_policy") or "")
     if source_field_policy not in {"", "metric_bindings"}:
         raise ValueError(
             f"reviewed_source_field_policy_invalid:{contract.query_intent}"
         )
-    if _freeze_contract_value(contract.query_parameters) != reviewed_parameters:
+    contract_parameters = _freeze_contract_value(contract.query_parameters)
+    if not isinstance(contract_parameters, Mapping) or (
+        set(contract_parameters).difference(runtime_parameter_keys)
+        != set(reviewed_parameters).difference(runtime_parameter_keys)
+    ):
         raise ValueError(f"reviewed_query_parameters_mismatch:{contract.query_intent}")
+    for key, reviewed_value in reviewed_parameters.items():
+        if (
+            key not in runtime_parameter_keys
+            and contract_parameters.get(key) != reviewed_value
+        ):
+            raise ValueError(
+                f"reviewed_query_parameters_mismatch:{contract.query_intent}"
+            )
+    if "month_phase_member_definitions" in runtime_parameter_keys:
+        try:
+            validate_month_phase_member_definitions(
+                contract_parameters.get("month_phase_member_definitions")
+            )
+        except TemporalComparisonContractError as exc:
+            raise ValueError(
+                f"reviewed_query_parameters_mismatch:{contract.query_intent}"
+            ) from exc
+    if "calendar_partition_role_frame" in contract_parameters:
+        if "calendar_partition_role_frame" not in runtime_parameter_keys:
+            raise ValueError(
+                f"reviewed_query_parameters_mismatch:{contract.query_intent}"
+            )
+        try:
+            validate_calendar_partition_role_frame(
+                contract_parameters["calendar_partition_role_frame"]
+            )
+        except TemporalComparisonContractError as exc:
+            raise ValueError(
+                f"reviewed_query_parameters_mismatch:{contract.query_intent}"
+            ) from exc
     expected_join = _reviewed_join_expectation(reviewed)
     if contract.join_expectation != expected_join:
         raise ValueError(f"reviewed_join_expectation_mismatch:{contract.query_intent}")
     dimension_ids = tuple(item.dimension_id for item in contract.dimension_bindings)
+    scope_invariant_fields = (
+        tuple(
+            f"{dimension_id}_scope_violation_count"
+            for dimension_id in registry.scope_invariant_dimension_ids(dataset_id)
+        )
+        if reviewed.get("scope_invariant_output") == "violation_counts"
+        else ()
+    )
     expected_shape = ResultShape(
         required_fields=_dedupe(
             (
                 *_string_tuple(reviewed.get("required_fields")),
                 *(item.metric_id for item in contract.metric_bindings),
                 *dimension_ids,
+                *scope_invariant_fields,
             )
         ),
         unique_key=_dedupe(

@@ -143,7 +143,7 @@ class InsightEvaluationCaseSnapshot:
     acceptance_summary_digest: str
     acceptance_status: str
     case_id: str
-    question_family: str
+    question_family: str | None
     variant: str
     user_message: str
     review_focus: str
@@ -163,7 +163,7 @@ class InsightEvaluationCaseSnapshot:
         acceptance_summary_digest: str,
         acceptance_status: str,
         case_id: str,
-        question_family: str,
+        question_family: str | None,
         variant: str,
         user_message: str,
         review_focus: str,
@@ -189,6 +189,17 @@ class InsightEvaluationCaseSnapshot:
             raise InsightQualityRubricContractError(
                 "insight_evaluation_case_variant_invalid"
             )
+        if question_family is None:
+            if variant != "additional":
+                raise InsightQualityRubricContractError(
+                    "insight_evaluation_case_question_family_invalid"
+                )
+            normalized_question_family = None
+        else:
+            normalized_question_family = _required_string(
+                question_family,
+                "insight_evaluation_case_question_family_invalid",
+            )
         body = {
             "acceptance_summary_version": _required_string(
                 acceptance_summary_version,
@@ -207,10 +218,7 @@ class InsightEvaluationCaseSnapshot:
                 case_id,
                 "insight_evaluation_case_id_invalid",
             ),
-            "question_family": _required_string(
-                question_family,
-                "insight_evaluation_case_question_family_invalid",
-            ),
+            "question_family": normalized_question_family,
             "variant": _required_string(
                 variant,
                 "insight_evaluation_case_variant_invalid",

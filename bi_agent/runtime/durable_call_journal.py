@@ -7,6 +7,10 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
+from bi_agent.runtime.llm_contract_projection import (
+    ContractProjection,
+    project_required_output_fields,
+)
 from bi_agent.runtime.llm_client import (
     LLMOutputError,
     llm_failure_code,
@@ -24,6 +28,7 @@ CALL_SCOPE_REQUIREMENTS = {
     "query": (True, True, True),
     "capability": (True, True, True),
     "semantic_provider": (True, True, False),
+    "controlled_investigation_provider": (True, True, False),
     "narrative_provider": (True, True, False),
 }
 CALL_KINDS = frozenset(CALL_SCOPE_REQUIREMENTS)
@@ -35,6 +40,7 @@ PROVIDER_CALL_KINDS = frozenset(
         "planner_provider",
         "plan_patch_provider",
         "semantic_provider",
+        "controlled_investigation_provider",
         "narrative_provider",
     }
 )
@@ -1748,6 +1754,7 @@ class PostgresDurableCallJournal:
 @dataclass(frozen=True)
 class _JournaledProviderResult:
     output: Mapping[str, Any]
+    raw_output: Mapping[str, Any]
     audit: Mapping[str, Any]
 
 
@@ -1769,9 +1776,6 @@ class DurableProviderClient:
         if not isinstance(journal, DurableCallJournal):
             raise DurableCallJournalError("provider_journal_invalid")
         self._provider_client = provider_client
-        self._provider_supports_output_validator = bool(
-            getattr(provider_client, "supports_output_validator", False)
-        )
         self.supports_model_tier = bool(
             getattr(provider_client, "supports_model_tier", False)
         )
@@ -1820,6 +1824,9 @@ class DurableProviderClient:
         prompt_version: str,
         messages: Sequence[Mapping[str, str]],
         required_keys: Sequence[str],
+        output_projector: (
+            Callable[[Mapping[str, Any]], ContractProjection] | None
+        ) = None,
         output_validator: Callable[[Mapping[str, Any]], None] | None = None,
         model_tier: str = "default",
         thinking: str | None = None,
@@ -1832,12 +1839,21 @@ class DurableProviderClient:
                 f"{getattr(output_validator, '__qualname__', '')}"
             )
         )
+        projector_ref = (
+            "runtime:required-output-fields.v1"
+            if output_projector is None
+            else (
+                f"{getattr(output_projector, '__module__', '')}:"
+                f"{getattr(output_projector, '__qualname__', '')}"
+            )
+        )
         input_payload = canonical_value(
             {
                 "task": task,
                 "prompt_version": prompt_version,
                 "messages": tuple(dict(item) for item in messages),
                 "required_keys": tuple(required_keys),
+                "output_projector_ref": projector_ref,
                 "output_validator_ref": validator_ref,
                 "model_tier": model_tier,
                 "thinking": thinking,
@@ -1867,6 +1883,9 @@ class DurableProviderClient:
         ):
             raise DurableCallJournalError("provider_max_attempts_invalid")
         prior_failures: list[dict[str, Any]] = []
+        repair_feedback: dict[str, Any] | None = None
+        output_repair_used = False
+        transient_retry_count = 0
         while True:
             claim = self._journal.claim(spec)
             if claim.replayed:
@@ -1875,18 +1894,19 @@ class DurableProviderClient:
                     accepted_attempt_ref=claim.attempt.attempt_ref,
                     call_spec=claim.attempt.spec,
                 )
+            candidate_output: Any = None
             try:
                 provider_kwargs: dict[str, Any] = {
                     "task": task,
                     "prompt_version": prompt_version,
-                    "messages": messages,
+                    "messages": (
+                        _messages_with_output_contract_repair(
+                            messages,
+                            repair_feedback=repair_feedback,
+                        )
+                    ),
                     "required_keys": required_keys,
                 }
-                if (
-                    output_validator is not None
-                    and self._provider_supports_output_validator
-                ):
-                    provider_kwargs["output_validator"] = output_validator
                 if model_tier != "default":
                     provider_kwargs["model_tier"] = model_tier
                 if thinking is not None:
@@ -1895,12 +1915,27 @@ class DurableProviderClient:
                     **provider_kwargs,
                 )
                 output = getattr(result, "output", None)
+                candidate_output = output
                 audit = getattr(result, "audit", None)
                 if not isinstance(output, Mapping) or not isinstance(audit, Mapping):
                     raise DurableCallJournalError("provider_result_invalid")
+                projection = (
+                    project_required_output_fields(
+                        output,
+                        required_fields=required_keys,
+                    )
+                    if output_projector is None
+                    else output_projector(output)
+                )
+                if not isinstance(projection, ContractProjection):
+                    raise DurableCallJournalError(
+                        "provider_output_projection_invalid"
+                    )
+                projected_output = dict(canonical_value(projection.output))
+                projection_audit = projection.audit_record(raw_output=output)
                 if output_validator is not None:
                     try:
-                        output_validator(output)
+                        output_validator(projected_output)
                     except (ValueError, LLMOutputError) as exc:
                         failure_code = str(exc).strip() or "llm_output_contract_invalid"
                         raise LLMOutputError(
@@ -1918,33 +1953,58 @@ class DurableProviderClient:
                             ),
                         ) from exc
                 provider_payload = {
-                    "output": canonical_value(output),
+                    "output": canonical_value(projected_output),
                     "audit": _provider_success_audit(
                         audit,
                         attempt_number=claim.attempt.attempt_number,
                         prior_failures=prior_failures,
+                        contract_projection=projection_audit,
                     ),
                 }
             except Exception as exc:
                 raw_audit = getattr(exc, "audit", None)
                 failure_code = llm_failure_code(exc)
+                invalid_output = (
+                    getattr(exc, "invalid_output", None)
+                    if isinstance(exc, LLMOutputError)
+                    else None
+                )
+                if invalid_output is None:
+                    invalid_output = candidate_output
+                failure_payload = {
+                    "audit": _provider_failure_journal_audit(
+                        raw_audit,
+                        failure_code=failure_code,
+                        attempt_number=claim.attempt.attempt_number,
+                        call_spec=claim.attempt.spec,
+                        provider_error=getattr(exc, "provider_error", None),
+                    )
+                }
+                if invalid_output is not None:
+                    failure_payload["invalid_output"] = canonical_value(
+                        invalid_output
+                    )
                 self._journal.fail(
                     claim.attempt,
                     failure_code=failure_code,
-                    failure_payload={
-                        "audit": _provider_failure_journal_audit(
-                            raw_audit,
-                            failure_code=failure_code,
-                            attempt_number=claim.attempt.attempt_number,
-                            call_spec=claim.attempt.spec,
-                            provider_error=getattr(exc, "provider_error", None),
-                        )
-                    },
+                    failure_payload=failure_payload,
                 )
-                if (
-                    llm_failure_is_retryable(exc)
-                    and claim.attempt.attempt_number < max_attempts
-                ):
+                should_retry = False
+                if llm_failure_is_retryable(exc):
+                    if isinstance(exc, LLMOutputError) and not output_repair_used:
+                        output_repair_used = True
+                        repair_feedback = {
+                            "failure_code": failure_code,
+                            "invalid_output": canonical_value(invalid_output),
+                        }
+                        should_retry = True
+                    elif (
+                        not isinstance(exc, LLMOutputError)
+                        and transient_retry_count < max_attempts - 1
+                    ):
+                        transient_retry_count += 1
+                        should_retry = True
+                if should_retry:
                     prior_failures.append(
                         _provider_failure_audit(
                             exc,
@@ -1982,13 +2042,62 @@ class DurableProviderClient:
         audit = payload["audit"]
         if not isinstance(output, Mapping) or not isinstance(audit, Mapping):
             raise DurableCallJournalError("provider_journal_output_invalid")
+        projection_audit = audit.get("contract_projection")
+        raw_output = (
+            projection_audit.get("raw_output")
+            if isinstance(projection_audit, Mapping)
+            else None
+        )
+        if not isinstance(raw_output, Mapping):
+            raise DurableCallJournalError("provider_journal_projection_invalid")
         if accepted_attempt_ref not in self._accepted_attempt_refs:
             self._accepted_attempt_refs.append(accepted_attempt_ref)
             self._accepted_call_specs.append(call_spec)
         return _JournaledProviderResult(
             output=MappingProxyType(dict(canonical_value(output))),
+            raw_output=MappingProxyType(dict(canonical_value(raw_output))),
             audit=MappingProxyType(dict(canonical_value(audit))),
         )
+
+
+def _messages_with_output_contract_repair(
+    messages: Sequence[Mapping[str, str]],
+    *,
+    repair_feedback: Mapping[str, Any] | None,
+) -> tuple[dict[str, str], ...]:
+    normalized = tuple(dict(item) for item in messages)
+    if repair_feedback is None:
+        return normalized
+    failure_code = _required_string(
+        repair_feedback.get("failure_code"),
+        "provider_output_repair_failure_code_invalid",
+    )
+    return (
+        *normalized,
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "repair_request": {
+                        "instruction": (
+                            "The previous JSON could not be consumed. Return one "
+                            "complete corrected JSON object that satisfies the "
+                            "original output contract. Preserve valid business "
+                            "meaning and repair only the reported contract issue."
+                        ),
+                        "validation_error": failure_code,
+                        "previous_output": canonical_value(
+                            repair_feedback.get("invalid_output")
+                        ),
+                        "attempt_limit": "final_repair_attempt",
+                    }
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        },
+    )
 
 
 def _provider_failure_audit(
@@ -2211,8 +2320,10 @@ def _provider_success_audit(
     *,
     attempt_number: int,
     prior_failures: Sequence[Mapping[str, Any]],
+    contract_projection: Mapping[str, Any],
 ) -> dict[str, Any]:
     normalized = dict(canonical_value(audit))
+    normalized["contract_projection"] = canonical_value(contract_projection)
     if attempt_number > 1:
         normalized["attempt_count"] = attempt_number
         normalized["attempt_failures"] = canonical_value(prior_failures)

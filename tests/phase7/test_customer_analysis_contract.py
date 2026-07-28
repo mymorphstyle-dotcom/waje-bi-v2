@@ -49,6 +49,16 @@ const clarification = {
     { option_id: "rolling", label: "近 7 日均值", description: "此前七个完整自然日", recommended: false },
     { option_id: "tell_agent_differently", label: "其他", description: "自行说明", recommended: false },
   ],
+  questions: [{
+    slot_id: "comparison_baseline",
+    question: "请选择比较基线",
+    recommendation_reason: "前一天最接近目标日。",
+    options: [
+      { option_id: "previous", label: "前一天", description: "前一个完整自然日", recommended: true },
+      { option_id: "rolling", label: "近 7 日均值", description: "此前七个完整自然日", recommended: false },
+      { option_id: "tell_agent_differently", label: "其他", description: "自行说明", recommended: false },
+    ],
+  }],
 };
 const publication = {
   blocks: [
@@ -125,6 +135,175 @@ def test_only_current_waiting_state_creates_one_actionable_input() -> None:
     }
 
 
+def test_business_understanding_requires_an_accepted_intent_revision_binding() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const unbound = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-unbound", status: "running_workflow",
+                request: {
+                  business_understanding: "这仍是会话入口的临时理解。",
+                },
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+            });
+            const bound = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-bound", status: "running_workflow",
+                request: {
+                  business_understanding: "你希望分析全量样本中月初付费金额是否稳定高于月中和月末。",
+                  business_understanding_intent_revision_id: "intent-revision-accepted",
+                },
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+            });
+            console.log(JSON.stringify({
+              unbound: unbound.businessUnderstanding,
+              bound: bound.businessUnderstanding,
+              restored: parseCustomerAnalysisSnapshot(bound).businessUnderstanding,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "unbound": None,
+        "bound": "你希望分析全量样本中月初付费金额是否稳定高于月中和月末。",
+        "restored": "你希望分析全量样本中月初付费金额是否稳定高于月中和月末。",
+    }
+
+
+def test_planner_issues_require_the_accepted_plan_binding() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const request = {
+              plan_result_refs: {
+                plan_revision_id: "plan-revision-accepted",
+                planner_proposal_id: "planner-proposal-accepted",
+              },
+              planner_problem_projection: {
+                schema_version: "planner-problem-projection.v1",
+                plan_revision_id: "plan-revision-accepted",
+                planner_proposal_id: "planner-proposal-accepted",
+                issues: [
+                  { issue_id: "root", parent_issue_id: null, question: "完成本轮分析" },
+                  { issue_id: "pattern", parent_issue_id: "root", question: "验证月初是否稳定更高" },
+                  { issue_id: "quality", parent_issue_id: "root", question: "检查数据质量边界" },
+                ],
+              },
+              query_bundle_projection: {
+                schema_version: "query-bundle-projection.v1",
+                query_bundle_ref: "query-bundle-accepted",
+                stage: "compiled",
+                plan_revision_id: "plan-revision-accepted",
+                planner_proposal_id: "planner-proposal-accepted",
+                issues: [
+                  {
+                    issue_id: "root", question: "完成本轮分析",
+                    status: "querying", status_message: "查询中",
+                    query_ir_ref: "query-ir-root", repair_actions: [],
+                  },
+                  {
+                    issue_id: "pattern", question: "验证月初是否稳定更高",
+                    status: "evidenced", status_message: "已有证据",
+                    query_ir_ref: "query-ir-pattern", repair_actions: [],
+                  },
+                  {
+                    issue_id: "quality", question: "检查数据质量边界",
+                    status: "limited", status_message: "有边界",
+                    query_ir_ref: "query-ir-quality",
+                    repair_actions: ["select_available_capability_route"],
+                  },
+                ],
+              },
+            };
+            const accepted = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-accepted", status: "running_workflow", request,
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+            });
+            const stale = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-stale", status: "running_workflow",
+                request: {
+                  ...request,
+                  plan_result_refs: {
+                    ...request.plan_result_refs,
+                    plan_revision_id: "plan-revision-new",
+                  },
+                },
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+            });
+            console.log(JSON.stringify({
+              accepted: accepted.plannerIssues,
+              acceptedStates: accepted.plannerIssueStates,
+              stale: stale.plannerIssues,
+              staleStates: stale.plannerIssueStates,
+              restored: parseCustomerAnalysisSnapshot(accepted).plannerIssues,
+              restoredStates: parseCustomerAnalysisSnapshot(accepted).plannerIssueStates,
+            }));
+            """
+        )
+    )
+    assert result == {
+        "accepted": [
+            "完成本轮分析",
+            "验证月初是否稳定更高",
+            "检查数据质量边界",
+        ],
+        "acceptedStates": [
+            {
+                "question": "完成本轮分析",
+                "status": "querying",
+                "statusLabel": "查询中",
+            },
+            {
+                "question": "验证月初是否稳定更高",
+                "status": "evidenced",
+                "statusLabel": "已有证据",
+            },
+            {
+                "question": "检查数据质量边界",
+                "status": "limited",
+                "statusLabel": "有边界",
+            },
+        ],
+        "stale": [],
+        "staleStates": [],
+        "restored": [
+            "完成本轮分析",
+            "验证月初是否稳定更高",
+            "检查数据质量边界",
+        ],
+        "restoredStates": [
+            {
+                "question": "完成本轮分析",
+                "status": "querying",
+                "statusLabel": "查询中",
+            },
+            {
+                "question": "验证月初是否稳定更高",
+                "status": "evidenced",
+                "statusLabel": "已有证据",
+            },
+            {
+                "question": "检查数据质量边界",
+                "status": "limited",
+                "statusLabel": "有边界",
+            },
+        ],
+    }
+
+
 def test_replayed_old_clarification_does_not_stop_working_run() -> None:
     result = _run_projection(
         textwrap.dedent(
@@ -140,6 +319,69 @@ def test_replayed_old_clarification_does_not_stop_working_run() -> None:
         )
     )
     assert result == {"status": "working", "phase": "querying", "hasInput": False}
+
+
+def test_explicit_phase_stop_projects_a_terminal_checkpoint() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const stopped = projectCustomerAnalysisSnapshot({
+              ...base,
+              runNodes: [{
+                nodeName: "compile_authoritative_plan",
+                status: "completed",
+                confirmedAt: base.confirmedAt,
+              }],
+              run: {
+                id: "run-stopped",
+                status: "planned",
+                request: { stop_after_phase: "phase02" },
+                createdAt: base.confirmedAt,
+                updatedAt: base.confirmedAt,
+              },
+            });
+            const continuing = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-continuing",
+                status: "planned",
+                request: {},
+                createdAt: base.confirmedAt,
+                updatedAt: base.confirmedAt,
+              },
+            });
+            console.log(JSON.stringify({
+              stopped: {
+                status: stopped.state.status,
+                phase: stopped.state.phase,
+                title: stopped.state.title,
+                safeToClose: stopped.state.safeToClose,
+                updateStatuses: stopped.state.updates.map((item) => item.status),
+                parsedStatus: parseCustomerAnalysisSnapshot(stopped).state.status,
+              },
+              continuing: {
+                status: continuing.state.status,
+                phase: continuing.state.phase,
+              },
+            }));
+            """
+        )
+    )
+    assert result == {
+        "stopped": {
+            "status": "checkpoint",
+            "phase": "planning",
+            "title": "分析计划已确认",
+            "safeToClose": True,
+            "updateStatuses": ["completed", "completed"],
+            "parsedStatus": "checkpoint",
+        },
+        "continuing": {
+            "status": "working",
+            "phase": "planning",
+        },
+    }
 
 
 def test_persisted_provider_stage_advances_progress_past_stale_run_nodes() -> None:

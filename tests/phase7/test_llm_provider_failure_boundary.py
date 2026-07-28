@@ -157,6 +157,22 @@ def test_value_error_from_typed_validator_is_audited_as_invalid_llm_output() -> 
     assert '{"items":[]}' not in serialized
 
 
+def test_missing_required_key_exposes_previous_object_for_diagnostic_repair() -> None:
+    with pytest.raises(
+        LLMOutputError,
+        match="^missing_llm_output_keys:decision$",
+    ) as captured:
+        _OutputClient().invoke_json(
+            task="provider_boundary_test",
+            prompt_version="test.v1",
+            messages=({"role": "user", "content": "{}"},),
+            required_keys=("decision",),
+        )
+
+    assert captured.value.invalid_output == {"items": []}
+    assert "structured_output" not in captured.value.audit
+
+
 def test_non_retryable_output_contract_failure_keeps_retryability() -> None:
     client = _OutputClient()
 

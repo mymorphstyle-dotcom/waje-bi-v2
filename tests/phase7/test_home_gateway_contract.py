@@ -13,6 +13,12 @@ class HomeGatewayContractTest(unittest.TestCase):
             ROOT / "app" / "api" / "_customerAnalysisContract.ts"
         ).read_text(encoding="utf-8")
         cls.styles = (ROOT / "app" / "globals.css").read_text(encoding="utf-8")
+        cls.analysis_dock = (
+            ROOT / "app" / "analysis-dock.tsx"
+        ).read_text(encoding="utf-8")
+        cls.reasoning_timeline = (
+            ROOT / "app" / "reasoning-timeline.tsx"
+        ).read_text(encoding="utf-8")
         cls.prompt_input = (
             ROOT / "components" / "ai-elements" / "prompt-input.tsx"
         ).read_text(encoding="utf-8")
@@ -45,7 +51,7 @@ class HomeGatewayContractTest(unittest.TestCase):
         self.assertNotIn("deliveryStatus", self.page)
 
     def test_one_time_actions_keep_a_versioned_idempotency_identity(self):
-        self.assertIn('PENDING_OPERATION_PREFIX = "waje-pending-operation:v3:"', self.page)
+        self.assertIn('PENDING_OPERATION_PREFIX = "waje-pending-operation:v4:"', self.page)
         self.assertIn('INITIAL_MESSAGE_SCOPE = "message:new"', self.page)
         self.assertIn("PENDING_OPERATION_TTL_MS", self.page)
         self.assertIn("const existing = loadPendingOperation(scope)", self.page)
@@ -75,7 +81,8 @@ class HomeGatewayContractTest(unittest.TestCase):
 
     def test_accessibility_and_mobile_navigation_remain_available(self):
         self.assertIn('aria-label="分析历史"', self.page)
-        self.assertIn('aria-label="分析进展"', self.page)
+        self.assertIn('aria-label="分析进展"', self.analysis_dock)
+        self.assertIn('aria-label="分析任务"', self.analysis_dock)
         self.assertIn('role="alert"', self.page)
         self.assertIn("inputRequestRef.current?.focus()", self.page)
         self.assertIn('event.key !== "Enter"', self.prompt_input)
@@ -97,7 +104,11 @@ class HomeGatewayContractTest(unittest.TestCase):
         self.assertIn('from "@/components/ai-elements/conversation"', self.page)
         self.assertIn('from "@/components/ai-elements/message"', self.page)
         self.assertIn('from "@/components/ai-elements/prompt-input"', self.page)
-        self.assertIn("ProgressTimeline", self.page)
+        self.assertIn("ReasoningTimeline", self.page)
+        self.assertIn('aria-label="分析问题"', self.reasoning_timeline)
+        self.assertIn('aria-label="核验事实"', self.reasoning_timeline)
+        self.assertIn("PlannerStatusCard", self.page)
+        self.assertIn("AnalysisTaskCard", self.page)
         self.assertNotIn("ProgressPanel", self.page)
         self.assertNotIn("customer-milestones", self.page)
         self.assertNotIn("工作流画布", self.page)

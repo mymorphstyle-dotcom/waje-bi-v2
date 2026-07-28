@@ -238,7 +238,9 @@ class _LLM:
 
     def invoke_json(self, **kwargs: Any) -> LLMResult:
         self.calls += 1
-        kwargs["output_validator"](self.output)
+        validator = kwargs.get("output_validator")
+        if callable(validator):
+            validator(self.output)
         return LLMResult(
             output=self.output,
             audit={

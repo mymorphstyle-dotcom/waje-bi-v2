@@ -1,5 +1,7 @@
 node_modules/
 .next/
+.turbo/
+tmp/
 .playwright-cli/
 playwright-report/
 test-results/

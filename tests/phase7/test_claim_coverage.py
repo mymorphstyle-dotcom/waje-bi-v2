@@ -692,6 +692,7 @@ def test_selected_route_union_cannot_exceed_remaining_auxiliary_budget() -> None
     evaluation = ClaimCoverageEvaluation.create(
         plan_revision=execution.plan_revision,
         execution_result=execution,
+        evidence_contract_reviews=source_evaluation.evidence_contract_reviews,
         obligation_coverages=source_evaluation.obligation_coverages,
         admissible_routes=(source_route, second_route),
     )
@@ -884,7 +885,7 @@ def test_provider_seal_preserves_provider_judgment_but_cannot_create_patch() -> 
         )
 
 
-def test_provider_audit_and_evidence_contract_mismatches_fail_closed() -> None:
+def test_provider_audit_fails_closed_and_evidence_contract_drift_is_observation_only() -> None:
     execution = _execution(succeeded=False)
     evaluation = evaluate_claim_coverage(
         authority_context=_authority_context(),
@@ -912,16 +913,22 @@ def test_provider_audit_and_evidence_contract_mismatches_fail_closed() -> None:
         succeeded=True,
         evidence_kind="derived",
     )
-    with pytest.raises(
-        ClaimCoverageContractError,
-        match="claim_coverage_evidence_contract_invalid",
-    ):
-        evaluate_claim_coverage(
-            authority_context=_authority_context(),
-            plan_revision=incompatible_execution.plan_revision,
-            execution_result=incompatible_execution,
-            route_catalog=_registry(),
-        )
+    incompatible_evaluation = evaluate_claim_coverage(
+        authority_context=_authority_context(),
+        plan_revision=incompatible_execution.plan_revision,
+        execution_result=incompatible_execution,
+        route_catalog=_registry(),
+    )
+    review = incompatible_evaluation.evidence_contract_reviews[0]
+    assert review.contract_match_state == "none"
+    assert review.publication_disposition == "observation_only"
+    assert review.audit_codes == ("evidence_kind_registration_drift",)
+    assert incompatible_evaluation.direct_publishable_evidence_refs == ()
+    assert incompatible_evaluation.weakened_evidence_refs == ()
+    assert incompatible_evaluation.observation_only_evidence_refs == (
+        review.evidence_entry_ref,
+    )
+    assert incompatible_evaluation.has_publication_limits is True
 
 
 def test_roundtrip_rejects_tampered_patch_authority_ref() -> None:

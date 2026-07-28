@@ -11,9 +11,20 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from bi_agent.runtime.analysis_contracts import DIMENSION_PRESENCE_POLICIES
+from bi_agent.runtime.analysis_contracts import (
+    DIMENSION_PRESENCE_POLICIES,
+    QUERY_RESULT_SEMANTICS,
+)
 from bi_agent.runtime.analysis_performance import AnalysisPerformancePolicy
 from bi_agent.runtime.contracts import load_contract
+from bi_agent.runtime.dimension_combination_derivation import (
+    DimensionCombinationDerivationError,
+    validate_dimension_combination_policy,
+)
+from bi_agent.runtime.event_window_derivation import (
+    EventWindowDerivationError,
+    validate_event_window_derivation_policy,
+)
 from bi_agent.runtime.exploration_budget_policy import ExplorationBudgetPolicy
 from bi_agent.runtime.temporal_comparison import ROLLING_WINDOW_PARAMETER_FIELDS
 
@@ -42,6 +53,7 @@ _REQUIRED_SECTIONS = (
     "business_timezone",
     "public_scope_types",
     "analysis_performance_policy",
+    "llm_output_handling_policy",
     "exploration_budget_policy",
     "restricted_output_policy",
     "claim_strength_taxonomy",
@@ -132,9 +144,11 @@ _ANALYSIS_GOAL_FIELDS = frozenset(
         "business_name",
         "semantics",
         "question_family_ref",
+        "merged_goal_refs",
         "target_metric_refs",
         "required_outcomes",
         "outcome_claim_types",
+        "outcome_route_policies",
         "analysis_axes",
         "completion_policy",
     }
@@ -176,7 +190,10 @@ _ANALYSIS_GOAL_COMPLETION_FIELDS = frozenset(
         "publication_authority",
     }
 )
-_ANALYSIS_GOAL_ROLES = frozenset({"primary", "supporting"})
+_ANALYSIS_GOAL_ROLES = frozenset({"primary"})
+_ANALYSIS_OUTCOME_ROUTE_POLICIES = frozenset(
+    {"all_required", "best_available"}
+)
 _FACTOR_DOMAIN_FIELDS = frozenset(
     {
         "business_name",
@@ -210,6 +227,7 @@ _CONTEXT_WINDOW_POLICY_FIELDS = frozenset(
         "execution_default",
     }
 )
+_CONTEXT_WINDOW_POLICY_OPTIONAL_FIELDS = frozenset({"derived_frame_modes"})
 _CONTEXT_WINDOW_RELATIONS = frozenset({"trailing_complete_periods"})
 _CONTEXT_WINDOW_UNITS = frozenset({"day", "week", "month", "quarter"})
 _CONTEXT_WINDOW_AGGREGATIONS = frozenset(
@@ -282,6 +300,7 @@ class RuntimeContractRegistry:
                 raise ValueError(f"runtime_contract_sequence_invalid:{section}")
         _validate_claim_strength_taxonomy(payload["claim_strength_taxonomy"])
         AnalysisPerformancePolicy.from_contract(payload["analysis_performance_policy"])
+        _validate_llm_output_handling_policy(payload["llm_output_handling_policy"])
         ExplorationBudgetPolicy.from_contract(payload["exploration_budget_policy"])
         _validate_public_scope_types(payload["public_scope_types"])
         _validate_metric_display_policies(payload["metric_display_policies"])
@@ -290,6 +309,7 @@ class RuntimeContractRegistry:
             tuple(str(item) for item in payload["metrics"]),
         )
         _validate_dimension_transformations(payload["dimensions"])
+        _validate_dimension_decision_use(payload["dimensions"])
         _validate_query_shapes(
             payload.get("query_shapes") or {},
             payload["capability_inputs"],
@@ -399,6 +419,17 @@ class RuntimeContractRegistry:
             payload["capability_inputs"],
             payload["analysis_axis_catalog"],
         )
+        for capability_id, contract in payload["capability_inputs"].items():
+            _validate_dynamic_event_window_policy(
+                capability_id,
+                contract,
+                capabilities=payload["capability_inputs"],
+            )
+            _validate_dynamic_dimension_combination_policy(
+                capability_id,
+                contract,
+                capabilities=payload["capability_inputs"],
+            )
         _validate_claim_publication_policy(payload)
         _validate_goal_obligations(payload)
         self._payload = deepcopy(dict(payload))
@@ -451,6 +482,10 @@ class RuntimeContractRegistry:
     @property
     def dimension_ids(self) -> tuple[str, ...]:
         return tuple(sorted(str(item) for item in self._payload["dimensions"]))
+
+    @property
+    def query_shape_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(str(item) for item in self._payload["query_shapes"]))
 
     @property
     def launch_question_family_ids(self) -> tuple[str, ...]:
@@ -543,7 +578,16 @@ class RuntimeContractRegistry:
             goal_bindings,
             known_goal_ids=set(self.analysis_goal_ids),
         )
-        goal_ids = tuple(item["goal_id"] for item in normalized_goals)
+        primary_goal_id = str(normalized_goals[0]["goal_id"])
+        goal_ids = (
+            primary_goal_id,
+            *(
+                str(item)
+                for item in self.analysis_goal_obligation(primary_goal_id)[
+                    "merged_goal_refs"
+                ]
+            ),
+        )
         factor_domain_ids = self.factor_domain_ids_for_goals(
             goal_ids,
             target_metric=target_metric,
@@ -663,44 +707,59 @@ class RuntimeContractRegistry:
         axis_records: dict[str, dict[str, Any]] = {}
         required_outcomes: list[str] = []
         outcome_claim_types: dict[str, list[str]] = {}
+        outcome_route_policies: dict[str, str] = {}
         question_family_refs: list[str] = []
         goal_claim_publication_requirements: dict[str, dict[str, str]] = {}
         goal_completion_policies: dict[str, dict[str, str]] = {}
-        for goal_binding in normalized_goals:
-            goal_id = goal_binding["goal_id"]
-            goal_role = goal_binding["role"]
+        primary_goal_id = str(normalized_goals[0]["goal_id"])
+        primary_obligation = self.analysis_goal_obligation(primary_goal_id)
+        merged_goal_refs = tuple(
+            str(goal_id) for goal_id in primary_obligation["merged_goal_refs"]
+        )
+        plan_goal_bindings = (
+            {"goal_id": primary_goal_id, "role": "primary"},
+            *(
+                {"goal_id": goal_id, "role": "merged"}
+                for goal_id in merged_goal_refs
+            ),
+        )
+        for goal_binding in plan_goal_bindings:
+            goal_id = str(goal_binding["goal_id"])
+            goal_role = str(goal_binding["role"])
             obligation = self.analysis_goal_obligation(goal_id)
             if target_metric not in set(obligation["target_metric_refs"]):
                 raise ValueError(
                     f"analysis_goal_target_metric_unsupported:{goal_id}:{target_metric}"
                 )
-            required_outcomes.extend(obligation["required_outcomes"])
             question_family_refs.append(str(obligation["question_family_ref"]))
-            goal_claim_kinds = {
-                str(claim_kind)
-                for claim_types in obligation["outcome_claim_types"].values()
-                for claim_kind in claim_types
-            }
-            goal_claim_publication_requirements[goal_id] = {
-                claim_kind: self.claim_publication_requirements[claim_kind]
-                for claim_kind in sorted(goal_claim_kinds)
-            }
-            goal_completion_policies[goal_id] = deepcopy(
-                dict(obligation["completion_policy"])
-            )
-            for outcome_id, claim_types in obligation["outcome_claim_types"].items():
-                outcome_claim_types.setdefault(str(outcome_id), [])
-                outcome_claim_types[str(outcome_id)].extend(
-                    claim_type
-                    for claim_type in claim_types
-                    if claim_type not in outcome_claim_types[str(outcome_id)]
+            if goal_role == "primary":
+                required_outcomes.extend(obligation["required_outcomes"])
+                goal_claim_kinds = {
+                    str(claim_kind)
+                    for claim_types in obligation["outcome_claim_types"].values()
+                    for claim_kind in claim_types
+                }
+                goal_claim_publication_requirements[goal_id] = {
+                    claim_kind: self.claim_publication_requirements[claim_kind]
+                    for claim_kind in sorted(goal_claim_kinds)
+                }
+                goal_completion_policies[goal_id] = deepcopy(
+                    dict(obligation["completion_policy"])
                 )
+                for outcome_id, claim_types in obligation[
+                    "outcome_claim_types"
+                ].items():
+                    outcome_claim_types[str(outcome_id)] = list(claim_types)
+                    outcome_route_policies[str(outcome_id)] = str(
+                        obligation["outcome_route_policies"][outcome_id]
+                    )
             for raw_binding in obligation["analysis_axes"]:
                 axis_id = str(raw_binding["axis_id"])
                 declared_role = str(raw_binding["role"])
                 effective_role = (
                     "auxiliary"
-                    if goal_role == "supporting" and declared_role == "required"
+                    if goal_role == "merged"
+                    and declared_role in {"required", "disclosure"}
                     else declared_role
                 )
                 if axis_id not in axis_records:
@@ -761,7 +820,7 @@ class RuntimeContractRegistry:
             raise ValueError(
                 "analysis_goal_explicit_focus_unbound:" + ",".join(unbound)
             )
-        goal_ids = tuple(item["goal_id"] for item in normalized_goals)
+        goal_ids = tuple(str(item["goal_id"]) for item in plan_goal_bindings)
         factor_domain_refs = self.factor_domain_ids_for_goals(
             goal_ids,
             target_metric=target_metric,
@@ -801,12 +860,21 @@ class RuntimeContractRegistry:
             if axis_id in axis_records
         ]
         return {
-            "schema_version": "analysis_goal_plan.v3",
+            "schema_version": "analysis_goal_plan.v4",
             "goal_bindings": normalized_goals,
+            "merged_goal_refs": list(merged_goal_refs),
+            "primary_question_family_ref": str(
+                primary_obligation["question_family_ref"]
+            ),
+            "merged_question_family_refs": [
+                self.analysis_goal_question_family_ref(goal_id)
+                for goal_id in merged_goal_refs
+            ],
             "question_family_refs": list(dict.fromkeys(question_family_refs)),
             "target_metric": target_metric,
             "required_outcomes": list(dict.fromkeys(required_outcomes)),
             "outcome_claim_types": outcome_claim_types,
+            "outcome_route_policies": outcome_route_policies,
             "goal_claim_publication_requirements": (
                 goal_claim_publication_requirements
             ),
@@ -909,6 +977,20 @@ class RuntimeContractRegistry:
 
     def dimension_sources(self, dimension_id: str) -> dict[str, dict[str, Any]]:
         return self._source_entries("dimensions", dimension_id, "dimension")
+
+    def scope_invariant_dimension_ids(self, dataset_id: str) -> tuple[str, ...]:
+        if dataset_id not in set(self.dataset_ids):
+            raise KeyError(f"unknown_dataset:{dataset_id}")
+        return tuple(
+            dimension_id
+            for dimension_id in self.dimension_ids
+            if dataset_id in self.dimension_sources(dimension_id)
+            and self.dimension(
+                dimension_id,
+                dataset_id=dataset_id,
+            ).get("decision_use")
+            == "scope_invariant"
+        )
 
     def capability_inputs(self, capability_id: str) -> dict[str, Any]:
         return self._entry("capability_inputs", capability_id, "capability")
@@ -1085,6 +1167,18 @@ def _validate_public_scope_types(value: Any) -> None:
         or len(value) != len(set(value))
     ):
         raise ValueError("runtime_contract_public_scope_types_invalid")
+
+
+def _validate_llm_output_handling_policy(value: Any) -> None:
+    expected = {
+        "schema_version": "llm-output-handling-policy.v2",
+        "consumable_contract_surplus": "project_record_and_continue",
+        "consumable_presentation_issue": "record_and_continue",
+        "output_contract_failure": "one_diagnostic_repair_then_stop",
+        "provider_transient_failure": "provider_retry_policy",
+    }
+    if not isinstance(value, Mapping) or dict(value) != expected:
+        raise ValueError("runtime_llm_output_handling_policy_invalid")
 
 
 def _validate_restricted_output_policy(
@@ -1315,6 +1409,14 @@ def _validate_query_shapes(
                 "runtime_query_shape_source_field_policy:"
                 f"{query_family}:{source_field_policy}"
             )
+        scope_invariant_output = shape.get("scope_invariant_output")
+        if scope_invariant_output is not None and scope_invariant_output != (
+            "violation_counts"
+        ):
+            raise ValueError(
+                "runtime_query_shape_scope_invariant_output:"
+                f"{query_family}:{scope_invariant_output}"
+            )
         if query_family in dimension_families:
             topology = shape.get("dimension_topology")
             if topology not in {"independent", "joint"}:
@@ -1322,6 +1424,23 @@ def _validate_query_shapes(
                     "runtime_query_shape_dimension_topology:"
                     f"{query_family}:{topology or 'missing'}"
                 )
+        result_semantics = shape.get("result_semantics") or "complete_aggregate"
+        if result_semantics not in QUERY_RESULT_SEMANTICS:
+            raise ValueError(
+                "runtime_query_shape_result_semantics:"
+                f"{query_family}:{result_semantics}"
+            )
+        if result_semantics == "complete_context_rows":
+            continue
+        max_result_rows = shape.get("max_result_rows")
+        if (
+            isinstance(max_result_rows, bool)
+            or not isinstance(max_result_rows, int)
+            or not 0 < max_result_rows <= 100000
+        ):
+            raise ValueError(
+                f"runtime_query_shape_result_bound_invalid:{query_family}"
+            )
 
 
 def _validate_dataset_intent_roles(datasets: Mapping[str, Any]) -> None:
@@ -1380,8 +1499,25 @@ def _validate_context_window_policy(
     policy = contract.get("context_window_policy")
     if policy is None:
         return
-    if not isinstance(policy, Mapping) or set(policy) != _CONTEXT_WINDOW_POLICY_FIELDS:
+    if (
+        not isinstance(policy, Mapping)
+        or not _CONTEXT_WINDOW_POLICY_FIELDS.issubset(policy)
+        or set(policy) - _CONTEXT_WINDOW_POLICY_FIELDS
+        - _CONTEXT_WINDOW_POLICY_OPTIONAL_FIELDS
+    ):
         raise ValueError(f"runtime_context_window_policy_invalid:{capability_id}:shape")
+    derived_frame_modes = policy.get("derived_frame_modes", [])
+    if (
+        not isinstance(derived_frame_modes, list)
+        or len(derived_frame_modes) != len(set(derived_frame_modes))
+        or any(
+            mode not in {"calendar_partition"}
+            for mode in derived_frame_modes
+        )
+    ):
+        raise ValueError(
+            f"runtime_context_window_policy_invalid:{capability_id}:derived_frame_modes"
+        )
     relation = policy.get("relation")
     units = policy.get("allowed_units")
     bounds = policy.get("count_bounds")
@@ -1681,6 +1817,98 @@ def _validate_capability_task_dependencies(
         visit(capability_id)
 
 
+def _validate_dynamic_event_window_policy(
+    capability_id: str,
+    contract: Mapping[str, Any],
+    *,
+    capabilities: Mapping[str, Any],
+) -> None:
+    raw_policy = contract.get("dynamic_event_window_policy")
+    if raw_policy is None:
+        return
+    binding = contract.get("task_input_binding")
+    dependencies = contract.get("task_dependencies")
+    if (
+        not isinstance(binding, Mapping)
+        or binding.get("payload_kind") != "event_window_metric_comparison"
+        or not isinstance(dependencies, list)
+        or len(dependencies) != 1
+    ):
+        raise ValueError(
+            f"runtime_dynamic_event_window_policy_invalid:{capability_id}"
+        )
+    source_dependency = str(dependencies[0])
+    source_contract = capabilities.get(source_dependency)
+    source_binding = (
+        source_contract.get("task_input_binding")
+        if isinstance(source_contract, Mapping)
+        else None
+    )
+    try:
+        validate_event_window_derivation_policy(
+            raw_policy,
+            expected_source_dependency=source_dependency,
+        )
+    except EventWindowDerivationError as exc:
+        raise ValueError(
+            f"runtime_dynamic_event_window_policy_invalid:{capability_id}"
+        ) from exc
+    if (
+        not isinstance(source_binding, Mapping)
+        or source_binding.get("payload_kind") != "event_evidence"
+    ):
+        raise ValueError(
+            f"runtime_dynamic_event_window_policy_invalid:{capability_id}"
+        )
+
+
+def _validate_dynamic_dimension_combination_policy(
+    capability_id: str,
+    contract: Mapping[str, Any],
+    *,
+    capabilities: Mapping[str, Any],
+) -> None:
+    raw_policy = contract.get("dynamic_dimension_combination_policy")
+    if raw_policy is None:
+        return
+    dependencies = contract.get("task_dependencies")
+    binding = contract.get("task_input_binding")
+    if (
+        not isinstance(dependencies, list)
+        or len(dependencies) != 1
+        or not isinstance(binding, Mapping)
+        or binding.get("payload_kind") != "joint_attribution"
+        or contract.get("dimension_mode") != "requested"
+    ):
+        raise ValueError(
+            f"runtime_dynamic_dimension_combination_policy_invalid:{capability_id}"
+        )
+    source_dependency = str(dependencies[0])
+    source_contract = capabilities.get(source_dependency)
+    source_binding = (
+        source_contract.get("task_input_binding")
+        if isinstance(source_contract, Mapping)
+        else None
+    )
+    if (
+        not isinstance(source_binding, Mapping)
+        or source_binding.get("payload_kind")
+        != "candidate_dimension_screen"
+    ):
+        raise ValueError(
+            f"runtime_dynamic_dimension_combination_policy_invalid:{capability_id}"
+        )
+    try:
+        validate_dimension_combination_policy(
+            raw_policy,
+            expected_source_dependency=source_dependency,
+        )
+    except DimensionCombinationDerivationError as exc:
+        raise ValueError(
+            f"runtime_dynamic_dimension_combination_policy_invalid:{capability_id}"
+        ) from exc
+
+
 def _validate_window_reconciliation_contracts(
     capabilities: Mapping[str, Any],
 ) -> None:
@@ -1872,7 +2100,42 @@ def _validate_dimension_transformations(dimensions: Mapping[str, Any]) -> None:
         transformation = contract.get("transformation")
         if transformation is None:
             continue
-        if not isinstance(transformation, Mapping) or set(transformation) != {
+        if not isinstance(transformation, Mapping):
+            raise ValueError(
+                f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+        if transformation.get("kind") == "categorical_map":
+            if set(transformation) != {
+                "kind",
+                "value_map",
+                "default_label",
+            }:
+                raise ValueError(
+                    f"runtime_dimension_transformation_invalid:{dimension_id}"
+                )
+            value_map = transformation.get("value_map")
+            default_label = transformation.get("default_label")
+            if (
+                not isinstance(value_map, Mapping)
+                or not value_map
+                or any(
+                    type(source) is not str
+                    or not source
+                    or source != source.casefold().strip()
+                    or type(label) is not str
+                    or not label.strip()
+                    for source, label in value_map.items()
+                )
+                or type(default_label) is not str
+                or not default_label.strip()
+                or not contract.get("source_field")
+                or contract.get("output_policy") != "aggregate_only"
+            ):
+                raise ValueError(
+                    f"runtime_dimension_transformation_invalid:{dimension_id}"
+                )
+            continue
+        if set(transformation) != {
             "kind",
             "null_or_negative_label",
             "buckets",
@@ -1930,6 +2193,55 @@ def _validate_dimension_transformations(dimensions: Mapping[str, Any]) -> None:
         ):
             raise ValueError(
                 f"runtime_dimension_transformation_invalid:{dimension_id}"
+            )
+
+
+def _validate_dimension_decision_use(dimensions: Mapping[str, Any]) -> None:
+    for dimension_id, contract in dimensions.items():
+        decision_use = contract.get("decision_use", "business_candidate")
+        if decision_use not in {"business_candidate", "scope_invariant"}:
+            raise ValueError(
+                f"runtime_dimension_decision_use_invalid:{dimension_id}"
+            )
+        invariant = contract.get("scope_invariant")
+        if decision_use == "business_candidate":
+            if invariant is not None:
+                raise ValueError(
+                    f"runtime_dimension_scope_invariant_invalid:{dimension_id}"
+                )
+            continue
+        if (
+            contract.get("automatic_screening") != "blocked"
+            or contract.get("output_policy") != "aggregate_only"
+            or type(contract.get("source_field")) is not str
+            or not contract["source_field"]
+            or not isinstance(invariant, Mapping)
+            or set(invariant)
+            != {
+                "canonical_value",
+                "accepted_source_values",
+                "data_quality_policy",
+            }
+        ):
+            raise ValueError(
+                f"runtime_dimension_scope_invariant_invalid:{dimension_id}"
+            )
+        canonical_value = invariant.get("canonical_value")
+        accepted_values = invariant.get("accepted_source_values")
+        if (
+            type(canonical_value) is not str
+            or not canonical_value.strip()
+            or not isinstance(accepted_values, list)
+            or not accepted_values
+            or any(type(item) is not str or not item.strip() for item in accepted_values)
+            or len({item.casefold().strip() for item in accepted_values})
+            != len(accepted_values)
+            or canonical_value.casefold().strip()
+            not in {item.casefold().strip() for item in accepted_values}
+            or invariant.get("data_quality_policy") != "required"
+        ):
+            raise ValueError(
+                f"runtime_dimension_scope_invariant_invalid:{dimension_id}"
             )
 
 
@@ -2356,6 +2668,19 @@ def _validate_goal_obligations(payload: Mapping[str, Any]) -> None:
                 f"{goal_id}:{question_family_ref or 'missing'}"
             )
         referenced_question_families.add(question_family_ref)
+        merged_goal_refs = _analysis_string_sequence(
+            contract["merged_goal_refs"],
+            field="merged_goal_refs",
+            item_id=str(goal_id),
+        )
+        invalid_merged_goals = (
+            set(merged_goal_refs) - set(goals)
+        ) | ({str(goal_id)} & set(merged_goal_refs))
+        if invalid_merged_goals:
+            raise ValueError(
+                "runtime_analysis_goal_merged_goal_invalid:"
+                f"{goal_id}:{','.join(sorted(invalid_merged_goals))}"
+            )
         target_metric_refs = _analysis_string_sequence(
             contract["target_metric_refs"],
             field="target_metric_refs",
@@ -2401,6 +2726,27 @@ def _validate_goal_obligations(payload: Mapping[str, Any]) -> None:
             )
             for outcome_id, claim_types in outcome_claim_types.items()
         }
+        outcome_route_policies = contract["outcome_route_policies"]
+        if (
+            not isinstance(outcome_route_policies, Mapping)
+            or set(outcome_route_policies) != set(required_outcomes)
+            or any(
+                policy not in _ANALYSIS_OUTCOME_ROUTE_POLICIES
+                for policy in outcome_route_policies.values()
+            )
+        ):
+            raise ValueError(
+                f"runtime_analysis_goal_outcome_route_policy_invalid:{goal_id}"
+            )
+        for outcome_id, policy in outcome_route_policies.items():
+            if (
+                policy == "best_available"
+                and len(normalized_outcome_claim_types[str(outcome_id)]) < 2
+            ):
+                raise ValueError(
+                    "runtime_analysis_goal_outcome_route_policy_invalid:"
+                    f"{goal_id}:{outcome_id}"
+                )
         axis_bindings = contract["analysis_axes"]
         if not isinstance(axis_bindings, list) or not axis_bindings:
             raise ValueError(f"runtime_analysis_goal_axes_invalid:{goal_id}")
@@ -2591,29 +2937,20 @@ def _validated_goal_bindings(
     *,
     known_goal_ids: set[str],
 ) -> list[dict[str, str]]:
-    if not isinstance(value, (list, tuple)) or not value:
+    if not isinstance(value, (list, tuple)) or len(value) != 1:
         raise ValueError("analysis_goal_bindings_invalid")
-    normalized: list[dict[str, str]] = []
-    seen: set[str] = set()
-    primary_count = 0
-    for binding in value:
-        if not isinstance(binding, Mapping) or set(binding) != {"goal_id", "role"}:
-            raise ValueError("analysis_goal_binding_invalid")
-        goal_id = binding["goal_id"]
-        role = binding["role"]
-        if (
-            type(goal_id) is not str
-            or goal_id not in known_goal_ids
-            or goal_id in seen
-            or role not in _ANALYSIS_GOAL_ROLES
-        ):
-            raise ValueError(f"analysis_goal_binding_invalid:{goal_id}")
-        seen.add(goal_id)
-        primary_count += int(role == "primary")
-        normalized.append({"goal_id": goal_id, "role": str(role)})
-    if primary_count != 1:
-        raise ValueError("analysis_goal_primary_cardinality_invalid")
-    return normalized
+    binding = value[0]
+    if not isinstance(binding, Mapping) or set(binding) != {"goal_id", "role"}:
+        raise ValueError("analysis_goal_binding_invalid")
+    goal_id = binding["goal_id"]
+    role = binding["role"]
+    if (
+        type(goal_id) is not str
+        or goal_id not in known_goal_ids
+        or role not in _ANALYSIS_GOAL_ROLES
+    ):
+        raise ValueError(f"analysis_goal_binding_invalid:{goal_id}")
+    return [{"goal_id": goal_id, "role": "primary"}]
 
 
 def _validated_analysis_explicit_focus(

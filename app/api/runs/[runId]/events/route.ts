@@ -36,7 +36,12 @@ export async function GET(request: Request, context: RouteContext) {
     });
     const lastEventId = request.headers.get("last-event-id")?.trim();
     const encoder = new TextEncoder();
-    const terminal = new Set(["completed", "completed_with_limits", "failed"]);
+    const terminal = new Set([
+      "checkpoint",
+      "completed",
+      "completed_with_limits",
+      "failed",
+    ]);
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let closed = false;

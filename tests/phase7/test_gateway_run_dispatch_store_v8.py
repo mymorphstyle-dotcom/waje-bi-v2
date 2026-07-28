@@ -76,7 +76,7 @@ def test_memory_store_supports_exactly_addressed_multi_dispatch_runs() -> None:
                 clarification: {
                   sourceRunId: initial.run.id,
                   answer: "采用上一日作为基线",
-                  selectedOptionId: "comparison_baseline.previous_day",
+                  selectedOptionIds: ["comparison_baseline.previous_day"],
                 },
               },
             };
@@ -251,7 +251,7 @@ def test_clarification_worker_exit_releases_the_exact_dispatch_for_recovery() ->
                   resolutionId: "single-authority:request-recovery-resolution",
                   attemptRunId: initial.run.id,
                   answer: "采用上一日作为基线",
-                  selectedOptionId: "comparison_baseline.previous_day",
+                  selectedOptionIds: ["comparison_baseline.previous_day"],
                   source: "user",
                   retryAttempt: false,
                 },

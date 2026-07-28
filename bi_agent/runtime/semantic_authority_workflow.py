@@ -29,7 +29,9 @@ from bi_agent.runtime.claim_authority import (
     VERIFICATION_VETO_BASES,
     recommendation_authorization_for_ceiling,
 )
+from bi_agent.runtime.claim_coverage import ClaimCoverageCheckpoint
 from bi_agent.runtime.claim_settlement import (
+    admissible_obligation_evidence_source_claim_kind,
     AuthorityBundleInputs,
     CandidateClaimProposal,
     CandidateEvidenceSupport,
@@ -70,7 +72,6 @@ _FORBIDDEN_PROJECTION_FIELDS = frozenset(
         "password",
         "raw_data",
         "raw_rows",
-        "rows",
         "secret",
         "secrets",
         "sql",
@@ -98,6 +99,14 @@ _SEMANTIC_ENCODING_GUIDANCE = (
     "Values marked lossless-columnar-json.v1 are complete, model-readable JSON: "
     "field_names defines each homogeneous record field once, and every positional "
     "record_values row aligns to those fields. No record is omitted. "
+)
+_PUBLICATION_DISPOSITION_GUIDANCE = (
+    "Each aggregate evidence item has publication_disposition. direct may support "
+    "a claim within its supplied effective claim kinds and ceiling. weakened may "
+    "support only the supplied weaker ceiling and must never be upgraded. "
+    "observation_only may be described as an aggregate observation but cannot "
+    "support a claim or recommendation. coverage_audit_codes explain internal "
+    "classification drift and are limitations, never evidence. "
 )
 _CANDIDATE_OUTPUT_CONTRACT = (
     "Return one JSON object whose only top-level key is "
@@ -195,6 +204,7 @@ _PROMPTS = MappingProxyType(
     {
         "candidate_claim_proposal": (
             _SEMANTIC_ENCODING_GUIDANCE
+            + _PUBLICATION_DISPOSITION_GUIDANCE
             + _CANDIDATE_OUTPUT_CONTRACT
             + "Propose zero or more candidate claims from the supplied aggregate "
             "evidence. Bind every reference to the supplied identifiers. Returning "
@@ -203,6 +213,7 @@ _PROMPTS = MappingProxyType(
         ),
         "claim_verification": (
             _SEMANTIC_ENCODING_GUIDANCE
+            + _PUBLICATION_DISPOSITION_GUIDANCE
             + _CLAIM_VERIFICATION_OUTPUT_CONTRACT
             + "Evaluate every proposed claim against the supplied aggregate evidence, "
             "obligation, publication ceiling, assumptions, and limitations. "
@@ -546,6 +557,10 @@ class RestrictedAggregateEvidence:
     evidence_kind: str
     data_contract_state: str
     supported_claim_kinds: tuple[str, ...]
+    effective_supported_claim_kinds: tuple[str, ...]
+    publication_disposition: str
+    effective_maximum_claim_strength_by_claim: Mapping[str, str]
+    coverage_audit_codes: tuple[str, ...]
     evidence_strength: str
     maximum_claim_strength: str
     observation_facts: tuple[Mapping[str, Any], ...]
@@ -562,6 +577,7 @@ class RestrictedAggregateEvidence:
         *,
         entry: EvidenceLedgerEntry,
         obligation_ids: Sequence[str],
+        publication_policy: Mapping[str, Any],
     ) -> "RestrictedAggregateEvidence":
         if type(entry) is not EvidenceLedgerEntry:
             raise SemanticAuthorityWorkflowError(
@@ -577,6 +593,60 @@ class RestrictedAggregateEvidence:
             raise SemanticAuthorityWorkflowError(
                 "restricted_aggregate_evidence_invalid"
             )
+        if not isinstance(publication_policy, Mapping) or set(
+            publication_policy
+        ) != {
+            "publication_disposition",
+            "effective_supported_claim_kinds",
+            "effective_maximum_claim_strength_by_claim",
+            "coverage_audit_codes",
+        }:
+            raise SemanticAuthorityWorkflowError(
+                "restricted_aggregate_evidence_policy_invalid"
+            )
+        disposition = publication_policy.get("publication_disposition")
+        if disposition not in {"direct", "weakened", "observation_only"}:
+            raise SemanticAuthorityWorkflowError(
+                "restricted_aggregate_evidence_policy_invalid"
+            )
+        effective_claim_kinds = _string_tuple(
+            publication_policy.get("effective_supported_claim_kinds"),
+            "restricted_aggregate_evidence_policy_invalid",
+        )
+        raw_strengths = publication_policy.get(
+            "effective_maximum_claim_strength_by_claim"
+        )
+        if not isinstance(raw_strengths, Mapping):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_aggregate_evidence_policy_invalid"
+            )
+        effective_strengths = {
+            _required_string(
+                claim_kind,
+                "restricted_aggregate_evidence_policy_invalid",
+            ): _required_string(
+                strength,
+                "restricted_aggregate_evidence_policy_invalid",
+            )
+            for claim_kind, strength in raw_strengths.items()
+        }
+        if (
+            set(effective_strengths) != set(effective_claim_kinds)
+            or not set(effective_claim_kinds).issubset(
+                entry.supported_claim_kinds
+            )
+            or (
+                disposition == "observation_only"
+                and (effective_claim_kinds or effective_strengths)
+            )
+        ):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_aggregate_evidence_policy_invalid"
+            )
+        coverage_audit_codes = _string_tuple(
+            publication_policy.get("coverage_audit_codes"),
+            "restricted_aggregate_evidence_policy_invalid",
+        )
         facts = tuple(
             _frozen(item, "restricted_aggregate_evidence_forbidden_field")
             for item in entry.observation_facts
@@ -586,6 +656,13 @@ class RestrictedAggregateEvidence:
             "evidence_kind": entry.evidence_kind,
             "data_contract_state": entry.data_contract_state,
             "supported_claim_kinds": entry.supported_claim_kinds,
+            "effective_supported_claim_kinds": effective_claim_kinds,
+            "publication_disposition": disposition,
+            "effective_maximum_claim_strength_by_claim": _frozen(
+                effective_strengths,
+                "restricted_aggregate_evidence_policy_invalid",
+            ),
+            "coverage_audit_codes": coverage_audit_codes,
             "evidence_strength": entry.evidence_strength,
             "maximum_claim_strength": entry.maximum_claim_strength,
             "observation_facts": facts,
@@ -674,6 +751,8 @@ class RestrictedExecutionProjection:
     projection_ref: str
     execution_result_ref: str
     execution_result_digest: str
+    claim_coverage_evaluation_ref: str
+    claim_coverage_evaluation_digest: str
     resolved_window_refs: tuple[str, ...]
     obligations: tuple[RestrictedClaimObligation, ...]
     aggregate_evidence: tuple[RestrictedAggregateEvidence, ...]
@@ -685,8 +764,70 @@ class RestrictedExecutionProjection:
     def create(
         cls,
         execution_result: AuthoritativeExecutionResult,
+        *,
+        claim_coverage_checkpoint: ClaimCoverageCheckpoint | None = None,
+        persisted_claim_coverage_policy: Mapping[str, Any] | None = None,
     ) -> "RestrictedExecutionProjection":
         execution = _validated_execution(execution_result)
+        if claim_coverage_checkpoint is not None:
+            if (
+                type(claim_coverage_checkpoint)
+                is not ClaimCoverageCheckpoint
+                or persisted_claim_coverage_policy is not None
+            ):
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_claim_coverage_invalid"
+                )
+            coverage = claim_coverage_checkpoint.evaluation
+            if (
+                coverage.source_execution_result_ref
+                != execution.authoritative_execution_result_ref
+                or coverage.source_execution_result_digest
+                != execution.content_digest
+                or coverage.source_plan_revision_id
+                != execution.plan_revision_id
+            ):
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_claim_coverage_invalid"
+                )
+            review_by_evidence_ref = {
+                item.evidence_entry_ref: item
+                for item in coverage.evidence_contract_reviews
+            }
+            direct_refs = set(coverage.direct_publishable_evidence_refs)
+            weakened_refs = set(coverage.weakened_evidence_refs)
+            observation_refs = set(coverage.observation_only_evidence_refs)
+            coverage_evaluation_ref = coverage.evaluation_ref
+            coverage_evaluation_digest = coverage.content_digest
+            persisted_policy_by_ref: Mapping[str, Any] | None = None
+        else:
+            policy = persisted_claim_coverage_policy
+            if not isinstance(policy, Mapping) or set(policy) != {
+                "claim_coverage_evaluation_ref",
+                "claim_coverage_evaluation_digest",
+                "evidence_policies",
+            }:
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_claim_coverage_invalid"
+                )
+            coverage_evaluation_ref = _required_string(
+                policy["claim_coverage_evaluation_ref"],
+                "restricted_execution_claim_coverage_invalid",
+            )
+            coverage_evaluation_digest = _digest_string(
+                policy["claim_coverage_evaluation_digest"],
+                "restricted_execution_claim_coverage_invalid",
+            )
+            raw_policies = policy["evidence_policies"]
+            if not isinstance(raw_policies, Mapping):
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_claim_coverage_invalid"
+                )
+            persisted_policy_by_ref = raw_policies
+            review_by_evidence_ref = {}
+            direct_refs = set()
+            weakened_refs = set()
+            observation_refs = set()
         task_by_id = {
             item.task_id: item for item in execution.plan_revision.capability_tasks
         }
@@ -697,16 +838,63 @@ class RestrictedExecutionProjection:
             limitation_refs.update(outcome.limitation_refs)
             for entry in entries:
                 limitation_refs.update(entry.limitation_refs)
+                if persisted_policy_by_ref is not None:
+                    publication_policy = persisted_policy_by_ref.get(
+                        entry.entry_ref
+                    )
+                    if not isinstance(publication_policy, Mapping):
+                        raise SemanticAuthorityWorkflowError(
+                            "restricted_execution_claim_coverage_invalid"
+                        )
+                else:
+                    review = review_by_evidence_ref.get(entry.entry_ref)
+                    if review is None:
+                        raise SemanticAuthorityWorkflowError(
+                            "restricted_execution_claim_coverage_invalid"
+                        )
+                    if entry.entry_ref in weakened_refs:
+                        disposition = "weakened"
+                    elif entry.entry_ref in direct_refs:
+                        disposition = "direct"
+                    elif entry.entry_ref in observation_refs:
+                        disposition = "observation_only"
+                    else:
+                        raise SemanticAuthorityWorkflowError(
+                            "restricted_execution_claim_coverage_invalid"
+                        )
+                    publication_policy = {
+                        "publication_disposition": disposition,
+                        "effective_supported_claim_kinds": (
+                            review.effective_supported_claim_kinds
+                            if disposition != "observation_only"
+                            else ()
+                        ),
+                        "effective_maximum_claim_strength_by_claim": (
+                            review.effective_maximum_claim_strength_by_claim
+                            if disposition != "observation_only"
+                            else {}
+                        ),
+                        "coverage_audit_codes": review.audit_codes,
+                    }
                 evidence.append(
                     RestrictedAggregateEvidence.create(
                         entry=entry,
                         obligation_ids=task.supports_obligation_ids,
+                        publication_policy=publication_policy,
                     )
                 )
         evidence.sort(key=lambda item: item.evidence_entry_ref)
         if len({item.evidence_entry_ref for item in evidence}) != len(evidence):
             raise SemanticAuthorityWorkflowError(
                 "restricted_execution_evidence_duplicated"
+            )
+        if (
+            persisted_policy_by_ref is not None
+            and set(persisted_policy_by_ref)
+            != {item.evidence_entry_ref for item in evidence}
+        ):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_execution_claim_coverage_invalid"
             )
         evidence_by_obligation: dict[str, list[RestrictedAggregateEvidence]] = {}
         for item in evidence:
@@ -720,9 +908,21 @@ class RestrictedExecutionProjection:
                     item.evidence_entry_ref
                     for item in evidence_by_obligation.get(obligation.obligation_id, ())
                     if item.data_contract_state == "complete"
-                    and item.evidence_kind
-                    in set(obligation.evidence_requirement.evidence_kinds)
-                    and bool(item.supported_claim_kinds)
+                    and item.publication_disposition != "observation_only"
+                    and admissible_obligation_evidence_source_claim_kind(
+                        obligation=obligation,
+                        evidence_kind=item.evidence_kind,
+                        supported_claim_kinds=(
+                            item.effective_supported_claim_kinds
+                        ),
+                        maximum_claim_strength=(
+                            item.effective_maximum_claim_strength_by_claim.get(
+                                obligation.claim_kind,
+                                item.maximum_claim_strength,
+                            )
+                        ),
+                    )
+                    is not None
                 )
             obligations.append(
                 RestrictedClaimObligation.create(
@@ -739,6 +939,8 @@ class RestrictedExecutionProjection:
         body = {
             "execution_result_ref": execution.authoritative_execution_result_ref,
             "execution_result_digest": execution.content_digest,
+            "claim_coverage_evaluation_ref": coverage_evaluation_ref,
+            "claim_coverage_evaluation_digest": coverage_evaluation_digest,
             "resolved_window_refs": execution.plan_revision.resolved_window_refs,
             "obligations": tuple(obligations),
             "aggregate_evidence": tuple(evidence),
@@ -762,6 +964,67 @@ class RestrictedExecutionProjection:
 
     def to_dict(self) -> dict[str, Any]:
         return canonical_value(self)
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        execution_result: AuthoritativeExecutionResult,
+    ) -> "RestrictedExecutionProjection":
+        if not isinstance(payload, Mapping) or set(payload) != set(
+            cls.__dataclass_fields__
+        ):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_execution_projection_shape_invalid"
+            )
+        raw_evidence = payload.get("aggregate_evidence")
+        if isinstance(raw_evidence, (str, bytes)) or not isinstance(
+            raw_evidence, Sequence
+        ):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_execution_projection_shape_invalid"
+            )
+        evidence_policies: dict[str, Any] = {}
+        for item in raw_evidence:
+            if not isinstance(item, Mapping):
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_projection_shape_invalid"
+                )
+            evidence_ref = item.get("evidence_entry_ref")
+            if not isinstance(evidence_ref, str) or evidence_ref in evidence_policies:
+                raise SemanticAuthorityWorkflowError(
+                    "restricted_execution_projection_shape_invalid"
+                )
+            evidence_policies[evidence_ref] = {
+                "publication_disposition": item.get(
+                    "publication_disposition"
+                ),
+                "effective_supported_claim_kinds": item.get(
+                    "effective_supported_claim_kinds"
+                ),
+                "effective_maximum_claim_strength_by_claim": item.get(
+                    "effective_maximum_claim_strength_by_claim"
+                ),
+                "coverage_audit_codes": item.get("coverage_audit_codes"),
+            }
+        rebuilt = cls.create(
+            execution_result,
+            persisted_claim_coverage_policy={
+                "claim_coverage_evaluation_ref": payload.get(
+                    "claim_coverage_evaluation_ref"
+                ),
+                "claim_coverage_evaluation_digest": payload.get(
+                    "claim_coverage_evaluation_digest"
+                ),
+                "evidence_policies": evidence_policies,
+            },
+        )
+        if rebuilt.to_dict() != canonical_value(payload):
+            raise SemanticAuthorityWorkflowError(
+                "restricted_execution_projection_integrity_invalid"
+            )
+        return rebuilt
 
 
 @dataclass(frozen=True)
@@ -1212,16 +1475,33 @@ def _candidate_proposals_from_output(
         if item.claim_kind in _CANDIDATE_CLAIM_KINDS
         and item.eligible_candidate_evidence_refs
     }
+    evidence_by_ref = {
+        evidence.evidence_entry_ref: evidence
+        for evidence in projection.aggregate_evidence
+    }
     for proposal_index, item in enumerate(output["candidate_claim_proposals"]):
         obligation = obligation_by_id[item["obligation_id"]]
-        support = tuple(
-            CandidateEvidenceSupport.create(
-                authority_namespace=authority_namespace,
-                evidence_entry_ref=evidence_ref,
-                source_claim_kind=obligation.claim_kind,
+        support_items = []
+        for evidence_ref in obligation.eligible_candidate_evidence_refs:
+            evidence = evidence_by_ref[evidence_ref]
+            source_claim_kind = admissible_obligation_evidence_source_claim_kind(
+                obligation=obligation,
+                evidence_kind=evidence.evidence_kind,
+                supported_claim_kinds=evidence.supported_claim_kinds,
+                maximum_claim_strength=evidence.maximum_claim_strength,
             )
-            for evidence_ref in obligation.eligible_candidate_evidence_refs
-        )
+            if source_claim_kind is None:
+                raise SemanticAuthorityWorkflowError(
+                    "candidate_claim_evidence_source_claim_missing"
+                )
+            support_items.append(
+                CandidateEvidenceSupport.create(
+                    authority_namespace=authority_namespace,
+                    evidence_entry_ref=evidence_ref,
+                    source_claim_kind=source_claim_kind,
+                )
+            )
+        support = tuple(support_items)
         proposals.append(
             CandidateClaimProposal.create(
                 authority_namespace=authority_namespace,
@@ -2434,13 +2714,19 @@ class SemanticAuthorityResult:
         namespace = authority_inputs.authority_namespace
 
         raw_projection = payload["projection"]
-        projection = RestrictedExecutionProjection.create(execution)
-        if not isinstance(raw_projection, Mapping) or (
-            projection.to_dict() != canonical_value(raw_projection)
-        ):
+        if not isinstance(raw_projection, Mapping):
             raise SemanticAuthorityWorkflowError(
                 "semantic_authority_result_projection_invalid"
             )
+        try:
+            projection = RestrictedExecutionProjection.from_dict(
+                raw_projection,
+                execution_result=execution,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SemanticAuthorityWorkflowError(
+                "semantic_authority_result_projection_invalid"
+            ) from exc
 
         raw_candidate_proposals = _mapping_sequence(
             payload["candidate_proposals"],
@@ -2911,11 +3197,15 @@ def run_semantic_authority_workflow(
     execution_result: AuthoritativeExecutionResult,
     *,
     authority_namespace: ClaimAuthorityNamespace,
+    claim_coverage_checkpoint: ClaimCoverageCheckpoint,
     llm_client: TypedSemanticAuthorityLLM,
 ) -> SemanticAuthorityResult:
     execution = _validated_execution(execution_result)
     namespace = _validated_namespace(authority_namespace, execution=execution)
-    projection = RestrictedExecutionProjection.create(execution)
+    projection = RestrictedExecutionProjection.create(
+        execution,
+        claim_coverage_checkpoint=claim_coverage_checkpoint,
+    )
     provider_responses: list[RestrictedProviderResponse] = []
     provider_audits: list[RestrictedProviderAudit] = []
 

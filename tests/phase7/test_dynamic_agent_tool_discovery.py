@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from bi_agent.runtime.agent_context import (
     AgentContextAssembler,
@@ -101,6 +101,7 @@ class SelectionGenerator:
         *,
         user_message: str,
         tool_catalog: object,
+        tool_input_models: object,
         permission_scope: object,
         action_context: object,
     ) -> DynamicToolSelectionOutput:
@@ -311,6 +312,65 @@ def test_tool_selection_trace_routing_stays_out_of_model_input() -> None:
     )
     assert adapter.request.thinking_mode == "disabled"
     assert "thread-private-routing" not in adapter.request.input_text
+
+
+def test_tool_selection_retries_schema_invalid_bound_arguments() -> None:
+    class ArtifactArguments(BaseModel):
+        model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+        artifact_refs: list[str] = Field(alias="artifactRefs", min_length=1)
+
+    class Adapter:
+        requests: list[WajeAgentRunRequest] = []
+
+        async def run(self, request: WajeAgentRunRequest) -> WajeAgentRunResult:
+            self.requests.append(request)
+            refs = [] if len(self.requests) == 1 else ["artifact:one"]
+            return WajeAgentRunResult(
+                run_id=request.run_id,
+                final_output={
+                    "selectedTools": ["inspect_analysis_artifact"],
+                    "initialAction": "call_tool",
+                    "requiredToolName": "inspect_analysis_artifact",
+                    "requiredToolArgumentsJson": json.dumps(
+                        {"artifactRefs": refs},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "materialDecisionTopics": [],
+                },
+                usage={},
+                model_turns=1,
+            )
+
+    adapter = Adapter()
+    output = asyncio.run(
+        WajeToolSelectionGenerator(adapter).select(
+            user_message="解释材料。",
+            tool_catalog=[
+                {
+                    "name": "inspect_analysis_artifact",
+                    "description": "Inspect an artifact.",
+                    "inputSchema": ArtifactArguments.model_json_schema(
+                        by_alias=True
+                    ),
+                }
+            ],
+            tool_input_models={
+                "inspect_analysis_artifact": ArtifactArguments,
+            },
+            permission_scope={"analysis_access": "single"},
+        )
+    )
+
+    assert len(adapter.requests) == 2
+    assert "bindingValidation" not in adapter.requests[0].input_text
+    assert "agent_required_action_arguments_invalid" in (
+        adapter.requests[1].input_text
+    )
+    assert output.required_tool_arguments_json == (
+        '{"artifactRefs":["artifact:one"]}'
+    )
 
 
 def test_material_decision_topics_require_an_exact_clarification_binding() -> None:

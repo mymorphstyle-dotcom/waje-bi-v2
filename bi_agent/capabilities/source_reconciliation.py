@@ -38,6 +38,7 @@ _COMPARABLE_STRATEGIES = frozenset(
     {"additive_sum", "exact_additive_count", "ratio_from_components"}
 )
 _RECONCILIATION_CONTRACT = "bounded-window-source-reconciliation.v1"
+_CLAIM_MATERIAL_WINDOW_LIMIT = 12
 
 
 def source_reconciliation(
@@ -256,6 +257,9 @@ def source_reconciliation(
             reconciliation_state
         ),
     }
+    payload["claim_material_observations"] = (
+        _claim_material_summary(payload, numeric_facts=numeric_facts),
+    )
     if reconciliation_state == "incomplete":
         limitations = ["window_reconciliation_incomplete"]
         for source_id, missing in missing_by_source.items():
@@ -295,6 +299,73 @@ def source_reconciliation(
         limitations=(),
         result_refs=result_refs,
     )
+
+
+def _claim_material_summary(
+    payload: Mapping[str, Any],
+    *,
+    numeric_facts: Mapping[str, Any],
+) -> dict[str, Any]:
+    windows = tuple(payload.get("window_reconciliations") or ())
+    ranked_windows = tuple(
+        sorted(
+            windows,
+            key=lambda item: (
+                item.get("residual_ratio") is not None,
+                item.get("residual_ratio") or Decimal(0),
+                str(item.get("window_id") or ""),
+            ),
+            reverse=True,
+        )
+    )
+    displayed_windows = ranked_windows[:_CLAIM_MATERIAL_WINDOW_LIMIT]
+    missing_by_source = payload.get("missing_by_source")
+    missing_counts = (
+        {
+            str(source_id): len(tuple(items))
+            for source_id, items in missing_by_source.items()
+        }
+        if isinstance(missing_by_source, Mapping)
+        else {}
+    )
+    return {
+        "projection_kind": "claim_material_summary",
+        "evidence_contract": payload["evidence_contract"],
+        "reconciliation_state": payload["reconciliation_state"],
+        "source_ids": payload["source_ids"],
+        "source_roles": payload["source_roles"],
+        "metric_contract_ref": payload["metric_contract_ref"],
+        "reconciliation_tolerance": payload["reconciliation_tolerance"],
+        "reconciliation_strategy": payload["reconciliation_strategy"],
+        "reconciliation_policy": payload["reconciliation_policy"],
+        "observation_count": (
+            int(numeric_facts.get("exact_pair_count") or 0)
+            + int(numeric_facts.get("bounded_pair_count") or 0)
+            + int(numeric_facts.get("failed_pair_count") or 0)
+        ),
+        "exact_pair_count": int(numeric_facts.get("exact_pair_count") or 0),
+        "bounded_pair_count": int(numeric_facts.get("bounded_pair_count") or 0),
+        "failed_pair_count": int(numeric_facts.get("failed_pair_count") or 0),
+        "missing_pair_count": int(numeric_facts.get("missing_pair_count") or 0),
+        "missing_pair_count_by_source": missing_counts,
+        "window_count": len(windows),
+        "displayed_window_count": len(displayed_windows),
+        "omitted_window_count": len(windows) - len(displayed_windows),
+        "window_selection_policy": "largest_residual_ratio_first",
+        "window_record_limit": _CLAIM_MATERIAL_WINDOW_LIMIT,
+        "worst_window_reconciliations": displayed_windows,
+        "max_observation_residual_ratio": numeric_facts.get(
+            "max_observation_residual_ratio"
+        ),
+        "max_window_residual_ratio": numeric_facts.get(
+            "max_window_residual_ratio"
+        ),
+        "change_reconciliation": payload.get("change_reconciliation"),
+        "residual_bucket": payload.get("residual_bucket"),
+        "claim_ceiling": payload["claim_ceiling"],
+        "metric_claim_allowed": payload["metric_claim_allowed"],
+        "interpretation_contract": payload["interpretation_contract"],
+    }
 
 
 def _policy(

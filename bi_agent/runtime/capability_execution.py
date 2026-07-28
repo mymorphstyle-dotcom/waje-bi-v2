@@ -566,7 +566,7 @@ def _resolve_authoritative_inputs(
                 rows_record,
             )
         )
-    contracts = tuple(item[1] for item in selected)
+    refs = tuple(item[0] for item in selected)
     results = tuple(item[2] for item in selected)
     base_reports = tuple(
         validate_query_result(
@@ -577,16 +577,27 @@ def _resolve_authoritative_inputs(
         )
         for item in selected
     )
-    final_reports = (
+    diagnostic_reports = (
         validate_query_set(
-            contracts,
+            tuple(item[1] for item in selected),
             results,
             base_reports,
         )
         if selected
         else ()
     )
-    refs = tuple(item[0] for item in selected)
+    final_reports_by_ref = _converged_binding_reports(
+        plan=plan,
+        selected=selected,
+        base_reports=dict(zip(refs, base_reports)),
+    )
+    reports_by_ref = dict(zip(refs, diagnostic_reports))
+    reports_by_ref.update(final_reports_by_ref)
+    final_reports = tuple(
+        final_reports_by_ref[ref]
+        for ref in refs
+        if ref in final_reports_by_ref
+    )
     records = tuple(writer.record_completeness(report) for report in final_reports)
     if any(
         runtime_evidence_record_integrity_errors(record)
@@ -596,10 +607,64 @@ def _resolve_authoritative_inputs(
         raise EvidenceIntegrityError("runtime_evidence_writer_record_invalid")
     return (
         dict(zip(refs, results)),
-        dict(zip(refs, final_reports)),
+        reports_by_ref,
         {report.report_ref: record for report, record in zip(final_reports, records)},
         {item[0]: {"query": item[4], "rows": item[5]} for item in selected},
     )
+
+
+def _converged_binding_reports(
+    *,
+    plan: CapabilityExecutionPlan,
+    selected: list[tuple[Any, ...]],
+    base_reports: Mapping[str, CompletenessReport],
+) -> dict[str, CompletenessReport]:
+    item_by_ref = {str(item[0]): item for item in selected}
+    active_refs = tuple(str(item[0]) for item in selected)
+    while active_refs:
+        active_items = tuple(item_by_ref[ref] for ref in active_refs)
+        active_results = {
+            ref: item_by_ref[ref][2] for ref in active_refs
+        }
+        active_reports = validate_query_set(
+            tuple(item[1] for item in active_items),
+            tuple(item[2] for item in active_items),
+            tuple(base_reports[ref] for ref in active_refs),
+        )
+        reports_by_ref = dict(zip(active_refs, active_reports))
+        consumable_refs = _consumable_binding_query_refs(
+            plan,
+            results=active_results,
+            reports=reports_by_ref,
+        )
+        next_refs = tuple(ref for ref in active_refs if ref in consumable_refs)
+        if next_refs == active_refs:
+            return reports_by_ref
+        active_refs = next_refs
+    return {}
+
+
+def _consumable_binding_query_refs(
+    plan: CapabilityExecutionPlan,
+    *,
+    results: Mapping[str, QueryResultEnvelope],
+    reports: Mapping[str, CompletenessReport],
+) -> set[str]:
+    refs: set[str] = set()
+    for slot in (*plan.required_input_slots, *plan.optional_input_slots):
+        match, _ = _match_exact_slot_with_validation_dependencies(
+            slot,
+            results=results,
+            reports=reports,
+        )
+        if match is None:
+            continue
+        refs.add(match.result.query_contract_ref)
+        refs.update(
+            result.query_contract_ref
+            for result, _ in match.validation_dependencies
+        )
+    return refs
 
 
 def _rows_hashes(

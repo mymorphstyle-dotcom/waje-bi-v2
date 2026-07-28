@@ -300,6 +300,29 @@ class _RunDispatchOwnershipConnection:
             "request_digest": "a" * 64,
             "request_payload": {
                 "message": "检查昨天付费金额",
+                **(
+                    {
+                        "resumeRequest": {
+                            "schema_version": (
+                                "single-authority-phase02-waiting.v1"
+                            ),
+                            "run_attempt_id": "run-dispatch",
+                            "thread_id": "thread-dispatch",
+                            "turn_id": "turn-dispatch",
+                            "topic_id": "topic-dispatch",
+                            "turn_intent": "new_analysis",
+                            "topic_relation": "new_topic",
+                            "intent_revision_id": "intent-dispatch",
+                            "decision_ledger_position": 0,
+                            "accepted_transition_id": "transition-waiting",
+                            "clarification": {"status": "needs_input"},
+                            "context_manifest_ref": "context-dispatch",
+                            "runtime_descriptors": {},
+                        },
+                    }
+                    if producer_kind == "clarification_resolution"
+                    else {}
+                ),
             },
             "run_id": "run-dispatch",
             "thread_id": "thread-dispatch",
@@ -321,7 +344,10 @@ class _RunDispatchOwnershipConnection:
         self.statements.append((statement, params))
         if "INSERT INTO waje_runtime.run_lifecycle_state_revisions" in statement:
             payload = json.loads(params["payload"])
-            if self.lifecycle is not None:
+            if (
+                self.lifecycle is not None
+                and self.lifecycle["state_revision"] >= payload["state_revision"]
+            ):
                 return _Cursor()
             self.lifecycle = payload
             return _Cursor(({"state_revision": payload["state_revision"]},))
@@ -531,6 +557,13 @@ class _RunDispatchOwnershipConnection:
                 "failure_reason": "run_dispatch_heartbeat_expired",
             }
             return _Cursor(({"status": "failed"},))
+        if "expired_running_clarification_run_restore_cas" in statement:
+            if self.run["status"] != params["run_status"]:
+                return _Cursor()
+            self.run["status"] = "waiting_for_clarification"
+            return _Cursor(({"status": "waiting_for_clarification"},))
+        if "expired_controlled_investigation_lease_cascade" in statement:
+            return _Cursor()
         if "expired_running_clarification_release_cas" in statement:
             if (
                 self.dispatch["dispatch_state"] != "running"
@@ -1171,6 +1204,75 @@ def test_expired_running_clarification_dispatch_is_released_for_recovery():
     assert connection.dispatch["owner_id"] is None
     assert connection.dispatch["terminal_status"] is None
     assert connection.dispatch["failure_reason"] is None
+
+
+def test_expired_running_clarification_workflow_restores_replayable_state():
+    connection = _RunDispatchOwnershipConnection(
+        dispatch_state="running",
+        run_status="running_workflow",
+        lease_active=False,
+        producer_kind="clarification_resolution",
+    )
+    connection.lifecycle = LifecycleState.create(
+        run_attempt_id="run-dispatch",
+        execution_state="complete",
+        evidence_state="complete",
+    ).to_dict()
+    connection.run["request"] = {
+        "plan_result_refs": {"plan_revision_id": "plan-dispatch"},
+        "execution_result_refs": {
+            "authoritative_execution_result_ref": "execution-dispatch"
+        },
+        "claim_coverage_refs": {
+            "claim_coverage_checkpoint_ref": "coverage-dispatch"
+        },
+    }
+    progress_request = deepcopy(connection.run["request"])
+
+    recovered = PostgresConversationStore(connection).sweep_expired_run_dispatches()
+
+    assert recovered == (
+        {
+            "dispatch_id": "dispatch-1",
+            "run_id": "run-dispatch",
+            "action": "released_for_retry",
+        },
+    )
+    assert connection.run["status"] == "waiting_for_clarification"
+    assert connection.run["request"] == progress_request
+    assert connection.dispatch["dispatch_state"] == "pending"
+    assert connection.dispatch["owner_id"] is None
+    assert connection.lifecycle["retry_state"] == "scheduled"
+
+
+def test_recovered_clarification_claim_advances_retry_epoch_in_lifecycle():
+    connection = _RunDispatchOwnershipConnection(
+        producer_kind="clarification_resolution",
+        dispatch_state="leased",
+        run_status="waiting_for_clarification",
+    )
+    prepared = LifecycleState.create(
+        run_attempt_id="run-dispatch",
+        execution_state="complete",
+        evidence_state="complete",
+    ).transition(retry_state="scheduled")
+    connection.lifecycle = prepared.to_dict()
+    store = PostgresConversationStore(connection)
+
+    claimed = store.claim_run_dispatch(
+        dispatch_id="dispatch-1",
+        run_id="run-dispatch",
+        thread_id="thread-dispatch",
+        dispatch_owner_id="owner-current",
+        lease_epoch=4,
+    )
+
+    assert claimed["dispatch_state"] == "running"
+    assert claimed["resume_request"] == connection.dispatch["request_payload"][
+        "resumeRequest"
+    ]
+    assert connection.lifecycle["state_revision"] == prepared.state_revision + 1
+    assert connection.lifecycle["retry_state"] == "running"
 
 
 def test_recovery_driver_starts_committed_pending_dispatch_without_client_retry():

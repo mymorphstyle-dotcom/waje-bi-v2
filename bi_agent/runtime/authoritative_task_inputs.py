@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from bi_agent.runtime.analysis_contract_compiler import (
     AnalysisCompileOutcome,
     compile_analysis_contract,
+    expand_dynamic_dimension_queries,
 )
 from bi_agent.runtime.analysis_contracts import (
     CapabilityExecutionPlan,
@@ -41,6 +42,16 @@ from bi_agent.runtime.evidence_authority import (
     canonical_digest,
     canonical_value,
 )
+from bi_agent.runtime.event_window_derivation import (
+    EventWindowDerivationError,
+    derive_event_window_set,
+    validate_event_window_derivation_policy,
+)
+from bi_agent.runtime.dimension_combination_derivation import (
+    DimensionCombinationDerivationError,
+    derive_dimension_combinations,
+    validate_dimension_combination_policy,
+)
 from bi_agent.runtime.durable_call_journal import (
     DurableCallJournal,
     DurableCallJournalError,
@@ -60,6 +71,10 @@ from bi_agent.runtime.query_completeness import (
     validate_query_result,
     validate_query_set,
 )
+from bi_agent.runtime.query_ir import (
+    QueryBundle,
+    compile_capability_query_route,
+)
 from bi_agent.runtime.runtime_persistence import CapabilitySettlementAuthority
 from bi_agent.runtime.single_authority import (
     DecisionLedger,
@@ -70,10 +85,14 @@ from bi_agent.runtime.temporal_comparison import (
     EffectiveTemporalComparison,
     TemporalComparisonContractError,
     resolve_rolling_window_strategy,
+    validate_calendar_partition_role_frame,
 )
 from bi_agent.runtime.window_metric_evidence import (
     WindowMetricEvidenceError,
     validate_event_window_metric_authority,
+)
+from bi_agent.capabilities.candidate_dimension_screen import (
+    candidate_dimension_screen,
 )
 
 
@@ -125,6 +144,7 @@ class MaterializedAuthoritativeTaskInputs:
     task_inputs: TaskRuntimeInputs
     settlement_authority: CapabilitySettlementAuthority
     accepted_query_attempt_refs: tuple[str, ...]
+    query_bundle: QueryBundle | None = None
     performance_observations: tuple[Mapping[str, Any], ...] = ()
 
     def resolve_task_input(
@@ -139,6 +159,7 @@ class MaterializedAuthoritativeTaskInputs:
 class AuthoritativeTaskInputMaterializer:
     analysis_runtime: Any
     attempt_journal: DurableCallJournal
+    query_bundle: QueryBundle | None = None
 
     def materialize(
         self,
@@ -192,6 +213,7 @@ class AuthoritativeTaskInputMaterializer:
             plan=plan,
             intent=intent,
             registry=registry,
+            query_bundle=self.query_bundle,
         )
         started = perf_counter()
         outcome = compile_analysis_contract(
@@ -222,76 +244,25 @@ class AuthoritativeTaskInputMaterializer:
         )
 
         snapshots = {item.snapshot_ref: item for item in catalog.snapshots()}
-        query_results = []
-        completeness_reports = []
-        accepted_query_attempt_refs = []
-        for contract in outcome.query_contracts:
-            contract_snapshots = {
-                ref: snapshots[ref] for ref in contract.dataset_snapshot_refs
-            }
-            query_input = {
-                "query_contract": contract.to_dict(),
-                "dataset_snapshots": tuple(
-                    item.to_dict() for item in contract_snapshots.values()
-                ),
-            }
-            started = perf_counter()
-            validate_clickhouse_query_contract(
-                contract,
-                contract_snapshots,
-                registry=registry,
-                release_resolver=release_resolver,
-            )
-            performance_observations.append(
-                _performance_observation(
-                    stage="query_contract_validation",
-                    operation=contract.query_contract_id,
-                    started=started,
-                    input_value=query_input,
-                )
-            )
-            owner_task = _query_owner_task(
-                plan=plan,
-                outcome=outcome,
-                contract=contract,
-            )
-            started = perf_counter()
-            result, accepted_attempt_ref = _execute_journaled_query(
-                plan=plan,
-                task=owner_task,
-                contract=contract,
-                snapshots=contract_snapshots,
-                executor=executor,
-                release_resolver=release_resolver,
-                attempt_journal=self.attempt_journal,
-            )
-            performance_observations.append(
-                _performance_observation(
-                    stage="query_execution",
-                    operation=contract.query_contract_id,
-                    started=started,
-                    input_value=query_input,
-                )
-            )
-            started = perf_counter()
-            report = validate_query_result(
-                contract,
-                result,
-                tuple(contract_snapshots.values()),
-                evidence_writer=evidence_writer,
-                release_resolver=release_resolver,
-            )
-            performance_observations.append(
-                _performance_observation(
-                    stage="query_result_validation",
-                    operation=contract.query_contract_id,
-                    started=started,
-                    input_value=result.to_dict(),
-                )
-            )
-            query_results.append(result)
-            completeness_reports.append(report)
-            accepted_query_attempt_refs.append(accepted_attempt_ref)
+        (
+            query_results,
+            completeness_reports,
+            accepted_query_attempt_refs,
+        ) = _execute_query_contract_batch(
+            contracts=outcome.query_contracts,
+            outcome=outcome,
+            plan=plan,
+            snapshots=snapshots,
+            executor=executor,
+            release_resolver=release_resolver,
+            attempt_journal=self.attempt_journal,
+            evidence_writer=evidence_writer,
+            registry=registry,
+            performance_observations=performance_observations,
+        )
+        query_results = list(query_results)
+        completeness_reports = list(completeness_reports)
+        accepted_query_attempt_refs = list(accepted_query_attempt_refs)
         if query_results:
             started = perf_counter()
             completeness_reports = list(
@@ -315,6 +286,110 @@ class AuthoritativeTaskInputMaterializer:
                     },
                 )
             )
+
+        dynamic_derivations: dict[str, Mapping[str, Any]] = {}
+        for capability_id in capability_ids:
+            capability_contract = registry.capability_inputs(capability_id)
+            raw_policy = capability_contract.get(
+                "dynamic_dimension_combination_policy"
+            )
+            if raw_policy is None:
+                continue
+            try:
+                policy = validate_dimension_combination_policy(raw_policy)
+                derivation = _derive_dynamic_dimension_queries(
+                    plan=plan,
+                    intent=intent,
+                    outcome=outcome,
+                    capability_id=capability_id,
+                    source_dependency=policy["source_dependency"],
+                    policy=policy,
+                    query_results=query_results,
+                    completeness_reports=completeness_reports,
+                    evidence_resolver=evidence_resolver,
+                    rows_loader=rows_loader,
+                    evidence_writer=evidence_writer,
+                    release_resolver=release_resolver,
+                    registry=registry,
+                )
+            except DimensionCombinationDerivationError as exc:
+                raise AuthoritativeTaskInputContractError(
+                    f"authoritative_dynamic_dimension_derivation_failed:{exc}"
+                ) from exc
+            dynamic_derivations[capability_id] = derivation
+            selected_combinations = tuple(
+                tuple(item["dimension_ids"])
+                for item in derivation["selected_combinations"]
+            )
+            if not selected_combinations:
+                continue
+            previous_query_refs = {
+                item.query_contract_id for item in outcome.query_contracts
+            }
+            outcome = expand_dynamic_dimension_queries(
+                outcome,
+                run_id=plan.plan_revision_id,
+                capability_id=capability_id,
+                selected_combinations=selected_combinations,
+                proposal=compile_material,
+                snapshots=tuple(snapshots.values()),
+                registry=registry,
+                temporal_authority=plan.temporal_authority,
+            )
+            additions = tuple(
+                item
+                for item in outcome.query_contracts
+                if item.query_contract_id not in previous_query_refs
+            )
+            (
+                added_results,
+                added_reports,
+                added_attempt_refs,
+            ) = _execute_query_contract_batch(
+                contracts=additions,
+                outcome=outcome,
+                plan=plan,
+                snapshots=snapshots,
+                executor=executor,
+                release_resolver=release_resolver,
+                attempt_journal=self.attempt_journal,
+                evidence_writer=evidence_writer,
+                registry=registry,
+                performance_observations=performance_observations,
+            )
+            query_results.extend(added_results)
+            completeness_reports.extend(added_reports)
+            accepted_query_attempt_refs.extend(added_attempt_refs)
+            started = perf_counter()
+            completeness_reports = list(
+                validate_query_set(
+                    tuple(outcome.query_contracts),
+                    tuple(query_results),
+                    tuple(completeness_reports),
+                    evidence_writer=evidence_writer,
+                )
+            )
+            performance_observations.append(
+                _performance_observation(
+                    stage="dynamic_query_set_validation",
+                    operation=capability_id,
+                    started=started,
+                    input_value={
+                        "selected_combinations": selected_combinations,
+                        "query_contract_refs": tuple(
+                            item.query_contract_id for item in additions
+                        ),
+                    },
+                )
+            )
+        _validate_compile_outcome(
+            outcome=outcome,
+            plan=plan,
+            context=context,
+            catalog=catalog,
+            capability_ids=capability_ids,
+            registry=registry,
+        )
 
         result_by_query = {item.query_contract_ref: item for item in query_results}
         report_by_query = {
@@ -433,6 +508,48 @@ class AuthoritativeTaskInputMaterializer:
                         )
                     )
                     continue
+                dynamic_derivation = dynamic_derivations.get(task.capability_id)
+                if (
+                    dynamic_derivation is not None
+                    and not dynamic_derivation.get("selected_combinations")
+                ):
+                    expected_gap = ExpectedCapabilityGap.create(
+                        gap_type="unsupported_scope",
+                        limitation_ref=(
+                            "dynamic_dimension_combination:"
+                            "no_admissible_combination"
+                        ),
+                        data_contract_state="contract_backed",
+                        business_boundary=(
+                            "候选维度不足，或所有组合超出层级与查询成本边界，"
+                            "本次不执行联合归因。"
+                        ),
+                        retryability="replan_required",
+                    )
+                    scoped_inputs.append(
+                        TaskScopedCapabilityInput.create(
+                            plan_revision_id=plan.plan_revision_id,
+                            task_id=task.task_id,
+                            authority_context_ref=context.authority_context_ref,
+                            binding_record_ref=None,
+                            data_contract_state=expected_gap.data_contract_state,
+                            maximum_claim_strength=(
+                                execution_plan.maximum_claim_strength
+                            ),
+                            scope_ref=_scope_ref(intent),
+                            payload={},
+                            result_refs=tuple(
+                                dynamic_derivation.get("source_result_refs") or ()
+                            ),
+                            completeness_report_refs=(),
+                            limitation_refs=(expected_gap.limitation_ref,),
+                            expected_gap=expected_gap,
+                            terminal_failure_status=None,
+                            terminal_failure=None,
+                            services={},
+                        )
+                    )
+                    continue
                 expected_gap = _expected_gap(
                     task=task,
                     gaps=capability_gaps,
@@ -478,6 +595,7 @@ class AuthoritativeTaskInputMaterializer:
                     task=task,
                     intent=intent,
                     bound=bound,
+                    bound_by_capability=bound_by_capability,
                     execution_plan=execution_plan,
                     query_by_ref=query_by_ref,
                     result_by_query=result_by_query,
@@ -532,12 +650,39 @@ class AuthoritativeTaskInputMaterializer:
                     scope_ref=_scope_ref(intent),
                     payload=payload,
                     result_refs=_dedupe(
-                        (*bound.result_refs, *bound.validation_result_refs)
+                        (
+                            *bound.result_refs,
+                            *bound.validation_result_refs,
+                            *_dependency_bound_refs(
+                                plan=plan,
+                                task=task,
+                                bound_by_capability=bound_by_capability,
+                                field="result_refs",
+                            ),
+                            *_dependency_bound_refs(
+                                plan=plan,
+                                task=task,
+                                bound_by_capability=bound_by_capability,
+                                field="validation_result_refs",
+                            ),
+                        )
                     ),
                     completeness_report_refs=_dedupe(
                         (
                             *bound.completeness_report_refs,
                             *bound.validation_completeness_report_refs,
+                            *_dependency_bound_refs(
+                                plan=plan,
+                                task=task,
+                                bound_by_capability=bound_by_capability,
+                                field="completeness_report_refs",
+                            ),
+                            *_dependency_bound_refs(
+                                plan=plan,
+                                task=task,
+                                bound_by_capability=bound_by_capability,
+                                field="validation_completeness_report_refs",
+                            ),
                         )
                     ),
                     limitation_refs=_dedupe(
@@ -581,8 +726,211 @@ class AuthoritativeTaskInputMaterializer:
             task_inputs=task_inputs,
             settlement_authority=settlement_authority,
             accepted_query_attempt_refs=tuple(sorted(set(accepted_query_attempt_refs))),
+            query_bundle=self.query_bundle,
             performance_observations=tuple(performance_observations),
         )
+
+
+def _execute_query_contract_batch(
+    *,
+    contracts: Sequence[QueryContract],
+    outcome: AnalysisCompileOutcome,
+    plan: PlanRevision,
+    snapshots: Mapping[str, Any],
+    executor: Any,
+    release_resolver: Any,
+    attempt_journal: DurableCallJournal,
+    evidence_writer: Any,
+    registry: Any,
+    performance_observations: list[dict[str, Any]],
+) -> tuple[tuple[Any, ...], tuple[Any, ...], tuple[str, ...]]:
+    query_results = []
+    completeness_reports = []
+    accepted_attempt_refs = []
+    for contract in contracts:
+        contract_snapshots = {
+            ref: snapshots[ref] for ref in contract.dataset_snapshot_refs
+        }
+        query_input = {
+            "query_contract": contract.to_dict(),
+            "dataset_snapshots": tuple(
+                item.to_dict() for item in contract_snapshots.values()
+            ),
+        }
+        started = perf_counter()
+        validate_clickhouse_query_contract(
+            contract,
+            contract_snapshots,
+            registry=registry,
+            release_resolver=release_resolver,
+        )
+        performance_observations.append(
+            _performance_observation(
+                stage="query_contract_validation",
+                operation=contract.query_contract_id,
+                started=started,
+                input_value=query_input,
+            )
+        )
+        owner_task = _query_owner_task(
+            plan=plan,
+            outcome=outcome,
+            contract=contract,
+        )
+        started = perf_counter()
+        result, accepted_attempt_ref = _execute_journaled_query(
+            plan=plan,
+            task=owner_task,
+            contract=contract,
+            snapshots=contract_snapshots,
+            executor=executor,
+            release_resolver=release_resolver,
+            attempt_journal=attempt_journal,
+        )
+        performance_observations.append(
+            _performance_observation(
+                stage="query_execution",
+                operation=contract.query_contract_id,
+                started=started,
+                input_value=query_input,
+            )
+        )
+        started = perf_counter()
+        report = validate_query_result(
+            contract,
+            result,
+            tuple(contract_snapshots.values()),
+            evidence_writer=evidence_writer,
+            release_resolver=release_resolver,
+        )
+        performance_observations.append(
+            _performance_observation(
+                stage="query_result_validation",
+                operation=contract.query_contract_id,
+                started=started,
+                input_value=result.to_dict(),
+            )
+        )
+        query_results.append(result)
+        completeness_reports.append(report)
+        accepted_attempt_refs.append(accepted_attempt_ref)
+    return (
+        tuple(query_results),
+        tuple(completeness_reports),
+        tuple(accepted_attempt_refs),
+    )
+
+
+def _derive_dynamic_dimension_queries(
+    *,
+    plan: PlanRevision,
+    intent: IntentRevision,
+    outcome: AnalysisCompileOutcome,
+    capability_id: str,
+    source_dependency: str,
+    policy: Mapping[str, Any],
+    query_results: Sequence[Any],
+    completeness_reports: Sequence[Any],
+    evidence_resolver: Any,
+    rows_loader: Any,
+    evidence_writer: Any,
+    release_resolver: Any,
+    registry: Any,
+) -> Mapping[str, Any]:
+    dynamic_tasks = tuple(
+        task
+        for task in plan.capability_tasks
+        if task.capability_id == capability_id
+    )
+    if len(dynamic_tasks) != 1:
+        raise DimensionCombinationDerivationError(
+            "dynamic_dimension_task_cardinality_invalid"
+        )
+    dynamic_task = dynamic_tasks[0]
+    task_by_id = {task.task_id: task for task in plan.capability_tasks}
+    dependency_tasks = tuple(
+        task_by_id[item] for item in dynamic_task.dependency_task_ids
+    )
+    source_tasks = tuple(
+        task for task in dependency_tasks if task.capability_id == source_dependency
+    )
+    if len(source_tasks) != 1:
+        raise DimensionCombinationDerivationError(
+            "dynamic_dimension_source_dependency_invalid"
+        )
+    source_task = source_tasks[0]
+    execution_plan_by_capability = {
+        item.capability_id: item for item in outcome.capability_plans
+    }
+    source_plan = execution_plan_by_capability.get(source_dependency)
+    if source_plan is None:
+        raise DimensionCombinationDerivationError(
+            "dynamic_dimension_source_plan_missing"
+        )
+    result_by_query = {
+        item.query_contract_ref: item for item in query_results
+    }
+    report_by_query = {
+        item.query_contract_ref: item for item in completeness_reports
+    }
+    bound = bind_capability_inputs(
+        source_plan,
+        results=result_by_query,
+        reports=report_by_query,
+        evidence_resolver=evidence_resolver,
+        rows_loader=rows_loader,
+        evidence_writer=evidence_writer,
+        runtime_registry=registry,
+        release_resolver=release_resolver,
+    )
+    if bound.status not in {"ready", "degraded"}:
+        return {
+            "schema_version": "derived-dimension-combinations.v1",
+            "source_dependency": source_dependency,
+            "candidate_pool": (),
+            "selected_combinations": (),
+            "excluded_combinations": (
+                {
+                    "dimension_ids": (),
+                    "reason": "source_dependency_unready",
+                },
+            ),
+            "estimated_cells_total": 0,
+            "policy": dict(policy),
+            "source_result_refs": tuple(bound.result_refs),
+        }
+    query_by_ref = {
+        item.query_contract_id: item for item in outcome.query_contracts
+    }
+    payload = _task_payload(
+        plan=plan,
+        task=source_task,
+        intent=intent,
+        bound=bound,
+        execution_plan=source_plan,
+        query_by_ref=query_by_ref,
+        result_by_query=result_by_query,
+        report_by_query=report_by_query,
+        registry=registry,
+    )
+    try:
+        evidence = candidate_dimension_screen(
+            **dict(payload),
+            result_refs=tuple(bound.result_refs),
+        )
+        derivation = derive_dimension_combinations(
+            evidence.typed_payload,
+            dimension_metadata=payload["dimension_metadata"],
+            policy=policy,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DimensionCombinationDerivationError(
+            "dynamic_dimension_source_evidence_invalid"
+        ) from exc
+    return {
+        **derivation,
+        "source_result_refs": tuple(bound.result_refs),
+    }
 
 
 def materialize_authoritative_task_inputs(
@@ -593,10 +941,12 @@ def materialize_authoritative_task_inputs(
     authority_context: AuthorityContext,
     analysis_runtime: Any,
     attempt_journal: DurableCallJournal,
+    query_bundle: QueryBundle | None = None,
 ) -> MaterializedAuthoritativeTaskInputs:
     return AuthoritativeTaskInputMaterializer(
         analysis_runtime,
         attempt_journal,
+        query_bundle,
     ).materialize(
         plan_revision=plan_revision,
         intent_revision=intent_revision,
@@ -886,13 +1236,36 @@ def _compile_material(
     plan: PlanRevision,
     intent: IntentRevision,
     registry: Any,
+    query_bundle: QueryBundle | None = None,
 ) -> Mapping[str, Any]:
     goal_ids = tuple(str(item["goal_id"]) for item in intent.goal_bindings)
-    question_families = tuple(
+    goal_obligation = getattr(registry, "analysis_goal_obligation", None)
+    merged_goal_ids = tuple(
         dict.fromkeys(
-            registry.analysis_goal_question_family_ref(goal_id) for goal_id in goal_ids
+            merged_goal_id
+            for goal_id in goal_ids
+            for merged_goal_id in (
+                goal_obligation(goal_id).get("merged_goal_refs", ())
+                if callable(goal_obligation)
+                else ()
+            )
         )
     )
+    question_families = tuple(
+        dict.fromkeys(
+            registry.analysis_goal_question_family_ref(goal_id)
+            for goal_id in (*goal_ids, *merged_goal_ids)
+        )
+    )
+    if query_bundle is not None and (
+        not isinstance(query_bundle, QueryBundle)
+        or query_bundle.plan_revision_id != plan.plan_revision_id
+        or query_bundle.intent_revision_id != intent.intent_revision_id
+        or query_bundle.stage != "compiled"
+    ):
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_query_bundle_mismatch"
+        )
     filters = intent.scope.get("filters")
     if (
         isinstance(filters, (str, bytes))
@@ -916,7 +1289,7 @@ def _compile_material(
             "authoritative_scope_filter_field_unapproved:"
             + ",".join(unapproved_filter_fields)
         )
-    metric_refs = tuple(
+    planned_metric_refs = tuple(
         dict.fromkeys(
             metric_ref
             for axis in plan.analysis_axes
@@ -924,20 +1297,56 @@ def _compile_material(
             if metric_ref not in set(intent.target_metric_refs)
         )
     )
-    dimension_refs = tuple(
+    planned_dimension_refs = tuple(
         dict.fromkeys(
             dimension_ref
             for axis in plan.analysis_axes
             for dimension_ref in axis.dimension_refs
         )
     )
-    context_source_refs = tuple(
+    planned_context_source_refs = tuple(
         dict.fromkeys(
             source_ref
             for axis in plan.analysis_axes
             for source_ref in axis.context_source_refs
         )
     )
+    executable_query_nodes = (
+        tuple(
+            node
+            for node in query_bundle.query_nodes
+            if node.status != "degraded"
+        )
+        if query_bundle is not None
+        else ()
+    )
+    if query_bundle is None:
+        metric_refs = planned_metric_refs
+        dimension_refs = planned_dimension_refs
+        context_source_refs = planned_context_source_refs
+    else:
+        metric_refs = tuple(
+            dict.fromkeys(
+                metric_ref
+                for node in executable_query_nodes
+                for metric_ref in node.metric_refs
+                if metric_ref not in set(intent.target_metric_refs)
+            )
+        )
+        dimension_refs = tuple(
+            dict.fromkeys(
+                dimension_ref
+                for node in executable_query_nodes
+                for dimension_ref in node.dimension_refs
+            )
+        )
+        context_source_refs = tuple(
+            dict.fromkeys(
+                source_ref
+                for node in executable_query_nodes
+                for source_ref in node.context_source_refs
+            )
+        )
     claim_intents = tuple(
         dict.fromkeys(item.claim_kind for item in plan.claim_obligations)
     )
@@ -984,8 +1393,17 @@ def _compile_material(
         ),
         "scope": {"type": scope_type},
         "filters": tuple(dict(item) for item in filters),
-        "grain": "window_id",
+        "grain": (
+            query_bundle.aggregation_grain
+            if query_bundle is not None
+            else "window_id"
+        ),
         "capability_roles": roles,
+        "query_ir": (
+            tuple(node.to_dict() for node in query_bundle.query_nodes)
+            if query_bundle is not None
+            else ()
+        ),
     }
     return material
 
@@ -1179,7 +1597,42 @@ def _validate_compiled_windows(
         expected_execution = (
             dict(execution_default) if isinstance(execution_default, Mapping) else None
         )
-        if isinstance(binding, Mapping) and binding.get("pattern_mode") == "rolling":
+        expected_relation = policy.get("relation")
+        if spec.relation == "evaluation_range":
+            query_route = compile_capability_query_route(
+                capability_id=capability_id,
+                capability_contract=contract,
+                temporal_authority=plan.temporal_authority,
+            )
+            if (
+                plan.temporal_authority.mode != "calendar_partition"
+                or query_route.get("adapter_kind")
+                != "daily_observation_frame"
+                or plan.temporal_authority.target_window.start is None
+                or plan.temporal_authority.target_window.end is None
+            ):
+                raise AuthoritativeTaskInputContractError(
+                    "authoritative_reference_window_policy_mismatch"
+                )
+            try:
+                observation_days = (
+                    date.fromisoformat(
+                        plan.temporal_authority.target_window.end
+                    )
+                    - date.fromisoformat(
+                        plan.temporal_authority.target_window.start
+                    )
+                ).days + 1
+            except ValueError as exc:
+                raise AuthoritativeTaskInputContractError(
+                    "authoritative_reference_window_policy_mismatch"
+                ) from exc
+            expected_relation = "evaluation_range"
+            expected_execution = {
+                "unit": "day",
+                "count": observation_days,
+            }
+        elif isinstance(binding, Mapping) and binding.get("pattern_mode") == "rolling":
             bounds = policy.get("count_bounds")
             day_bounds = bounds.get("day") if isinstance(bounds, Mapping) else None
             try:
@@ -1197,7 +1650,7 @@ def _validate_compiled_windows(
                     "authoritative_reference_window_contract_invalid"
                 ) from exc
             expected_execution = {"unit": "day", "count": strategy.context_days}
-        if policy.get("relation") != spec.relation or expected_execution != {
+        if expected_relation != spec.relation or expected_execution != {
             "unit": spec.unit,
             "count": spec.count,
         }:
@@ -1602,6 +2055,7 @@ def _task_payload(
     result_by_query: Mapping[str, Any],
     report_by_query: Mapping[str, Any],
     registry: Any,
+    bound_by_capability: Mapping[str, BoundCapabilityInput] | None = None,
 ) -> Mapping[str, Any]:
     axis = _task_axis(plan, task)
     metric_id = _single_target_metric(axis, intent)
@@ -1614,13 +2068,19 @@ def _task_payload(
     parameters = _binding_mapping(binding, "parameters", capability_id, required=False)
     if payload_kind == "event_window_metric_comparison":
         return _event_window_metric_comparison_payload(
+            plan=plan,
+            task=task,
             bound=bound,
+            bound_by_capability=bound_by_capability or {},
             execution_plan=execution_plan,
             contracts=contracts,
             metric_id=metric_id,
             binding=binding,
             capability_id=capability_id,
             temporal_authority=plan.temporal_authority,
+            dynamic_event_window_policy=registry.capability_inputs(
+                capability_id
+            ).get("dynamic_event_window_policy"),
         )
     if payload_kind == "window_metric_comparison":
         contract = _single_query_family(
@@ -1631,7 +2091,52 @@ def _task_payload(
             "contract": contract,
             "rows": _rows_for_contract(bound, execution_plan, contract),
             "metric_id": metric_id,
-            "primary_baseline_window_id": _baseline_window_id((contract,)),
+            "primary_baseline_window_id": _comparison_baseline_window_id(
+                contract
+            ),
+        }
+    if payload_kind == "multi_metric_window_comparison":
+        contract = _single_query_family(
+            contracts, _binding_query_family(binding, "primary", capability_id)
+        )
+        metric_ids = tuple(
+            item.metric_id for item in contract.metric_bindings
+        )
+        required_metric_ids = tuple(
+            str(item)
+            for item in registry.capability_inputs(capability_id).get(
+                "required_metrics", ()
+            )
+        )
+        if (
+            not metric_ids
+            or not required_metric_ids
+            or not set(required_metric_ids) <= set(metric_ids)
+        ):
+            raise _TaskPayloadContractGap(
+                gap_type="missing_contract",
+                limitation_ref=(
+                    "limitation:sha256:"
+                    + canonical_digest(
+                        {
+                            "capability_id": capability_id,
+                            "query_contract_ref": contract.query_contract_id,
+                            "required_metric_ids": required_metric_ids,
+                            "bound_metric_ids": metric_ids,
+                        }
+                    )
+                ),
+                business_boundary=(
+                    f"{capability_id}_multi_metric_input_unavailable"
+                ),
+            )
+        return {
+            "contract": contract,
+            "rows": _rows_for_contract(bound, execution_plan, contract),
+            "metric_ids": required_metric_ids,
+            "primary_baseline_window_id": _comparison_baseline_window_id(
+                contract
+            ),
         }
     if payload_kind == "formula_graph":
         return _formula_payload(
@@ -1639,7 +2144,12 @@ def _task_payload(
             execution_plan=execution_plan,
             contracts=contracts,
             metric_id=metric_id,
-            baseline_id=_baseline_window_id(contracts),
+            baseline_id=_comparison_baseline_window_id(
+                _single_query_family(
+                    contracts,
+                    _binding_query_family(binding, "primary", capability_id),
+                )
+            ),
             registry=registry,
             binding=binding,
             capability_id=capability_id,
@@ -1776,24 +2286,49 @@ def _task_payload(
             "amount_key": amount_key,
         }
     if payload_kind == "joint_attribution":
-        dimension_ids = tuple(
-            dict.fromkeys(
-                item.dimension_id
-                for contract in contracts
-                for item in contract.dimension_bindings
-            )
-        )
         group_key = _binding_string(fields, "group_key", capability_id)
         target_group = _binding_string(fields, "target_group", capability_id)
         baseline_group = _binding_string(fields, "baseline_group", capability_id)
         amount_key = _binding_string(fields, "amount_key", capability_id)
+        analyses = []
         for contract in contracts:
+            dimension_ids = tuple(
+                item.dimension_id for item in contract.dimension_bindings
+            )
+            if len(dimension_ids) < 2:
+                continue
             _require_query_fields(
                 contract, (group_key, amount_key, *dimension_ids), capability_id
             )
+            analyses.append(
+                {
+                    "query_contract_ref": contract.query_contract_id,
+                    "rows": _rows_for_contract(bound, execution_plan, contract),
+                    "dimension_keys": dimension_ids,
+                }
+            )
+        if not analyses:
+            raise _TaskPayloadContractGap(
+                gap_type="missing_contract",
+                limitation_ref=(
+                    "limitation:sha256:"
+                    + canonical_digest(
+                        {
+                            "capability_id": capability_id,
+                            "required_dimension_count": 2,
+                            "query_contract_refs": tuple(
+                                contract.query_contract_id
+                                for contract in contracts
+                            ),
+                        }
+                    )
+                ),
+                business_boundary=(
+                    f"{capability_id}_joint_query_inputs_unavailable"
+                ),
+            )
         return {
-            "rows": rows,
-            "dimension_keys": dimension_ids,
+            "analyses": tuple(analyses),
             "group_key": group_key,
             "target_group": target_group,
             "baseline_group": baseline_group,
@@ -1860,9 +2395,23 @@ def _task_payload(
             ),
             capability_id,
         )
+        window_aggregations = {
+            window.aggregation for window in contract.resolved_windows
+        }
+        if window_aggregations == {"mean_of_complete_days"}:
+            high_value_users_aggregation = "mean_per_complete_day"
+        elif window_aggregations and window_aggregations.issubset(
+            {"daily_total", "sum_of_complete_days"}
+        ):
+            high_value_users_aggregation = "window_distinct_count"
+        else:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_high_value_user_count_aggregation_ambiguous"
+            )
         return {
             "rows": _rows_for_contract(bound, execution_plan, contract),
             "threshold_policy": {"type": "top_percentile", "value": quantile},
+            "high_value_users_aggregation": high_value_users_aggregation,
             "group_key": group_key,
             "total_amount_key": total_amount_key,
             "high_value_amount_key": high_value_amount_key,
@@ -1974,6 +2523,23 @@ def _task_payload(
         payload = {"events": rows, **dict(parameters)}
         if plan.temporal_authority.mode == "event_relative":
             payload.update(_event_temporal_identity(plan.temporal_authority))
+        elif plan.temporal_authority.mode == "calendar_partition":
+            dynamic_policy = _dependent_event_window_policy(
+                plan=plan,
+                source_task=task,
+                registry=registry,
+            )
+            if dynamic_policy is not None:
+                try:
+                    payload["event_window_set"] = derive_event_window_set(
+                        rows,
+                        temporal_authority=plan.temporal_authority,
+                        policy=dynamic_policy,
+                    )
+                except EventWindowDerivationError as exc:
+                    raise AuthoritativeTaskInputContractError(
+                        f"authoritative_event_window_derivation_failed:{exc}"
+                    ) from exc
         return payload
     if payload_kind == "cross_source_association":
         return _cross_source_association_payload(
@@ -2215,6 +2781,32 @@ def _bound_rows(bound: BoundCapabilityInput) -> tuple[Mapping[str, Any], ...]:
     return tuple(
         dict(row) for slot_rows in bound.rows_by_slot.values() for row in slot_rows
     )
+
+
+def _dependency_bound_refs(
+    *,
+    plan: PlanRevision,
+    task: CapabilityTask,
+    bound_by_capability: Mapping[str, BoundCapabilityInput],
+    field: str,
+) -> tuple[str, ...]:
+    task_by_id = {item.task_id: item for item in plan.capability_tasks}
+    output: list[str] = []
+    for dependency_task_id in task.dependency_task_ids:
+        dependency_task = task_by_id.get(dependency_task_id)
+        if dependency_task is None:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_dependency_invalid"
+            )
+        dependency_bound = bound_by_capability.get(
+            dependency_task.capability_id
+        )
+        if dependency_bound is None or not hasattr(dependency_bound, field):
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_dependency_input_missing"
+            )
+        output.extend(str(item) for item in getattr(dependency_bound, field))
+    return tuple(output)
 
 
 def _bound_primary_contracts(
@@ -2810,6 +3402,33 @@ def _baseline_window_id(contracts: Sequence[QueryContract]) -> str:
     return baseline_ids[0]
 
 
+def _calendar_partition_role_frame(
+    contract: QueryContract,
+) -> Mapping[str, Any] | None:
+    raw = contract.query_parameters.get("calendar_partition_role_frame")
+    if raw is None:
+        return None
+    try:
+        return validate_calendar_partition_role_frame(raw)
+    except TemporalComparisonContractError as exc:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_calendar_partition_role_frame_invalid"
+        ) from exc
+
+
+def _comparison_baseline_window_id(contract: QueryContract) -> str:
+    if _calendar_partition_role_frame(contract) is None:
+        return _baseline_window_id((contract,))
+    targets = tuple(
+        window for window in contract.resolved_windows if window.role == "target"
+    )
+    if len(targets) != 1:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_calendar_partition_window_cardinality_invalid"
+        )
+    return f"{targets[0].window_id}:partition:baseline"
+
+
 def _formula_payload(
     *,
     bound: BoundCapabilityInput,
@@ -2859,35 +3478,61 @@ def _formula_payload(
         raise AuthoritativeTaskInputContractError(
             f"authoritative_formula_path_unbound:{capability_id}:{path_id}"
         )
-    target_windows = tuple(
-        item for item in contract.resolved_windows if item.role == "target"
-    )
-    baseline_windows = tuple(
-        item for item in contract.resolved_windows if item.window_id == baseline_id
-    )
-    if len(target_windows) != 1 or len(baseline_windows) != 1:
-        raise AuthoritativeTaskInputContractError(
-            "authoritative_formula_window_cardinality_invalid"
-        )
     aggregate_result = (
         contract.result_shape.result_semantics == "complete_window_aggregate"
     )
-    target_metrics = {
-        item: _window_metric_value(
-            rows,
-            target_windows[0],
-            item,
-            aggregate_result=aggregate_result,
+    partition_frame = _calendar_partition_role_frame(contract)
+    if partition_frame is not None:
+        targets = tuple(
+            item for item in contract.resolved_windows if item.role == "target"
         )
+        expected_baseline_id = _comparison_baseline_window_id(contract)
+        if (
+            len(targets) != 1
+            or baseline_id != expected_baseline_id
+            or not aggregate_result
+        ):
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_formula_window_cardinality_invalid"
+            )
+
+        def value_for(role: str, selected_metric: str) -> Decimal:
+            return _partition_role_metric_value(
+                rows,
+                contract=contract,
+                role=role,
+                metric_id=selected_metric,
+            )
+
+    else:
+        target_windows = tuple(
+            item for item in contract.resolved_windows if item.role == "target"
+        )
+        baseline_windows = tuple(
+            item for item in contract.resolved_windows if item.window_id == baseline_id
+        )
+        if len(target_windows) != 1 or len(baseline_windows) != 1:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_formula_window_cardinality_invalid"
+            )
+
+        def value_for(role: str, selected_metric: str) -> Decimal:
+            window = (
+                target_windows[0] if role == "target" else baseline_windows[0]
+            )
+            return _window_metric_value(
+                rows,
+                window,
+                selected_metric,
+                aggregate_result=aggregate_result,
+            )
+
+    target_metrics = {
+        item: value_for("target", item)
         for item in factor_ids
     }
     baseline_metrics = {
-        item: _window_metric_value(
-            rows,
-            baseline_windows[0],
-            item,
-            aggregate_result=aggregate_result,
-        )
+        item: value_for("baseline", item)
         for item in factor_ids
     }
     return {
@@ -2911,18 +3556,8 @@ def _formula_payload(
             }
             for grouping in path.contribution_groupings
         ),
-        "observed_baseline": _window_metric_value(
-            rows,
-            baseline_windows[0],
-            metric_id,
-            aggregate_result=aggregate_result,
-        ),
-        "observed_target": _window_metric_value(
-            rows,
-            target_windows[0],
-            metric_id,
-            aggregate_result=aggregate_result,
-        ),
+        "observed_baseline": value_for("baseline", metric_id),
+        "observed_target": value_for("target", metric_id),
         "absolute_tolerance": path.absolute_tolerance,
         "relative_tolerance": path.relative_tolerance,
     }
@@ -2990,20 +3625,56 @@ def _funnel_decomposition_payload(
             f"authoritative_task_input_binding_invalid:{capability_id}:parameters"
         )
     rows = _rows_for_contract(bound, execution_plan, contract)
-    target_windows = tuple(
-        item for item in contract.resolved_windows if item.role == "target"
-    )
-    baseline_id = _baseline_window_id((contract,))
-    baseline_windows = tuple(
-        item for item in contract.resolved_windows if item.window_id == baseline_id
-    )
-    if len(target_windows) != 1 or len(baseline_windows) != 1:
-        raise AuthoritativeTaskInputContractError(
-            "authoritative_funnel_window_cardinality_invalid"
-        )
     aggregate_result = (
         contract.result_shape.result_semantics == "complete_window_aggregate"
     )
+    partition_frame = _calendar_partition_role_frame(contract)
+    if partition_frame is not None:
+        targets = tuple(
+            item for item in contract.resolved_windows if item.role == "target"
+        )
+        if len(targets) != 1 or not aggregate_result:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_funnel_window_cardinality_invalid"
+            )
+        target_window_ref = f"{targets[0].window_id}:partition:target"
+        baseline_window_ref = _comparison_baseline_window_id(contract)
+
+        def value_for(role: str, selected_metric: str) -> Decimal:
+            return _partition_role_metric_value(
+                rows,
+                contract=contract,
+                role=role,
+                metric_id=selected_metric,
+            )
+
+    else:
+        target_windows = tuple(
+            item for item in contract.resolved_windows if item.role == "target"
+        )
+        baseline_id = _baseline_window_id((contract,))
+        baseline_windows = tuple(
+            item for item in contract.resolved_windows
+            if item.window_id == baseline_id
+        )
+        if len(target_windows) != 1 or len(baseline_windows) != 1:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_funnel_window_cardinality_invalid"
+            )
+        target_window_ref = target_windows[0].window_id
+        baseline_window_ref = baseline_windows[0].window_id
+
+        def value_for(role: str, selected_metric: str) -> Decimal:
+            window = (
+                target_windows[0] if role == "target" else baseline_windows[0]
+            )
+            return _window_metric_value(
+                rows,
+                window,
+                selected_metric,
+                aggregate_result=aggregate_result,
+            )
+
     stages = []
     for raw_stage in raw_stages:
         stage = {str(key): str(value) for key, value in raw_stage.items()}
@@ -3014,28 +3685,10 @@ def _funnel_decomposition_payload(
         ):
             _require_query_metric(contract, metric_id, capability_id)
         values: dict[str, Any] = {}
-        for prefix, window in (
-            ("target", target_windows[0]),
-            ("baseline", baseline_windows[0]),
-        ):
-            numerator = _window_metric_value(
-                rows,
-                window,
-                stage["numerator_metric"],
-                aggregate_result=aggregate_result,
-            )
-            denominator = _window_metric_value(
-                rows,
-                window,
-                stage["denominator_metric"],
-                aggregate_result=aggregate_result,
-            )
-            reported_rate = _window_metric_value(
-                rows,
-                window,
-                stage["rate_metric"],
-                aggregate_result=aggregate_result,
-            )
+        for prefix in ("target", "baseline"):
+            numerator = value_for(prefix, stage["numerator_metric"])
+            denominator = value_for(prefix, stage["denominator_metric"])
+            reported_rate = value_for(prefix, stage["rate_metric"])
             recomputed_rate = None if denominator == 0 else numerator / denominator
             reconciled = (
                 recomputed_rate is None
@@ -3061,8 +3714,8 @@ def _funnel_decomposition_payload(
         "lifetime_first_payment_supported": parameters[
             "lifetime_first_payment_supported"
         ],
-        "target_window_ref": target_windows[0].window_id,
-        "baseline_window_ref": baseline_windows[0].window_id,
+        "target_window_ref": target_window_ref,
+        "baseline_window_ref": baseline_window_ref,
         "stages": tuple(stages),
     }
 
@@ -3123,6 +3776,45 @@ def _window_metric_value(
     raise AuthoritativeTaskInputContractError(
         f"authoritative_window_aggregation_unsupported:{window.aggregation}"
     )
+
+
+def _partition_role_metric_value(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    contract: QueryContract,
+    role: str,
+    metric_id: str,
+) -> Decimal:
+    if role not in {"target", "baseline"}:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_calendar_partition_role_invalid"
+        )
+    targets = tuple(
+        item for item in contract.resolved_windows if item.role == "target"
+    )
+    matches = tuple(
+        row
+        for row in rows
+        if row.get("window_role") == role
+        and len(targets) == 1
+        and row.get("window_id") == targets[0].window_id
+        and row.get("observation_key") == targets[0].window_id
+    )
+    if len(matches) != 1:
+        raise EvidenceIntegrityError(
+            f"authoritative_partition_role_aggregate_invalid:{role}:{metric_id}"
+        )
+    try:
+        value = Decimal(str(matches[0][metric_id]))
+    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+        raise EvidenceIntegrityError(
+            f"authoritative_partition_role_metric_invalid:{role}:{metric_id}"
+        ) from exc
+    if not value.is_finite():
+        raise EvidenceIntegrityError(
+            f"authoritative_partition_role_metric_invalid:{role}:{metric_id}"
+        )
+    return value
 
 
 def _rows_by_dimension(
@@ -3691,17 +4383,53 @@ def _event_temporal_identity(
     }
 
 
+def _dependent_event_window_policy(
+    *,
+    plan: PlanRevision,
+    source_task: CapabilityTask,
+    registry: Any,
+) -> Mapping[str, Any] | None:
+    candidates: list[Mapping[str, Any]] = []
+    for task in plan.capability_tasks:
+        if source_task.task_id not in set(task.dependency_task_ids):
+            continue
+        contract = registry.capability_inputs(task.capability_id)
+        raw_policy = contract.get("dynamic_event_window_policy")
+        if raw_policy is None:
+            continue
+        try:
+            policy = validate_event_window_derivation_policy(
+                raw_policy,
+                expected_source_dependency=source_task.capability_id,
+            )
+        except EventWindowDerivationError as exc:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_window_policy_invalid"
+            ) from exc
+        candidates.append(policy)
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_dynamic_event_window_policy_ambiguous"
+        )
+    return candidates[0]
+
+
 def _event_window_metric_comparison_payload(
     *,
+    plan: PlanRevision | None = None,
+    task: CapabilityTask | None = None,
     bound: BoundCapabilityInput,
+    bound_by_capability: Mapping[str, BoundCapabilityInput] | None = None,
     execution_plan: CapabilityExecutionPlan,
     contracts: Sequence[QueryContract],
     metric_id: str,
     binding: Mapping[str, Any],
     capability_id: str,
     temporal_authority: EffectiveTemporalComparison,
+    dynamic_event_window_policy: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
-    identity = _event_temporal_identity(temporal_authority)
     contract = _single_query_family(
         contracts,
         _binding_query_family(binding, "primary", capability_id),
@@ -3711,6 +4439,68 @@ def _event_window_metric_comparison_payload(
         raise AuthoritativeTaskInputContractError(
             "authoritative_event_window_metric_forbidden"
         )
+    if temporal_authority.mode == "calendar_partition":
+        if plan is None or task is None:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_window_plan_missing"
+            )
+        try:
+            dynamic_policy = validate_event_window_derivation_policy(
+                dynamic_event_window_policy,
+            )
+        except EventWindowDerivationError as exc:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_window_policy_invalid"
+            ) from exc
+        dependency_tasks = tuple(
+            candidate
+            for candidate in plan.capability_tasks
+            if candidate.task_id in set(task.dependency_task_ids)
+        )
+        source_dependency = str(dynamic_policy["source_dependency"])
+        if (
+            len(dependency_tasks) != 1
+            or dependency_tasks[0].capability_id != source_dependency
+        ):
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_dependency_invalid"
+            )
+        dependency_bound = (bound_by_capability or {}).get(source_dependency)
+        if dependency_bound is None:
+            raise AuthoritativeTaskInputContractError(
+                "authoritative_dynamic_event_dependency_input_missing"
+            )
+        if dependency_bound.status not in {"ready", "degraded"}:
+            limitation_ref = (
+                dependency_bound.reasons[0]
+                if dependency_bound.reasons
+                else "limitation:dynamic_event_dependency_unavailable"
+            )
+            raise _TaskPayloadContractGap(
+                gap_type="source_unbound",
+                limitation_ref=limitation_ref,
+                business_boundary=(
+                    f"{capability_id}_event_discovery_unavailable"
+                ),
+            )
+        try:
+            event_window_set = derive_event_window_set(
+                _bound_rows(dependency_bound),
+                temporal_authority=temporal_authority,
+                policy=dynamic_policy,
+            )
+        except EventWindowDerivationError as exc:
+            raise AuthoritativeTaskInputContractError(
+                f"authoritative_event_window_derivation_failed:{exc}"
+            ) from exc
+        return {
+            "contract": contract,
+            "rows": _rows_for_contract(bound, execution_plan, contract),
+            "metric_id": metric_id,
+            "derivation_policy": dynamic_policy,
+            "event_window_set": event_window_set,
+        }
+    identity = _event_temporal_identity(temporal_authority)
     baseline_window_id = _baseline_window_id((contract,))
     try:
         validate_event_window_metric_authority(

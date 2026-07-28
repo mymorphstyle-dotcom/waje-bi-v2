@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import date, timedelta
 
 from bi_agent.runtime.analysis_contracts import (
     MetricBinding,
@@ -88,6 +89,95 @@ def test_explicit_primary_baseline_is_independent_of_signed_query_order():
     assert payload["interpretation_contract"]["zero_baseline_policy"] == (
         "relative_change_unavailable"
     )
+
+
+def test_calendar_partition_role_frame_compares_derived_daily_groups():
+    window = ResolvedWindow(
+        window_id="target_day",
+        role="target",
+        label="2026-06",
+        start_inclusive="2026-06-01",
+        end_exclusive="2026-07-01",
+        timezone="Africa/Lagos",
+        aggregation="mean_of_complete_days",
+        required_complete_days=30,
+        source_watermark_requirement="2026-06-30",
+    )
+    frame = {
+        "schema_version": "calendar-partition-role-frame.v1",
+        "partition_field": "month_phase",
+        "target_members": ("start",),
+        "baseline_members": ("mid", "end"),
+        "aggregation": "mean_of_complete_days",
+        "member_definitions": (
+            {"member": "start", "day_start": 1, "day_end": 10},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 21, "day_end": 31},
+        ),
+    }
+    contract = QueryContract(
+        query_contract_id="query:partition-role-frame",
+        analysis_contract_ref="analysis:partition-role-frame",
+        query_intent="daily_metric_baselines",
+        dataset_snapshot_refs=("snapshot:market:1",),
+        metric_bindings=(
+            MetricBinding(
+                metric_id="active_users",
+                contract_ref="metric:active-users@1",
+                dataset_id="market_dashboard",
+                expression="active_users",
+                aggregation="sum",
+                required_fields=("active_users",),
+                grain=("business_date",),
+            ),
+        ),
+        dimension_bindings=(),
+        window_refs=("target_day",),
+        resolved_windows=(window,),
+        filters=(),
+        result_shape=ResultShape(
+            required_fields=(
+                "window_id",
+                "window_role",
+                "observation_key",
+                "active_users",
+            ),
+            unique_key=("window_id", "observation_key"),
+            grain=("window_id", "observation_key"),
+            required_window_ids=("target_day",),
+        ),
+        completeness_assertions=(),
+        workload_class="interactive_aggregate",
+        contract_signature="",
+        query_parameters={"calendar_partition_role_frame": frame},
+    )
+    contract = replace(
+        contract,
+        contract_signature=query_contract_signature(contract),
+    )
+    start = date(2026, 6, 1)
+    rows = tuple(
+        {
+            "window_id": "target_day",
+            "window_role": "target" if offset < 10 else "baseline",
+            "observation_key": (start + timedelta(days=offset)).isoformat(),
+            "active_users": offset + 1,
+        }
+        for offset in range(30)
+    )
+
+    comparison = aggregate_window_metric_comparison(
+        contract,
+        rows,
+        metric_id="active_users",
+        primary_baseline_window_id="target_day:partition:baseline",
+    )
+
+    assert comparison.target.window_id == "target_day:partition:target"
+    assert comparison.target.required_complete_days == 10
+    assert comparison.target.value == 5.5
+    assert comparison.primary_baseline.required_complete_days == 20
+    assert comparison.primary_baseline.value == 20.5
 
 
 def _window(

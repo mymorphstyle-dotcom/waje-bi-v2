@@ -7,6 +7,7 @@ from bi_agent.runtime.release_manifest import (
     ACTIVE_REF_PATTERN,
     FORBIDDEN_LEGACY_PATHS,
     FORBIDDEN_LEGACY_SYMBOLS,
+    PRODUCTION_INVENTORY_FILES,
     PRODUCTION_INVENTORY_ROOTS,
     REQUIRED_ROLLBACK_COMPONENTS,
     ROLLBACK_REF_PATTERN,
@@ -51,6 +52,7 @@ class ReleaseManifestTest(unittest.TestCase):
                 "bi_agent/runtime/authoritative_plan_result.py",
                 "bi_agent/runtime/plan_authority.py",
                 "bi_agent/runtime/plan_compiler.py",
+                "bi_agent/runtime/recorded_plan_proposal.py",
                 "bi_agent/runtime/runtime_contract_registry.py",
                 "bi_agent/runtime/durable_call_journal.py",
                 "bi_agent/runtime/llm_prompts.py",
@@ -116,6 +118,7 @@ class ReleaseManifestTest(unittest.TestCase):
                 "bi_agent/runtime/agent_tool_discovery.py",
                 "bi_agent/runtime/capability_catalog_tool.py",
                 "bi_agent/runtime/controlled_subagent_tools.py",
+                "bi_agent/runtime/recorded_plan_proposal.py",
                 "bi_agent/runtime/analysis_artifacts.py",
                 "bi_agent/runtime/bi_analysis_tools.py",
                 "bi_agent/runtime/agent_interaction_tools.py",
@@ -150,6 +153,13 @@ class ReleaseManifestTest(unittest.TestCase):
             "bi_agent/runtime/narrative_material_persistence.py",
             paths_by_component["publication_and_delivery"],
         )
+        self.assertTrue(
+            {
+                "bi_agent/runtime/controlled_investigation_runtime.py",
+                "bi_agent/runtime/controlled_investigation_workflow.py",
+            }
+            <= paths_by_component["publication_and_delivery"]
+        )
         self.assertIn(
             "tools/runtime/cutover_single_authority_schema.py",
             paths_by_component["publication_and_delivery"],
@@ -181,10 +191,14 @@ class ReleaseManifestTest(unittest.TestCase):
         self.assertIn("tools/contracts/generate-ssot-node-map.rb", paths)
         self.assertIn("tools/contracts/validate-contracts.rb", paths)
         self.assertIn("tools/data", paths)
+        self.assertIn("tools/clickhouse", paths)
+        self.assertIn("ops/clickhouse", paths)
+        self.assertIn("compose.clickhouse.yaml", paths)
         self.assertIn("app", paths)
         self.assertIn("bi_agent/runtime/exploration_budget_policy.py", paths)
         self.assertIn("contracts/authorities", paths)
         self.assertTrue(PRODUCTION_INVENTORY_ROOTS)
+        self.assertEqual(PRODUCTION_INVENTORY_FILES, ("compose.clickhouse.yaml",))
         self.assertFalse(
             [
                 problem

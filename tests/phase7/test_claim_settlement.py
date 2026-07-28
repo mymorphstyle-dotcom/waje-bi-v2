@@ -895,7 +895,7 @@ def test_context_enrichment_evidence_stays_outside_claim_membership() -> None:
     )
 
 
-def test_context_enrichment_cannot_advertise_unbound_claim_support() -> None:
+def test_context_enrichment_with_unbound_claim_support_remains_observation_only() -> None:
     execution = _execution_result(
         obligations={"change": ("comparative_change", "observed")},
         tasks=(
@@ -930,14 +930,17 @@ def test_context_enrichment_cannot_advertise_unbound_claim_support() -> None:
         ),
     )
 
-    with pytest.raises(
-        ClaimSettlementContractError,
-        match="claim_settlement_unbound_evidence_claim_support_invalid",
-    ):
-        prepare_claim_settlement(
-            execution,
-            authority_namespace=_namespace(execution),
-        )
+    settlement = _settle(execution)
+    context_entry = _ledger_by_evidence_ref(execution)["evidence:unbound_claim:0"]
+
+    assert context_entry.entry_ref not in {
+        edge.source_ref for edge in settlement.accepted_support_edges
+    }
+    assert context_entry.entry_ref not in settlement.claim_graph.evidence_ceiling_by_ref
+    assert all(
+        context_entry.entry_ref not in item.non_claim_support_evidence_refs
+        for item in settlement.checkpoint.obligation_basis
+    )
 
 
 @pytest.mark.parametrize(

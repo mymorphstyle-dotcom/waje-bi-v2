@@ -34,6 +34,34 @@
 - LLM 子进程隔离用于保护主进程稳定性；只有显式配置正数 `WAJE_LLM_TIMEOUT_SECONDS` 时，才允许 kill 子进程并按统一 LLM client 重试策略重试。
 - timeout、retry、provider 熔断必须集中在 LLM provider 层，业务节点不写分散重试循环，也不使用本地模板补高价值回答。
 
+## Local Runtime Bootstrap
+
+- 项目根目录的 `.env` 是本地 PostgreSQL、LLM provider 和分析运行时配置入口。Next.js 开发服务器会自动读取 `.env`，独立 Python 命令不会自动读取。
+- 运行真实 Conversation Core、Phase 02/03 acceptance、runtime worker 或直接访问 `PostgresConversationStore.from_env()` 前，统一从项目根目录执行：
+
+  ```bash
+  set -a
+  source .env
+  set +a
+  PYTHONPATH=. .venv/bin/python <script> <args>
+  ```
+
+- Phase 02 单问题真实计划测试的标准入口：
+
+  ```bash
+  set -a
+  source .env
+  set +a
+  PYTHONPATH=. .venv/bin/python \
+    tools/phase7/run_single_authority_phase02_acceptance.py \
+    plan-once \
+    --question '<业务问题>' \
+    --artifact-root artifacts/phase7/single-authority-phase02
+  ```
+
+- `npm run dev` 正常运行只代表前端进程已加载环境，不能据此判断当前 shell 中的 Python 进程已有 `WAJE_RUNTIME_DATABASE_URL`。
+- 不打印、复制或提交 `.env` 内容；排查时只检查必需变量是否存在以及依赖服务是否可达。
+
 ## Clarification Principle
 
 - 把 ask question 当成可选的澄清分支，用来降低业务误判、证据误用和无效执行成本。

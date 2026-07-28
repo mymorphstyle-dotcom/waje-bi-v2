@@ -170,6 +170,24 @@ class PatternScanTest(unittest.TestCase):
         self.assertEqual(result.strength, "insufficient")
         self.assertEqual(result.wording_limit, "blocked")
 
+    def test_data_quality_reports_scope_invariant_contamination(self):
+        result = data_quality_check(
+            [
+                {
+                    "source_row_count": 20,
+                    "country_scope_violation_count": 2,
+                }
+            ],
+            required_fields=("source_row_count",),
+        )
+
+        self.assertEqual(result.wording_limit, "degraded")
+        self.assertEqual(
+            result.typed_payload["quality_risks"],
+            {"country_scope_violation_count": 2},
+        )
+        self.assertIn("scope_invariant_violation:country", result.limitations)
+
     def test_segment_bridge_blocks_sparse_or_sensitive_rows(self):
         result = segment_bridge(
             [
@@ -220,7 +238,7 @@ class PatternScanTest(unittest.TestCase):
                     "phase": "start",
                     "group": "baseline",
                     "amount": 100,
-                    "paid_users": 30,
+                    "paid_orders": 30,
                 },
                 {
                     "channel": "B",
@@ -234,6 +252,33 @@ class PatternScanTest(unittest.TestCase):
         )
 
         self.assertNotIn("sample_size_unverified", result.limitations)
+
+    def test_joint_attribution_zero_fills_missing_additive_side(self):
+        result = joint_attribution(
+            [
+                {
+                    "channel": "A",
+                    "phase": "start",
+                    "group": "target",
+                    "amount": 120,
+                    "paid_orders": 24,
+                },
+                {
+                    "channel": "B",
+                    "phase": "start",
+                    "group": "baseline",
+                    "amount": 80,
+                    "paid_orders": 20,
+                },
+            ],
+            dimension_keys=("channel", "phase"),
+            missing_group_policy="additive_zero",
+        )
+
+        self.assertEqual(result.evidence_type, "accounting_contribution")
+        self.assertEqual(result.typed_payload["zero_filled_missing_groups"], 2)
+        self.assertIn("zero_filled_missing_groups", result.limitations)
+        self.assertEqual(result.typed_payload["total_delta"], 40.0)
 
     def test_segment_bridge_outputs_only_safe_aggregate_payload(self):
         result = segment_bridge(

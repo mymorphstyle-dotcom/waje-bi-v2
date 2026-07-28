@@ -583,6 +583,10 @@ def test_source_reconciliation_accepts_bounded_window_and_retains_residual() -> 
     payload = result.typed_payload
     assert payload["reconciliation_state"] == "bounded_match"
     assert payload["metric_claim_allowed"] is True
+    material_summary = payload["claim_material_observations"][0]
+    assert material_summary["projection_kind"] == "claim_material_summary"
+    assert material_summary["observation_count"] == 2
+    assert "observation_reconciliations" not in material_summary
     assert payload["window_reconciliations"] == (
         {
             "window_id": "baseline",
@@ -863,6 +867,9 @@ def test_source_reconciliation_scales_across_day_week_month_and_custom_windows(
         window["observation_count"] == observation_count
         for window in result.typed_payload["window_reconciliations"]
     )
+    material_summary = result.typed_payload["claim_material_observations"][0]
+    assert material_summary["observation_count"] == observation_count * 2
+    assert "observation_reconciliations" not in material_summary
 
 
 def test_source_reconciliation_rejects_large_observation_even_when_window_is_small() -> (

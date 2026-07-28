@@ -157,7 +157,10 @@ def test_phase03_evidence_kind_constraint_matches_current_authority_contract():
 
 def test_parallel_task_records_do_not_depend_on_global_transition_head():
     schema = _schema()
-    phase03 = schema[schema.index("-- vNext Phase 3 task-scoped execution authority") :]
+    phase03 = schema[
+        schema.index("-- vNext Phase 3 task-scoped execution authority") :
+        schema.index("-- vNext Phase 4-6 sealed authority")
+    ]
     assert "parent_transition_id" not in phase03
     assert "workflow_transition_attempts" not in phase03
 
@@ -270,8 +273,8 @@ def _persist_execution_closure(
                 window_refs=plan.resolved_window_refs,
                 dimension_path=(),
                 limitation_refs=(),
-                result_refs=(f"result:{task.task_id}",),
-                completeness_report_refs=(f"completeness:{task.task_id}",),
+                result_refs=(),
+                completeness_report_refs=(),
                 hierarchy_qualified=False,
             )
             adapter_output = CapabilityAdapterOutput.create(
@@ -630,8 +633,8 @@ def _dense_capability_adapter_output(plan, task, *, marker: str):
         window_refs=plan.resolved_window_refs,
         dimension_path=("device_model",),
         limitation_refs=(),
-        result_refs=(f"result:{task.task_id}:dense",),
-        completeness_report_refs=(f"completeness:{task.task_id}:dense",),
+        result_refs=(),
+        completeness_report_refs=(),
         hierarchy_qualified=True,
     )
     members = tuple(

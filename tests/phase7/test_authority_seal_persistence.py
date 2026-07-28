@@ -24,16 +24,11 @@ from bi_agent.runtime.capability_scheduler import (
 )
 from bi_agent.runtime.claim_authority import ClaimAuthorityNamespace
 from bi_agent.runtime.claim_coverage import (
-    ClaimEvidenceCoverageAssessment,
     ClaimCoverageCheckpoint,
-    ClaimCoverageEvaluation,
-    ClaimObligationCoverage,
-    PlanExpansionDecision,
     claim_coverage_transition_payloads,
 )
 from bi_agent.runtime.claim_settlement import (
     AuthorityBundleInputs,
-    evidence_publication_ceiling,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest, canonical_value
 from bi_agent.runtime.durable_call_journal import (
@@ -60,6 +55,7 @@ from bi_agent.runtime.semantic_authority_workflow import (
     SemanticAuthorityResult,
     run_semantic_authority_workflow,
 )
+from tests.support.claim_coverage import resolved_test_claim_coverage_checkpoint
 from tests.support.temporal_authority import resolved_test_temporal_authority
 
 
@@ -175,7 +171,7 @@ class _SemanticLLM:
             }
         else:
             raise AssertionError(f"unexpected semantic task: {task}")
-        validator = kwargs["output_validator"]
+        validator = kwargs.get("output_validator")
         if validator is not None:
             validator(output)
         call_number = self.calls
@@ -203,6 +199,7 @@ def _fixture(
     intent = IntentRevision.create(
         run_attempt_id=run_attempt_id,
         original_user_text="2026-06-19 paid amount change",
+        business_summary="你希望分析2026年6月19日付费金额的变化。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -228,7 +225,7 @@ def _fixture(
             },
         ),
         source_spans=(),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="test.intent.v2",
         model_version="test-model",
     )
@@ -436,9 +433,26 @@ def _fixture(
         intent_revision_id=execution.intent_revision_id,
         plan_revision_id=execution.plan_revision_id,
     )
+    from bi_agent.runtime.authority_seal_persistence import (
+        semantic_authority_transition_payloads,
+    )
+
+    claim_coverage_checkpoint = resolved_test_claim_coverage_checkpoint(
+        execution
+    )
+    (
+        claim_coverage_transition_input,
+        claim_coverage_transition_output,
+    ) = claim_coverage_transition_payloads(
+        evaluation=claim_coverage_checkpoint.evaluation,
+        decision=claim_coverage_checkpoint.decision,
+        plan_patch=None,
+    )
+    claim_coverage_transition = claim_coverage_checkpoint.transition
     semantic_result = run_semantic_authority_workflow(
         execution,
         authority_namespace=namespace,
+        claim_coverage_checkpoint=claim_coverage_checkpoint,
         llm_client=_SemanticLLM(),
     )
     authority_inputs = semantic_result.authority_bundle_inputs
@@ -446,86 +460,6 @@ def _fixture(
         bundle_revision=1,
         supersedes_bundle_ref=None,
         sealed_at="2026-07-18T00:00:02Z",
-    )
-    from bi_agent.runtime.authority_seal_persistence import (
-        semantic_authority_transition_payloads,
-    )
-
-    evidence_assessments = tuple(
-        ClaimEvidenceCoverageAssessment.create(
-            evidence_entry_ref=entry.entry_ref,
-            settlement_outcome_ref=outcome.outcome_ref,
-            binding_record_ref=entry.binding_record_ref,
-            evidence_kind=entry.evidence_kind,
-            evidence_strength=entry.evidence_strength,
-            maximum_claim_strength=entry.maximum_claim_strength,
-            publication_ceiling=evidence_publication_ceiling(
-                evidence_kind=entry.evidence_kind,
-                source_claim_kind=obligation.claim_kind,
-                maximum_claim_strength=entry.maximum_claim_strength,
-            ).to_dict(),
-            data_contract_state=entry.data_contract_state,
-            supported_claim_kinds=entry.supported_claim_kinds,
-            observation_facts=entry.observation_facts,
-            scope=entry.scope,
-            window_refs=entry.window_refs,
-            dimension_path=entry.dimension_path,
-            limitation_refs=entry.limitation_refs,
-            result_refs=entry.result_refs,
-            completeness_report_refs=entry.completeness_report_refs,
-        )
-        for entry in evidence_entries
-    )
-    obligation_coverage = ClaimObligationCoverage.create(
-        obligation_id=obligation.obligation_id,
-        claim_kind=obligation.claim_kind,
-        role=obligation.role,
-        subject=obligation.subject,
-        success_policy=obligation.success_policy,
-        status="uncovered" if boundary_only else "evidence_present",
-        evidence_assessments=evidence_assessments,
-    )
-    claim_coverage_evaluation = ClaimCoverageEvaluation.create(
-        plan_revision=plan,
-        execution_result=execution,
-        obligation_coverages=(obligation_coverage,),
-        admissible_routes=(),
-    )
-    claim_coverage_decision = PlanExpansionDecision.deterministic_seal(
-        claim_coverage_evaluation
-    )
-    (
-        claim_coverage_transition_input,
-        claim_coverage_transition_output,
-    ) = claim_coverage_transition_payloads(
-        evaluation=claim_coverage_evaluation,
-        decision=claim_coverage_decision,
-        plan_patch=None,
-    )
-    claim_coverage_transition = DurableTransition.create(
-        node_name="evaluate_claim_coverage",
-        parent_transition_id=execution.transition_id,
-        run_attempt_id=run_attempt_id,
-        intent_revision_id=intent.intent_revision_id,
-        decision_ledger_position=transition.decision_ledger_position,
-        input_digest=canonical_digest(claim_coverage_transition_input),
-        output_digest=canonical_digest(claim_coverage_transition_output),
-        execution_attempt=1,
-        provider_ref="local_deterministic",
-        model_ref="claim-coverage-contract.v1",
-        status="succeeded",
-        acceptance_state="accepted",
-        next_transition="seal_authority_bundle",
-        started_at="2026-07-18T00:00:01+00:00",
-        finished_at="2026-07-18T00:00:02+00:00",
-    )
-    claim_coverage_checkpoint = ClaimCoverageCheckpoint.create(
-        plan_revision=plan,
-        execution_result=execution,
-        evaluation=claim_coverage_evaluation,
-        decision=claim_coverage_decision,
-        plan_patch=None,
-        transition=claim_coverage_transition,
     )
 
     settlement_transition_input, settlement_transition_output = (
@@ -1481,7 +1415,7 @@ def test_cancelled_or_superseded_lifecycle_cannot_seal() -> None:
         assert connection.rollbacks == 1
 
 
-def test_non_idle_lifecycle_cannot_enter_or_replay_authority_seal() -> None:
+def test_running_recovery_cannot_create_a_seal_but_can_replay_the_existing_seal() -> None:
     fixture = _fixture()
     non_idle = fixture.lifecycle.transition(retry_state="running")
     pending_connection = _Connection(replace(fixture, lifecycle=non_idle))
@@ -1496,11 +1430,11 @@ def test_non_idle_lifecycle_cannot_enter_or_replay_authority_seal() -> None:
         replace(fixture, lifecycle=non_idle),
         existing_bundle_payload=fixture.bundle.to_dict(),
     )
-    with pytest.raises(ValueError, match="authority_seal_lifecycle_not_ready"):
-        _seal(replay_connection, replace(fixture, lifecycle=non_idle))
+    result = _seal(replay_connection, replace(fixture, lifecycle=non_idle))
 
-    assert replay_connection.commits == 0
-    assert replay_connection.rollbacks == 1
+    assert result.status == "replayed"
+    assert replay_connection.commits == 1
+    assert replay_connection.rollbacks == 0
 
 
 def test_immutable_child_conflict_rolls_back_the_complete_seal() -> None:

@@ -26,6 +26,7 @@ from bi_agent.runtime.runtime_contract_registry import (
     CANONICAL_RUNTIME_BINDINGS_PATH,
     RuntimeContractRegistry,
 )
+from bi_agent.runtime.query_ir import compile_query_bundle
 from bi_agent.runtime.single_authority import DurableTransition, IntentRevision
 from tests.support.temporal_authority import resolved_test_temporal_authority
 
@@ -83,6 +84,7 @@ def _intent_revision(run_id: str) -> IntentRevision:
     return IntentRevision.create(
         run_attempt_id=run_id,
         original_user_text=QUESTION,
+        business_summary="你希望分析2026年6月1日付费金额上涨及其业务驱动。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -124,7 +126,7 @@ def _intent_revision(run_id: str) -> IntentRevision:
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="single-authority.phase02.postgres-test.v1",
         model_version="deterministic-contract-record",
         known_goal_ids={"explain_change"},
@@ -230,6 +232,7 @@ def _planner_proposal(
     hypotheses = (
         {
             "proposal_item_id": f"hypothesis:calendar_pattern:{variant}",
+            "issue_ref": "paid_amount_change",
             "statement": "周期性波动可能影响目标日期表现。",
             "target_claim_kind": "comparative_change",
             "requested_axis_ids": ("time_context",),
@@ -274,7 +277,7 @@ def _planner_proposal(
             "restricted-provider-response:sha256:"
             + sha256(raw_response.encode("utf-8")).hexdigest()
         ),
-        schema_version="planner-proposal.v1",
+        schema_version="planner-proposal.v2",
         prompt_version="single-authority-plan-proposal.v1",
         model_version="deepseek-chat",
     )
@@ -367,7 +370,7 @@ def _proposal_admission(
                 "item_kind": "hypothesis",
                 "status": "admitted",
                 "reason_code": "bounded_as_assumption",
-                "contract_refs": ["intent-revision.v2#assumption_boundary"],
+                "contract_refs": ["intent-revision.v3#assumption_boundary"],
                 "normalized_execution_ref": f"hypothesis:{hypothesis_item_id}",
             },
             *priority_entries,
@@ -498,7 +501,7 @@ def _plan_revision(
         ),
         capability_task_specs=(
             {
-                "task_key": "data_quality",
+                "task_key": "data_quality:data_quality",
                 "capability_id": "data_quality_profile",
                 "normalized_input_refs": ["dataset:paid_order_success"],
                 "dependency_task_keys": (),
@@ -526,14 +529,14 @@ def _plan_revision(
                 },
             },
             {
-                "task_key": "primary_comparison",
+                "task_key": "change_validation:primary_comparison",
                 "capability_id": "compare_periods",
                 "normalized_input_refs": [
                     "metric:paid_amount",
                     "window:2026-06-01",
                     "window:2026-05-31",
                 ],
-                "dependency_task_keys": ["data_quality"],
+                "dependency_task_keys": ["data_quality:data_quality"],
                 "obligation_edges": (
                     {
                         "obligation_id": comparison.obligation_id,
@@ -558,10 +561,10 @@ def _plan_revision(
                 },
             },
             {
-                "task_key": "time_context",
+                "task_key": "time_context:time_context",
                 "capability_id": "metric_timeseries",
                 "normalized_input_refs": ["metric:paid_amount", "window:2026-06-01"],
-                "dependency_task_keys": ["primary_comparison"],
+                "dependency_task_keys": ["change_validation:primary_comparison"],
                 "obligation_edges": (
                     {
                         "obligation_id": comparison.obligation_id,
@@ -1034,6 +1037,39 @@ class SingleAuthorityPhase02PostgresIntegrationTest(unittest.TestCase):
                 "plan_revision_id": plan.plan_revision_id,
                 "accepted_transition_id": bundle[4].transition_id,
             },
+        )
+        self.assertEqual(
+            self.store.get_run_request(run_id)["planner_problem_projection"],
+            {
+                "schema_version": "planner-problem-projection.v1",
+                "planner_proposal_id": bundle[1].planner_proposal_id,
+                "plan_revision_id": plan.plan_revision_id,
+                "issues": [
+                    {
+                        "issue_id": issue["issue_id"],
+                        "parent_issue_id": issue["parent_issue_id"],
+                        "question": issue["question"],
+                    }
+                    for issue in bundle[1].issue_tree
+                ],
+            },
+        )
+        query_bundle = compile_query_bundle(
+            plan_revision=plan,
+            planner_proposal=bundle[1],
+            runtime_registry=_registry(),
+        )
+        query_projection = query_bundle.customer_projection()
+        self.assertEqual(
+            self.store.save_query_bundle_projection(
+                run_attempt_id=run_id,
+                projection=query_projection,
+            ),
+            query_projection,
+        )
+        self.assertEqual(
+            self.store.get_run_request(run_id)["query_bundle_projection"],
+            query_projection,
         )
         persisted_counts = self.store._fetchone(
             """

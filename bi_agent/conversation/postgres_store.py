@@ -11,6 +11,7 @@ from uuid import uuid4
 from bi_agent.conversation.models import (
     CLARIFICATION_ESCAPE_OPTION,
     ClarificationOption,
+    ClarificationQuestion,
     ClarificationState,
     ContextItem,
     ContextManifest,
@@ -1080,23 +1081,36 @@ class PostgresConversationStore:
             raise EvidenceIntegrityError("pending_clarification_transition_invalid")
         transition = accepted["transition"]
         transition_input = accepted.get("input_payload") or {}
-        ambiguity_slot = transition_input.get("ambiguity_slot")
-        active_slot = next(
-            (
-                slot
-                for slot in intent.ambiguity_slots
-                if isinstance(ambiguity_slot, Mapping)
-                and slot.get("slot_id") == ambiguity_slot.get("slot_id")
-            ),
-            None,
+        clarification_slots = transition_input.get("clarification_slots")
+        active_slots = {
+            str(slot["slot_id"]): slot
+            for slot in intent.ambiguity_slots
+            if slot.get("materiality") == "material"
+            and slot.get("status") == "unresolved"
+        }
+        supplied_slots = (
+            [
+                item.get("slot")
+                for item in clarification_slots
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(clarification_slots, list)
+            else []
         )
         if (
             transition.status != "succeeded"
             or transition.intent_revision_id != intent.intent_revision_id
             or transition.next_transition != "persist_waiting_for_decision"
             or transition_input.get("intent_revision_ref") != intent.intent_revision_id
-            or active_slot is None
-            or canonical_value(ambiguity_slot) != canonical_value(active_slot)
+            or not supplied_slots
+            or len(supplied_slots) != len(clarification_slots)
+            or [str(item.get("slot_id") or "") for item in supplied_slots]
+            != list(active_slots)
+            or any(
+                canonical_value(item)
+                != canonical_value(active_slots[str(item.get("slot_id") or "")])
+                for item in supplied_slots
+            )
             or len(
                 self.attempt_journal.load_stage_attempt_refs(
                     run_attempt_id=pending_run_id,
@@ -1120,77 +1134,115 @@ class PostgresConversationStore:
             raise EvidenceIntegrityError(
                 "pending_clarification_decision_options_invalid"
             )
-        slot_id = str(active_slot["slot_id"])
-        slot_kind = str(active_slot["slot_kind"])
-        allowed_value_refs = set(active_slot.get("allowed_value_refs") or ())
-        typed_value_key = "baseline_id" if slot_kind == "baseline" else "value_ref"
         for option in persisted_options:
-            typed_value = option["typed_value"]
+            slot_id = str(option["slot_id"])
+            slot = active_slots.get(slot_id)
+            if slot is None:
+                raise EvidenceIntegrityError(
+                    "pending_clarification_decision_options_invalid"
+                )
+            try:
+                normalized_value, value_ref = normalize_temporal_decision_value(
+                    slot_id=slot_id,
+                    value=option["typed_value"],
+                    time_spec=intent.time_spec,
+                )
+                expected_option_id = temporal_decision_option_id(
+                    slot_id=slot_id,
+                    value=normalized_value,
+                    time_spec=intent.time_spec,
+                )
+            except (TypeError, ValueError) as exc:
+                raise EvidenceIntegrityError(
+                    "pending_clarification_decision_options_invalid"
+                ) from exc
             if (
-                option["slot_id"] != slot_id
-                or set(typed_value) != {typed_value_key}
-                or typed_value[typed_value_key] not in allowed_value_refs
-                or option["option_id"] != f"{slot_id}.{typed_value[typed_value_key]}"
+                value_ref not in set(slot.get("allowed_value_refs") or ())
+                or canonical_value(option["typed_value"])
+                != canonical_value(normalized_value)
+                or option["option_id"] != expected_option_id
             ):
                 raise EvidenceIntegrityError(
                     "pending_clarification_decision_options_invalid"
                 )
-        outcome_options = outcome.get("options")
-        question = outcome.get("question")
+        outcome_questions = outcome.get("questions")
         if (
             set(outcome)
             != {
                 "status",
                 "boundary_status",
-                "slot_id",
-                "slot_kind",
-                "question",
                 "questions",
-                "options",
-                "recommendation_reason",
                 "status_message",
             }
-            or not isinstance(question, str)
-            or not question.strip()
-            or not isinstance(outcome_options, list)
-            or len(outcome_options) != len(persisted_options) + 1
+            or not isinstance(outcome_questions, list)
+            or len(outcome_questions) != len(active_slots)
         ):
             raise EvidenceIntegrityError("pending_clarification_projection_invalid")
-        expected_projection = [
-            {
-                "option_id": option["option_id"],
-                "label": option["display_label"],
-                "description": option["display_description"],
-                "recommended": option["recommended"],
-                "typed_value": option["typed_value"],
-            }
-            for option in persisted_options
-        ]
-        escape_option = outcome_options[-1]
-        expected_question_projection = [
-            {
-                "question": question,
-                "options": [option["display_label"] for option in persisted_options]
-                + [CLARIFICATION_ESCAPE_OPTION],
-            }
-        ]
+        projected_questions = []
+        for question, (slot_id, slot) in zip(
+            outcome_questions,
+            active_slots.items(),
+            strict=True,
+        ):
+            if not isinstance(question, Mapping):
+                raise EvidenceIntegrityError(
+                    "pending_clarification_projection_invalid"
+                )
+            slot_options = [
+                option
+                for option in persisted_options
+                if option["slot_id"] == slot_id
+            ]
+            expected_options = [
+                {
+                    "option_id": option["option_id"],
+                    "label": option["display_label"],
+                    "description": option["display_description"],
+                    "recommended": option["recommended"],
+                    "typed_value": option["typed_value"],
+                }
+                for option in slot_options
+            ]
+            raw_options = question.get("options")
+            if (
+                set(question)
+                != {
+                    "slot_id",
+                    "slot_kind",
+                    "question",
+                    "options",
+                    "recommendation_reason",
+                }
+                or question.get("slot_id") != slot_id
+                or question.get("slot_kind") != slot.get("slot_kind")
+                or not isinstance(question.get("question"), str)
+                or not question["question"].strip()
+                or not isinstance(question.get("recommendation_reason"), str)
+                or not question["recommendation_reason"].strip()
+                or not isinstance(raw_options, list)
+                or len(raw_options) != len(expected_options) + 1
+                or canonical_value(raw_options[:-1])
+                != canonical_value(expected_options)
+            ):
+                raise EvidenceIntegrityError(
+                    "pending_clarification_projection_invalid"
+                )
+            escape_option = raw_options[-1]
+            if (
+                not isinstance(escape_option, Mapping)
+                or escape_option.get("option_id") != "tell_agent_differently"
+                or escape_option.get("label") != CLARIFICATION_ESCAPE_OPTION
+                or not isinstance(escape_option.get("description"), str)
+                or not escape_option["description"].strip()
+                or escape_option.get("recommended") is not False
+            ):
+                raise EvidenceIntegrityError(
+                    "pending_clarification_projection_invalid"
+                )
+            projected_questions.append(question)
         if (
-            canonical_value(outcome_options[:-1])
-            != canonical_value(expected_projection)
-            or not isinstance(escape_option, Mapping)
-            or escape_option.get("option_id") != "tell_agent_differently"
-            or escape_option.get("label") != CLARIFICATION_ESCAPE_OPTION
-            or not isinstance(escape_option.get("description"), str)
-            or not escape_option["description"].strip()
-            or escape_option.get("recommended") is not False
-            or outcome.get("status") != "question_tool_opened"
+            outcome.get("status") != "question_tool_opened"
             or outcome.get("boundary_status") != "needs_question"
-            or outcome.get("slot_id") != slot_id
-            or outcome.get("slot_kind") != slot_kind
-            or canonical_value(outcome.get("questions"))
-            != canonical_value(expected_question_projection)
-            or not isinstance(outcome.get("recommendation_reason"), str)
-            or not outcome["recommendation_reason"].strip()
             or not isinstance(outcome.get("status_message"), str)
             or not outcome["status_message"].strip()
         ):
@@ -1296,7 +1348,7 @@ class PostgresConversationStore:
         return ClarificationState(
             run_id=pending_run_id,
             topic_id=pending_topic_id,
-            question=question,
+            question=str(projected_questions[0]["question"]),
             options=[
                 ClarificationOption(
                     option_id=str(option["option_id"]),
@@ -1304,7 +1356,26 @@ class PostgresConversationStore:
                     description=str(option["description"]),
                     recommended=bool(option["recommended"]),
                 )
-                for option in outcome_options
+                for option in projected_questions[0]["options"]
+            ],
+            questions=[
+                ClarificationQuestion(
+                    slot_id=str(question["slot_id"]),
+                    question=str(question["question"]),
+                    options=[
+                        ClarificationOption(
+                            option_id=str(option["option_id"]),
+                            label=str(option["label"]),
+                            description=str(option["description"]),
+                            recommended=bool(option["recommended"]),
+                        )
+                        for option in question["options"]
+                    ],
+                    recommendation_reason=str(
+                        question["recommendation_reason"]
+                    ),
+                )
+                for question in projected_questions
             ],
         )
 
@@ -1491,7 +1562,8 @@ class PostgresConversationStore:
                 /* generic_run_dispatch_owner_lock */
                 SELECT dispatch_id, run_id, thread_id, producer_kind,
                        scope_ref, dispatch_state, owner_id, lease_epoch,
-                       lease_expires_at > now() AS lease_active
+                       lease_expires_at > now() AS lease_active,
+                       request_payload
                 FROM waje_runtime.run_dispatches
                 WHERE dispatch_id = %(dispatch_id)s
                   AND run_id = %(run_id)s
@@ -1511,6 +1583,9 @@ class PostgresConversationStore:
                 "owner_id": str(_field(dispatch, "owner_id", 6) or ""),
                 "lease_epoch": int(_field(dispatch, "lease_epoch", 7) or 0),
                 "lease_active": bool(_field(dispatch, "lease_active", 8)),
+                "request_payload": _json_value(
+                    _field(dispatch, "request_payload", 9)
+                ),
             }
             run = self._fetchone(
                 """
@@ -1549,6 +1624,17 @@ class PostgresConversationStore:
                     and (
                         resolved_dispatch["scope_ref"] != run_id
                         or run_status != "waiting_for_clarification"
+                        or not isinstance(
+                            resolved_dispatch["request_payload"],
+                            Mapping,
+                        )
+                        or not _valid_clarification_resume_request(
+                            resolved_dispatch["request_payload"].get(
+                                "resumeRequest"
+                            ),
+                            run_id=run_id,
+                            thread_id=thread_id,
+                        )
                     )
                 )
             ):
@@ -1571,10 +1657,37 @@ class PostgresConversationStore:
                     commit=False,
                 ).fetchone()
             else:
+                waiting_for_decision = (
+                    lifecycle is not None
+                    and lifecycle.execution_state == "waiting"
+                    and lifecycle.interaction_state == "waiting_for_user"
+                )
+                resuming_after_decision = (
+                    lifecycle is not None
+                    and lifecycle.execution_state == "waiting"
+                    and lifecycle.interaction_state == "active"
+                    and lifecycle.evidence_state == "not_started"
+                    and lifecycle.publication_state == "not_ready"
+                    and lifecycle.delivery_state == "pending"
+                    and lifecycle.retry_state == "idle"
+                    and lifecycle.cancellation_state == "active"
+                    and lifecycle.supersession_state == "active"
+                )
+                recovering_post_authority = (
+                    lifecycle is not None
+                    and lifecycle.execution_state == "complete"
+                    and lifecycle.interaction_state == "active"
+                    and lifecycle.evidence_state in {"complete", "boundary_only"}
+                    and lifecycle.publication_state == "not_ready"
+                    and lifecycle.delivery_state == "pending"
+                    and lifecycle.retry_state == "scheduled"
+                    and lifecycle.cancellation_state == "active"
+                    and lifecycle.supersession_state == "active"
+                )
                 if (
-                    lifecycle is None
-                    or lifecycle.execution_state != "waiting"
-                    or lifecycle.interaction_state != "waiting_for_user"
+                    not waiting_for_decision
+                    and not resuming_after_decision
+                    and not recovering_post_authority
                 ):
                     raise EvidenceIntegrityError("run_dispatch_lifecycle_conflict")
                 updated_run = run
@@ -1625,6 +1738,11 @@ class PostgresConversationStore:
                     },
                     commit=False,
                 )
+            elif recovering_post_authority:
+                if lifecycle is None:
+                    raise EvidenceIntegrityError("run_dispatch_lifecycle_conflict")
+                running_recovery = lifecycle.transition(retry_state="running")
+                self._append_lifecycle_state_locked(running_recovery)
             self._audit(
                 "run_dispatch_claimed",
                 thread_id=thread_id,
@@ -1665,6 +1783,26 @@ class PostgresConversationStore:
                 "status": "running"
                 if producer_kind == "thread_message"
                 else run_status,
+                **(
+                    {
+                        "resume_request": resolved_dispatch[
+                            "request_payload"
+                        ].get("resumeRequest")
+                    }
+                    if producer_kind == "clarification_resolution"
+                    and isinstance(
+                        resolved_dispatch["request_payload"],
+                        Mapping,
+                    )
+                    and _valid_clarification_resume_request(
+                        resolved_dispatch["request_payload"].get(
+                            "resumeRequest"
+                        ),
+                        run_id=run_id,
+                        thread_id=thread_id,
+                    )
+                    else {}
+                ),
             }
         )
 
@@ -1737,7 +1875,8 @@ class PostgresConversationStore:
                        dispatch.thread_id, dispatch.producer_kind,
                        dispatch.dispatch_state, dispatch.owner_id,
                        dispatch.lease_epoch, false AS lease_active,
-                       run.status AS run_status
+                       run.status AS run_status,
+                       dispatch.request_payload
                 FROM waje_runtime.run_dispatches dispatch
                 JOIN waje_runtime.analysis_runs run
                   ON run.run_id = dispatch.run_id
@@ -1762,6 +1901,14 @@ class PostgresConversationStore:
                 owner_id = str(_field(row, "owner_id", 5) or "")
                 lease_epoch = int(_field(row, "lease_epoch", 6) or 0)
                 run_status = str(_field(row, "run_status", 8) or "")
+                request_payload = _json_value(
+                    _field(row, "request_payload", 9)
+                )
+                resume_request = (
+                    request_payload.get("resumeRequest")
+                    if isinstance(request_payload, Mapping)
+                    else None
+                )
                 releasable_status = (
                     producer_kind == "thread_message" and run_status == "queued"
                 ) or (
@@ -1802,11 +1949,75 @@ class PostgresConversationStore:
                     continue
                 if state != "running":
                     continue
-                preserve_waiting_run = (
+                lifecycle = self._latest_lifecycle_state_locked(run_id)
+                resuming_post_authority = (
                     producer_kind == "clarification_resolution"
-                    and run_status == "waiting_for_clarification"
+                    and run_status in {"running", "running_workflow"}
+                    and lifecycle is not None
+                    and lifecycle.execution_state == "complete"
+                    and lifecycle.interaction_state == "active"
+                    and lifecycle.evidence_state in {"complete", "boundary_only"}
+                    and lifecycle.publication_state == "not_ready"
+                    and lifecycle.delivery_state == "pending"
+                    and lifecycle.retry_state in {"idle", "scheduled"}
+                    and lifecycle.cancellation_state == "active"
+                    and lifecycle.supersession_state == "active"
+                    and _valid_clarification_resume_request(
+                        resume_request,
+                        run_id=run_id,
+                        thread_id=thread_id,
+                    )
                 )
-                if preserve_waiting_run:
+                recoverable_clarification_run = (
+                    producer_kind == "clarification_resolution"
+                    and (
+                        run_status == "waiting_for_clarification"
+                        or resuming_post_authority
+                    )
+                )
+                if recoverable_clarification_run:
+                    recovery_lifecycle = lifecycle
+                    if resuming_post_authority:
+                        if lifecycle is None:
+                            continue
+                        if lifecycle.retry_state != "scheduled":
+                            recovery_lifecycle = lifecycle.transition(
+                                retry_state="scheduled"
+                            )
+                            self._append_lifecycle_state_locked(
+                                recovery_lifecycle
+                            )
+                        restored = self._execute(
+                            """
+                            /* expired_running_clarification_run_restore_cas */
+                            UPDATE waje_runtime.analysis_runs
+                            SET status = 'waiting_for_clarification',
+                                updated_at = now()
+                            WHERE run_id = %(run_id)s
+                              AND status = %(run_status)s
+                            RETURNING status
+                            """,
+                            {
+                                "run_id": run_id,
+                                "run_status": run_status,
+                            },
+                            commit=False,
+                        ).fetchone()
+                        if restored is None:
+                            continue
+                        self._execute(
+                            """
+                            /* expired_controlled_investigation_lease_cascade */
+                            UPDATE waje_runtime.controlled_investigation_dispatches
+                            SET lease_expires_at = now(),
+                                heartbeat_at = now(),
+                                updated_at = now()
+                            WHERE run_attempt_id = %(run_id)s
+                              AND dispatch_state IN ('leased', 'running')
+                            """,
+                            {"run_id": run_id},
+                            commit=False,
+                        )
                     released = self._execute(
                         """
                         /* expired_running_clarification_release_cas */
@@ -1840,6 +2051,11 @@ class PostgresConversationStore:
                                 "producer_kind": producer_kind,
                                 "failure_reason": ("run_dispatch_heartbeat_expired"),
                                 "lease_epoch": lease_epoch,
+                                "recovery_lifecycle_digest": (
+                                    None
+                                    if recovery_lifecycle is None
+                                    else recovery_lifecycle.content_digest
+                                ),
                             },
                             commit=False,
                         )
@@ -1851,7 +2067,7 @@ class PostgresConversationStore:
                             }
                         )
                     continue
-                if not preserve_waiting_run and run_status not in {
+                if run_status not in {
                     "running",
                     "running_workflow",
                 }:
@@ -2825,6 +3041,107 @@ class PostgresConversationStore:
         request["topic_id"] = str(_field(row, "topic_id", 2) or "") if row else ""
         return request
 
+    def save_query_bundle_projection(
+        self,
+        *,
+        run_attempt_id: str,
+        projection: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from bi_agent.runtime.evidence_authority import (
+            EvidenceIntegrityError,
+            canonical_value,
+        )
+
+        expected = _validated_query_bundle_projection(projection)
+        try:
+            self._lock_single_authority_run(run_attempt_id)
+            request = self._single_authority_request_locked(run_attempt_id)
+            plan_refs = request.get("plan_result_refs")
+            planner_projection = request.get("planner_problem_projection")
+            if (
+                not isinstance(plan_refs, Mapping)
+                or not isinstance(planner_projection, Mapping)
+                or expected["plan_revision_id"]
+                != str(plan_refs.get("plan_revision_id") or "")
+                or expected["planner_proposal_id"]
+                != str(plan_refs.get("planner_proposal_id") or "")
+                or expected["plan_revision_id"]
+                != str(planner_projection.get("plan_revision_id") or "")
+                or expected["planner_proposal_id"]
+                != str(planner_projection.get("planner_proposal_id") or "")
+            ):
+                raise EvidenceIntegrityError(
+                    "query_bundle_projection_authority_mismatch"
+                )
+            planner_issues = planner_projection.get("issues")
+            if not isinstance(planner_issues, Sequence):
+                raise EvidenceIntegrityError(
+                    "query_bundle_projection_issue_closure_invalid"
+                )
+            expected_issue_closure = tuple(
+                (
+                    str(item.get("issue_id") or ""),
+                    str(item.get("question") or ""),
+                )
+                for item in planner_issues
+                if isinstance(item, Mapping)
+            )
+            actual_issue_closure = tuple(
+                (str(item["issue_id"]), str(item["question"]))
+                for item in expected["issues"]
+            )
+            if actual_issue_closure != expected_issue_closure:
+                raise EvidenceIntegrityError(
+                    "query_bundle_projection_issue_closure_invalid"
+                )
+            current = request.get("query_bundle_projection")
+            if isinstance(current, Mapping):
+                current_value = _validated_query_bundle_projection(current)
+                if (
+                    current_value["plan_revision_id"]
+                    != expected["plan_revision_id"]
+                    or current_value["planner_proposal_id"]
+                    != expected["planner_proposal_id"]
+                ):
+                    raise EvidenceIntegrityError(
+                        "query_bundle_projection_conflict"
+                    )
+                if current_value["stage"] == "settled":
+                    if expected["stage"] == "compiled":
+                        self.connection.commit()
+                        return dict(current_value)
+                    if canonical_value(current_value) != canonical_value(expected):
+                        raise EvidenceIntegrityError(
+                            "query_bundle_projection_conflict"
+                        )
+                    self.connection.commit()
+                    return dict(current_value)
+                if (
+                    current_value["stage"] == "compiled"
+                    and expected["stage"] == "compiled"
+                ):
+                    if canonical_value(current_value) != canonical_value(expected):
+                        raise EvidenceIntegrityError(
+                            "query_bundle_projection_conflict"
+                        )
+                    self.connection.commit()
+                    return dict(current_value)
+            next_request = {
+                **request,
+                "query_bundle_projection": canonical_value(expected),
+            }
+            self._replace_single_authority_request_locked(
+                run_attempt_id,
+                current_request=request,
+                next_request=next_request,
+                conflict_code="query_bundle_projection_conflict",
+            )
+            self.connection.commit()
+            return dict(expected)
+        except Exception:
+            self.connection.rollback()
+            raise
+
     def record_terminal_completion_conflict(
         self,
         *,
@@ -3382,18 +3699,41 @@ class PostgresConversationStore:
                     "intent_transition_ledger_position_mismatch"
                 )
 
-            self._execute(
+            updated_run = self._execute(
                 """
                 UPDATE waje_runtime.analysis_runs
-                SET intent_revision_id = %(intent_revision_id)s
+                SET intent_revision_id = %(intent_revision_id)s,
+                    request = COALESCE(request, '{}'::jsonb)
+                      || jsonb_build_object(
+                        'business_understanding', %(business_summary)s::text,
+                        'business_understanding_intent_revision_id',
+                        %(intent_revision_id)s::text
+                      )
                 WHERE run_id = %(run_attempt_id)s
+                RETURNING request
                 """,
                 {
                     "intent_revision_id": intent_revision.intent_revision_id,
                     "run_attempt_id": intent_revision.run_attempt_id,
+                    "business_summary": intent_revision.business_summary,
                 },
                 commit=False,
+            ).fetchone()
+            updated_request = (
+                _json_value(_field(updated_run, "request", 0))
+                if updated_run is not None
+                else None
             )
+            if (
+                not isinstance(updated_request, Mapping)
+                or updated_request.get("business_understanding")
+                != intent_revision.business_summary
+                or updated_request.get("business_understanding_intent_revision_id")
+                != intent_revision.intent_revision_id
+            ):
+                raise EvidenceIntegrityError(
+                    "intent_business_understanding_projection_failed"
+                )
             transition_status = self._save_transition_attempt_locked(
                 transition=transition,
                 input_payload=input_payload,
@@ -3445,6 +3785,41 @@ class PostgresConversationStore:
             raise EvidenceIntegrityError("active_intent_revision_invalid") from exc
         if revision.run_attempt_id != run_attempt_id:
             raise EvidenceIntegrityError("active_intent_revision_owner_mismatch")
+        return revision
+
+    def load_intent_revision(
+        self,
+        intent_revision_id: str,
+    ) -> IntentRevision | None:
+        """Load one immutable intent revision by its content-addressed identity."""
+        from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+
+        if (
+            not isinstance(intent_revision_id, str)
+            or not intent_revision_id
+            or intent_revision_id != intent_revision_id.strip()
+        ):
+            raise EvidenceIntegrityError("intent_revision_lookup_id_invalid")
+        rows = self._fetchall(
+            """
+            SELECT payload
+            FROM waje_runtime.intent_revisions
+            WHERE intent_revision_id = %(intent_revision_id)s
+            LIMIT 2
+            """,
+            {"intent_revision_id": intent_revision_id},
+        )
+        if len(rows) > 1:
+            raise EvidenceIntegrityError("intent_revision_lookup_ambiguous")
+        if not rows:
+            return None
+        payload = _json_value(_field(rows[0], "payload", 0))
+        try:
+            revision = IntentRevision.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            raise EvidenceIntegrityError("intent_revision_lookup_invalid") from exc
+        if revision.intent_revision_id != intent_revision_id:
+            raise EvidenceIntegrityError("intent_revision_lookup_owner_mismatch")
         return revision
 
     def save_plan_revision_transition(
@@ -4045,6 +4420,10 @@ class PostgresConversationStore:
             self._persist_plan_result_refs_locked(
                 run_attempt_id=run_attempt_id,
                 plan_result_refs=plan_result_refs,
+                planner_problem_projection=_planner_problem_projection(
+                    planner_proposal=planner_proposal,
+                    plan_revision=plan_revision,
+                ),
                 transition_replayed=transition_status == "replayed",
                 previous_plan_result_refs=previous_plan_result_refs,
                 plan_patch_ref=plan_patch_ref,
@@ -4312,31 +4691,72 @@ class PostgresConversationStore:
                 for item in failures
             )
             or settlement_authority.run_id != attempt.run_attempt_id
-            or set(bindings_by_ref) != binding_refs
+            or not binding_refs.issubset(bindings_by_ref)
         ):
             raise EvidenceIntegrityError("capability_outcome_bundle_invalid")
+        used_binding_refs: set[str] = set()
         for entry in rebuilt_evidence:
             if entry.binding_record_ref is None:
+                if entry.result_refs or entry.completeness_report_refs:
+                    raise EvidenceIntegrityError(
+                        "capability_outcome_unbound_evidence_authority_mismatch"
+                    )
                 continue
             binding = bindings_by_ref[entry.binding_record_ref]
             if entry.maximum_claim_strength != binding.maximum_claim_strength:
                 raise EvidenceIntegrityError(
                     "capability_outcome_binding_claim_ceiling_mismatch"
                 )
-            if set(entry.result_refs) != {
-                *binding.result_refs,
-                *binding.validation_result_refs,
-            }:
+            entry_result_refs = set(entry.result_refs)
+            entry_report_refs = set(entry.completeness_report_refs)
+            contributing_bindings = tuple(
+                record
+                for record in bindings_by_ref.values()
+                if record.record_ref == entry.binding_record_ref
+                or entry_result_refs.intersection(
+                    {
+                        *record.result_refs,
+                        *record.validation_result_refs,
+                    }
+                )
+                or entry_report_refs.intersection(
+                    {
+                        *record.completeness_report_refs,
+                        *record.validation_completeness_report_refs,
+                    }
+                )
+            )
+            permitted_result_refs = {
+                ref
+                for record in contributing_bindings
+                for ref in (
+                    *record.result_refs,
+                    *record.validation_result_refs,
+                )
+            }
+            permitted_report_refs = {
+                ref
+                for record in contributing_bindings
+                for ref in (
+                    *record.completeness_report_refs,
+                    *record.validation_completeness_report_refs,
+                )
+            }
+            if not entry_result_refs.issubset(permitted_result_refs):
                 raise EvidenceIntegrityError(
                     "capability_outcome_binding_result_membership_mismatch"
                 )
-            if set(entry.completeness_report_refs) != {
-                *binding.completeness_report_refs,
-                *binding.validation_completeness_report_refs,
-            }:
+            if not entry_report_refs.issubset(permitted_report_refs):
                 raise EvidenceIntegrityError(
                     "capability_outcome_binding_completeness_membership_mismatch"
                 )
+            used_binding_refs.update(
+                record.record_ref for record in contributing_bindings
+            )
+        if used_binding_refs != set(bindings_by_ref):
+            raise EvidenceIntegrityError(
+                "capability_outcome_binding_authority_closure_mismatch"
+            )
 
         try:
             self._lock_single_authority_run(attempt.run_attempt_id)
@@ -4374,9 +4794,33 @@ class PostgresConversationStore:
                 rebuilt_evidence,
                 rebuilt_failures,
             )
+            tasks_by_id = {
+                candidate.task_id: candidate
+                for candidate in active_plan.capability_tasks
+            }
+            dependency_tasks = tuple(
+                tasks_by_id.get(task_id) for task_id in task.dependency_task_ids
+            )
+            if any(candidate is None for candidate in dependency_tasks):
+                raise EvidenceIntegrityError(
+                    "capability_outcome_dependency_task_missing"
+                )
+            permitted_binding_capability_ids = {
+                task.capability_id,
+                *(
+                    candidate.capability_id
+                    for candidate in dependency_tasks
+                    if candidate is not None
+                ),
+            }
             if any(
-                binding.capability_id != task.capability_id
+                binding.capability_id not in permitted_binding_capability_ids
                 for binding in bindings_by_ref.values()
+            ) or any(
+                entry.binding_record_ref is not None
+                and bindings_by_ref[entry.binding_record_ref].capability_id
+                != task.capability_id
+                for entry in rebuilt_evidence
             ):
                 raise EvidenceIntegrityError(
                     "capability_outcome_binding_capability_mismatch"
@@ -5568,14 +6012,19 @@ class PostgresConversationStore:
             ):
                 raise EvidenceIntegrityError("decision_option_shape_invalid")
             normalized.append(canonical_value(dict(option)))
-        normalized.sort(key=lambda item: (item["slot_id"], item["option_id"]))
         if len({(item["slot_id"], item["option_id"]) for item in normalized}) != len(
             normalized
         ):
             raise EvidenceIntegrityError("decision_option_identity_duplicated")
-        if (
-            len({item["slot_id"] for item in normalized}) != 1
-            or sum(item["recommended"] for item in normalized) != 1
+        slot_ids = {str(item["slot_id"]) for item in normalized}
+        if any(
+            sum(
+                bool(item["recommended"])
+                for item in normalized
+                if item["slot_id"] == slot_id
+            )
+            != 1
+            for slot_id in slot_ids
         ):
             raise EvidenceIntegrityError("decision_option_set_invalid")
         if (
@@ -5600,7 +6049,7 @@ class PostgresConversationStore:
             known_slots = {
                 str(slot["slot_id"]): slot for slot in active.ambiguity_slots
             }
-            for option in normalized:
+            for display_position, option in enumerate(normalized, start=1):
                 slot = known_slots.get(option["slot_id"])
                 if slot is None:
                     raise EvidenceIntegrityError("decision_option_slot_unknown")
@@ -5640,11 +6089,13 @@ class PostgresConversationStore:
                     INSERT INTO waje_runtime.decision_options(
                       intent_revision_id, slot_id, option_id, typed_value,
                       display_label, display_description, recommended,
+                      display_position,
                       option_set_digest, content_digest, payload
                     ) VALUES (
                       %(intent_revision_id)s, %(slot_id)s, %(option_id)s,
                       %(typed_value)s::jsonb, %(display_label)s,
                       %(display_description)s, %(recommended)s,
+                      %(display_position)s,
                       %(option_set_digest)s, %(content_digest)s,
                       %(payload)s::jsonb
                     )
@@ -5653,6 +6104,7 @@ class PostgresConversationStore:
                     {
                         **body,
                         "typed_value": _json(body["typed_value"]),
+                        "display_position": display_position,
                         "content_digest": content_digest,
                         "payload": _json(payload),
                     },
@@ -6014,6 +6466,18 @@ class PostgresConversationStore:
         affected_by_kind = {
             "baseline": ("baseline_refs", "resolved_window_refs"),
             "comparison_window": ("baseline_refs", "resolved_window_refs"),
+            "comparison_interpretation": (
+                "baseline_refs",
+                "resolved_window_refs",
+            ),
+            "month_phase_definition": (
+                "comparison_spec.member_definitions",
+                "resolved_window_refs",
+            ),
+            "phase_aggregation": (
+                "comparison_spec.aggregation",
+                "resolved_window_refs",
+            ),
             "time": ("time_spec", "resolved_window_refs"),
             "scope": ("scope", "filters"),
             "metric": ("target_metric_refs", "analysis_axes"),
@@ -6139,10 +6603,10 @@ class PostgresConversationStore:
             """
             SELECT intent_revision_id, slot_id, option_id, typed_value,
                    display_label, display_description, recommended,
-                   option_set_digest, content_digest, payload
+                   display_position, option_set_digest, content_digest, payload
             FROM waje_runtime.decision_options
             WHERE intent_revision_id = %(intent_revision_id)s
-            ORDER BY slot_id, option_id
+            ORDER BY display_position
             """,
             {"intent_revision_id": intent_revision_id},
         )
@@ -6156,9 +6620,10 @@ class PostgresConversationStore:
             display_label = _field(row, "display_label", 4)
             display_description = _field(row, "display_description", 5)
             recommended = _field(row, "recommended", 6)
-            option_set_digest = _field(row, "option_set_digest", 7)
-            content_digest = _field(row, "content_digest", 8)
-            payload = _json_value(_field(row, "payload", 9))
+            display_position = _field(row, "display_position", 7)
+            option_set_digest = _field(row, "option_set_digest", 8)
+            content_digest = _field(row, "content_digest", 9)
+            payload = _json_value(_field(row, "payload", 10))
             if (
                 row_intent_revision_id != intent_revision_id
                 or not isinstance(slot_id, str)
@@ -6172,6 +6637,9 @@ class PostgresConversationStore:
                 or not isinstance(display_description, str)
                 or not display_description.strip()
                 or not isinstance(recommended, bool)
+                or not isinstance(display_position, int)
+                or isinstance(display_position, bool)
+                or display_position != len(options) + 1
                 or not isinstance(option_set_digest, str)
                 or len(option_set_digest) != 64
                 or not isinstance(content_digest, str)
@@ -6203,13 +6671,22 @@ class PostgresConversationStore:
                 raise EvidenceIntegrityError("decision_option_record_invalid")
             options.append(option)
             option_set_digests.add(option_set_digest)
-        if options and (
-            len(option_set_digests) != 1
-            or next(iter(option_set_digests)) != canonical_digest(options)
-            or len({item["slot_id"] for item in options}) != 1
-            or sum(item["recommended"] for item in options) != 1
-        ):
-            raise EvidenceIntegrityError("decision_option_set_invalid")
+        if options:
+            slot_ids = {str(item["slot_id"]) for item in options}
+            if (
+                len(option_set_digests) != 1
+                or next(iter(option_set_digests)) != canonical_digest(options)
+                or any(
+                    sum(
+                        bool(item["recommended"])
+                        for item in options
+                        if item["slot_id"] == slot_id
+                    )
+                    != 1
+                    for slot_id in slot_ids
+                )
+            ):
+                raise EvidenceIntegrityError("decision_option_set_invalid")
         return tuple(options)
 
     def record_typed_slot_decision(
@@ -6269,6 +6746,18 @@ class PostgresConversationStore:
         affected_by_kind = {
             "baseline": ("baseline_refs", "resolved_window_refs"),
             "comparison_window": ("baseline_refs", "resolved_window_refs"),
+            "comparison_interpretation": (
+                "baseline_refs",
+                "resolved_window_refs",
+            ),
+            "month_phase_definition": (
+                "comparison_spec.member_definitions",
+                "resolved_window_refs",
+            ),
+            "phase_aggregation": (
+                "comparison_spec.aggregation",
+                "resolved_window_refs",
+            ),
             "time": ("time_spec", "resolved_window_refs"),
             "scope": ("scope", "filters"),
             "metric": ("target_metric_refs", "analysis_axes"),
@@ -6318,7 +6807,7 @@ class PostgresConversationStore:
         )
         accepted = self.load_accepted_transition(
             run_attempt_id=run_attempt_id,
-            node_name="bind_free_text_decision",
+            node_name="bind_free_text_submission",
             input_digest=canonical_digest(input_payload),
         )
         if accepted is not None:
@@ -6336,7 +6825,7 @@ class PostgresConversationStore:
                 "replayed": True,
             }
         transition = DurableTransition.create(
-            node_name="bind_free_text_decision",
+            node_name="bind_free_text_submission",
             parent_transition_id=self.latest_accepted_transition_id(run_attempt_id),
             run_attempt_id=run_attempt_id,
             intent_revision_id=active.intent_revision_id,
@@ -6820,9 +7309,9 @@ class PostgresConversationStore:
             """
             /* material_revision_successor_message_insert */
             INSERT INTO waje_runtime.conversation_messages(
-              message_id, thread_id, role, text
+              message_id, thread_id, role, text, customer_visible
             ) VALUES (
-              %(message_id)s, %(thread_id)s, 'user', %(text)s
+              %(message_id)s, %(thread_id)s, 'user', %(text)s, false
             )
             ON CONFLICT DO NOTHING
             RETURNING message_id
@@ -6900,14 +7389,21 @@ class PostgresConversationStore:
             /* material_revision_pending_clarification_clear_cas */
             UPDATE waje_runtime.investigation_threads
             SET pending_clarification_topic_id = NULL,
-                pending_clarification_id = '', updated_at = now()
+                pending_clarification_id = '',
+                active_task_id = %(successor_run_id)s,
+                pending_action_ref = NULL,
+                customer_state = 'working',
+                state_version = state_version + 1,
+                updated_at = now()
             WHERE thread_id = %(thread_id)s
               AND pending_clarification_id = %(source_run_id)s
+              AND active_task_id = %(source_run_id)s
             RETURNING thread_id
             """,
             {
                 "thread_id": continuation.thread_id,
                 "source_run_id": directive.run_attempt_id,
+                "successor_run_id": continuation.successor_run_id,
             },
             commit=False,
         ).fetchone()
@@ -7144,9 +7640,7 @@ class PostgresConversationStore:
             SELECT node_name, input_payload, output_payload, input_digest
             FROM waje_runtime.workflow_transition_attempts
             WHERE run_attempt_id = %(run_attempt_id)s
-              AND node_name IN (
-                'bind_free_text_decision', 'bind_free_text_directive'
-              )
+              AND node_name = 'bind_free_text_submission'
               AND acceptance_state = 'accepted'
               AND input_payload ->> 'original_user_text'
                   = %(original_user_text)s
@@ -7503,6 +7997,7 @@ class PostgresConversationStore:
         *,
         run_attempt_id: str,
         plan_result_refs: Mapping[str, Any],
+        planner_problem_projection: Mapping[str, Any],
         transition_replayed: bool,
         previous_plan_result_refs: Mapping[str, Any] | None,
         plan_patch_ref: str | None,
@@ -7516,8 +8011,16 @@ class PostgresConversationStore:
         has_plan_refs = "plan_result_refs" in request
         existing_plan_refs = request.get("plan_result_refs")
         expected = canonical_value(plan_result_refs)
+        expected_problem_projection = canonical_value(
+            planner_problem_projection
+        )
         if transition_replayed:
-            if not has_plan_refs or canonical_value(existing_plan_refs) != expected:
+            if (
+                not has_plan_refs
+                or canonical_value(existing_plan_refs) != expected
+                or canonical_value(request.get("planner_problem_projection"))
+                != expected_problem_projection
+            ):
                 raise EvidenceIntegrityError("plan_result_refs_replay_conflict")
             return
         if previous_plan_result_refs is None:
@@ -7549,7 +8052,11 @@ class PostgresConversationStore:
         next_request = dict(request)
         next_request.pop("execution_result_refs", None)
         next_request.pop("claim_coverage_refs", None)
+        next_request.pop("query_bundle_projection", None)
         next_request["plan_result_refs"] = expected
+        next_request["planner_problem_projection"] = (
+            expected_problem_projection
+        )
         self._replace_single_authority_request_locked(
             run_attempt_id,
             current_request=request,
@@ -8766,6 +9273,130 @@ def _plan_result_refs(
     }
 
 
+def _planner_problem_projection(
+    *,
+    planner_proposal: PlannerProposal,
+    plan_revision: PlanRevision,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "planner-problem-projection.v1",
+        "planner_proposal_id": planner_proposal.planner_proposal_id,
+        "plan_revision_id": plan_revision.plan_revision_id,
+        "issues": [
+            {
+                "issue_id": str(issue["issue_id"]),
+                "parent_issue_id": (
+                    str(issue["parent_issue_id"])
+                    if issue["parent_issue_id"] is not None
+                    else None
+                ),
+                "question": str(issue["question"]),
+            }
+            for issue in planner_proposal.issue_tree
+        ],
+    }
+
+
+def _validated_query_bundle_projection(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
+    from bi_agent.runtime.query_ir import QUERY_PROJECTION_STATUSES
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "query_bundle_ref",
+        "stage",
+        "plan_revision_id",
+        "planner_proposal_id",
+        "issues",
+    }:
+        raise EvidenceIntegrityError("query_bundle_projection_invalid")
+    if (
+        value.get("schema_version") != "query-bundle-projection.v1"
+        or value.get("stage") not in {"compiled", "settled"}
+    ):
+        raise EvidenceIntegrityError("query_bundle_projection_invalid")
+    required_strings = (
+        "query_bundle_ref",
+        "plan_revision_id",
+        "planner_proposal_id",
+    )
+    if any(
+        not isinstance(value.get(field), str)
+        or not value[field]
+        or value[field] != value[field].strip()
+        for field in required_strings
+    ):
+        raise EvidenceIntegrityError("query_bundle_projection_invalid")
+    raw_issues = value.get("issues")
+    if (
+        isinstance(raw_issues, (str, bytes))
+        or not isinstance(raw_issues, Sequence)
+        or not raw_issues
+    ):
+        raise EvidenceIntegrityError("query_bundle_projection_invalid")
+    issues: list[dict[str, Any]] = []
+    issue_ids: set[str] = set()
+    for item in raw_issues:
+        if not isinstance(item, Mapping) or set(item) != {
+            "issue_id",
+            "question",
+            "status",
+            "status_message",
+            "query_ir_ref",
+            "repair_actions",
+        }:
+            raise EvidenceIntegrityError("query_bundle_projection_invalid")
+        issue_id = str(item.get("issue_id") or "")
+        question = str(item.get("question") or "")
+        status_message = str(item.get("status_message") or "")
+        query_ir_ref = str(item.get("query_ir_ref") or "")
+        status = item.get("status")
+        repair_actions = item.get("repair_actions")
+        if (
+            not issue_id
+            or issue_id != issue_id.strip()
+            or issue_id in issue_ids
+            or not question
+            or question != question.strip()
+            or status not in QUERY_PROJECTION_STATUSES
+            or not status_message
+            or status_message != status_message.strip()
+            or not query_ir_ref
+            or query_ir_ref != query_ir_ref.strip()
+            or isinstance(repair_actions, (str, bytes))
+            or not isinstance(repair_actions, Sequence)
+            or any(
+                not isinstance(action, str)
+                or not action
+                or action != action.strip()
+                for action in repair_actions
+            )
+            or len(set(repair_actions)) != len(repair_actions)
+        ):
+            raise EvidenceIntegrityError("query_bundle_projection_invalid")
+        issue_ids.add(issue_id)
+        issues.append(
+            {
+                "issue_id": issue_id,
+                "question": question,
+                "status": str(status),
+                "status_message": status_message,
+                "query_ir_ref": query_ir_ref,
+                "repair_actions": list(repair_actions),
+            }
+        )
+    return {
+        "schema_version": "query-bundle-projection.v1",
+        "query_bundle_ref": str(value["query_bundle_ref"]),
+        "stage": str(value["stage"]),
+        "plan_revision_id": str(value["plan_revision_id"]),
+        "planner_proposal_id": str(value["planner_proposal_id"]),
+        "issues": issues,
+    }
+
+
 def _plan_result_refs_from_revision(
     *,
     plan_revision: PlanRevision,
@@ -8801,6 +9432,56 @@ def _execution_result_refs(result: Any) -> dict[str, str]:
         "stop_ref": result.stop_ref,
         "accepted_transition_id": result.transition_id,
     }
+
+
+def _valid_clarification_resume_request(
+    value: Any,
+    *,
+    run_id: str,
+    thread_id: str,
+) -> bool:
+    expected_fields = {
+        "schema_version",
+        "run_attempt_id",
+        "thread_id",
+        "turn_id",
+        "topic_id",
+        "turn_intent",
+        "topic_relation",
+        "intent_revision_id",
+        "decision_ledger_position",
+        "accepted_transition_id",
+        "clarification",
+        "context_manifest_ref",
+        "runtime_descriptors",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        return False
+    if (
+        value.get("schema_version") != "single-authority-phase02-waiting.v1"
+        or value.get("run_attempt_id") != run_id
+        or value.get("thread_id") != thread_id
+        or isinstance(value.get("decision_ledger_position"), bool)
+        or not isinstance(value.get("decision_ledger_position"), int)
+        or int(value["decision_ledger_position"]) < 0
+        or not isinstance(value.get("clarification"), Mapping)
+        or not isinstance(value.get("runtime_descriptors"), Mapping)
+    ):
+        return False
+    return all(
+        isinstance(value.get(field), str)
+        and bool(str(value[field]).strip())
+        and value[field] == str(value[field]).strip()
+        for field in (
+            "turn_id",
+            "topic_id",
+            "turn_intent",
+            "topic_relation",
+            "intent_revision_id",
+            "accepted_transition_id",
+            "context_manifest_ref",
+        )
+    )
 
 
 def _json(value: Any) -> str:

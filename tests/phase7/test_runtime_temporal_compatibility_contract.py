@@ -86,6 +86,7 @@ SAFE_TEMPORAL_COMPATIBILITY = {
         "modes": [
             "single_day_window_pair",
             "aggregate_window_pair",
+            "calendar_partition",
             "event_relative",
         ],
         "window_roles": ["target", "baseline"],
@@ -300,7 +301,7 @@ def test_canonical_temporal_compatibility_only_opens_audited_capabilities() -> N
         if "temporal_compatibility" in registry.capability_inputs(capability_id)
     }
 
-    assert registry.contract_version == "20"
+    assert registry.contract_version == "23"
     assert actual == SAFE_TEMPORAL_COMPATIBILITY
 
 

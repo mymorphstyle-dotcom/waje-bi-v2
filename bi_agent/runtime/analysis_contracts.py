@@ -14,6 +14,13 @@ from bi_agent.runtime.canonical_values import canonical_thaw
 DIMENSION_PRESENCE_POLICIES = frozenset(
     {"paired_required", "sparse_allowed", "zero_filled"}
 )
+QUERY_RESULT_SEMANTICS = frozenset(
+    {
+        "complete_aggregate",
+        "complete_window_aggregate",
+        "complete_context_rows",
+    }
+)
 
 
 class CompletenessFailureClass(str, Enum):
@@ -925,9 +932,23 @@ class QueryResultEnvelope:
             raise ValueError("query_result_execution_failure_reason_invalid")
 
     def to_dict(self) -> dict[str, Any]:
-        payload = canonical_thaw(self)
-        payload.pop("rows")
-        return payload
+        return {
+            "query_contract_ref": self.query_contract_ref,
+            "query_id": self.query_id,
+            "query_hash": self.query_hash,
+            "result_ref": self.result_ref,
+            "execution_status": self.execution_status,
+            "rows_ref": self.rows_ref,
+            "row_count": self.row_count,
+            "completeness_report_ref": self.completeness_report_ref,
+            "observed_schema": canonical_thaw(self.observed_schema),
+            "observed_windows": canonical_thaw(self.observed_windows),
+            "observed_grain": canonical_thaw(self.observed_grain),
+            "source_snapshot_refs": canonical_thaw(self.source_snapshot_refs),
+            "provider_stats": canonical_thaw(self.provider_stats),
+            "failure_reason": self.failure_reason,
+            "execution_attempt_ref": self.execution_attempt_ref,
+        }
 
 
 @dataclass(frozen=True)

@@ -274,6 +274,64 @@ def admissible_evidence_publication_ceiling(
         return None
 
 
+def admissible_obligation_evidence_source_claim_kind(
+    *,
+    obligation: Any,
+    evidence_kind: str,
+    supported_claim_kinds: Sequence[str],
+    maximum_claim_strength: str,
+) -> str | None:
+    """Resolve which capability claim makes evidence usable for an obligation."""
+
+    if (
+        not isinstance(getattr(obligation, "claim_kind", None), str)
+        or not isinstance(getattr(obligation, "role", None), str)
+        or not isinstance(getattr(obligation, "success_policy", None), Mapping)
+        or not hasattr(
+            getattr(obligation, "evidence_requirement", None),
+            "evidence_kinds",
+        )
+    ):
+        raise ClaimSettlementContractError(
+            "claim_settlement_obligation_evidence_scope_invalid"
+        )
+    investigation = (
+        obligation.role == "analyst_auxiliary"
+        and obligation.success_policy.get("investigation_mode")
+        == "hypothesis_test"
+    )
+    normalized_claim_kinds = tuple(
+        dict.fromkeys(str(item) for item in supported_claim_kinds)
+    )
+    if not investigation:
+        if obligation.claim_kind not in set(normalized_claim_kinds):
+            return None
+        _compatibility(
+            evidence_kind=evidence_kind,
+            source_claim_kind=obligation.claim_kind,
+            maximum_claim_strength=maximum_claim_strength,
+        )
+        return obligation.claim_kind
+    if evidence_kind not in set(obligation.evidence_requirement.evidence_kinds):
+        return None
+    candidates = tuple(
+        dict.fromkeys((obligation.claim_kind, *normalized_claim_kinds))
+    )
+    for source_claim_kind in candidates:
+        if source_claim_kind not in set(normalized_claim_kinds):
+            continue
+        if (
+            admissible_evidence_publication_ceiling(
+                evidence_kind=evidence_kind,
+                source_claim_kind=source_claim_kind,
+                maximum_claim_strength=maximum_claim_strength,
+            )
+            is not None
+        ):
+            return source_claim_kind
+    return None
+
+
 def publication_ceiling_satisfies(
     ceiling: ClaimPublicationCeiling,
     *,
@@ -1856,24 +1914,27 @@ def _evidence_records(
         for entry in entries:
             _validate_evidence_authority(entry, outcome=outcome, execution=execution)
             relevant = tuple(
-                obligations[ref]
-                for ref in task.supports_obligation_ids
-                if obligations[ref].claim_kind in entry.supported_claim_kinds
-            )
-            if not task.supports_obligation_ids:
-                if entry.supported_claim_kinds:
-                    raise ClaimSettlementContractError(
-                        "claim_settlement_unbound_evidence_claim_support_invalid"
-                    )
-            elif not relevant:
-                raise ClaimSettlementContractError(
-                    "claim_settlement_evidence_obligation_membership_missing"
+                (
+                    obligations[ref],
+                    admissible_obligation_evidence_source_claim_kind(
+                        obligation=obligations[ref],
+                        evidence_kind=entry.evidence_kind,
+                        supported_claim_kinds=entry.supported_claim_kinds,
+                        maximum_claim_strength=entry.maximum_claim_strength,
+                    ),
                 )
+                for ref in task.supports_obligation_ids
+            )
+            relevant = tuple(
+                (obligation, source_claim_kind)
+                for obligation, source_claim_kind in relevant
+                if source_claim_kind is not None
+            )
             claim_support_obligation_ids: list[str] = []
-            for obligation in relevant:
+            for obligation, source_claim_kind in relevant:
                 compatibility = _compatibility(
                     evidence_kind=entry.evidence_kind,
-                    source_claim_kind=obligation.claim_kind,
+                    source_claim_kind=str(source_claim_kind),
                     maximum_claim_strength=entry.maximum_claim_strength,
                 )
                 if _data_contract_allows_claim_support(entry, compatibility):
@@ -2000,6 +2061,7 @@ def _direct_claim_proposals(
             subject_identity={
                 "obligation_subject": obligation.subject,
                 "epistemic_class": key[4],
+                "issue_ref": obligation.success_policy.get("issue_ref"),
             },
             scope=key[1],
             window_refs=execution.plan_revision.resolved_window_refs,
@@ -2127,6 +2189,7 @@ def _candidate_claim_proposal(
             "obligation_subject": obligation.subject,
             "proposal_item_ref": proposal.proposal_item_ref,
             "candidate_subject": proposal.subject,
+            "issue_ref": obligation.success_policy.get("issue_ref"),
         },
         scope=scope,
         window_refs=resolved_window_refs,
@@ -2311,21 +2374,42 @@ def _validated_candidate_composite_support(
         getattr(temporal_authority, "event_ref", None),
         getattr(temporal_authority, "authority_ref", None),
     )
-    if (
-        getattr(temporal_authority, "mode", None) != "event_relative"
-        or len(scopes) != 1
+    mode = getattr(temporal_authority, "mode", None)
+    identity = next(iter(identities)) if len(identities) == 1 else ()
+    common_authority_invalid = (
+        len(scopes) != 1
         or scopes != {expected_scope}
         or len(windows) != 1
         or windows
         != {tuple(sorted(getattr(temporal_authority, "resolved_window_refs", ())))}
         or len(identities) != 1
-        or any(not isinstance(item, str) or not item for item in next(iter(identities)))
-        or next(iter(identities)) != expected_identity
-    ):
+        or any(
+            not isinstance(item, str) or not item
+            for item in identity
+        )
+    )
+    if mode == "event_relative":
+        authority_invalid = common_authority_invalid or identity != expected_identity
+    elif mode == "calendar_partition":
+        source_authority_refs = {
+            fact.get("source_temporal_authority_ref") for _, fact in matched
+        }
+        authority_invalid = (
+            common_authority_invalid
+            or len(identity) != 2
+            or not str(identity[0]).startswith("event-set:sha256:")
+            or not str(identity[1]).startswith(
+                "derived-event-window-set:sha256:"
+            )
+            or source_authority_refs != {temporal_authority.authority_ref}
+        )
+    else:
+        authority_invalid = True
+    if authority_invalid:
         raise ClaimSettlementContractError(
             "candidate_claim_composite_authority_mismatch"
         )
-    identity = dict(zip(identity_fields, next(iter(identities))))
+    identity = dict(zip(identity_fields, identity))
     return {
         "claim_class": policy["claim_class"],
         "publication_strength": policy["publication_strength"],
@@ -2890,6 +2974,7 @@ def _recommendations_from_payload(
 
 __all__ = (
     "admissible_evidence_publication_ceiling",
+    "admissible_obligation_evidence_source_claim_kind",
     "AuthorityBundleInputs",
     "CandidateClaimProposal",
     "CandidateEvidenceSupport",

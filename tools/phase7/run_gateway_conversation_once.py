@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -901,7 +902,9 @@ def _submit_clarification_resolution(
     deadline = monotonic() + timeout_seconds
     payload: dict[str, Any] = {
         "answer": answer,
-        "selectedOptionId": selected_option_id,
+        "selectedOptionIds": (
+            [selected_option_id] if selected_option_id is not None else []
+        ),
         "requestIdentity": request_identity,
     }
     response = _json_request(
@@ -963,7 +966,14 @@ def _poll_existing_run(
     if len(events) != 1:
         raise RuntimeError("gateway_customer_snapshot_unavailable")
     snapshot = _customer_snapshot(events[0])
-    if snapshot["transport"].get("runHandle") != run_id:
+    run_handle = snapshot["transport"].get("runHandle")
+    state = snapshot.get("state")
+    terminal_snapshot = (
+        isinstance(state, Mapping)
+        and state.get("status") in {"completed", "completed_with_limits"}
+        and isinstance(state.get("answer"), Mapping)
+    )
+    if run_handle != run_id and not (run_handle is None and terminal_snapshot):
         raise RuntimeError("gateway_run_identity_invalid")
     observation = _poll_customer_snapshot(
         base_url=base_url,

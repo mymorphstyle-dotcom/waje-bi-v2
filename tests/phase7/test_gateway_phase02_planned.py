@@ -75,7 +75,7 @@ def test_planned_agent_core_contract_is_strict_and_customer_projection_is_fixed(
                 assumption_proposals: [{ statement: "private-assumption" }],
                 raw_provider_response_ref: "private-provider-ref",
                 raw_provider_response: "private-provider-content",
-                schema_version: "planner-proposal.v1",
+                schema_version: "planner-proposal.v2",
                 prompt_version: "single-authority-plan-proposal.v1",
                 model_version: "model-v1",
                 content_digest: "proposal-digest",
@@ -680,13 +680,18 @@ def test_clarification_route_admits_same_run_dispatch_then_continues_after_respo
                 "waiting_for_clarification";
               store.recordCustomerRunStateFromAgentResult(run.id, {
                 clarification: {
-                  question: "请选择比较基线",
                   status: "waiting",
-                  recommendation_reason: "默认使用上一日。",
-                  options: [
-                    { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
-                    { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
-                    { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                  questions: [
+                    {
+                      slot_id: "comparison_baseline",
+                      question: "请选择比较基线",
+                      recommendation_reason: "默认使用上一日。",
+                      options: [
+                        { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
+                        { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
+                        { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                      ],
+                    },
                   ],
                 },
               });
@@ -701,7 +706,7 @@ def test_clarification_route_admits_same_run_dispatch_then_continues_after_respo
                     },
                     body: JSON.stringify({
                       answer: "采用上一日作为比较基线",
-                      selectedOptionId: "comparison_baseline.previous_day",
+                      selectedOptionIds: ["comparison_baseline.previous_day"],
                       requestIdentity: "phase02-option-request",
                     }),
                   },
@@ -767,7 +772,7 @@ def test_clarification_route_admits_same_run_dispatch_then_continues_after_respo
         "resolutionId": "single-authority:phase02-option-request",
         "attemptRunId": run_id,
         "answer": "采用上一日作为比较基线",
-        "selectedOptionId": "comparison_baseline.previous_day",
+        "selectedOptionIds": ["comparison_baseline.previous_day"],
         "source": "user",
         "retryAttempt": False,
     }
@@ -778,6 +783,7 @@ def test_clarification_route_admits_same_run_dispatch_then_continues_after_respo
     assert result["dispatch"]["requestPayload"] == {
         "message": "采用上一日作为比较基线",
         "clarification": result["invocation"]["clarification"],
+        "resumeRequest": {},
     }
 
 
@@ -798,13 +804,18 @@ def test_clarification_route_releases_exact_dispatch_when_startup_fails():
                 "waiting_for_clarification";
               store.recordCustomerRunStateFromAgentResult(run.id, {
                 clarification: {
-                  question: "请选择比较基线",
                   status: "waiting",
-                  recommendation_reason: "默认使用上一日。",
-                  options: [
-                    { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
-                    { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
-                    { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                  questions: [
+                    {
+                      slot_id: "comparison_baseline",
+                      question: "请选择比较基线",
+                      recommendation_reason: "默认使用上一日。",
+                      options: [
+                        { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
+                        { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
+                        { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                      ],
+                    },
                   ],
                 },
               });
@@ -819,7 +830,7 @@ def test_clarification_route_releases_exact_dispatch_when_startup_fails():
                     },
                     body: JSON.stringify({
                       answer: "采用上一日作为比较基线",
-                      selectedOptionId: "comparison_baseline.previous_day",
+                      selectedOptionIds: ["comparison_baseline.previous_day"],
                       requestIdentity: "phase02-startup-failure",
                     }),
                   },
@@ -884,13 +895,18 @@ def test_clarification_route_observes_post_ack_exit_on_exact_dispatch():
                 "waiting_for_clarification";
               store.recordCustomerRunStateFromAgentResult(run.id, {
                 clarification: {
-                  question: "请选择比较基线",
                   status: "waiting",
-                  recommendation_reason: "默认使用上一日。",
-                  options: [
-                    { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
-                    { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
-                    { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                  questions: [
+                    {
+                      slot_id: "comparison_baseline",
+                      question: "请选择比较基线",
+                      recommendation_reason: "默认使用上一日。",
+                      options: [
+                        { option_id: "comparison_baseline.previous_day", label: "上一日", description: "与上一日比较", recommended: true },
+                        { option_id: "comparison_baseline.previous_week", label: "上周同日", description: "与上周同日比较", recommended: false },
+                        { option_id: "tell_agent_differently", label: "其他方式", description: "告诉分析助手其他比较方式", recommended: false },
+                      ],
+                    },
                   ],
                 },
               });
@@ -905,7 +921,7 @@ def test_clarification_route_observes_post_ack_exit_on_exact_dispatch():
                     },
                     body: JSON.stringify({
                       answer: "采用上一日作为比较基线",
-                      selectedOptionId: "comparison_baseline.previous_day",
+                      selectedOptionIds: ["comparison_baseline.previous_day"],
                       requestIdentity: "phase02-post-ack-exit",
                     }),
                   },
@@ -981,7 +997,7 @@ def test_clarification_route_rejects_choice_alias_and_inexact_body():
                     headers: { "content-type": "application/json" },
                     body: JSON.stringify({
                       choice: "跟前一天比较",
-                      selectedOptionId: "comparison_baseline.previous_day",
+                      selectedOptionIds: ["comparison_baseline.previous_day"],
                     }),
                   },
                 ),

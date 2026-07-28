@@ -57,7 +57,27 @@ _CALENDAR_BASELINE_CLASSES: Mapping[str, frozenset[str]] = MappingProxyType(
     }
 )
 COMPARISON_DECISION_SLOT_IDS = frozenset(
-    {"comparison_baseline", "comparison_window", "event_relative_window"}
+    {
+        "comparison_baseline",
+        "comparison_window",
+        "comparison_interpretation",
+        "event_relative_window",
+    }
+)
+COMPARISON_OVERRIDE_SLOT_IDS = frozenset(
+    {
+        "month_phase_definition",
+        "phase_aggregation",
+    }
+)
+MONTH_PHASE_DEFINITION_VALUE_REFS = (
+    "definition_1",
+    "definition_2",
+    "definition_3",
+)
+PHASE_AGGREGATION_VALUE_REFS = (
+    "sum_of_complete_days",
+    "mean_of_complete_days",
 )
 COMPARISON_WINDOW_VALUE_REFS = (
     "prior_period",
@@ -155,17 +175,23 @@ def _immutable_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     return frozen
 
 
-def _calendar_member(value: date, partition_field: str) -> Any:
+def _calendar_member(
+    value: date,
+    partition_field: str,
+    *,
+    month_phase_member_definitions: tuple[Mapping[str, Any], ...] = (),
+) -> Any:
     if partition_field == "quarter_of_year":
         return f"Q{((value.month - 1) // 3) + 1}"
     if partition_field == "month_of_year":
         return value.month
     if partition_field == "month_phase":
-        if value.day <= 10:
-            return "start"
-        if value.day <= 20:
-            return "mid"
-        return "end"
+        for definition in month_phase_member_definitions:
+            if int(definition["day_start"]) <= value.day <= int(
+                definition["day_end"]
+            ):
+                return str(definition["member"])
+        raise TemporalComparisonContractError("temporal_comparison_spec_invalid")
     if partition_field == "iso_weekday":
         return value.isoweekday()
     raise TemporalComparisonContractError("temporal_comparison_spec_invalid")
@@ -177,6 +203,7 @@ def _validate_calendar_range_coverage(
     partition_field: str,
     target_members: tuple[Any, ...],
     baseline_members: tuple[Any, ...],
+    month_phase_member_definitions: tuple[Mapping[str, Any], ...] = (),
     error: str,
 ) -> None:
     bounds = target_bounds(time_spec)
@@ -186,7 +213,11 @@ def _validate_calendar_range_coverage(
     end = date.fromisoformat(bounds[1])
     days_to_check = min((end - start).days + 1, 366)
     observed_members = {
-        _calendar_member(start + timedelta(days=offset), partition_field)
+        _calendar_member(
+            start + timedelta(days=offset),
+            partition_field,
+            month_phase_member_definitions=month_phase_member_definitions,
+        )
         for offset in range(days_to_check)
     }
     if not observed_members.intersection(target_members) or not (
@@ -279,6 +310,159 @@ def _validate_calendar_members(
     return tuple(member for member in member_order if member in set(members))
 
 
+def validate_month_phase_member_definitions(
+    value: Any,
+) -> tuple[Mapping[str, Any], ...]:
+    """Validate explicit, SQL-affecting month-phase membership."""
+
+    error = "temporal_month_phase_member_definitions_invalid"
+    if (
+        isinstance(value, (str, bytes))
+        or not isinstance(value, (list, tuple))
+        or len(value) != 3
+        or any(not isinstance(item, Mapping) for item in value)
+    ):
+        raise TemporalComparisonContractError(error)
+    normalized: list[Mapping[str, Any]] = []
+    expected_member_order = ("start", "mid", "end")
+    expected_start = 1
+    for index, item in enumerate(value):
+        if set(item) != {"member", "day_start", "day_end"}:
+            raise TemporalComparisonContractError(error)
+        member = item.get("member")
+        day_start = item.get("day_start")
+        day_end = item.get("day_end")
+        if (
+            member != expected_member_order[index]
+            or isinstance(day_start, bool)
+            or isinstance(day_end, bool)
+            or not isinstance(day_start, int)
+            or not isinstance(day_end, int)
+            or day_start != expected_start
+            or day_end < day_start
+            or day_end > 31
+        ):
+            raise TemporalComparisonContractError(error)
+        normalized.append(
+            _immutable_mapping(
+                {
+                    "member": str(member),
+                    "day_start": day_start,
+                    "day_end": day_end,
+                }
+            )
+        )
+        expected_start = day_end + 1
+    if expected_start != 32:
+        raise TemporalComparisonContractError(error)
+    return tuple(normalized)
+
+
+def calendar_partition_llm_contracts() -> dict[str, dict[str, Any]]:
+    """Return the exact field combinations the LLM may bind."""
+
+    return {
+        partition_field: {
+            "period_grain": contract[0],
+            "baseline_classes": sorted(
+                _CALENDAR_BASELINE_CLASSES[partition_field]
+            ),
+            "members": list(_CALENDAR_MEMBER_ORDER[partition_field]),
+        }
+        for partition_field, contract in CALENDAR_PARTITION_CONTRACTS.items()
+    }
+
+
+def validate_calendar_partition_role_frame(
+    value: Any,
+) -> Mapping[str, Any]:
+    error = "temporal_calendar_partition_role_frame_invalid"
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "partition_field",
+        "target_members",
+        "baseline_members",
+        "aggregation",
+        "member_definitions",
+    }:
+        raise TemporalComparisonContractError(error)
+    if value.get("schema_version") != "calendar-partition-role-frame.v1":
+        raise TemporalComparisonContractError(error)
+    partition_field = value.get("partition_field")
+    contract = CALENDAR_PARTITION_CONTRACTS.get(str(partition_field))
+    if contract is None:
+        raise TemporalComparisonContractError(error)
+    target_members = _validate_calendar_members(
+        value.get("target_members"),
+        allowed=contract[1],
+        member_order=_CALENDAR_MEMBER_ORDER[str(partition_field)],
+        error=error,
+    )
+    baseline_members = _validate_calendar_members(
+        value.get("baseline_members"),
+        allowed=contract[1],
+        member_order=_CALENDAR_MEMBER_ORDER[str(partition_field)],
+        error=error,
+    )
+    if set(target_members).intersection(baseline_members):
+        raise TemporalComparisonContractError(error)
+    definitions = (
+        validate_month_phase_member_definitions(value.get("member_definitions"))
+        if partition_field == "month_phase"
+        else ()
+    )
+    if (
+        partition_field != "month_phase"
+        and value.get("member_definitions") not in ((), [])
+    ):
+        raise TemporalComparisonContractError(error)
+    return _immutable_mapping(
+        {
+            "schema_version": "calendar-partition-role-frame.v1",
+            "partition_field": partition_field,
+            "target_members": target_members,
+            "baseline_members": baseline_members,
+            "aggregation": _validate_aggregation(value.get("aggregation"), error),
+            "member_definitions": definitions,
+        }
+    )
+
+
+def calendar_partition_role_for_date(
+    observed_on: date,
+    frame: Mapping[str, Any],
+) -> str | None:
+    if not isinstance(observed_on, date):
+        raise TemporalComparisonContractError(
+            "temporal_calendar_partition_observation_invalid"
+        )
+    normalized = validate_calendar_partition_role_frame(frame)
+    partition_field = str(normalized["partition_field"])
+    if partition_field == "quarter_of_year":
+        member: Any = f"Q{((observed_on.month - 1) // 3) + 1}"
+    elif partition_field == "month_of_year":
+        member = observed_on.month
+    elif partition_field == "iso_weekday":
+        member = observed_on.isoweekday()
+    else:
+        definitions = tuple(normalized["member_definitions"])
+        member = next(
+            (
+                item["member"]
+                for item in definitions
+                if int(item["day_start"])
+                <= observed_on.day
+                <= int(item["day_end"])
+            ),
+            None,
+        )
+    if member in set(normalized["target_members"]):
+        return "target"
+    if member in set(normalized["baseline_members"]):
+        return "baseline"
+    return None
+
+
 def validate_comparison_spec(
     value: Any,
     *,
@@ -305,6 +489,9 @@ def validate_comparison_spec(
             raise TemporalComparisonContractError(error)
         if (slot_id == "comparison_baseline" and normalized_time["kind"] != "date") or (
             slot_id == "comparison_window" and normalized_time["kind"] != "date_range"
+        ) or (
+            slot_id == "comparison_interpretation"
+            and normalized_time["kind"] != "date_range"
         ):
             raise TemporalComparisonContractError(error)
         return _immutable_mapping(
@@ -365,7 +552,8 @@ def validate_comparison_spec(
             }
         )
     if kind == "calendar_partition":
-        if set(value) != {
+        partition_field = value.get("partition_field")
+        expected_fields = {
             "kind",
             "baseline_class",
             "period_grain",
@@ -373,11 +561,13 @@ def validate_comparison_spec(
             "target_members",
             "baseline_members",
             "aggregation",
-        }:
+        }
+        if partition_field == "month_phase":
+            expected_fields.add("member_definitions")
+        if set(value) != expected_fields:
             raise TemporalComparisonContractError(error)
         if normalized_time["kind"] != "date_range":
             raise TemporalComparisonContractError(error)
-        partition_field = value.get("partition_field")
         contract = CALENDAR_PARTITION_CONTRACTS.get(str(partition_field))
         if contract is None or value.get("period_grain") != contract[0]:
             raise TemporalComparisonContractError(error)
@@ -402,15 +592,20 @@ def validate_comparison_spec(
         )
         if set(target_members).intersection(baseline_members):
             raise TemporalComparisonContractError(error)
+        month_phase_member_definitions = (
+            validate_month_phase_member_definitions(value.get("member_definitions"))
+            if partition_field == "month_phase"
+            else ()
+        )
         _validate_calendar_range_coverage(
             time_spec=normalized_time,
             partition_field=str(partition_field),
             target_members=target_members,
             baseline_members=baseline_members,
+            month_phase_member_definitions=month_phase_member_definitions,
             error=error,
         )
-        return _immutable_mapping(
-            {
+        normalized_partition = {
                 "kind": "calendar_partition",
                 "baseline_class": baseline_class,
                 "period_grain": contract[0],
@@ -418,8 +613,12 @@ def validate_comparison_spec(
                 "target_members": target_members,
                 "baseline_members": baseline_members,
                 "aggregation": _validate_aggregation(value.get("aggregation"), error),
-            }
-        )
+        }
+        if month_phase_member_definitions:
+            normalized_partition["member_definitions"] = (
+                month_phase_member_definitions
+            )
+        return _immutable_mapping(normalized_partition)
     if set(value) != {
         "kind",
         "event_ref",
@@ -481,13 +680,59 @@ def normalize_temporal_decision_value(
         baseline_id = baseline_ids[0]
         return _immutable_mapping({"baseline_id": baseline_id}), baseline_id
 
-    if slot_id not in {"comparison_window", "event_relative_window"}:
+    if slot_id == "month_phase_definition":
+        if not isinstance(value, Mapping) or set(value) != {
+            "value_ref",
+            "member_definitions",
+        }:
+            raise TemporalComparisonContractError(
+                "temporal_comparison_decision_invalid"
+            )
+        value_ref = value.get("value_ref")
+        if value_ref not in MONTH_PHASE_DEFINITION_VALUE_REFS:
+            raise TemporalComparisonContractError(
+                "temporal_comparison_decision_invalid"
+            )
+        definitions = validate_month_phase_member_definitions(
+            value.get("member_definitions")
+        )
+        return (
+            _immutable_mapping(
+                {
+                    "value_ref": str(value_ref),
+                    "member_definitions": definitions,
+                }
+            ),
+            str(value_ref),
+        )
+
+    if slot_id == "phase_aggregation":
+        if not isinstance(value, Mapping) or set(value) != {"aggregation"}:
+            raise TemporalComparisonContractError(
+                "temporal_comparison_decision_invalid"
+            )
+        aggregation = _validate_aggregation(
+            value.get("aggregation"),
+            "temporal_comparison_decision_invalid",
+        )
+        return _immutable_mapping({"aggregation": aggregation}), aggregation
+
+    if slot_id not in {
+        "comparison_window",
+        "comparison_interpretation",
+        "event_relative_window",
+    }:
         raise TemporalComparisonContractError("temporal_comparison_decision_invalid")
     normalized = validate_comparison_spec(value, time_spec=normalized_time)
-    if slot_id == "comparison_window":
+    if slot_id in {"comparison_window", "comparison_interpretation"}:
         if normalized["kind"] not in {"fixed_window", "calendar_partition"}:
             raise TemporalComparisonContractError(
                 "temporal_comparison_decision_invalid"
+            )
+        if slot_id == "comparison_interpretation":
+            return (
+                normalized,
+                "interpretation_" + canonical_digest(normalized)[:16],
             )
         value_ref = str(normalized["baseline_class"])
         if value_ref not in COMPARISON_WINDOW_VALUE_REFS:
@@ -527,9 +772,14 @@ def validate_comparison_slot_binding(
 
     slot_ids = tuple(str(slot["slot_id"]) for slot in ambiguity_slots)
     comparison_slot_ids = set(slot_ids).intersection(COMPARISON_DECISION_SLOT_IDS)
+    override_slot_ids = set(slot_ids).intersection(COMPARISON_OVERRIDE_SLOT_IDS)
     if comparison_spec["kind"] == "decision_slot":
         slot_id = str(comparison_spec["slot_id"])
-        if slot_ids.count(slot_id) != 1 or comparison_slot_ids != {slot_id}:
+        if (
+            slot_ids.count(slot_id) != 1
+            or comparison_slot_ids != {slot_id}
+            or override_slot_ids
+        ):
             raise TemporalComparisonContractError(
                 "temporal_comparison_decision_slot_missing"
             )
@@ -541,6 +791,22 @@ def validate_comparison_slot_binding(
         return
     if comparison_slot_ids:
         raise TemporalComparisonContractError("temporal_comparison_authority_conflict")
+    if not override_slot_ids:
+        return
+    if (
+        comparison_spec.get("kind") != "calendar_partition"
+        or comparison_spec.get("partition_field") != "month_phase"
+    ):
+        raise TemporalComparisonContractError(
+            "temporal_comparison_override_slot_invalid"
+        )
+    for slot in ambiguity_slots:
+        if str(slot["slot_id"]) not in override_slot_ids:
+            continue
+        if slot.get("status") != "unresolved" or slot.get("materiality") != "material":
+            raise TemporalComparisonContractError(
+                "temporal_comparison_override_slot_invalid"
+            )
 
 
 @dataclass(frozen=True)
@@ -614,7 +880,7 @@ class EffectiveTemporalComparison:
     time_spec: Mapping[str, Any]
     intent_comparison_spec: Mapping[str, Any]
     effective_comparison_spec: Mapping[str, Any]
-    decision_id: str | None
+    decision_refs: tuple[str, ...]
     target_window: TemporalWindow
     baseline_window: TemporalWindow | None
     calendar_partition: Mapping[str, Any] | None
@@ -632,7 +898,7 @@ class EffectiveTemporalComparison:
             "time_spec",
             "intent_comparison_spec",
             "effective_comparison_spec",
-            "decision_id",
+            "decision_refs",
             "target_window",
             "baseline_window",
             "calendar_partition",
@@ -645,7 +911,7 @@ class EffectiveTemporalComparison:
         if (
             not isinstance(payload, Mapping)
             or set(payload) != expected
-            or payload.get("schema_version") != "temporal-comparison-authority.v2"
+            or payload.get("schema_version") != "temporal-comparison-authority.v3"
         ):
             raise TemporalComparisonContractError("temporal_authority_shape_invalid")
         try:
@@ -661,17 +927,19 @@ class EffectiveTemporalComparison:
             ) from exc
         mode = payload.get("mode")
         source = payload.get("source")
-        decision_id = payload.get("decision_id")
+        decision_refs = payload.get("decision_refs")
         event_ref = payload.get("event_ref")
         baseline_ids = payload.get("baseline_ids")
         resolved_window_refs = payload.get("resolved_window_refs")
         if (
             mode not in TEMPORAL_MODES
             or source not in {"intent", "decision", "unresolved_decision_slot"}
-            or (
-                decision_id is not None
-                and (not isinstance(decision_id, str) or not decision_id)
+            or not isinstance(decision_refs, list)
+            or any(
+                not isinstance(item, str) or not item
+                for item in decision_refs
             )
+            or len(decision_refs) != len(set(decision_refs))
             or (
                 event_ref is not None
                 and (not isinstance(event_ref, str) or not event_ref)
@@ -698,7 +966,7 @@ class EffectiveTemporalComparison:
             mode=str(mode),
             source=str(source),
             time_spec=time_spec,
-            decision_id=decision_id,
+            decision_refs=tuple(decision_refs),
             target_window=target_window,
             baseline_window=baseline_window,
             calendar_partition=payload.get("calendar_partition"),
@@ -713,7 +981,7 @@ class EffectiveTemporalComparison:
             time_spec=time_spec,
             intent_spec=intent_spec,
             effective_spec=effective_spec,
-            decision_id=decision_id,
+            decision_refs=tuple(decision_refs),
             target_window=target_window,
             baseline_window=baseline_window,
             calendar_partition=(
@@ -770,7 +1038,7 @@ class EffectiveTemporalComparison:
 
     def _material_payload(self) -> dict[str, Any]:
         return {
-            "schema_version": "temporal-comparison-authority.v2",
+            "schema_version": "temporal-comparison-authority.v3",
             "mode": self.mode,
             "source": self.source,
             "time_spec": canonical_value(self.time_spec),
@@ -778,7 +1046,7 @@ class EffectiveTemporalComparison:
             "effective_comparison_spec": canonical_value(
                 self.effective_comparison_spec
             ),
-            "decision_id": self.decision_id,
+            "decision_refs": list(self.decision_refs),
             "target_window": self.target_window.to_dict(),
             "baseline_window": (
                 self.baseline_window.to_dict()
@@ -797,7 +1065,7 @@ def _validate_temporal_authority_material(
     mode: str,
     source: str,
     time_spec: Mapping[str, Any],
-    decision_id: str | None,
+    decision_refs: tuple[str, ...],
     target_window: TemporalWindow,
     baseline_window: TemporalWindow | None,
     calendar_partition: Any,
@@ -812,12 +1080,19 @@ def _validate_temporal_authority_material(
     if baseline_window is not None and baseline_window.role != "baseline":
         raise TemporalComparisonContractError(error)
     if source == "intent":
-        if decision_id is not None or intent_spec != effective_spec:
+        if decision_refs or intent_spec != effective_spec:
             raise TemporalComparisonContractError(error)
     elif source == "decision":
-        if decision_id is None or intent_spec.get("kind") != "decision_slot":
+        decision_slot_source = intent_spec.get("kind") == "decision_slot"
+        decision_binding_source = _is_calendar_partition_decision_binding(
+            intent_spec=intent_spec,
+            effective_spec=effective_spec,
+        )
+        if not decision_refs or not (
+            decision_slot_source or decision_binding_source
+        ):
             raise TemporalComparisonContractError(error)
-    elif mode != "unresolved" or decision_id is not None:
+    elif mode != "unresolved" or decision_refs:
         raise TemporalComparisonContractError(error)
 
     normalized_time = validate_time_spec(time_spec)
@@ -922,6 +1197,10 @@ def _validate_temporal_authority_material(
                 "aggregation",
             )
         }
+        if "member_definitions" in normalized_effective:
+            expected_partition["member_definitions"] = normalized_effective[
+                "member_definitions"
+            ]
         if (
             baseline_window is not None
             or event_ref is not None
@@ -965,6 +1244,33 @@ def _validate_temporal_authority_material(
         raise TemporalComparisonContractError(error)
 
 
+def _is_calendar_partition_decision_binding(
+    *,
+    intent_spec: Mapping[str, Any],
+    effective_spec: Mapping[str, Any],
+) -> bool:
+    if (
+        intent_spec.get("kind") != "calendar_partition"
+        or effective_spec.get("kind") != "calendar_partition"
+        or intent_spec.get("partition_field") != "month_phase"
+        or effective_spec.get("partition_field") != "month_phase"
+    ):
+        return False
+    stable_fields = {
+        "kind",
+        "baseline_class",
+        "period_grain",
+        "partition_field",
+        "target_members",
+        "baseline_members",
+    }
+    return all(
+        canonical_value(intent_spec.get(field))
+        == canonical_value(effective_spec.get(field))
+        for field in stable_fields
+    )
+
+
 def _active_comparison_decisions(
     decision_ledger: Any,
     *,
@@ -973,7 +1279,11 @@ def _active_comparison_decisions(
     active_records = getattr(decision_ledger, "active_records", None)
     if not callable(active_records):
         raise TemporalComparisonContractError("temporal_decision_ledger_invalid")
-    comparison_slot_ids = COMPARISON_DECISION_SLOT_IDS.union(additional_slot_ids)
+    comparison_slot_ids = (
+        COMPARISON_DECISION_SLOT_IDS
+        .union(COMPARISON_OVERRIDE_SLOT_IDS)
+        .union(additional_slot_ids)
+    )
     return {
         str(record.slot_id): record
         for record in active_records()
@@ -988,7 +1298,7 @@ def _effective_result(
     time_spec: Mapping[str, Any],
     intent_spec: Mapping[str, Any],
     effective_spec: Mapping[str, Any],
-    decision_id: str | None,
+    decision_refs: tuple[str, ...],
     target_window: TemporalWindow,
     baseline_window: TemporalWindow | None = None,
     calendar_partition: Mapping[str, Any] | None = None,
@@ -1003,7 +1313,7 @@ def _effective_result(
         time_spec=_immutable_mapping(validate_time_spec(time_spec)),
         intent_comparison_spec=_immutable_mapping(intent_spec),
         effective_comparison_spec=_immutable_mapping(effective_spec),
-        decision_id=decision_id,
+        decision_refs=decision_refs,
         target_window=target_window,
         baseline_window=baseline_window,
         calendar_partition=(
@@ -1141,16 +1451,68 @@ def resolve_effective_comparison(
         additional_slot_ids=additional_slot_ids,
     )
     if intent_spec["kind"] != "decision_slot":
-        if active:
+        authority_decisions = {
+            slot_id: decision
+            for slot_id, decision in active.items()
+            if slot_id in COMPARISON_DECISION_SLOT_IDS
+        }
+        override_decisions = {
+            slot_id: decision
+            for slot_id, decision in active.items()
+            if slot_id in COMPARISON_OVERRIDE_SLOT_IDS
+        }
+        if authority_decisions:
             raise TemporalComparisonContractError(
                 "temporal_comparison_authority_conflict"
+            )
+        if override_decisions:
+            if (
+                intent_spec.get("kind") != "calendar_partition"
+                or intent_spec.get("partition_field") != "month_phase"
+            ):
+                raise TemporalComparisonContractError(
+                    "temporal_comparison_authority_conflict"
+                )
+            effective = canonical_value(intent_spec)
+            decision_ids: list[str] = []
+            for slot_id in sorted(override_decisions):
+                decision = override_decisions[slot_id]
+                if decision.status not in {"inferred", "user_confirmed"}:
+                    raise TemporalComparisonContractError(
+                        "temporal_comparison_decision_invalid"
+                    )
+                normalized_value, _ = normalize_temporal_decision_value(
+                    slot_id=slot_id,
+                    value=decision.value,
+                    time_spec=normalized_time,
+                )
+                if slot_id == "month_phase_definition":
+                    effective["member_definitions"] = canonical_value(
+                        normalized_value["member_definitions"]
+                    )
+                elif slot_id == "phase_aggregation":
+                    effective["aggregation"] = str(
+                        normalized_value["aggregation"]
+                    )
+                decision_ids.append(str(decision.decision_id))
+            normalized_effective = validate_comparison_spec(
+                effective,
+                time_spec=normalized_time,
+            )
+            return _resolve_explicit_comparison(
+                time_spec=normalized_time,
+                intent_spec=intent_spec,
+                effective_spec=normalized_effective,
+                source="decision",
+                decision_refs=tuple(decision_ids),
+                require_physical_baseline=require_physical_baseline,
             )
         return _resolve_explicit_comparison(
             time_spec=normalized_time,
             intent_spec=intent_spec,
             effective_spec=intent_spec,
             source="intent",
-            decision_id=None,
+            decision_refs=(),
             require_physical_baseline=require_physical_baseline,
         )
 
@@ -1170,7 +1532,7 @@ def resolve_effective_comparison(
             time_spec=normalized_time,
             intent_spec=intent_spec,
             effective_spec=intent_spec,
-            decision_id=None,
+            decision_refs=(),
             target_window=_pending_decision_target_window(normalized_time),
         )
     if decision.status not in {"inferred", "user_confirmed"}:
@@ -1198,7 +1560,7 @@ def resolve_effective_comparison(
             time_spec=normalized_time,
             intent_spec=intent_spec,
             effective_spec=effective,
-            decision_id=str(decision.decision_id),
+            decision_refs=(str(decision.decision_id),),
             target_window=_target_window(
                 normalized_time,
                 aggregation="sum_of_complete_days",
@@ -1216,7 +1578,7 @@ def resolve_effective_comparison(
         intent_spec=intent_spec,
         effective_spec=normalized_decision_value,
         source="decision",
-        decision_id=str(decision.decision_id),
+        decision_refs=(str(decision.decision_id),),
         require_physical_baseline=require_physical_baseline,
     )
 
@@ -1227,7 +1589,7 @@ def _resolve_explicit_comparison(
     intent_spec: Mapping[str, Any],
     effective_spec: Mapping[str, Any],
     source: str,
-    decision_id: str | None,
+    decision_refs: tuple[str, ...],
     require_physical_baseline: bool,
 ) -> EffectiveTemporalComparison:
     kind = str(effective_spec["kind"])
@@ -1240,7 +1602,7 @@ def _resolve_explicit_comparison(
             time_spec=time_spec,
             intent_spec=intent_spec,
             effective_spec=effective_spec,
-            decision_id=decision_id,
+            decision_refs=decision_refs,
             target_window=_target_window(
                 time_spec,
                 aggregation=_physical_target_aggregation(time_spec),
@@ -1257,13 +1619,15 @@ def _resolve_explicit_comparison(
             "baseline_members": effective_spec["baseline_members"],
             "aggregation": effective_spec["aggregation"],
         }
+        if "member_definitions" in effective_spec:
+            partition["member_definitions"] = effective_spec["member_definitions"]
         return _effective_result(
             mode="calendar_partition",
             source=source,
             time_spec=time_spec,
             intent_spec=intent_spec,
             effective_spec=effective_spec,
-            decision_id=decision_id,
+            decision_refs=decision_refs,
             target_window=_target_window(
                 time_spec,
                 aggregation=str(effective_spec["aggregation"]),
@@ -1293,7 +1657,7 @@ def _resolve_explicit_comparison(
         time_spec=time_spec,
         intent_spec=intent_spec,
         effective_spec=effective_spec,
-        decision_id=decision_id,
+        decision_refs=decision_refs,
         target_window=(
             _event_target_window(time_spec, effective_spec)
             if kind == "event_relative_window"
@@ -1317,51 +1681,21 @@ def capability_supports_temporal_authority(
     capability_contract: Mapping[str, Any],
     temporal_authority: EffectiveTemporalComparison,
 ) -> bool:
-    """Return whether a typed capability input can consume the temporal mode."""
+    """Return whether Query IR can construct a typed input for this authority."""
+
+    from bi_agent.runtime.query_ir import compile_capability_query_route
 
     if not isinstance(temporal_authority, EffectiveTemporalComparison):
         raise TemporalComparisonContractError("temporal_authority_invalid")
-    if (
-        temporal_authority.mode == "unresolved"
-        or not temporal_authority.has_physical_target
-    ):
+    try:
+        route = compile_capability_query_route(
+            capability_id="temporal-capability-probe",
+            capability_contract=capability_contract,
+            temporal_authority=temporal_authority,
+        )
+    except ValueError:
         return False
-    compatibility = capability_contract.get("temporal_compatibility")
-    if not isinstance(compatibility, Mapping):
-        return False
-    modes = compatibility.get("modes")
-    if not isinstance(modes, (list, tuple)):
-        return False
-    execution_mode = temporal_execution_mode(temporal_authority)
-    if execution_mode not in set(modes):
-        return False
-    if execution_mode != "calendar_partition":
-        return True
-    semantics = compatibility.get("consumption_semantics")
-    if not isinstance(semantics, (list, tuple)):
-        return False
-    if "partition_members" not in set(semantics):
-        return True
-    partition = temporal_authority.calendar_partition
-    calendar_fields = compatibility.get("calendar_partition_fields")
-    if not isinstance(partition, Mapping) or not isinstance(
-        calendar_fields, (list, tuple)
-    ):
-        return False
-    partition_field = str(partition.get("partition_field") or "")
-    if partition_field not in set(calendar_fields):
-        return False
-    binding = capability_contract.get("task_input_binding")
-    if not isinstance(binding, Mapping) or binding.get("payload_kind") != "pattern":
-        return True
-    expected_pattern_mode = {
-        "month_phase": "intra_period",
-        "iso_weekday": "weekly",
-    }.get(partition_field)
-    return (
-        expected_pattern_mode is not None
-        and binding.get("pattern_mode") == expected_pattern_mode
-    )
+    return route.get("status") != "unavailable"
 
 
 def temporal_execution_mode(

@@ -56,6 +56,8 @@ def _plan_result(
     plan_patch_ref: str | None = None,
     transition_node_name: str | None = None,
     next_transition: str | None = None,
+    priority_target_ref: str = "change_validation",
+    priority_execution_ref: str = "change_validation",
 ) -> dict[str, Any]:
     context_versions = context_versions or dict(CONTRACT_VERSIONS)
     admitted_versions = admitted_versions or dict(context_versions)
@@ -87,6 +89,7 @@ def _plan_result(
         "hypotheses": [
             {
                 "proposal_item_id": HYPOTHESIS_PROPOSAL_ID,
+                "issue_ref": "issue-root",
                 "statement": "Channel mix may explain the change.",
                 "target_claim_kind": "comparative_change",
                 "requested_axis_ids": ["change_validation"],
@@ -96,7 +99,7 @@ def _plan_result(
         "priority_proposals": [
             {
                 "proposal_item_id": PRIORITY_PROPOSAL_ID,
-                "target_ref": "change_validation",
+                "target_ref": priority_target_ref,
                 "rationale": "Resolve the primary comparison first.",
             }
         ],
@@ -128,7 +131,7 @@ def _plan_result(
             "restricted-provider-response:sha256:"
             + sha256(raw_response.encode("utf-8")).hexdigest()
         ),
-        schema_version="planner-proposal.v1",
+        schema_version="planner-proposal.v2",
         prompt_version=(
             "single-authority-plan-patch-proposal.v1"
             if supersedes_plan_revision_id is not None
@@ -159,7 +162,7 @@ def _plan_result(
             "status": "admitted",
             "reason_code": "priority_target_scheduled",
             "contract_refs": ["contract:change-validation"],
-            "normalized_execution_ref": "change_validation",
+            "normalized_execution_ref": priority_execution_ref,
         },
         {
             "proposal_item_ref": ASSUMPTION_PROPOSAL_ID,
@@ -638,6 +641,23 @@ def test_plan_result_binds_admitted_items_to_normalized_execution_refs(
         match=("single_authority_plan_proposal_admission_closure_mismatch"),
     ):
         parse_authoritative_plan_result(_plan_result(admission_entries=entries))
+
+
+def test_plan_result_accepts_priority_bound_to_planner_issue() -> None:
+    parsed = parse_authoritative_plan_result(
+        _plan_result(
+            priority_target_ref="issue-root",
+            priority_execution_ref="issue:issue-root",
+        )
+    )
+
+    assert parsed.planner_proposal.priority_proposals[0]["target_ref"] == "issue-root"
+    priority_entry = next(
+        entry
+        for entry in parsed.proposal_admission.admission_entries
+        if entry["item_kind"] == "priority"
+    )
+    assert priority_entry["normalized_execution_ref"] == "issue:issue-root"
 
 
 def test_plan_result_closes_admission_status_into_plan_provenance() -> None:

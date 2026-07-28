@@ -4,7 +4,9 @@ import unittest
 
 from bi_agent.runtime.analysis_contract_compiler import (
     _canonical_query_windows,
+    _context_window_specs,
     compile_analysis_contract as _compile_analysis_contract,
+    expand_dynamic_dimension_queries,
 )
 from bi_agent.runtime.analysis_contracts import (
     ResolvedWindow,
@@ -23,6 +25,7 @@ from bi_agent.runtime.dataset_catalog import (
     dataset_snapshot_release_ref,
 )
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
+from bi_agent.runtime.query_ir import compile_capability_query_route
 from tests.support.temporal_authority import (
     resolved_test_daily_pair_authority,
     resolved_test_temporal_authority,
@@ -81,6 +84,11 @@ def _calendar_partition_temporal_authority():
             "target_members": ["start"],
             "baseline_members": ["mid", "end"],
             "aggregation": "mean_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
         },
         require_physical_baseline=False,
     )
@@ -119,6 +127,7 @@ def snapshot(dataset_id, table, watermark):
             "region",
             "device_brand",
             "gameplay",
+            "is_new_user",
             "is_first_payment",
             "订单id",
             "支付状态",
@@ -277,6 +286,10 @@ def _market_dashboard_snapshots():
             "business_date",
             "game",
             "active_users",
+            "new_users",
+            "registrations",
+            "aggregate_marketing_cost",
+            "profit",
             "paid_amount",
         ),
         evidence_state="claim_ready",
@@ -310,7 +323,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
     def _assert_temporal_unsupported(self, capability_id, *, proposal=None):
         with self.assertRaisesRegex(
             ValueError,
-            f"analysis_capability_temporal_unsupported:{capability_id}",
+            (
+                "analysis_query_input_route_unavailable:"
+                f"{capability_id}:query_input_binding_missing"
+            ),
         ):
             compile_analysis_contract(
                 run_id=f"run-temporal-unsupported-{capability_id}",
@@ -330,6 +346,32 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 temporal_authority=_single_day_pair_temporal_authority(),
                 as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
             )
+
+    def _assert_dynamic_pair_adapter(self, capability_id, *, proposal=None):
+        outcome = compile_analysis_contract(
+            run_id=f"run-dynamic-pair-{capability_id}",
+            proposal={
+                "scope": {"type": "full_sample"},
+                "grain": "window_id",
+                "capability_roles": _required_roles(capability_id),
+                **(proposal or {"target_metrics": ["paid_amount"]}),
+            },
+            accepted_capabilities=(capability_id,),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            temporal_authority=_single_day_pair_temporal_authority(),
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+        self.assertEqual(
+            tuple(item.capability_id for item in outcome.capability_plans),
+            (capability_id,),
+        )
+        self.assertTrue(outcome.query_contracts)
+        return outcome
 
     def test_target_only_authority_selects_only_target_query_window(self):
         outcome = compile_analysis_contract(
@@ -454,6 +496,126 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(
             outcome.query_contracts[0].query_intent,
             "time_bucket_scan",
+        )
+        self.assertEqual(
+            outcome.query_contracts[0].query_parameters[
+                "month_phase_member_definitions"
+            ],
+            (
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ),
+        )
+
+    def test_calendar_partition_derives_pair_frame_for_formula_analysis(self):
+        outcome = compile_analysis_contract(
+            run_id="run-calendar-partition-formula",
+            proposal={
+                "scope": {"type": "full_sample"},
+                "grain": "window_id",
+                "capability_roles": _required_roles("formula_decompose"),
+                "target_metrics": ["paid_amount"],
+            },
+            accepted_capabilities=("formula_decompose",),
+            catalog=DatasetCatalog(
+                (snapshot("paid_order_success", "paid", "2026-07-04"),)
+            ),
+            registry=RuntimeContractRegistry.from_path(
+                "contracts/runtime/clickhouse-analysis-bindings.yaml"
+            ),
+            temporal_authority=_calendar_partition_temporal_authority(),
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+
+        self.assertEqual(
+            tuple(
+                window.window_id
+                for window in outcome.analysis_contract.resolved_windows
+            ),
+            ("target_day",),
+        )
+        contract = outcome.query_contracts[0]
+        self.assertEqual(contract.query_intent, "component_driver_scan")
+        self.assertEqual(
+            contract.query_parameters["calendar_partition_role_frame"],
+            {
+                "schema_version": "calendar-partition-role-frame.v1",
+                "partition_field": "month_phase",
+                "target_members": ("start",),
+                "baseline_members": ("mid", "end"),
+                "aggregation": "mean_of_complete_days",
+                "member_definitions": (
+                    {"member": "start", "day_start": 1, "day_end": 10},
+                    {"member": "mid", "day_start": 11, "day_end": 20},
+                    {"member": "end", "day_start": 21, "day_end": 31},
+                ),
+            },
+        )
+        self.assertEqual(
+            contract.result_shape.unique_key,
+            ("window_id", "observation_key", "window_role"),
+        )
+
+    def test_calendar_partition_daily_frame_uses_evaluation_range_context(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        capability_id = "cross_source_association"
+        authority = resolved_test_temporal_authority(
+            time_spec={
+                "kind": "date_range",
+                "start": "2024-01-01",
+                "end": "2026-05-31",
+            },
+            comparison_spec={
+                "kind": "calendar_partition",
+                "baseline_class": "same_month_phase",
+                "period_grain": "month",
+                "partition_field": "month_phase",
+                "target_members": ["start"],
+                "baseline_members": ["mid", "end"],
+                "aggregation": "mean_of_complete_days",
+                "member_definitions": [
+                    {"member": "start", "day_start": 1, "day_end": 10},
+                    {"member": "mid", "day_start": 11, "day_end": 20},
+                    {"member": "end", "day_start": 21, "day_end": 31},
+                ],
+            },
+            require_physical_baseline=False,
+        )
+        route = compile_capability_query_route(
+            capability_id=capability_id,
+            capability_contract=registry.capability_inputs(capability_id),
+            temporal_authority=authority,
+        )
+
+        specs = _context_window_specs(
+            {
+                "context_window_specs": (
+                    {
+                        "capability_id": capability_id,
+                        "relation": "evaluation_range",
+                        "unit": "day",
+                        "count": 882,
+                    },
+                ),
+            },
+            accepted_capabilities=(capability_id,),
+            registry=registry,
+            capability_query_routes={capability_id: route},
+        )
+
+        self.assertEqual(
+            specs,
+            (
+                {
+                    "capability_id": capability_id,
+                    "relation": "evaluation_range",
+                    "unit": "day",
+                    "count": 882,
+                },
+            ),
         )
 
     def test_compiler_rejects_grain_with_surrounding_whitespace_before_binding(self):
@@ -838,7 +1000,13 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             self.assertEqual(len(paid_orders), 1)
             self.assertEqual(
                 paid_users[0].affected_capabilities,
-                tuple(sorted(capabilities)),
+                tuple(
+                    sorted(
+                        capability
+                        for capability in capabilities
+                        if capability != "market_health_compare"
+                    )
+                ),
             )
             self.assertTrue(
                 any(
@@ -861,21 +1029,39 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             (
                 ("active_users",),
                 {
-                    "market_health_compare": ("active_users",),
+                    "market_health_compare": (
+                        "active_users",
+                        "aggregate_marketing_cost",
+                        "new_users",
+                        "profit",
+                        "registrations",
+                    ),
                     "source_reconciliation": (),
                 },
             ),
             (
                 ("paid_amount",),
                 {
-                    "market_health_compare": (),
+                    "market_health_compare": (
+                        "active_users",
+                        "aggregate_marketing_cost",
+                        "new_users",
+                        "profit",
+                        "registrations",
+                    ),
                     "source_reconciliation": ("paid_amount", "paid_amount"),
                 },
             ),
             (
                 ("paid_amount", "active_users"),
                 {
-                    "market_health_compare": ("active_users",),
+                    "market_health_compare": (
+                        "active_users",
+                        "aggregate_marketing_cost",
+                        "new_users",
+                        "profit",
+                        "registrations",
+                    ),
                     "source_reconciliation": ("paid_amount", "paid_amount"),
                 },
             ),
@@ -934,15 +1120,13 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                         ),
                         unsupported,
                     )
-                if "paid_amount" in target_metrics:
-                    self.assertTrue(
-                        any(
-                            gap.affected_capabilities == ("market_health_compare",)
-                            and "paid_amount" in gap.gap_id
-                            for gap in unsupported
-                        ),
-                        unsupported,
-                    )
+                self.assertFalse(
+                    any(
+                        gap.affected_capabilities == ("market_health_compare",)
+                        for gap in unsupported
+                    ),
+                    unsupported,
+                )
 
     def test_market_health_capability_selects_unique_dashboard_sources_without_override(
         self,
@@ -960,6 +1144,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 "game",
                 "active_users",
                 "new_users",
+                "registrations",
                 "aggregate_marketing_cost",
                 "profit",
                 "paid_amount",
@@ -1007,20 +1192,33 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             {
                 "active_users",
                 "new_users",
+                "registrations",
                 "aggregate_marketing_cost",
                 "profit",
             },
         )
         self.assertEqual(len(outcome.query_contracts), 1)
 
-    def test_capability_metric_family_blocks_unreviewed_dashboard_metric(self):
+    def test_market_health_uses_context_metrics_when_target_is_owned_elsewhere(
+        self,
+    ):
         dashboard = DatasetSnapshot(
             "snapshot:market:verified",
             "market_dashboard",
             "market_dashboard_daily__schema1234567890",
             "2026-06-02",
             "schema1234567890abcdef",
-            ("snapshot_id", "load_revision", "business_date", "game", "paid_users"),
+            (
+                "snapshot_id",
+                "load_revision",
+                "business_date",
+                "game",
+                "active_users",
+                "new_users",
+                "registrations",
+                "aggregate_marketing_cost",
+                "profit",
+            ),
             "contract:market-dashboard@1",
             "2026-06-03T00:00:00Z",
             "active",
@@ -1047,8 +1245,21 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             as_of=datetime.fromisoformat("2026-06-03T12:00:00+01:00"),
         )
 
-        self.assertFalse(outcome.query_contracts)
-        self.assertIn(
+        self.assertEqual(len(outcome.query_contracts), 1)
+        self.assertEqual(
+            tuple(
+                binding.metric_id
+                for binding in outcome.query_contracts[0].metric_bindings
+            ),
+            (
+                "active_users",
+                "aggregate_marketing_cost",
+                "new_users",
+                "profit",
+                "registrations",
+            ),
+        )
+        self.assertNotIn(
             "metric:paid_users:capability_metric_family_unsupported",
             {gap.gap_id for gap in outcome.analysis_contract.contract_gaps},
         )
@@ -1654,17 +1865,86 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             )
             self.assertEqual(len(slot.validation_query_contract_refs), 1)
 
-    def test_joint_attribution_remains_temporally_closed(self):
-        self._assert_temporal_unsupported(
-            "joint_attribution",
-            proposal={
-                "target_metrics": ["paid_amount"],
-                "requested_dimensions": ["channel", "region"],
-            },
+    def test_joint_attribution_materializes_only_after_candidate_selection(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        paid = snapshot("paid_order_success", "paid", "2026-07-04")
+        temporal_authority = _single_day_pair_temporal_authority()
+        proposal = {
+            "scope": {"type": "full_sample"},
+            "grain": "window_id",
+            "capability_roles": _required_roles(
+                "candidate_dimension_screen",
+                "joint_attribution",
+            ),
+            "target_metrics": ["paid_amount"],
+            "requested_dimensions": ["channel", "region"],
+        }
+        outcome = compile_analysis_contract(
+            run_id="run-dynamic-pair-joint-attribution",
+            proposal=proposal,
+            accepted_capabilities=(
+                "candidate_dimension_screen",
+                "joint_attribution",
+            ),
+            catalog=DatasetCatalog((paid,)),
+            registry=registry,
+            temporal_authority=temporal_authority,
+            as_of=datetime.fromisoformat("2026-07-17T01:56:11+00:00"),
+        )
+        self.assertFalse(
+            tuple(
+                item
+                for item in outcome.query_contracts
+                if item.query_intent == "joint_candidate_scan"
+            )
+        )
+        joint_plan = next(
+            item
+            for item in outcome.capability_plans
+            if item.capability_id == "joint_attribution"
+        )
+        self.assertEqual(
+            joint_plan.required_input_slots[0].query_contract_refs,
+            (),
         )
 
-    def test_high_value_contribution_remains_temporally_closed(self):
-        self._assert_temporal_unsupported("high_value_user_contribution")
+        expanded = expand_dynamic_dimension_queries(
+            outcome,
+            run_id="run-dynamic-pair-joint-attribution",
+            capability_id="joint_attribution",
+            selected_combinations=(("channel", "region"),),
+            proposal=proposal,
+            snapshots=(paid,),
+            registry=registry,
+            temporal_authority=temporal_authority,
+        )
+        joint_queries = tuple(
+            item
+            for item in expanded.query_contracts
+            if item.query_intent == "joint_candidate_scan"
+            and item.dimension_bindings
+        )
+        self.assertEqual(len(joint_queries), 1)
+        self.assertEqual(
+            tuple(
+                item.dimension_id
+                for item in joint_queries[0].dimension_bindings
+            ),
+            ("channel", "region"),
+        )
+        self.assertEqual(
+            tuple(item.metric_id for item in joint_queries[0].metric_bindings),
+            ("paid_amount", "paid_orders"),
+        )
+        self.assertEqual(
+            joint_queries[0].result_shape.dimension_presence_policy,
+            "sparse_allowed",
+        )
+
+    def test_high_value_contribution_uses_the_dynamic_window_pair_adapter(self):
+        self._assert_dynamic_pair_adapter("high_value_user_contribution")
 
     def test_capability_queries_only_use_their_reviewed_datasets(self):
         from bi_agent.runtime.analysis_contract_compiler import (
@@ -1942,6 +2222,10 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             outcome.query_contracts[0].dataset_snapshot_refs,
             (released[0].snapshot_ref,),
         )
+        self.assertIn(
+            "country_scope_violation_count",
+            outcome.query_contracts[0].result_shape.required_fields,
+        )
         self.assertFalse(
             any(
                 "requested_source_unreviewed" in gap.gap_id
@@ -2004,7 +2288,13 @@ class AnalysisContractCompilerTest(unittest.TestCase):
                 item.metric_id
                 for item in queries_by_ref[market_ref[0]].metric_bindings
             ),
-            ("active_users",),
+            (
+                "active_users",
+                "aggregate_marketing_cost",
+                "new_users",
+                "profit",
+                "registrations",
+            ),
         )
         quality_refs = tuple(
             ref
@@ -2577,6 +2867,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
             "dimension_presence_policy": "paired_required",
+            "max_result_rows": 10000,
         }
         outcome = compile_analysis_contract(
             run_id="run-workload-dedupe",
@@ -3824,11 +4115,44 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             {query.query_intent for query in outcome.query_contracts},
         )
 
-    def test_auxiliary_user_mix_remains_temporally_closed(self):
-        self._assert_temporal_unsupported("user_mix_contribution")
+    def test_auxiliary_user_mix_uses_the_dynamic_window_pair_adapter(self):
+        outcome = self._assert_dynamic_pair_adapter(
+            "user_mix_contribution",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel"],
+            },
+        )
+        self.assertEqual(
+            tuple(item.query_intent for item in outcome.query_contracts),
+            ("user_mix_joint_scan", "user_mix_joint_scan"),
+        )
+        joint_contract = next(
+            item for item in outcome.query_contracts if item.dimension_bindings
+        )
+        self.assertEqual(
+            tuple(
+                item.dimension_id
+                for item in joint_contract.dimension_bindings
+            ),
+            ("channel", "user_mix_bucket"),
+        )
+        self.assertEqual(
+            tuple(
+                item.metric_id
+                for item in joint_contract.metric_bindings
+            ),
+            ("paid_amount", "paid_users"),
+        )
 
-    def test_required_user_mix_remains_temporally_closed(self):
-        self._assert_temporal_unsupported("user_mix_contribution")
+    def test_required_user_mix_uses_the_dynamic_window_pair_adapter(self):
+        self._assert_dynamic_pair_adapter(
+            "user_mix_contribution",
+            proposal={
+                "target_metrics": ["paid_amount"],
+                "requested_dimensions": ["channel"],
+            },
+        )
 
     def test_shared_query_family_plans_bind_only_owned_metric_contracts(self):
         payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
@@ -3864,6 +4188,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
             "dimension_presence_policy": "paired_required",
+            "max_result_rows": 10000,
         }
         outcome = compile_analysis_contract(
             run_id="run-owned-query",
@@ -3949,6 +4274,7 @@ class AnalysisContractCompilerTest(unittest.TestCase):
             "unique_key": ["window_id", "observation_key"],
             "grain": ["window_id", "observation_key"],
             "dimension_presence_policy": "paired_required",
+            "max_result_rows": 10000,
         }
         outcome = compile_analysis_contract(
             run_id="run-dedupe",

@@ -10,6 +10,7 @@ def high_value_user_contribution(
     rows: Iterable[dict[str, Any]],
     *,
     threshold_policy: Mapping[str, Any],
+    high_value_users_aggregation: str,
     group_key: str,
     total_amount_key: str,
     high_value_amount_key: str,
@@ -21,6 +22,7 @@ def high_value_user_contribution(
     threshold = _top_percentile_threshold(policy)
     if threshold is None or not 0 < threshold < 1:
         raise ValueError("high_value_threshold_policy_invalid")
+    users_measure = _high_value_users_measure(high_value_users_aggregation)
     aggregate_rows = []
     observed_groups: set[str] = set()
     for row in rows:
@@ -39,14 +41,20 @@ def high_value_user_contribution(
             raise ValueError("high_value_aggregate_negative")
         if amount >= 0 and high_value_amount > amount:
             raise ValueError("high_value_amount_exceeds_total")
-        if not high_value_paid_users.is_integer():
+        if (
+            high_value_users_aggregation == "window_distinct_count"
+            and not high_value_paid_users.is_integer()
+        ):
             raise ValueError("high_value_paid_users_non_integral")
+        normalized_high_value_paid_users: int | float = high_value_paid_users
+        if high_value_users_aggregation == "window_distinct_count":
+            normalized_high_value_paid_users = int(high_value_paid_users)
         aggregate_rows.append(
             {
                 "group": normalized_group,
                 "total_amount": amount,
                 "high_value_amount": high_value_amount,
-                "high_value_paid_users": int(high_value_paid_users),
+                "high_value_paid_users": normalized_high_value_paid_users,
                 "high_value_threshold": threshold_cutoff,
                 "high_value_amount_share": (
                     high_value_amount / amount if amount else 0.0
@@ -63,6 +71,7 @@ def high_value_user_contribution(
             typed_payload={
                 "privacy_policy": "aggregate_only",
                 "threshold_policy": policy,
+                "high_value_paid_users_measure": users_measure,
                 "rows": aggregate_rows,
                 "comparison_available": False,
                 "business_readout": "当前没有可用的高价值聚合结果。",
@@ -93,6 +102,7 @@ def high_value_user_contribution(
         typed_payload={
             "privacy_policy": "aggregate_only",
             "threshold_policy": policy,
+            "high_value_paid_users_measure": users_measure,
             "rows": aggregate_rows,
             "comparison_available": comparison is not None,
             "comparison": comparison,
@@ -128,6 +138,14 @@ def _top_percentile_threshold(policy: Mapping[str, Any]) -> float | None:
         return None
     parsed = float(value)
     return parsed if isfinite(parsed) else None
+
+
+def _high_value_users_measure(aggregation: str) -> str:
+    if aggregation == "window_distinct_count":
+        return "distinct_users_in_window"
+    if aggregation == "mean_per_complete_day":
+        return "average_users_per_complete_day"
+    raise ValueError("high_value_users_aggregation_invalid")
 
 
 def _business_readout(

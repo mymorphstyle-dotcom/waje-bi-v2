@@ -160,6 +160,37 @@ def candidate_dimension_screen(
             start=1,
         )
     )
+    joint_exploration_candidates = tuple(
+        {
+            "dimension": profile["dimension"],
+            "dimension_label": labels.get(
+                profile["dimension"], profile["dimension"]
+            ),
+            "diagnostic_priority_score": profile[
+                "diagnostic_priority_score"
+            ],
+            "priority_rank": index,
+            "exploration_basis": "coverage_reconciled_candidate",
+        }
+        for index, profile in enumerate(
+            sorted(
+                (
+                    profile
+                    for profile in profiles
+                    if profile["candidate_eligible"]
+                ),
+                key=lambda item: (
+                    item["diagnostic_priority_score"],
+                    item["excess_change_ratio"],
+                    item["dimension_differentiation_score"],
+                    item["hierarchy_depth"],
+                    item["dimension"],
+                ),
+                reverse=True,
+            ),
+            start=1,
+        )
+    )
     eligible = tuple(item["dimension"] for item in diagnostic_priorities)
     coverage_ready = tuple(
         profile["dimension"] for profile in profiles if profile["candidate_eligible"]
@@ -397,6 +428,16 @@ def candidate_dimension_screen(
             "eligible_dimensions": eligible,
             "diagnostic_priorities": diagnostic_priorities,
             "ranked_dimension_candidates": diagnostic_priorities,
+            "joint_exploration_candidates": joint_exploration_candidates,
+            "continuation_contract": {
+                "state": "ready"
+                if joint_exploration_candidates
+                else "unavailable",
+                "purpose": "dynamic_query_derivation",
+                "material_ref": "joint_exploration_candidates",
+                "material_count": len(joint_exploration_candidates),
+                "claim_support": "none",
+            },
             "selected_dimension": selected_dimension,
             "selected_dimension_label": selected_label,
             "selected_value": selected_value,

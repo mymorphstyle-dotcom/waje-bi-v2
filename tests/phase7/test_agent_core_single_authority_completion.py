@@ -76,7 +76,7 @@ class _WithheldNarrativeLLM:
                     for block in payload["blocks"]
                 ]
             }
-        validator = kwargs["output_validator"]
+        validator = kwargs.get("output_validator")
         if validator is not None:
             validator(output)
         raw = json.dumps(output, sort_keys=True, separators=(",", ":"))
@@ -682,7 +682,10 @@ def test_tampered_post_execution_result_cannot_complete_run(
         _finalize(tampered, source=accepted_fixture.source)
 
 
-def test_phase46_runtime_bindings_are_explicit_and_postgres_scoped() -> None:
+def test_phase46_runtime_bindings_are_explicit_and_postgres_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WAJE_CONTROLLED_INVESTIGATION_ENABLED", "1")
     connection = _BindingConnection()
     transport = GatewayDeliveryTransport()
     core = ConversationAgentCore(
@@ -706,6 +709,7 @@ def test_phase46_runtime_bindings_are_explicit_and_postgres_scoped() -> None:
         "destination_ref": "conversation:thread-phase46",
         "publication_channel": "gateway",
         "delivery_transport": transport,
+        "controlled_investigation_enabled": True,
     }
     with pytest.raises(
         EvidenceIntegrityError,
@@ -721,6 +725,28 @@ def test_phase46_runtime_bindings_are_explicit_and_postgres_scoped() -> None:
             owner_ref="owner-phase46",
             thread_id="thread-phase46",
         )
+
+
+def test_controlled_investigation_requires_explicit_enablement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WAJE_CONTROLLED_INVESTIGATION_ENABLED", raising=False)
+    connection = _BindingConnection()
+    core = ConversationAgentCore(
+        PostgresConversationStore(connection),
+        conversation_llm_client=_BindingLLM(),
+        post_execution_locale="zh-CN",
+        publication_channel="gateway",
+        delivery_transport=GatewayDeliveryTransport(),
+    )
+
+    assert (
+        core._post_execution_runtime_bindings(
+            owner_ref="owner-phase46",
+            thread_id="thread-phase46",
+        )["controlled_investigation_enabled"]
+        is False
+    )
 
 
 def test_phase46_runtime_binding_omissions_fail_closed() -> None:

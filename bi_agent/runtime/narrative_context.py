@@ -40,12 +40,25 @@ def _accepted_intent_context(intent: IntentRevision) -> Mapping[str, Any]:
 def _accepted_plan_context(authority_inputs: AuthorityBundleInputs) -> Mapping[str, Any]:
     plan = authority_inputs.execution_result.plan_revision
     tasks_by_id = {item.task_id: item for item in plan.capability_tasks}
+    accepted_question_graph = tuple(
+        {
+            "issue_ref": item.issue_ref,
+            "parent_issue_ref": item.parent_issue_ref,
+            "business_question": item.business_question,
+            "role": item.role,
+            "target_claim_kind": item.target_claim_kind,
+            "answer_contract": item.answer_contract,
+        }
+        for item in plan.accepted_question_graph
+    )
     user_required_obligations = tuple(
         {
             "obligation_id": item.obligation_id,
             "claim_kind": item.claim_kind,
             "subject": item.subject,
             "minimum_claim_strength": item.success_policy["minimum_claim_strength"],
+            "issue_ref": item.success_policy.get("issue_ref"),
+            "answer_contract": item.success_policy.get("answer_contract"),
         }
         for item in plan.claim_obligations
         if item.role == "user_required"
@@ -81,6 +94,7 @@ def _accepted_plan_context(authority_inputs: AuthorityBundleInputs) -> Mapping[s
         )
     )
     return {
+        "accepted_question_graph": accepted_question_graph,
         "user_required_obligations": user_required_obligations,
         "analysis_axes": analysis_axes,
         "capability_route": capability_route,

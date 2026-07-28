@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tools.data.clean_payment_details_clickhouse import (
     CLEAN_COLUMNS,
     CLEAN_TABLE,
@@ -7,6 +9,8 @@ from tools.data.clean_payment_details_clickhouse import (
     RAW_TABLE,
     clean_insert_sql,
     first_payment_insert_sql,
+    parse_args,
+    should_rebuild_derived,
 )
 
 
@@ -51,3 +55,26 @@ def test_negative_lag_is_auditable_and_does_not_rewrite_source_time() -> None:
     assert "dateDiff('second', normalized.registered_at, normalized.first_paid_at)" in sql
     assert "addHours" not in sql
     assert "subtractHours" not in sql
+
+
+def test_skip_load_reuses_existing_derived_tables_without_truncate() -> None:
+    args = parse_args(["--skip-load"])
+
+    assert should_rebuild_derived(args) is False
+
+
+def test_skip_load_requires_explicit_derived_rebuild_authority() -> None:
+    args = parse_args(["--skip-load", "--rebuild-derived"])
+
+    assert should_rebuild_derived(args) is True
+
+
+def test_fresh_load_still_rebuilds_derived_tables() -> None:
+    args = parse_args([])
+
+    assert should_rebuild_derived(args) is True
+
+
+def test_replace_cannot_drop_derived_tables_on_read_only_reuse_path() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--skip-load", "--replace"])

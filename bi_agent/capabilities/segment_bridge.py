@@ -24,6 +24,7 @@ SAFE_SEGMENT_KEYS = frozenset(
         "n",
         "order_count",
         "orders",
+        "paid_orders",
         "paid_users",
         "segment",
         "share",
@@ -98,6 +99,7 @@ def _sample_size(segment: dict[str, Any]):
         "sample_size",
         "order_count",
         "orders",
+        "paid_orders",
         "user_count",
         "paid_users",
     ):

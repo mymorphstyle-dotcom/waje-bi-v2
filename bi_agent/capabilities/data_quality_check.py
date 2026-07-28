@@ -110,6 +110,17 @@ def _quality_risks(rows: list[dict[str, Any]]) -> dict[str, Any]:
         total = sum(_numeric(row.get(field)) for row in rows if field in row)
         if total:
             risks[field] = total
+    for field in sorted(
+        {
+            str(key)
+            for row in rows
+            for key in row
+            if str(key).endswith("_scope_violation_count")
+        }
+    ):
+        total = sum(_numeric(row.get(field)) for row in rows if field in row)
+        if total:
+            risks[field] = total
     return risks
 
 
@@ -119,6 +130,11 @@ def _risk_limitations(quality_risks: dict[str, Any]) -> tuple[str, ...]:
         limitations.append("payment_status_risk")
     if quality_risks.get("duplicate_orders"):
         limitations.append("duplicate_order_risk")
+    limitations.extend(
+        f"scope_invariant_violation:{field.removesuffix('_scope_violation_count')}"
+        for field in quality_risks
+        if field.endswith("_scope_violation_count")
+    )
     return tuple(limitations)
 
 

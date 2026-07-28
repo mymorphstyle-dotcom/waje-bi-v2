@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def intent_revision(
     *,
     original_user_text: str = "2026年6月1日付费金额为什么上涨？",
+    business_summary: str = "你希望分析2026年6月1日付费金额上涨的业务驱动。",
     supersedes_intent_revision_id: str | None = None,
     requested_factor_refs: tuple[str, ...] = (),
 ) -> IntentRevision:
@@ -37,6 +38,7 @@ def intent_revision(
         run_attempt_id="run-attempt-1",
         supersedes_intent_revision_id=supersedes_intent_revision_id,
         original_user_text=original_user_text,
+        business_summary=business_summary,
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -79,7 +81,7 @@ def intent_revision(
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="single-authority-intent.v2",
         model_version="deepseek-v4-flash",
         known_goal_ids=GOAL_IDS,
@@ -109,11 +111,26 @@ class IntentRevisionContractTest(unittest.TestCase):
     def test_paraphrases_keep_material_binding_digest_stable(self):
         first = intent_revision()
         second = intent_revision(
-            original_user_text="请分析2026年6月1日付费金额上升的主要驱动。"
+            original_user_text="请分析2026年6月1日付费金额上升的主要驱动。",
+            business_summary="你希望定位2026年6月1日付费金额上升的主要驱动。",
         )
 
         self.assertNotEqual(first.content_digest, second.content_digest)
         self.assertEqual(first.material_binding_digest, second.material_binding_digest)
+
+    def test_business_summary_is_part_of_the_revision_but_not_plan_materiality(self):
+        first = intent_revision()
+        second = intent_revision(
+            business_summary="你希望解释2026年6月1日付费金额上升的业务原因。"
+        )
+
+        self.assertNotEqual(first.content_digest, second.content_digest)
+        self.assertNotEqual(first.intent_revision_id, second.intent_revision_id)
+        self.assertEqual(first.material_binding_digest, second.material_binding_digest)
+        self.assertEqual(
+            IntentRevision.from_dict(second.to_dict()).business_summary,
+            second.business_summary,
+        )
 
     def test_requested_factor_refs_are_typed_material_intent(self):
         general = intent_revision()
@@ -210,7 +227,8 @@ class IntentRevisionContractTest(unittest.TestCase):
                 provider_output,
                 run_attempt_id="run-attempt-1",
                 original_user_text="2026年6月1日付费金额为什么上涨？",
-                schema_version="intent-revision.v2",
+                business_summary="你希望分析2026年6月1日付费金额上涨的业务驱动。",
+                schema_version="intent-revision.v3",
                 prompt_version="single-authority-intent.v2",
                 model_version="deepseek-v4-flash",
                 known_goal_ids=GOAL_IDS,
@@ -244,7 +262,8 @@ class IntentRevisionContractTest(unittest.TestCase):
                 provider_output,
                 run_attempt_id="run-attempt-1",
                 original_user_text="分析用户 u-00042 的付费金额",
-                schema_version="intent-revision.v2",
+                business_summary="你希望分析指定用户的付费金额。",
+                schema_version="intent-revision.v3",
                 prompt_version="single-authority-intent.v2",
                 model_version="deepseek-v4-flash",
                 known_goal_ids=GOAL_IDS,

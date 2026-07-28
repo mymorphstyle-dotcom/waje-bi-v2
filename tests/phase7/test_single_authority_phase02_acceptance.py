@@ -283,6 +283,7 @@ def test_core_resumes_plan_from_persisted_intent_and_decision_head() -> None:
             "run_attempt_id": intent.run_attempt_id,
             "question": intent.original_user_text,
             "artifact_root": artifact_root,
+            "stop_after_phase": "phase02",
             "analysis_context": {},
             "context_manifest": manifest,
         },
@@ -410,11 +411,13 @@ class _ResumeStore:
         ledger: Any,
         transition: DurableTransition,
         waiting_request: dict[str, Any],
+        progress_request: dict[str, Any] | None = None,
     ) -> None:
         self.intent = intent
         self.ledger = ledger
         self.transition = transition
         self.waiting_request = deepcopy(waiting_request)
+        self.progress_request = deepcopy(progress_request or waiting_request)
         self.run_updates: list[dict[str, Any]] = []
         self.audit_events: list[dict[str, Any]] = []
         self.node_records: list[tuple[Any, ...]] = []
@@ -426,7 +429,7 @@ class _ResumeStore:
             "turn_id": self.waiting_request["turn_id"],
             "topic_id": self.waiting_request["topic_id"],
             "status": "waiting_for_clarification",
-            "request": deepcopy(self.waiting_request),
+            "request": deepcopy(self.progress_request),
         }
 
     def resolve_active_intent_revision(self, run_id: str) -> Any:

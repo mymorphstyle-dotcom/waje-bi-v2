@@ -62,7 +62,15 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
         "再从公式、聚合维度和时间背景定位主要驱动，"
         "并明确证据边界。"
     )
-    assert plan["schema_version"] == "analysis_goal_plan.v3"
+    assert plan["schema_version"] == "analysis_goal_plan.v4"
+    assert plan["merged_goal_refs"] == [
+        "segment_or_factor_attribution",
+        "data_quality_or_evidence_review",
+    ]
+    assert plan["merged_question_family_refs"] == [
+        "segment_or_factor_attribution",
+        "data_quality_or_evidence_review",
+    ]
     assert plan["required_outcomes"] == [
         "direction_and_magnitude",
         "ranked_drivers",
@@ -109,7 +117,6 @@ def test_explain_change_plan_exposes_full_deterministic_axis_universe() -> None:
         "channel",
         "amount_bucket",
         "payment_method",
-        "country",
         "region",
         "city",
         "device_brand",
@@ -329,7 +336,17 @@ def test_compiled_goal_plan_carries_contract_owned_family_and_boundaries() -> No
             explicit_focus=EMPTY_FOCUS,
         )
 
-        assert plan["question_family_refs"] == [question_family_ref]
+        obligation = registry.analysis_goal_obligation(goal_id)
+        expected_merged_families = [
+            registry.analysis_goal_question_family_ref(merged_goal_id)
+            for merged_goal_id in obligation["merged_goal_refs"]
+        ]
+        assert plan["primary_question_family_ref"] == question_family_ref
+        assert plan["merged_question_family_refs"] == expected_merged_families
+        assert plan["question_family_refs"] == [
+            question_family_ref,
+            *expected_merged_families,
+        ]
         goal_claim_kinds = {
             claim_kind
             for claim_types in registry.analysis_goal_obligation(goal_id)[
@@ -504,7 +521,6 @@ def test_explicit_focus_upgrades_matching_axes_without_narrowing_universe() -> N
         "channel",
         "amount_bucket",
         "payment_method",
-        "country",
         "region",
         "city",
         "device_brand",
@@ -534,6 +550,33 @@ def test_registry_rejects_nonaggregate_automatic_dimension() -> None:
     with pytest.raises(
         ValueError,
         match="runtime_dimension_automatic_screening_contract_invalid:region",
+    ):
+        RuntimeContractRegistry(payload)
+
+
+def test_registry_keeps_country_as_a_quality_checked_scope_invariant() -> None:
+    registry = RuntimeContractRegistry.from_path(CANONICAL_RUNTIME_BINDINGS_PATH)
+
+    country = registry.dimension("country")
+    assert country["decision_use"] == "scope_invariant"
+    assert country["automatic_screening"] == "blocked"
+    assert country["scope_invariant"] == {
+        "canonical_value": "Nigeria",
+        "accepted_source_values": ["Nigeria", "NG"],
+        "data_quality_policy": "required",
+    }
+    assert "country" not in registry.analysis_axis("dimension_localization")[
+        "dimension_refs"
+    ]
+
+
+def test_registry_rejects_a_scope_invariant_exposed_as_a_business_candidate() -> None:
+    payload = _payload()
+    payload["dimensions"]["country"]["automatic_screening"] = "allowed"
+
+    with pytest.raises(
+        ValueError,
+        match="runtime_dimension_scope_invariant_invalid:country",
     ):
         RuntimeContractRegistry(payload)
 

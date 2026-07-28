@@ -320,6 +320,7 @@ class ToolSelectionGenerator(Protocol):
         *,
         user_message: str,
         tool_catalog: Sequence[Mapping[str, Any]],
+        tool_input_models: Mapping[str, type[BaseModel]] | None = None,
         permission_scope: Mapping[str, Any],
         action_context: Mapping[str, Any],
     ) -> DynamicToolSelectionOutput: ...
@@ -340,39 +341,72 @@ class WajeToolSelectionGenerator:
         *,
         user_message: str,
         tool_catalog: Sequence[Mapping[str, Any]],
+        tool_input_models: Mapping[str, type[BaseModel]] | None = None,
         permission_scope: Mapping[str, Any],
         action_context: Mapping[str, Any] | None = None,
     ) -> DynamicToolSelectionOutput:
-        payload = {
+        base_payload = {
             "userMessage": user_message,
             "optionalToolCatalog": [dict(item) for item in tool_catalog],
             "permissionScope": canonical_value(permission_scope),
             "conversationContext": canonical_value(action_context or {}),
         }
-        input_digest = canonical_digest(payload)
-        result = await self._adapter.run(
-            WajeAgentRunRequest(
-                run_id=f"tool-selection-run-{input_digest[:24]}",
-                agent_name="WAJE Dynamic Tool Discovery",
-                instructions=TOOL_DISCOVERY_INSTRUCTIONS,
-                input_text=json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-                output_type=DynamicToolSelectionOutput,
-                max_turns=1,
-                thinking_mode="disabled",
-                trace_metadata={
-                    **self._trace_metadata,
-                    "waje_tool_catalog_digest": canonical_digest(tool_catalog),
-                    "waje_tool_selection_input_digest": input_digest,
-                },
+        input_digest = canonical_digest(base_payload)
+        validation_feedback: Mapping[str, Any] | None = None
+        maximum_attempts = 3 if tool_input_models is not None else 1
+        last_error: AgentToolDiscoveryError | None = None
+        for attempt_number in range(1, maximum_attempts + 1):
+            payload = dict(base_payload)
+            if validation_feedback is not None:
+                payload["bindingValidation"] = validation_feedback
+            result = await self._adapter.run(
+                WajeAgentRunRequest(
+                    run_id=(
+                        f"tool-selection-run-{input_digest[:24]}"
+                        f"-attempt-{attempt_number}"
+                    ),
+                    agent_name="WAJE Dynamic Tool Discovery",
+                    instructions=TOOL_DISCOVERY_INSTRUCTIONS,
+                    input_text=json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    output_type=DynamicToolSelectionOutput,
+                    max_turns=1,
+                    thinking_mode="disabled",
+                    trace_metadata={
+                        **self._trace_metadata,
+                        "waje_tool_catalog_digest": canonical_digest(tool_catalog),
+                        "waje_tool_selection_input_digest": input_digest,
+                        "waje_tool_selection_attempt_number": attempt_number,
+                    },
+                )
             )
+            output = DynamicToolSelectionOutput.model_validate(result.final_output)
+            if tool_input_models is None:
+                return output
+            try:
+                _validate_provider_selection_binding(
+                    output,
+                    tool_input_models=tool_input_models,
+                )
+            except AgentToolDiscoveryError as exc:
+                last_error = exc
+                validation_feedback = {
+                    "status": "retry_required",
+                    "failureCode": exc.code,
+                    "instruction": (
+                        "Return a corrected action binding whose selected tool and "
+                        "requiredToolArgumentsJson satisfy the supplied catalog."
+                    ),
+                }
+                continue
+            return output
+        raise last_error or AgentToolDiscoveryError(
+            "agent_tool_selection_validation_failed"
         )
-        output = DynamicToolSelectionOutput.model_validate(result.final_output)
-        return output
 
 
 @dataclass(frozen=True)
@@ -419,6 +453,11 @@ class DynamicAgentToolResolver:
         output = await self._generator.select(
             user_message=user_message,
             tool_catalog=optional_catalog,
+            tool_input_models={
+                name: tool.input_model
+                for name, tool in by_name.items()
+                if name not in self._mandatory_tool_names
+            },
             permission_scope=permission_scope,
             action_context=action_context or {},
         )
@@ -620,6 +659,32 @@ def _validated_required_tool_arguments(
     if not isinstance(normalized, dict):
         raise AgentToolDiscoveryError("agent_required_action_arguments_invalid")
     return normalized
+
+
+def _validate_provider_selection_binding(
+    output: DynamicToolSelectionOutput,
+    *,
+    tool_input_models: Mapping[str, type[BaseModel]],
+) -> None:
+    known = set(tool_input_models)
+    if not set(output.selected_tools).issubset(known):
+        raise AgentToolDiscoveryError("agent_tool_selection_unknown")
+    if output.initial_action != "call_tool":
+        return
+    name = output.required_tool_name
+    if name is None or name not in tool_input_models:
+        raise AgentToolDiscoveryError("agent_action_required_tool_unselected")
+    raw_arguments = _decode_required_tool_arguments(
+        output.required_tool_arguments_json
+    )
+    if raw_arguments is None:
+        raise AgentToolDiscoveryError("agent_required_action_arguments_missing")
+    try:
+        tool_input_models[name].model_validate(dict(raw_arguments))
+    except Exception as exc:
+        raise AgentToolDiscoveryError(
+            "agent_required_action_arguments_invalid"
+        ) from exc
 
 
 def _decode_required_tool_arguments(

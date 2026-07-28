@@ -112,6 +112,7 @@ _INTENT_FIELDS = (
     "run_attempt_id",
     "supersedes_intent_revision_id",
     "original_user_text",
+    "business_summary",
     "goal_bindings",
     "target_metric_refs",
     "scope",
@@ -258,6 +259,7 @@ class IntentRevision:
     run_attempt_id: str
     supersedes_intent_revision_id: str | None
     original_user_text: str
+    business_summary: str
     goal_bindings: tuple[Mapping[str, Any], ...]
     target_metric_refs: tuple[str, ...]
     scope: Mapping[str, Any]
@@ -281,6 +283,7 @@ class IntentRevision:
         run_attempt_id: str,
         supersedes_intent_revision_id: str | None = None,
         original_user_text: str,
+        business_summary: str,
         goal_bindings: Sequence[Mapping[str, Any]],
         target_metric_refs: Sequence[str],
         scope: Mapping[str, Any],
@@ -316,31 +319,24 @@ class IntentRevision:
         original_user_text = _nonempty_string(
             original_user_text, "intent_revision_original_user_text_invalid"
         )
+        business_summary = _nonempty_string(
+            business_summary, "intent_revision_business_summary_invalid"
+        )
         raw_goals = _mapping_sequence(
             goal_bindings, "intent_revision_goal_bindings_invalid"
         )
-        if not raw_goals:
+        if len(raw_goals) != 1:
             raise SingleAuthorityContractError("intent_revision_goal_bindings_invalid")
-        normalized_goals: list[Mapping[str, Any]] = []
-        for binding in raw_goals:
-            if set(binding) != {"goal_id", "role"}:
-                raise SingleAuthorityContractError(
-                    "intent_revision_goal_bindings_invalid"
-                )
-            _nonempty_string(
-                binding.get("goal_id"), "intent_revision_goal_bindings_invalid"
-            )
-            if binding.get("role") not in {"primary", "supporting"}:
-                raise SingleAuthorityContractError(
-                    "intent_revision_goal_bindings_invalid"
-                )
-            normalized_goals.append(_freeze(binding))
-        if sum(
-            binding["role"] == "primary" for binding in normalized_goals
-        ) != 1 or len({binding["goal_id"] for binding in normalized_goals}) != len(
-            normalized_goals
+        binding = raw_goals[0]
+        if (
+            set(binding) != {"goal_id", "role"}
+            or binding.get("role") != "primary"
         ):
             raise SingleAuthorityContractError("intent_revision_goal_bindings_invalid")
+        _nonempty_string(
+            binding.get("goal_id"), "intent_revision_goal_bindings_invalid"
+        )
+        normalized_goals = [_freeze(binding)]
         _validate_catalog_refs(
             (str(binding["goal_id"]) for binding in normalized_goals),
             known_goal_ids,
@@ -553,6 +549,7 @@ class IntentRevision:
             "run_attempt_id": run_attempt_id,
             "supersedes_intent_revision_id": supersedes_intent_revision_id,
             "original_user_text": original_user_text,
+            "business_summary": business_summary,
             "goal_bindings": normalized_goals,
             "target_metric_refs": target_metric_refs,
             "scope": normalized_scope,
@@ -594,6 +591,7 @@ class IntentRevision:
         *,
         run_attempt_id: str,
         original_user_text: str,
+        business_summary: str,
         schema_version: str,
         prompt_version: str,
         model_version: str,
@@ -614,6 +612,7 @@ class IntentRevision:
             run_attempt_id=run_attempt_id,
             supersedes_intent_revision_id=supersedes_intent_revision_id,
             original_user_text=original_user_text,
+            business_summary=business_summary,
             schema_version=schema_version,
             prompt_version=prompt_version,
             model_version=model_version,

@@ -1,0 +1,38 @@
+name: waje-bi
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine@sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5
+    container_name: waje-bi-clickhouse
+    restart: unless-stopped
+    stop_grace_period: 2m
+    cpus: "${WAJE_CLICKHOUSE_CPUS:-12}"
+    mem_limit: "${WAJE_CLICKHOUSE_MEMORY_LIMIT:-18g}"
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    volumes:
+      - type: volume
+        source: clickhouse-data
+        target: /var/lib/clickhouse
+      - type: bind
+        source: ./ops/clickhouse/config.d/90-waje-development.xml
+        target: /etc/clickhouse-server/config.d/90-waje-development.xml
+        read_only: true
+      - type: bind
+        source: ./ops/clickhouse/users.d/90-waje-development.xml
+        target: /etc/clickhouse-server/users.d/90-waje-development.xml
+        read_only: true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - clickhouse-client --query "SELECT 1" >/dev/null 2>&1 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+volumes:
+  clickhouse-data:
+    name: waje-bi-clickhouse-data-v3
+    external: true

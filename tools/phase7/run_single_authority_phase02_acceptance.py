@@ -64,6 +64,9 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     start = subparsers.add_parser("case-b-start")
     start.add_argument("--artifact-root", type=Path, default=DEFAULT_ROOT)
+    plan_once = subparsers.add_parser("plan-once")
+    plan_once.add_argument("--question", required=True)
+    plan_once.add_argument("--artifact-root", type=Path, default=DEFAULT_ROOT)
     plan = subparsers.add_parser("case-b-plan")
     plan.add_argument("--artifact-directory", type=Path, required=True)
     plan.add_argument("--option-id", required=True)
@@ -74,6 +77,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "case-b-start":
         return run_case_b_start(args.artifact_root)
+    if args.command == "plan-once":
+        return run_plan_once(args.question, args.artifact_root)
     if args.command == "case-b-plan":
         return run_case_b_plan(
             args.artifact_directory,
@@ -82,6 +87,41 @@ def main() -> int:
     if args.command == "reassess-start":
         return reassess_case_b_start(args.artifact_directory)
     return reassess_case_b_plan(args.artifact_directory)
+
+
+def run_plan_once(question: str, artifact_root: Path) -> int:
+    if not question.strip() or question != question.strip():
+        raise ValueError("plan_once_question_invalid")
+    acceptance_id = _acceptance_id("plan-once")
+    output_dir = _new_directory(artifact_root / acceptance_id)
+    core = ConversationAgentCore.from_environment()
+    run_id = f"phase02-live-plan-{uuid4().hex}"
+    thread_id = f"phase02-live-plan-thread-{uuid4().hex}"
+    try:
+        core.store.create_thread(thread_id, owner_id=OWNER_ID)
+        result = core.run_message(
+            thread_id=thread_id,
+            run_id=run_id,
+            user_message=question,
+            user_id=OWNER_ID,
+            artifact_root=str(output_dir),
+            stop_after_phase="phase02",
+        )
+        record = {
+            "schema_version": "single-authority-phase02-plan-once.v1",
+            "acceptance_id": acceptance_id,
+            "question": question,
+            "owner_id": OWNER_ID,
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "result": result,
+            "artifact_directory": str(output_dir.resolve()),
+        }
+        _write_new_json(output_dir / "plan-once.json", record)
+        print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        return 0 if result.get("status") == "planned" else 7
+    finally:
+        core.store.connection.close()
 
 
 def run_case_b_start(artifact_root: Path) -> int:
@@ -184,7 +224,7 @@ def run_case_b_plan(
                 "resolutionId": (f"phase02-acceptance:{run_id}:{option_id}"),
                 "attemptRunId": run_id,
                 "answer": answer,
-                "selectedOptionId": option_id,
+                "selectedOptionIds": [option_id],
                 "source": "user",
                 "retryAttempt": False,
             },

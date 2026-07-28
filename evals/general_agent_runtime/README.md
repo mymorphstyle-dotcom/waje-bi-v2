@@ -152,6 +152,35 @@ unset OPENAI_API_KEY
   --validate-only
 ```
 
+## P9 Case B 受控多 Agent 包
+
+P9 包含 1 个真实 Case B 多轮 case 和 9 个 deterministic case，覆盖 accepted axis/source
+admission、无损列式材料、Provider 读取预算、父子 identity、租约恢复、重复 dispatch、子失败
+隔离、子调查 narrative delta 单次落位、唯一 publication、DeepSeek 出站及
+Workbench/客户投影隔离。
+
+```bash
+unset OPENAI_API_KEY
+.venv/bin/python -m evals.general_agent_runtime.run_local \
+  --cases evals/general_agent_runtime/p9-cases.jsonl \
+  --profile smoke \
+  --validate-only
+```
+
+```bash
+unset OPENAI_API_KEY
+.venv/bin/python -m evals.general_agent_runtime.run_local \
+  --cases evals/general_agent_runtime/p9-cases.jsonl \
+  --profile smoke \
+  --adapter pytest \
+  --output evals/general_agent_runtime/results/p9-latest-deterministic.json
+```
+
+真实首答继续使用 480 秒验收上限；该上限不代表性能目标，也不能替代 stage、Provider attempt
+和恢复事件的原因分析。两轮已发布材料追问各使用 20 秒合同和最多一次只读 artifact 工具。
+人工评估机制、抵消项、结构集中、交叉信号、竞争解释和行动优先级，只影响后续功能发布判断，
+不改变已经形成的 publication 或 delivery。
+
 ## 执行浏览器 case
 
 ```bash

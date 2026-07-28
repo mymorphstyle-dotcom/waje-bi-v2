@@ -37,8 +37,10 @@ PRODUCTION_INVENTORY_ROOTS = (
     "bi_agent/conversation",
     "bi_agent/runtime",
     "contracts",
+    "ops",
     "tools",
 )
+PRODUCTION_INVENTORY_FILES = ("compose.clickhouse.yaml",)
 INVENTORY_EXCLUDED_PATHS = frozenset(
     {
         "bi_agent/runtime/release_manifest.json",
@@ -186,6 +188,14 @@ def _production_inventory(*, root: Path) -> frozenset[str]:
             relative = candidate.relative_to(root).as_posix()
             if relative not in INVENTORY_EXCLUDED_PATHS:
                 inventory.add(relative)
+    for raw_path in PRODUCTION_INVENTORY_FILES:
+        candidate = root / raw_path
+        if (
+            candidate.is_file()
+            and not _is_generated_path(candidate, root=root)
+            and raw_path not in INVENTORY_EXCLUDED_PATHS
+        ):
+            inventory.add(raw_path)
     return frozenset(inventory)
 
 

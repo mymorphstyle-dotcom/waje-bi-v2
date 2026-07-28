@@ -350,7 +350,7 @@ def _event_authority_context(registry):
         rows_content_hash="e" * 64,
         snapshot_id="external-events-authority-e2e",
         source_load_manifest_ref="load-manifest:event:authority-e2e",
-        runtime_binding_ref="contracts/runtime/clickhouse-analysis-bindings.yaml@20",
+        runtime_binding_ref="contracts/runtime/clickhouse-analysis-bindings.yaml@23",
         source_checksums=(("events.xlsx", "f" * 64),),
         row_count=1,
         date_range=("2026-05-01", "2026-06-08"),

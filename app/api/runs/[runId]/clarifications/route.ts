@@ -44,40 +44,42 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (
       Object.keys(body).length !== 3
       || !Object.prototype.hasOwnProperty.call(body, "answer")
-      || !Object.prototype.hasOwnProperty.call(body, "selectedOptionId")
+      || !Object.prototype.hasOwnProperty.call(body, "selectedOptionIds")
       || !Object.prototype.hasOwnProperty.call(body, "requestIdentity")
     ) throw gatewayError("clarification_request_invalid");
     const rawAnswer = body.answer;
     if (typeof rawAnswer !== "string" || !rawAnswer.trim()) {
       throw gatewayError("clarification_answer_required");
     }
-    const rawSelectedOptionId = body.selectedOptionId;
+    const rawSelectedOptionIds = body.selectedOptionIds;
     if (
-      rawSelectedOptionId !== undefined
-      && rawSelectedOptionId !== null
-      && (
-        typeof rawSelectedOptionId !== "string"
-        || !rawSelectedOptionId.trim()
+      !Array.isArray(rawSelectedOptionIds)
+      || rawSelectedOptionIds.some((optionId) =>
+        typeof optionId !== "string" || !optionId.trim()
       )
+      || new Set(rawSelectedOptionIds).size !== rawSelectedOptionIds.length
     ) throw gatewayError("clarification_selected_option_invalid");
     const answer = rawAnswer.trim();
     requireCustomerMessageBudget(answer);
-    const selectedOptionId = typeof rawSelectedOptionId === "string"
-      ? rawSelectedOptionId.trim()
-      : null;
+    const selectedOptionIds = rawSelectedOptionIds.map((optionId) =>
+      (optionId as string).trim()
+    );
     const requestIdentity = runDispatchRequestIdentity(request, body);
     const clarification = {
       sourceRunId: runId,
       resolutionId: `single-authority:${requestIdentity}`,
       attemptRunId: runId,
       answer,
-      selectedOptionId,
+      selectedOptionIds,
       source: "user" as const,
       retryAttempt: false,
     };
     const run = await withCustomerActorScope(actorId, () =>
       requireRun(runId, actorId!)
     );
+    if (!run.request) {
+      throw gatewayError("clarification_resume_request_missing");
+    }
     const claim = await claimRunDispatchRequest({
       producerKind: "clarification_resolution",
       scopeRef: runId,
@@ -89,6 +91,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       requestPayload: {
         message: answer,
         clarification,
+        resumeRequest: run.request,
       },
     });
     const dispatch = await acquireRunDispatchLease({

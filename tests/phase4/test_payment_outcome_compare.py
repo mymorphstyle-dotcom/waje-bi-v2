@@ -103,6 +103,9 @@ def test_payment_outcome_compare_keeps_final_status_boundary() -> None:
     summary = evidence.typed_payload["dimension_summaries"][0]
     assert summary["selection_policy"] == "largest_target_terminal_order_volume"
     assert summary["representative_member"] == "OPAY"
+    claim_summary = evidence.typed_payload["claim_material_observations"][0]
+    assert claim_summary["projection_kind"] == "claim_material_summary"
+    assert "profiles" not in claim_summary
     assert evidence.typed_payload["interpretation_contract"][
         "process_inference_allowed"
     ] is False

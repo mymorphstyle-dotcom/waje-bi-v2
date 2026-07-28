@@ -187,6 +187,7 @@ def _bound(
     expected_gap: ExpectedCapabilityGap | None = None,
     maximum_claim_strength: str = "descriptive",
     supported_evidence_types: tuple[str, ...] | None = None,
+    supported_claim_types: tuple[str, ...] | None = None,
 ) -> TaskScopedCapabilityInput:
     task = plan.capability_tasks[task_index]
     return TaskScopedCapabilityInput.create(
@@ -207,6 +208,18 @@ def _bound(
                 "bound_capability_input": SimpleNamespace(
                     maximum_claim_strength=maximum_claim_strength,
                     supported_evidence_types=supported_evidence_types,
+                    supported_claim_types=(
+                        supported_claim_types
+                        if supported_claim_types is not None
+                        else tuple(
+                            dict.fromkeys(
+                                obligation.claim_kind
+                                for obligation in plan.claim_obligations
+                                if obligation.obligation_id
+                                in set(task.supports_obligation_ids)
+                            )
+                        )
+                    ),
                 )
             }
             if supported_evidence_types is not None
@@ -296,6 +309,184 @@ def test_builtin_registry_covers_every_capability_in_the_active_case_b_plan() ->
     plan = _plan(CASE_B_CAPABILITY_IDS, seed="case-b")
 
     builtin_capability_adapter_registry().validate_plan(plan)
+
+
+def test_joint_attribution_adapter_consumes_each_dynamic_query_at_its_own_grain() -> None:
+    plan = _plan(("joint_attribution",), seed="joint-query-groups")
+    task = plan.capability_tasks[0]
+    analyses = (
+        {
+            "query_contract_ref": "query:joint:channel-region",
+            "dimension_keys": ("channel", "region"),
+            "rows": (
+                {
+                    "channel": "organic",
+                    "region": "lagos",
+                    "window_role": "target",
+                    "paid_amount": 140.0,
+                    "paid_orders": 20,
+                },
+                {
+                    "channel": "organic",
+                    "region": "lagos",
+                    "window_role": "baseline",
+                    "paid_amount": 100.0,
+                    "paid_orders": 20,
+                },
+            ),
+        },
+        {
+            "query_contract_ref": "query:joint:payment-device",
+            "dimension_keys": ("payment_method", "device_brand"),
+            "rows": (
+                {
+                    "payment_method": "opay",
+                    "device_brand": "tecno",
+                    "window_role": "target",
+                    "paid_amount": 80.0,
+                    "paid_orders": 20,
+                },
+                {
+                    "payment_method": "opay",
+                    "device_brand": "tecno",
+                    "window_role": "baseline",
+                    "paid_amount": 100.0,
+                    "paid_orders": 20,
+                },
+            ),
+        },
+    )
+    scoped = _bound(
+        plan,
+        payload={
+            "analyses": analyses,
+            "group_key": "window_role",
+            "target_group": "target",
+            "baseline_group": "baseline",
+            "amount_key": "paid_amount",
+            "residual": 0.0,
+            "fit": 1.0,
+            "force_run": True,
+            "missing_group_policy": "additive_zero",
+        },
+        maximum_claim_strength="candidate_driver",
+        supported_evidence_types=("accounting_contribution",),
+        supported_claim_types=("formula_component_contribution",),
+    )
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(scoped),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    assert output.output_payload["evidence_type"] == "accounting_contribution"
+    typed_payload = output.output_payload["typed_payload"]
+    assert typed_payload["analysis_count"] == 2
+    assert typed_payload["supported_analysis_count"] == 2
+    assert tuple(
+        item["dimension_keys"] for item in typed_payload["analyses"]
+    ) == (
+        ("channel", "region"),
+        ("payment_method", "device_brand"),
+    )
+
+
+def test_market_health_adapter_publishes_every_bound_metric_comparison() -> None:
+    plan = _plan(("market_health_compare",), seed="market-health")
+    task = plan.capability_tasks[0]
+    base_contract = _event_metric_contract(plan)
+    metric_ids = (
+        "active_users",
+        "new_users",
+        "registrations",
+        "aggregate_marketing_cost",
+        "profit",
+    )
+    market_metrics = tuple(
+        MetricBinding(
+            metric_id=metric_id,
+            contract_ref=f"contract:market:{metric_id}",
+            dataset_id="market_dashboard",
+            expression=f"sum({metric_id})",
+            aggregation="sum",
+            required_fields=(metric_id,),
+            grain=("window_id",),
+            claim_types=("comparative_change",),
+        )
+        for metric_id in metric_ids
+    )
+    market_contract = replace(
+        base_contract,
+        metric_bindings=market_metrics,
+        result_shape=replace(
+            base_contract.result_shape,
+            required_fields=(
+                "window_id",
+                "window_role",
+                "observation_key",
+                *metric_ids,
+            ),
+        ),
+        contract_signature="",
+    )
+    market_contract = replace(
+        market_contract,
+        contract_signature=query_contract_signature(market_contract),
+    )
+    rows = tuple(
+        {
+            "window_id": window.window_id,
+            "window_role": window.role,
+            "observation_key": window.start_inclusive,
+            **{
+                metric_id: float(
+                    (metric_index + 1) * (10 if window.role == "target" else 5)
+                )
+                for metric_index, metric_id in enumerate(metric_ids)
+            },
+        }
+        for window in market_contract.resolved_windows
+    )
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(
+            _bound(
+                plan,
+                payload={
+                    "contract": market_contract,
+                    "rows": rows,
+                    "metric_ids": metric_ids,
+                    "primary_baseline_window_id": next(
+                        window.window_id
+                        for window in market_contract.resolved_windows
+                        if window.role == "baseline"
+                    ),
+                },
+                maximum_claim_strength="directional",
+                supported_evidence_types=("observed_comparison",),
+                supported_claim_types=("comparative_change",),
+            )
+        ),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    typed_payload = output.output_payload["typed_payload"]
+    assert typed_payload["metric_ids"] == metric_ids
+    assert tuple(
+        item["metric"] for item in typed_payload["comparisons"]
+    ) == metric_ids
+    assert set(output.output_payload["numeric_facts"]) == {
+        key
+        for metric_id in metric_ids
+        for key in (
+            f"{metric_id}_target_value",
+            f"{metric_id}_baseline_value",
+        )
+    }
 
 
 def test_registry_rejects_duplicate_fixed_capability_mappings() -> None:
@@ -706,6 +897,94 @@ def test_remaining_phase3_primitives_settle_through_builtin_adapters(
     assert output.evidence[0].maximum_claim_strength == claim_ceiling
     assert output.evidence[0].evidence_strength == output.output_payload["strength"]
     assert output.evidence[0].result_refs == (f"result:{task.task_id}",)
+    if capability_id == "source_reconciliation":
+        observation = next(
+            item
+            for item in output.evidence[0].observation_facts
+            if item.get("projection_kind") == "claim_material_summary"
+        )
+        assert observation["projection_kind"] == "claim_material_summary"
+        assert "observation_reconciliations" not in observation
+
+
+def test_source_reconciliation_keeps_full_output_behind_bounded_claim_summary() -> None:
+    capability_id = "source_reconciliation"
+    rows = tuple(
+        {
+            "window_id": "target",
+            "window_role": "target",
+            "observation_key": f"2024-01-01:{index:04d}",
+            "paid_amount": 100_000 + index,
+        }
+        for index in range(900)
+    )
+    payload = {
+        "sources": (
+            {
+                "source_id": "market_dashboard",
+                "result_ref": "result:overall",
+                "metric_contract_ref": "contract:paid-amount",
+                "reconciliation_tolerance": 0.01,
+                "reconciliation_strategy": "additive_sum",
+                "rows": rows,
+            },
+            {
+                "source_id": "market_dashboard_channel",
+                "result_ref": "result:channel",
+                "metric_contract_ref": "contract:paid-amount",
+                "reconciliation_tolerance": 0.01,
+                "reconciliation_strategy": "additive_sum",
+                "rows": rows,
+            },
+        ),
+        "join_keys": ("window_id", "observation_key"),
+        "value_key": "paid_amount",
+        "reconciliation_tolerance": 0.01,
+        "reconciliation_strategy": "additive_sum",
+        "reconciliation_policy": {
+            "contract_id": "bounded-window-source-reconciliation.v1",
+            "authoritative_source_id": "market_dashboard",
+            "partition_source_id": "market_dashboard_channel",
+            "window_id_key": "window_id",
+            "window_role_key": "window_role",
+            "bounded_window_relative_tolerance": 0.002,
+            "bounded_change_residual_share": 0.01,
+            "hard_observation_relative_limit": 0.01,
+        },
+    }
+    plan = _plan((capability_id,), seed="bounded-source-reconciliation")
+    task = plan.capability_tasks[0]
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(
+            _bound(
+                plan,
+                payload=payload,
+                maximum_claim_strength="quantified_contribution",
+            )
+        ),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    assert len(
+        output.output_payload["typed_payload"]["observation_reconciliations"]
+    ) == 900
+    observation = next(
+        item
+        for item in output.evidence[0].observation_facts
+        if item.get("projection_kind") == "claim_material_summary"
+    )
+    assert observation["observation_count"] == 900
+    assert "observation_reconciliations" not in observation
+    encoded = json.dumps(
+        canonical_value(output.evidence[0].observation_facts),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert len(encoded) <= CAPABILITY_EVIDENCE_OBSERVATION_BYTE_LIMIT
 
 
 @pytest.mark.parametrize(
@@ -850,6 +1129,8 @@ def test_candidate_context_keeps_primitive_claim_strength() -> None:
                     "events": ({"event_id": "event:campaign", "event_count": 1},),
                 },
                 maximum_claim_strength="candidate_mechanism",
+                supported_evidence_types=("candidate_mechanism",),
+                supported_claim_types=("candidate_mechanism",),
             )
         ),
     )
@@ -861,6 +1142,119 @@ def test_candidate_context_keeps_primitive_claim_strength() -> None:
     assert output.evidence[0].evidence_kind == "observed"
     assert output.evidence[0].evidence_strength == "low"
     assert output.evidence[0].maximum_claim_strength == "candidate_mechanism"
+    assert output.evidence[0].supported_claim_kinds == ("candidate_mechanism",)
+
+
+def test_exploration_ready_insufficient_output_continues_without_claim_support() -> None:
+    plan = _plan(("candidate_dimension_screen",), seed="continuation-ready")
+    task = plan.capability_tasks[0]
+    payload = {
+        "rows_by_dimension": {
+            "region": (
+                {
+                    "region": "A",
+                    "group": "baseline",
+                    "amount": 50,
+                    "paid_orders": 10,
+                    "paid_users": 10,
+                    "n": 20,
+                },
+                {
+                    "region": "A",
+                    "group": "target",
+                    "amount": 60,
+                    "paid_orders": 12,
+                    "paid_users": 10,
+                    "n": 20,
+                },
+                {
+                    "region": "B",
+                    "group": "baseline",
+                    "amount": 50,
+                    "paid_orders": 10,
+                    "paid_users": 10,
+                    "n": 20,
+                },
+                {
+                    "region": "B",
+                    "group": "target",
+                    "amount": 60,
+                    "paid_orders": 12,
+                    "paid_users": 10,
+                    "n": 20,
+                },
+            ),
+        },
+        "overall_by_group": {"baseline": 100, "target": 120},
+        "complete_dimensions": ("region",),
+    }
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(_bound(plan, payload=payload)),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    assert output.output_payload["evidence_type"] == "insufficient_evidence"
+    assert len(output.evidence) == 1
+    assert output.evidence[0].evidence_kind == "boundary"
+    assert output.evidence[0].supported_claim_kinds == ()
+    assert "public_claim_support_unavailable" in output.limitation_refs
+
+
+def test_event_evidence_keeps_large_match_set_behind_bounded_claim_summary() -> None:
+    plan = _plan(("event_evidence",), seed="bounded-event-evidence")
+    task = plan.capability_tasks[0]
+    events = tuple(
+        {
+            "event_id": f"event:campaign:{index:04d}",
+            "event_count": 1,
+            "source_family": "external_event",
+            "window_role": "target",
+            "event_type": "campaign",
+            "event_start_date": "2024-01-01",
+            "event_end_date": "2024-01-02",
+            "affected_scope": "Nigeria",
+            "authority": "reviewed_source",
+            "evidence_level": "context",
+            "wording_limit": "context",
+            "payload": json.dumps(
+                {"description": "campaign context " + ("x" * 200)}
+            ),
+        }
+        for index in range(500)
+    )
+    execute = builtin_capability_adapter_registry().bind(
+        plan,
+        _runtime(
+            _bound(
+                plan,
+                payload={"events": events},
+                maximum_claim_strength="candidate_mechanism",
+            )
+        ),
+    )
+
+    output = execute(task, CapabilityAttempt.create(plan, task))
+
+    assert output.status == "succeeded"
+    assert len(output.output_payload["typed_payload"]["event_summary"]) == 500
+    observation = next(
+        item
+        for item in output.evidence[0].observation_facts
+        if item.get("projection_kind") == "claim_material_summary"
+    )
+    assert observation["event_count"] == 500
+    assert observation["displayed_event_count"] == 20
+    assert observation["omitted_event_count"] == 480
+    encoded = json.dumps(
+        canonical_value(output.evidence[0].observation_facts),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert len(encoded) <= CAPABILITY_EVIDENCE_OBSERVATION_BYTE_LIMIT
 
 
 def test_event_evidence_binds_presence_to_frozen_event_identity() -> None:
@@ -958,12 +1352,19 @@ def test_event_window_comparison_uses_business_metric_and_non_causal_identity() 
         "interpretation_contract": output.output_payload["typed_payload"][
             "metric_comparison"
         ]["interpretation_contract"],
+        "claim_material_observations": output.output_payload["typed_payload"][
+            "claim_material_observations"
+        ],
         "causal_interpretation_allowed": False,
     }
     assert output.evidence[0].evidence_kind == "observed"
     assert output.evidence[0].maximum_claim_strength == "directional"
     assert any(
         fact.get("evidence_contract") == "event-window-metric-comparison.v1"
+        for fact in output.evidence[0].observation_facts
+    )
+    assert any(
+        fact.get("projection_kind") == "claim_material_summary"
         for fact in output.evidence[0].observation_facts
     )
     assert output.output_payload["typed_payload"]["interpretation_contract"] == {

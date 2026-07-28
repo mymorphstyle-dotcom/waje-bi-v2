@@ -69,6 +69,7 @@ def _revision(
         run_attempt_id=run_id,
         supersedes_intent_revision_id=supersedes,
         original_user_text=QUESTION,
+        business_summary="你希望分析2026年6月1日全量样本付费金额上涨及其主要驱动。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -111,7 +112,7 @@ def _revision(
                 "text": date_text,
             },
         ),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version="single-authority.phase01.test.v1",
         model_version="deterministic-contract-record",
         known_goal_ids={"explain_change"},
@@ -204,6 +205,21 @@ class SingleAuthorityPostgresIntegrationTest(unittest.TestCase):
         suffix = uuid4().hex
         self.thread_id = f"phase01-contract-thread-{suffix}"
         self.store.create_thread(self.thread_id, owner_id="phase01-contract-user")
+
+    def test_accepted_intent_projects_its_business_summary_into_the_run(self):
+        run_id = f"phase01-contract-run-{uuid4().hex}"
+        revision, _ = self._accepted_revision(run_id)
+
+        run_state = self.store.get_run_state(run_id)
+        request = run_state["request"]
+        self.assertEqual(
+            request["business_understanding"],
+            revision.business_summary,
+        )
+        self.assertEqual(
+            request["business_understanding_intent_revision_id"],
+            revision.intent_revision_id,
+        )
 
     def test_waiting_transition_is_atomic_and_replayable(self):
         run_id = f"phase01-contract-run-{uuid4().hex}"

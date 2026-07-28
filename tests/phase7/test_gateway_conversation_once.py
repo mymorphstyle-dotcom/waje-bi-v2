@@ -237,7 +237,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
                     "http://gateway.test",
                     "/api/runs/run-one/clarifications",
                     method="POST",
-                    payload={"answer": "one", "selectedOptionId": None},
+                    payload={"answer": "one", "selectedOptionIds": []},
                     user_id="user-test",
                     expected_status=202,
                 )
@@ -670,7 +670,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
             request.call_args.kwargs["payload"],
             {
                 "answer": "baseline.previous_quarter",
-                "selectedOptionId": "baseline.previous_quarter",
+                "selectedOptionIds": ["baseline.previous_quarter"],
                 "requestIdentity": "clarification-cli",
             },
         )
@@ -723,7 +723,7 @@ class GatewayConversationOnceTest(unittest.TestCase):
             request.call_args.kwargs["payload"],
             {
                 "answer": "请改用活动上线前七天",
-                "selectedOptionId": None,
+                "selectedOptionIds": [],
                 "requestIdentity": "clarification-free-text-one",
             },
         )

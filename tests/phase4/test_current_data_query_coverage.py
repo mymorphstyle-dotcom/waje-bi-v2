@@ -141,6 +141,11 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             for dataset_id in registry.metric_sources(metric_id)
             for dimension_id in registry.dimension_ids
             if dataset_id in registry.dimension_sources(dimension_id)
+            and registry.dimension(
+                dimension_id,
+                dataset_id=dataset_id,
+            ).get("decision_use", "business_candidate")
+            == "business_candidate"
         }
         covered_cells = {
             (metric_id, dataset_id, dimension_id)
@@ -156,6 +161,11 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             dimension_id
             for dimension_id in registry.dimension_ids
             if "paid_order_success" in registry.dimension_sources(dimension_id)
+            and registry.dimension(
+                dimension_id,
+                dataset_id="paid_order_success",
+            ).get("decision_use", "business_candidate")
+            == "business_candidate"
         }
         paid_independent = {
             frozenset(case.dimension_ids)
@@ -178,15 +188,11 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             {frozenset((dimension_id,)) for dimension_id in paid_dimensions},
         )
         self.assertEqual(
-            paid_joint,
-            {
-                frozenset(group)
-                for size in range(1, len(paid_dimensions) + 1)
-                for group in __import__("itertools").combinations(
-                    sorted(paid_dimensions), size
-                )
-            },
+            {dimension for group in paid_joint for dimension in group},
+            paid_dimensions,
         )
+        self.assertEqual({len(group) for group in paid_joint}, {2, 3})
+        self.assertLessEqual(len(paid_joint), 2 * len(paid_dimensions))
 
     def test_new_registered_dimension_is_generated_without_dataset_name_code(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
@@ -202,6 +208,11 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
         cases = current_data_coverage_cases(registry)
         paid_dimension_count = sum(
             "paid_order_success" in registry.dimension_sources(dimension_id)
+            and registry.dimension(
+                dimension_id,
+                dataset_id="paid_order_success",
+            ).get("decision_use", "business_candidate")
+            == "business_candidate"
             for dimension_id in registry.dimension_ids
         )
 
@@ -232,16 +243,14 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
             ),
             paid_dimension_count,
         )
-        self.assertEqual(
-            len(
-                {
-                    frozenset(case.dimension_ids)
-                    for case in paid_amount
-                    if case.query_family == "joint_candidate_scan"
-                }
-            ),
-            (2**paid_dimension_count) - 1,
-        )
+        joint_groups = {
+            frozenset(case.dimension_ids)
+            for case in paid_amount
+            if case.query_family == "joint_candidate_scan"
+        }
+        self.assertIn("campaign", {item for group in joint_groups for item in group})
+        self.assertEqual({len(group) for group in joint_groups}, {2, 3})
+        self.assertLessEqual(len(joint_groups), 2 * paid_dimension_count)
 
     def test_dimension_grain_and_query_family_legality_degrade_every_affected_set(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
@@ -312,6 +321,19 @@ class CurrentDataQueryCoverageTest(unittest.TestCase):
                     "runtime_query_shape_dimension_topology:joint_candidate_scan",
                 ):
                     RuntimeContractRegistry(payload)
+
+    def test_query_result_semantics_are_closed_by_the_runtime_contract(self):
+        payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))
+        payload["query_shapes"]["daily_metric_baselines"]["result_semantics"] = (
+            "invented_result_semantics"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime_query_shape_result_semantics:"
+            "daily_metric_baselines:invented_result_semantics",
+        ):
+            RuntimeContractRegistry(payload)
 
     def test_dimension_schema_boundary_is_retained_as_typed_gap(self):
         payload = deepcopy(load_contract(CANONICAL_RUNTIME_BINDINGS_PATH))

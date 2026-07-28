@@ -154,8 +154,12 @@ def test_runtime_exposes_every_direct_geo_and_device_field_as_aggregate_only():
     assert expected <= set(registry.dimension_ids)
     for dimension_id in expected:
         dimension = registry.dimension(dimension_id)
-        assert dimension["automatic_screening"] == "allowed"
         assert dimension["output_policy"] == "aggregate_only"
+        if dimension_id == "country":
+            assert dimension["decision_use"] == "scope_invariant"
+            assert dimension["automatic_screening"] == "blocked"
+        else:
+            assert dimension["automatic_screening"] == "allowed"
 
 
 def test_runtime_filter_contract_excludes_raw_identifiers_at_source_admission():

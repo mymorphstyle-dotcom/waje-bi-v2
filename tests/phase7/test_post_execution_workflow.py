@@ -123,7 +123,7 @@ class _NarrativeLLM:
                     for block in payload["blocks"]
                 ]
             }
-        validator = kwargs["output_validator"]
+        validator = kwargs.get("output_validator")
         if validator is not None:
             validator(output)
         raw = json.dumps(output, sort_keys=True, separators=(",", ":"))

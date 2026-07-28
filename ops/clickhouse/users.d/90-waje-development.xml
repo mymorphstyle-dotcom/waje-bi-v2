@@ -1,0 +1,15 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <max_threads>12</max_threads>
+            <log_queries>1</log_queries>
+            <log_queries_min_type>QUERY_FINISH</log_queries_min_type>
+            <log_query_threads>0</log_query_threads>
+            <log_processors_profiles>0</log_processors_profiles>
+            <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
+            <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
+            <memory_profiler_step>0</memory_profiler_step>
+            <memory_profiler_sample_probability>0</memory_profiler_sample_probability>
+        </default>
+    </profiles>
+</clickhouse>

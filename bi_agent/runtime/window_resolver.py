@@ -41,7 +41,9 @@ class ContextWindowSpec:
     count: int
 
 
-CONTEXT_WINDOW_RELATIONS = frozenset({"trailing_complete_periods"})
+CONTEXT_WINDOW_RELATIONS = frozenset(
+    {"trailing_complete_periods", "evaluation_range"}
+)
 CONTEXT_WINDOW_UNITS = frozenset({"day", "week", "month", "quarter"})
 _CONTEXT_WINDOW_SPEC_FIELDS = frozenset({"capability_id", "relation", "unit", "count"})
 
@@ -101,15 +103,33 @@ def resolve_temporal_windows(
     elif temporal_authority.baseline_window is not None:
         raise WindowResolutionError("temporal_baseline_window_unexpected")
 
-    if temporal_authority.mode != "calendar_partition":
-        target_start = date.fromisoformat(target.start_inclusive)
-        windows.extend(
+    target_start = date.fromisoformat(target.start_inclusive)
+    for spec in context_specs:
+        if spec.relation == "evaluation_range":
+            if temporal_authority.mode != "calendar_partition":
+                raise WindowResolutionError(
+                    "unsupported_context_window_relation",
+                    spec.relation,
+                )
+            windows.append(
+                _resolve_evaluation_range_spec(
+                    spec,
+                    target=target,
+                    timezone_name=timezone_name,
+                )
+            )
+            continue
+        if temporal_authority.mode == "calendar_partition":
+            raise WindowResolutionError(
+                "unsupported_context_window_relation",
+                spec.relation,
+            )
+        windows.append(
             _resolve_context_window_spec(
                 spec,
                 target_day=target_start,
                 timezone_name=timezone_name,
             )
-            for spec in context_specs
         )
 
     gaps = _temporal_freshness_gaps(
@@ -348,6 +368,48 @@ def _resolve_context_window_spec(
         end_exclusive=end.isoformat(),
         timezone=timezone_name,
         aggregation="mean_of_complete_days",
+        required_complete_days=complete_days,
+        source_watermark_requirement=last_complete_day.isoformat(),
+        capability_refs=(spec.capability_id,),
+    )
+
+
+def _resolve_evaluation_range_spec(
+    spec: ContextWindowSpec,
+    *,
+    target: ResolvedWindow,
+    timezone_name: str,
+) -> ResolvedWindow:
+    try:
+        start = date.fromisoformat(target.start_inclusive)
+        end_exclusive = date.fromisoformat(target.end_exclusive)
+    except ValueError as exc:
+        raise WindowResolutionError(
+            "context_window_out_of_range",
+            spec.capability_id,
+        ) from exc
+    complete_days = (end_exclusive - start).days
+    if (
+        spec.unit != "day"
+        or complete_days <= 0
+        or complete_days != spec.count
+    ):
+        raise WindowResolutionError(
+            "context_window_spec_invalid",
+            f"{spec.capability_id}:evaluation_range",
+        )
+    last_complete_day = end_exclusive - timedelta(days=1)
+    return ResolvedWindow(
+        window_id=(
+            f"context__{spec.capability_id}__{spec.relation}__"
+            f"{spec.count}_{spec.unit}"
+        ),
+        role="reference",
+        label=f"{start.isoformat()}..{last_complete_day.isoformat()}",
+        start_inclusive=start.isoformat(),
+        end_exclusive=end_exclusive.isoformat(),
+        timezone=timezone_name,
+        aggregation="daily_observations",
         required_complete_days=complete_days,
         source_watermark_requirement=last_complete_day.isoformat(),
         capability_refs=(spec.capability_id,),

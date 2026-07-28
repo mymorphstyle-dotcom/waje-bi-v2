@@ -17,6 +17,7 @@ from bi_agent.runtime.evidence_taxonomy import (
 from bi_agent.runtime.claim_authority import ClaimPublicationCeiling
 from bi_agent.runtime.claim_settlement import (
     admissible_evidence_publication_ceiling,
+    admissible_obligation_evidence_source_claim_kind,
     evidence_publication_ceiling,
     publication_ceiling_satisfies,
 )
@@ -34,13 +35,17 @@ from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 from bi_agent.runtime.single_authority import DurableTransition
 
 
-CLAIM_COVERAGE_SCHEMA_VERSION = "claim-coverage-evaluation.v2"
+CLAIM_COVERAGE_SCHEMA_VERSION = "claim-coverage-evaluation.v4"
 PLAN_EXPANSION_DECISION_SCHEMA_VERSION = "plan-expansion-decision.v2"
 PLAN_PATCH_SCHEMA_VERSION = "plan-patch.v2"
 CLAIM_COVERAGE_CHECKPOINT_SCHEMA_VERSION = "claim-coverage-checkpoint.v1"
 PLAN_EXPANSION_PROVIDER_TASK = "claim_coverage_expansion_decision"
 
 _COVERAGE_STATES = frozenset({"uncovered", "evidence_present", "explicit_boundary"})
+_CONTRACT_MATCH_STATES = frozenset({"full", "partial", "none"})
+_PUBLICATION_DISPOSITIONS = frozenset(
+    {"direct", "weakened", "observation_only"}
+)
 _DECISIONS = frozenset({"seal", "patch"})
 _DECISION_AUTHORITIES = frozenset({"provider", "deterministic_no_admissible_route"})
 _PLAN_AXIS_ROLE_PRIORITY = MappingProxyType(
@@ -74,6 +79,198 @@ class ClaimCoverageContractError(ValueError):
 
 
 @dataclass(frozen=True)
+class ClaimEvidenceContractReview:
+    review_ref: str
+    evidence_entry_ref: str
+    settlement_outcome_ref: str
+    task_id: str
+    capability_id: str
+    contract_match_state: str
+    publication_disposition: str
+    evidence_kind: str
+    capability_evidence_kinds: tuple[str, ...]
+    evidence_supported_claim_kinds: tuple[str, ...]
+    capability_supported_claim_kinds: tuple[str, ...]
+    effective_supported_claim_kinds: tuple[str, ...]
+    evidence_maximum_claim_strength: str
+    capability_maximum_claim_strength: str
+    effective_maximum_claim_strength_by_claim: Mapping[str, str]
+    audit_codes: tuple[str, ...]
+    content_digest: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        evidence_entry_ref: str,
+        settlement_outcome_ref: str,
+        task_id: str,
+        capability_id: str,
+        contract_match_state: str,
+        publication_disposition: str,
+        evidence_kind: str,
+        capability_evidence_kinds: Sequence[str],
+        evidence_supported_claim_kinds: Sequence[str],
+        capability_supported_claim_kinds: Sequence[str],
+        effective_supported_claim_kinds: Sequence[str],
+        evidence_maximum_claim_strength: str,
+        capability_maximum_claim_strength: str,
+        effective_maximum_claim_strength_by_claim: Mapping[str, Any],
+        audit_codes: Sequence[str],
+    ) -> "ClaimEvidenceContractReview":
+        if contract_match_state not in _CONTRACT_MATCH_STATES:
+            raise ClaimCoverageContractError(
+                "claim_coverage_contract_match_state_invalid"
+            )
+        if publication_disposition not in _PUBLICATION_DISPOSITIONS:
+            raise ClaimCoverageContractError(
+                "claim_coverage_publication_disposition_invalid"
+            )
+        evidence_claim_kinds = _string_tuple(
+            evidence_supported_claim_kinds,
+            "claim_coverage_review_evidence_claim_kinds_invalid",
+        )
+        capability_claim_kinds = _string_tuple(
+            capability_supported_claim_kinds,
+            "claim_coverage_review_capability_claim_kinds_invalid",
+        )
+        effective_claim_kinds = _string_tuple(
+            effective_supported_claim_kinds,
+            "claim_coverage_review_effective_claim_kinds_invalid",
+        )
+        capability_kinds = _string_tuple(
+            capability_evidence_kinds,
+            "claim_coverage_review_capability_evidence_kinds_invalid",
+        )
+        audits = _string_tuple(
+            audit_codes,
+            "claim_coverage_review_audit_codes_invalid",
+        )
+        if not isinstance(effective_maximum_claim_strength_by_claim, Mapping):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_effective_strength_invalid"
+            )
+        effective_strengths = {
+            _required_string(
+                claim_kind,
+                "claim_coverage_review_effective_strength_invalid",
+            ): _required_string(
+                strength,
+                "claim_coverage_review_effective_strength_invalid",
+            )
+            for claim_kind, strength in (
+                effective_maximum_claim_strength_by_claim.items()
+            )
+        }
+        if (
+            not set(effective_claim_kinds).issubset(evidence_claim_kinds)
+            or not set(effective_claim_kinds).issubset(capability_claim_kinds)
+            or (
+                contract_match_state == "none"
+                and (
+                    publication_disposition != "observation_only"
+                    or effective_claim_kinds
+                    or effective_strengths
+                )
+            )
+            or (
+                contract_match_state != "none"
+                and (
+                    publication_disposition == "observation_only"
+                    or not effective_claim_kinds
+                    or set(effective_strengths) != set(effective_claim_kinds)
+                )
+            )
+            or (
+                contract_match_state == "full"
+                and publication_disposition != "direct"
+            )
+            or (
+                contract_match_state == "partial"
+                and publication_disposition != "weakened"
+            )
+            or (contract_match_state == "full" and audits)
+            or (contract_match_state != "full" and not audits)
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_semantics_invalid"
+            )
+        body = {
+            "evidence_entry_ref": _required_string(
+                evidence_entry_ref,
+                "claim_coverage_review_evidence_ref_invalid",
+            ),
+            "settlement_outcome_ref": _required_string(
+                settlement_outcome_ref,
+                "claim_coverage_review_outcome_ref_invalid",
+            ),
+            "task_id": _required_string(
+                task_id,
+                "claim_coverage_review_task_id_invalid",
+            ),
+            "capability_id": _required_string(
+                capability_id,
+                "claim_coverage_review_capability_id_invalid",
+            ),
+            "contract_match_state": contract_match_state,
+            "publication_disposition": publication_disposition,
+            "evidence_kind": _required_string(
+                evidence_kind,
+                "claim_coverage_review_evidence_kind_invalid",
+            ),
+            "capability_evidence_kinds": capability_kinds,
+            "evidence_supported_claim_kinds": evidence_claim_kinds,
+            "capability_supported_claim_kinds": capability_claim_kinds,
+            "effective_supported_claim_kinds": effective_claim_kinds,
+            "evidence_maximum_claim_strength": _required_string(
+                evidence_maximum_claim_strength,
+                "claim_coverage_review_evidence_strength_invalid",
+            ),
+            "capability_maximum_claim_strength": _required_string(
+                capability_maximum_claim_strength,
+                "claim_coverage_review_capability_strength_invalid",
+            ),
+            "effective_maximum_claim_strength_by_claim": _freeze(
+                effective_strengths
+            ),
+            "audit_codes": audits,
+        }
+        digest = canonical_digest(body)
+        return cls(
+            review_ref="claim-evidence-contract-review:sha256:" + digest,
+            content_digest=digest,
+            **body,
+        )
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, Any],
+    ) -> "ClaimEvidenceContractReview":
+        if not isinstance(payload, Mapping) or set(payload) != set(
+            cls.__dataclass_fields__
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_shape_invalid"
+            )
+        rebuilt = cls.create(
+            **{
+                key: payload[key]
+                for key in payload
+                if key not in {"review_ref", "content_digest"}
+            }
+        )
+        if rebuilt.to_dict() != canonical_value(payload):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_integrity_invalid"
+            )
+        return rebuilt
+
+    def to_dict(self) -> dict[str, Any]:
+        return canonical_value(self)
+
+
+@dataclass(frozen=True)
 class ClaimEvidenceCoverageAssessment:
     assessment_ref: str
     evidence_entry_ref: str
@@ -84,7 +281,11 @@ class ClaimEvidenceCoverageAssessment:
     maximum_claim_strength: str
     publication_ceiling: Mapping[str, str]
     data_contract_state: str
+    source_claim_kind: str
+    obligation_claim_kind: str
     supported_claim_kinds: tuple[str, ...]
+    contract_review_ref: str
+    publication_disposition: str
     observation_facts: tuple[Mapping[str, Any], ...]
     scope: str
     window_refs: tuple[str, ...]
@@ -106,7 +307,11 @@ class ClaimEvidenceCoverageAssessment:
         maximum_claim_strength: str,
         publication_ceiling: Mapping[str, Any],
         data_contract_state: str,
+        source_claim_kind: str,
+        obligation_claim_kind: str,
         supported_claim_kinds: Sequence[str],
+        contract_review_ref: str,
+        publication_disposition: str,
         observation_facts: Sequence[Mapping[str, Any]],
         scope: str,
         window_refs: Sequence[str],
@@ -116,6 +321,38 @@ class ClaimEvidenceCoverageAssessment:
         completeness_report_refs: Sequence[str],
     ) -> "ClaimEvidenceCoverageAssessment":
         ceiling = ClaimPublicationCeiling.from_dict(publication_ceiling)
+        normalized_source_claim_kind = _required_string(
+            source_claim_kind,
+            "claim_coverage_assessment_source_claim_kind_invalid",
+        )
+        normalized_obligation_claim_kind = _required_string(
+            obligation_claim_kind,
+            "claim_coverage_assessment_obligation_claim_kind_invalid",
+        )
+        normalized_supported_claim_kinds = _string_tuple(
+            supported_claim_kinds,
+            "claim_coverage_assessment_claim_kinds_invalid",
+            allow_empty=False,
+        )
+        if normalized_source_claim_kind not in set(
+            normalized_supported_claim_kinds
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_assessment_source_claim_kind_mismatch"
+            )
+        if publication_disposition not in {"direct", "weakened"}:
+            raise ClaimCoverageContractError(
+                "claim_coverage_assessment_publication_disposition_invalid"
+            )
+        expected_ceiling = evidence_publication_ceiling(
+            evidence_kind=evidence_kind,
+            source_claim_kind=normalized_source_claim_kind,
+            maximum_claim_strength=maximum_claim_strength,
+        )
+        if ceiling != expected_ceiling:
+            raise ClaimCoverageContractError(
+                "claim_coverage_assessment_publication_ceiling_mismatch"
+            )
         body = {
             "evidence_entry_ref": _required_string(
                 evidence_entry_ref,
@@ -146,11 +383,14 @@ class ClaimEvidenceCoverageAssessment:
                 data_contract_state,
                 "claim_coverage_assessment_data_contract_state_invalid",
             ),
-            "supported_claim_kinds": _string_tuple(
-                supported_claim_kinds,
-                "claim_coverage_assessment_claim_kinds_invalid",
-                allow_empty=False,
+            "source_claim_kind": normalized_source_claim_kind,
+            "obligation_claim_kind": normalized_obligation_claim_kind,
+            "supported_claim_kinds": normalized_supported_claim_kinds,
+            "contract_review_ref": _required_string(
+                contract_review_ref,
+                "claim_coverage_assessment_contract_review_ref_invalid",
             ),
+            "publication_disposition": publication_disposition,
             "observation_facts": _mapping_tuple(
                 observation_facts,
                 "claim_coverage_assessment_observation_facts_invalid",
@@ -262,7 +502,7 @@ class ClaimObligationCoverage:
         if len(evidence_refs) != len(set(evidence_refs)):
             raise ClaimCoverageContractError("claim_coverage_evidence_refs_invalid")
         if any(
-            claim_kind not in assessment.supported_claim_kinds
+            assessment.obligation_claim_kind != claim_kind
             for assessment in assessments
         ):
             raise ClaimCoverageContractError(
@@ -673,8 +913,13 @@ class ClaimCoverageEvaluation:
     exploration_stop_policy: Mapping[str, Any]
     used_budget_units: int
     hard_budget_limit: int | None
+    evidence_contract_reviews: tuple[ClaimEvidenceContractReview, ...]
     obligation_coverages: tuple[ClaimObligationCoverage, ...]
     unresolved_obligation_ids: tuple[str, ...]
+    direct_publishable_evidence_refs: tuple[str, ...]
+    weakened_evidence_refs: tuple[str, ...]
+    observation_only_evidence_refs: tuple[str, ...]
+    has_publication_limits: bool
     scheduled_axis_ids: tuple[str, ...]
     admissible_routes: tuple[AdmissibleAxisRoute, ...]
     route_catalog_digest: str
@@ -686,6 +931,7 @@ class ClaimCoverageEvaluation:
         *,
         plan_revision: PlanRevision,
         execution_result: AuthoritativeExecutionResult,
+        evidence_contract_reviews: Sequence[ClaimEvidenceContractReview],
         obligation_coverages: Sequence[ClaimObligationCoverage],
         admissible_routes: Sequence[AdmissibleAxisRoute],
     ) -> "ClaimCoverageEvaluation":
@@ -697,6 +943,89 @@ class ClaimCoverageEvaluation:
                 key=lambda item: item.obligation_id,
             )
         )
+        reviews = tuple(
+            sorted(
+                (
+                    _replay_contract_review(item)
+                    for item in evidence_contract_reviews
+                ),
+                key=lambda item: item.evidence_entry_ref,
+            )
+        )
+        if (
+            len({item.evidence_entry_ref for item in reviews}) != len(reviews)
+            or len({item.review_ref for item in reviews}) != len(reviews)
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_closure_invalid"
+            )
+        execution_review_sources = {
+            entry.entry_ref: (
+                outcome.outcome_ref,
+                outcome.task_id,
+            )
+            for _, outcome, entries, _ in execution.capability_outcome_bundles
+            for entry in entries
+        }
+        if (
+            set(execution_review_sources)
+            != {item.evidence_entry_ref for item in reviews}
+            or any(
+                execution_review_sources[item.evidence_entry_ref]
+                != (item.settlement_outcome_ref, item.task_id)
+                for item in reviews
+            )
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_review_source_closure_invalid"
+            )
+        review_by_ref = {item.review_ref: item for item in reviews}
+        assessments = tuple(
+            assessment
+            for item in coverage
+            for assessment in item.evidence_assessments
+        )
+        if any(
+            assessment.contract_review_ref not in review_by_ref
+            or review_by_ref[
+                assessment.contract_review_ref
+            ].evidence_entry_ref
+            != assessment.evidence_entry_ref
+            for assessment in assessments
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_assessment_review_closure_invalid"
+            )
+        weakened_refs = {
+            assessment.evidence_entry_ref
+            for assessment in assessments
+            if assessment.publication_disposition == "weakened"
+        }
+        direct_refs = {
+            assessment.evidence_entry_ref
+            for assessment in assessments
+            if assessment.publication_disposition == "direct"
+        } - weakened_refs
+        reviewed_refs = {item.evidence_entry_ref for item in reviews}
+        observation_refs = reviewed_refs - direct_refs - weakened_refs
+        direct_publishable_evidence_refs = tuple(sorted(direct_refs))
+        weakened_evidence_refs = tuple(sorted(weakened_refs))
+        observation_only_evidence_refs = tuple(sorted(observation_refs))
+        if (
+            set(direct_publishable_evidence_refs)
+            | set(weakened_evidence_refs)
+            | set(observation_only_evidence_refs)
+            != reviewed_refs
+            or set(direct_publishable_evidence_refs)
+            & set(weakened_evidence_refs)
+            or set(direct_publishable_evidence_refs)
+            & set(observation_only_evidence_refs)
+            or set(weakened_evidence_refs)
+            & set(observation_only_evidence_refs)
+        ):
+            raise ClaimCoverageContractError(
+                "claim_coverage_publication_partition_invalid"
+            )
         obligations = {item.obligation_id: item for item in plan.claim_obligations}
         if (
             len(coverage) != len(obligations)
@@ -767,8 +1096,21 @@ class ClaimCoverageEvaluation:
             ),
             "used_budget_units": (execution.exploration_stop_record.used_budget_units),
             "hard_budget_limit": (execution.exploration_stop_record.hard_budget_limit),
+            "evidence_contract_reviews": reviews,
             "obligation_coverages": coverage,
             "unresolved_obligation_ids": unresolved_ids,
+            "direct_publishable_evidence_refs": (
+                direct_publishable_evidence_refs
+            ),
+            "weakened_evidence_refs": weakened_evidence_refs,
+            "observation_only_evidence_refs": (
+                observation_only_evidence_refs
+            ),
+            "has_publication_limits": bool(
+                weakened_evidence_refs
+                or observation_only_evidence_refs
+                or unresolved_ids
+            ),
             "scheduled_axis_ids": scheduled_axis_ids,
             "admissible_routes": routes,
             "route_catalog_digest": route_catalog_digest,
@@ -1480,43 +1822,10 @@ def evaluate_claim_coverage(
     ):
         raise ClaimCoverageContractError("claim_coverage_authority_context_invalid")
     obligations = {item.obligation_id: item for item in plan.claim_obligations}
-    for obligation in obligations.values():
-        required_strength = obligation.success_policy.get("minimum_claim_strength")
-        goal_ids = _string_tuple(
-            obligation.subject.get("goal_refs"),
-            "claim_coverage_obligation_goal_refs_invalid",
-            allow_empty=False,
-        )
-        axis_ids = (
-            ()
-            if obligation.role == "user_required"
-            else _string_tuple(
-                obligation.success_policy.get("requested_axis_ids"),
-                "claim_coverage_requested_axis_ids_invalid",
-                allow_empty=False,
-            )
-        )
-        try:
-            contract_strength = route_catalog.claim_required_publication_strength(
-                obligation.claim_kind,
-                goal_ids=goal_ids,
-                axis_ids=axis_ids,
-            )
-        except (KeyError, ValueError) as exc:
-            raise ClaimCoverageContractError(
-                f"claim_coverage_claim_requirement_invalid:{obligation.claim_kind}"
-            ) from exc
-        if (
-            obligation.success_policy.get("policy") != "verified_or_explicit_boundary"
-            or required_strength != contract_strength
-        ):
-            raise ClaimCoverageContractError(
-                "claim_coverage_success_policy_contract_mismatch:"
-                f"{obligation.claim_kind}"
-            )
     assessments_by_obligation: dict[str, dict[str, ClaimEvidenceCoverageAssessment]] = {
         obligation_id: {} for obligation_id in obligations
     }
+    evidence_contract_reviews: dict[str, ClaimEvidenceContractReview] = {}
     tasks = {item.task_id: item for item in plan.capability_tasks}
     for _, outcome, entries, _ in execution.capability_outcome_bundles:
         task = tasks[outcome.task_id]
@@ -1536,20 +1845,41 @@ def evaluate_claim_coverage(
                 outcome=outcome,
                 task=task,
                 plan=plan,
+            )
+            review = _review_evidence_contract(
+                entry=entry,
+                outcome=outcome,
+                task=task,
+                capability=capability,
                 capability_claim_kinds=capability_claim_kinds,
                 capability_evidence_kinds=capability_evidence_kinds,
             )
-            relevant_obligation_ids = tuple(
-                obligation_id
-                for obligation_id in task.supports_obligation_ids
-                if obligations[obligation_id].claim_kind
-                in set(entry.supported_claim_kinds)
+            existing_review = evidence_contract_reviews.setdefault(
+                entry.entry_ref,
+                review,
             )
-            if task.supports_obligation_ids and not relevant_obligation_ids:
+            if existing_review != review:
                 raise ClaimCoverageContractError(
-                    "claim_coverage_evidence_obligation_membership_missing"
+                    "claim_coverage_review_conflict"
                 )
-            for obligation_id in relevant_obligation_ids:
+            relevant_obligations = tuple(
+                (
+                    obligation_id,
+                    _review_source_claim_kind_for_obligation(
+                        obligation=obligations[obligation_id],
+                        evidence_kind=entry.evidence_kind,
+                        review=review,
+                    ),
+                )
+                for obligation_id in task.supports_obligation_ids
+                if review.contract_match_state != "none"
+            )
+            relevant_obligations = tuple(
+                (obligation_id, source_claim_kind)
+                for obligation_id, source_claim_kind in relevant_obligations
+                if source_claim_kind is not None
+            )
+            for obligation_id, source_claim_kind in relevant_obligations:
                 if obligation_id not in set(outcome.affected_obligation_ids):
                     raise ClaimCoverageContractError(
                         "claim_coverage_outcome_obligation_membership_missing"
@@ -1573,8 +1903,25 @@ def evaluate_claim_coverage(
                 )
                 ceiling = evidence_publication_ceiling(
                     evidence_kind=entry.evidence_kind,
-                    source_claim_kind=obligation.claim_kind,
-                    maximum_claim_strength=entry.maximum_claim_strength,
+                    source_claim_kind=str(source_claim_kind),
+                    maximum_claim_strength=str(
+                        review.effective_maximum_claim_strength_by_claim[
+                            str(source_claim_kind)
+                        ]
+                    ),
+                )
+                required_strength = str(
+                    obligation.success_policy["minimum_claim_strength"]
+                )
+                publication_disposition = (
+                    "direct"
+                    if review.contract_match_state == "full"
+                    and entry.data_contract_state == "complete"
+                    and publication_ceiling_satisfies(
+                        ceiling,
+                        required_strength=required_strength,
+                    )
+                    else "weakened"
                 )
                 assessment = ClaimEvidenceCoverageAssessment.create(
                     evidence_entry_ref=entry.entry_ref,
@@ -1582,10 +1929,20 @@ def evaluate_claim_coverage(
                     binding_record_ref=entry.binding_record_ref,
                     evidence_kind=entry.evidence_kind,
                     evidence_strength=entry.evidence_strength,
-                    maximum_claim_strength=(entry.maximum_claim_strength),
+                    maximum_claim_strength=str(
+                        review.effective_maximum_claim_strength_by_claim[
+                            str(source_claim_kind)
+                        ]
+                    ),
                     publication_ceiling=ceiling.to_dict(),
                     data_contract_state=entry.data_contract_state,
-                    supported_claim_kinds=entry.supported_claim_kinds,
+                    source_claim_kind=str(source_claim_kind),
+                    obligation_claim_kind=obligation.claim_kind,
+                    supported_claim_kinds=(
+                        review.effective_supported_claim_kinds
+                    ),
+                    contract_review_ref=review.review_ref,
+                    publication_disposition=publication_disposition,
                     observation_facts=entry.observation_facts,
                     scope=entry.scope,
                     window_refs=entry.window_refs,
@@ -1658,6 +2015,7 @@ def evaluate_claim_coverage(
     return ClaimCoverageEvaluation.create(
         plan_revision=plan,
         execution_result=execution,
+        evidence_contract_reviews=tuple(evidence_contract_reviews.values()),
         obligation_coverages=coverage,
         admissible_routes=routes,
     )
@@ -1914,6 +2272,19 @@ def _allowed_axis_ids(
     *,
     route_catalog: RuntimeContractRegistry,
 ) -> frozenset[str]:
+    requested_axis_ids = obligation.success_policy.get("requested_axis_ids")
+    if requested_axis_ids:
+        normalized_axis_ids = _string_tuple(
+            requested_axis_ids,
+            "claim_coverage_requested_axis_ids_invalid",
+            allow_empty=False,
+        )
+        unknown = set(normalized_axis_ids) - set(route_catalog.analysis_axis_ids)
+        if unknown:
+            raise ClaimCoverageContractError(
+                "claim_coverage_requested_axis_ids_invalid"
+            )
+        return frozenset(normalized_axis_ids)
     if obligation.role == "user_required":
         goal_refs = _string_tuple(
             obligation.subject.get("goal_refs"),
@@ -1927,15 +2298,15 @@ def _allowed_axis_ids(
                 "analysis_axes"
             ]
         )
-    requested_axis_ids = _string_tuple(
-        obligation.success_policy.get("requested_axis_ids"),
+    normalized_axis_ids = _string_tuple(
+        requested_axis_ids,
         "claim_coverage_requested_axis_ids_invalid",
         allow_empty=False,
     )
-    unknown = set(requested_axis_ids) - set(route_catalog.analysis_axis_ids)
+    unknown = set(normalized_axis_ids) - set(route_catalog.analysis_axis_ids)
     if unknown:
         raise ClaimCoverageContractError("claim_coverage_requested_axis_ids_invalid")
-    return frozenset(requested_axis_ids)
+    return frozenset(normalized_axis_ids)
 
 
 def _obligation_target_metric_refs(
@@ -1963,8 +2334,6 @@ def _validate_evidence_entry(
     outcome: Any,
     task: Any,
     plan: PlanRevision,
-    capability_claim_kinds: set[str],
-    capability_evidence_kinds: set[str],
 ) -> None:
     if (
         outcome.status != "succeeded"
@@ -1978,12 +2347,148 @@ def _validate_evidence_entry(
         or entry.hierarchy_qualified != bool(entry.dimension_path)
     ):
         raise ClaimCoverageContractError("claim_coverage_evidence_authority_invalid")
-    entry_claim_kinds = set(entry.supported_claim_kinds)
+
+
+def _review_evidence_contract(
+    *,
+    entry: Any,
+    outcome: Any,
+    task: Any,
+    capability: Mapping[str, Any],
+    capability_claim_kinds: set[str],
+    capability_evidence_kinds: set[str],
+) -> ClaimEvidenceContractReview:
+    entry_claim_kinds = set(str(item) for item in entry.supported_claim_kinds)
+    common_claim_kinds = entry_claim_kinds.intersection(
+        capability_claim_kinds
+    )
+    audit_codes: list[str] = []
+    if not entry_claim_kinds.issubset(capability_claim_kinds):
+        audit_codes.append("claim_kind_registration_drift")
+    if entry.evidence_kind not in capability_evidence_kinds:
+        audit_codes.append("evidence_kind_registration_drift")
+    capability_maximum_claim_strength = _required_string(
+        capability.get("maximum_claim_strength"),
+        "claim_coverage_capability_maximum_claim_strength_invalid",
+    )
+    effective_strengths: dict[str, str] = {}
+    if entry.evidence_kind in capability_evidence_kinds:
+        for claim_kind in sorted(common_claim_kinds):
+            evidence_ceiling = admissible_evidence_publication_ceiling(
+                evidence_kind=entry.evidence_kind,
+                source_claim_kind=claim_kind,
+                maximum_claim_strength=entry.maximum_claim_strength,
+            )
+            capability_ceiling = admissible_evidence_publication_ceiling(
+                evidence_kind=entry.evidence_kind,
+                source_claim_kind=claim_kind,
+                maximum_claim_strength=capability_maximum_claim_strength,
+            )
+            if (
+                evidence_ceiling is None
+                or capability_ceiling is None
+                or evidence_ceiling.claim_class
+                != capability_ceiling.claim_class
+            ):
+                continue
+            if publication_ceiling_satisfies(
+                evidence_ceiling,
+                required_strength=capability_ceiling.strength,
+            ):
+                effective_strengths[claim_kind] = (
+                    capability_ceiling.strength
+                )
+                if evidence_ceiling.strength != capability_ceiling.strength:
+                    audit_codes.append("claim_strength_registration_drift")
+            else:
+                effective_strengths[claim_kind] = evidence_ceiling.strength
+    effective_claim_kinds = set(effective_strengths)
     if (
-        not entry_claim_kinds.issubset(capability_claim_kinds)
-        or entry.evidence_kind not in capability_evidence_kinds
+        entry.evidence_kind in capability_evidence_kinds
+        and effective_claim_kinds != common_claim_kinds
     ):
-        raise ClaimCoverageContractError("claim_coverage_evidence_contract_invalid")
+        audit_codes.append("claim_strength_compatibility_drift")
+    if (
+        entry.evidence_kind not in capability_evidence_kinds
+        or not effective_claim_kinds
+    ):
+        match_state = "none"
+        disposition = "observation_only"
+        if not audit_codes:
+            audit_codes.append("claim_contract_common_scope_missing")
+    else:
+        if audit_codes:
+            match_state = "partial"
+            disposition = "weakened"
+        else:
+            match_state = "full"
+            disposition = "direct"
+    return ClaimEvidenceContractReview.create(
+        evidence_entry_ref=entry.entry_ref,
+        settlement_outcome_ref=outcome.outcome_ref,
+        task_id=task.task_id,
+        capability_id=task.capability_id,
+        contract_match_state=match_state,
+        publication_disposition=disposition,
+        evidence_kind=entry.evidence_kind,
+        capability_evidence_kinds=tuple(sorted(capability_evidence_kinds)),
+        evidence_supported_claim_kinds=tuple(sorted(entry_claim_kinds)),
+        capability_supported_claim_kinds=tuple(
+            sorted(capability_claim_kinds)
+        ),
+        effective_supported_claim_kinds=tuple(
+            sorted(effective_claim_kinds)
+        )
+        if match_state != "none"
+        else (),
+        evidence_maximum_claim_strength=entry.maximum_claim_strength,
+        capability_maximum_claim_strength=(
+            capability_maximum_claim_strength
+        ),
+        effective_maximum_claim_strength_by_claim=effective_strengths,
+        audit_codes=tuple(sorted(set(audit_codes))),
+    )
+
+
+def _review_source_claim_kind_for_obligation(
+    *,
+    obligation: ClaimObligation,
+    evidence_kind: str,
+    review: ClaimEvidenceContractReview,
+) -> str | None:
+    effective = review.effective_maximum_claim_strength_by_claim
+    investigation = (
+        obligation.role == "analyst_auxiliary"
+        and obligation.success_policy.get("investigation_mode")
+        == "hypothesis_test"
+    )
+    candidates = (
+        tuple(
+            dict.fromkeys(
+                (
+                    obligation.claim_kind,
+                    *review.effective_supported_claim_kinds,
+                )
+            )
+        )
+        if investigation
+        else (obligation.claim_kind,)
+    )
+    for claim_kind in candidates:
+        maximum_strength = effective.get(claim_kind)
+        if maximum_strength is None:
+            continue
+        if (
+            admissible_obligation_evidence_source_claim_kind(
+                obligation=obligation,
+                evidence_kind=evidence_kind,
+                supported_claim_kinds=(claim_kind,),
+                maximum_claim_strength=maximum_strength,
+            )
+            is not None
+        ):
+            return claim_kind
+    return None
 
 
 def _validate_data_contract_state(
@@ -2147,6 +2652,14 @@ def _replay_assessment(value: Any) -> ClaimEvidenceCoverageAssessment:
     return ClaimEvidenceCoverageAssessment.from_dict(value.to_dict())
 
 
+def _replay_contract_review(value: Any) -> ClaimEvidenceContractReview:
+    if type(value) is not ClaimEvidenceContractReview:
+        raise ClaimCoverageContractError(
+            "claim_coverage_contract_review_invalid"
+        )
+    return ClaimEvidenceContractReview.from_dict(value.to_dict())
+
+
 def _replay_route(value: Any) -> AdmissibleAxisRoute:
     if type(value) is not AdmissibleAxisRoute:
         raise ClaimCoverageContractError("claim_coverage_route_invalid")
@@ -2168,6 +2681,15 @@ def _replay_evaluation(value: Any) -> ClaimCoverageEvaluation:
             key=lambda item: item.obligation_id,
         )
     )
+    reviews = tuple(
+        sorted(
+            (
+                _replay_contract_review(item)
+                for item in value.evidence_contract_reviews
+            ),
+            key=lambda item: item.evidence_entry_ref,
+        )
+    )
     routes = tuple(
         sorted(
             (_replay_route(item) for item in value.admissible_routes),
@@ -2184,12 +2706,41 @@ def _replay_evaluation(value: Any) -> ClaimCoverageEvaluation:
         "claim_coverage_evaluation_invalid",
     )
     coverage_by_id = {item.obligation_id: item for item in coverage}
+    weakened_refs = {
+        assessment.evidence_entry_ref
+        for item in coverage
+        for assessment in item.evidence_assessments
+        if assessment.publication_disposition == "weakened"
+    }
+    direct_refs = {
+        assessment.evidence_entry_ref
+        for item in coverage
+        for assessment in item.evidence_assessments
+        if assessment.publication_disposition == "direct"
+    } - weakened_refs
+    reviewed_refs = {item.evidence_entry_ref for item in reviews}
+    observation_refs = reviewed_refs - direct_refs - weakened_refs
+    direct_publishable_evidence_refs = tuple(sorted(direct_refs))
+    weakened_evidence_refs = tuple(sorted(weakened_refs))
+    observation_only_evidence_refs = tuple(sorted(observation_refs))
+    has_publication_limits = bool(
+        weakened_evidence_refs
+        or observation_only_evidence_refs
+        or unresolved_ids
+    )
     if (
         coverage != value.obligation_coverages
+        or reviews != value.evidence_contract_reviews
         or routes != value.admissible_routes
         or scheduled_axis_ids != value.scheduled_axis_ids
         or len(coverage_by_id) != len(coverage)
         or unresolved_ids != value.unresolved_obligation_ids
+        or direct_publishable_evidence_refs
+        != value.direct_publishable_evidence_refs
+        or weakened_evidence_refs != value.weakened_evidence_refs
+        or observation_only_evidence_refs
+        != value.observation_only_evidence_refs
+        or has_publication_limits != value.has_publication_limits
         or len({item.axis_id for item in routes}) != len(routes)
         or len({item.remaining_auxiliary_budget_units for item in routes}) > 1
         or any(item.axis_id in set(scheduled_axis_ids) for item in routes)
@@ -2220,8 +2771,17 @@ def _replay_evaluation(value: Any) -> ClaimCoverageEvaluation:
         "exploration_stop_policy": _freeze(value.exploration_stop_policy),
         "used_budget_units": value.used_budget_units,
         "hard_budget_limit": value.hard_budget_limit,
+        "evidence_contract_reviews": reviews,
         "obligation_coverages": coverage,
         "unresolved_obligation_ids": unresolved_ids,
+        "direct_publishable_evidence_refs": (
+            direct_publishable_evidence_refs
+        ),
+        "weakened_evidence_refs": weakened_evidence_refs,
+        "observation_only_evidence_refs": (
+            observation_only_evidence_refs
+        ),
+        "has_publication_limits": has_publication_limits,
         "scheduled_axis_ids": scheduled_axis_ids,
         "admissible_routes": routes,
         "route_catalog_digest": route_catalog_digest,
@@ -2428,6 +2988,7 @@ __all__ = (
     "ClaimCoverageCheckpoint",
     "ClaimCoverageContractError",
     "ClaimCoverageEvaluation",
+    "ClaimEvidenceContractReview",
     "ClaimEvidenceCoverageAssessment",
     "ClaimObligationCoverage",
     "PLAN_EXPANSION_DECISION_SCHEMA_VERSION",

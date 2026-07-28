@@ -248,6 +248,61 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertIn("no_dimension_movement:channel", profile["limitations"])
         self.assertEqual(evidence.evidence_type, "insufficient_evidence")
 
+    def test_reconciled_exploration_material_can_continue_without_public_readout(self):
+        evidence = candidate_dimension_screen(
+            {
+                "region": (
+                    {
+                        "region": "A",
+                        "group": "baseline",
+                        "amount": 50,
+                        "paid_orders": 10,
+                        "paid_users": 10,
+                        "n": 20,
+                    },
+                    {
+                        "region": "A",
+                        "group": "target",
+                        "amount": 60,
+                        "paid_orders": 12,
+                        "paid_users": 10,
+                        "n": 20,
+                    },
+                    {
+                        "region": "B",
+                        "group": "baseline",
+                        "amount": 50,
+                        "paid_orders": 10,
+                        "paid_users": 10,
+                        "n": 20,
+                    },
+                    {
+                        "region": "B",
+                        "group": "target",
+                        "amount": 60,
+                        "paid_orders": 12,
+                        "paid_users": 10,
+                        "n": 20,
+                    },
+                ),
+            },
+            overall_by_group={"baseline": 100, "target": 120},
+            complete_dimensions=("region",),
+        )
+
+        self.assertEqual(evidence.evidence_type, "insufficient_evidence")
+        self.assertTrue(evidence.typed_payload["joint_exploration_candidates"])
+        self.assertEqual(
+            evidence.typed_payload["continuation_contract"],
+            {
+                "state": "ready",
+                "purpose": "dynamic_query_derivation",
+                "material_ref": "joint_exploration_candidates",
+                "material_count": 1,
+                "claim_support": "none",
+            },
+        )
+
     def test_localizes_segments_by_global_primary_factor_without_cross_dimension_addition(
         self,
     ):
@@ -348,6 +403,11 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         )
         self.assertTrue(payload["diagnostic_priorities"])
         self.assertNotIn("contribution", payload["diagnostic_priorities"][0])
+        self.assertTrue(payload["joint_exploration_candidates"])
+        self.assertEqual(
+            payload["joint_exploration_candidates"][0]["exploration_basis"],
+            "coverage_reconciled_candidate",
+        )
 
     def test_diagnostic_priority_is_independent_from_the_display_top_k(self):
         rows = tuple(
@@ -408,6 +468,7 @@ class CandidateDimensionScreenTest(unittest.TestCase):
         self.assertEqual(evidence.wording_limit, "insufficient")
         self.assertIn("overall_reconciliation_unavailable", evidence.limitations)
         self.assertEqual(evidence.typed_payload["ranked_dimension_candidates"], ())
+        self.assertEqual(evidence.typed_payload["joint_exploration_candidates"], ())
 
 
 if __name__ == "__main__":

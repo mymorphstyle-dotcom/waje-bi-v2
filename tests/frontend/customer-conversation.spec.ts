@@ -17,7 +17,7 @@ const baseTransport = {
 };
 
 const waitingSnapshot = {
-  schemaVersion: "customer-conversation.v2",
+  schemaVersion: "customer-conversation.v5",
   stateVersion: "2000",
   confirmedAt: "2026-07-20T00:00:02.000Z",
   thread: {
@@ -30,6 +30,9 @@ const waitingSnapshot = {
     text: "为什么变化？",
     createdAt: "2026-07-20T00:00:01.000Z",
   }],
+  businessUnderstanding: "你想先确定用于解释业务变化的比较基线，再按同一口径继续分析。",
+  plannerIssues: [],
+  plannerIssueStates: [],
   state: {
     status: "needs_input",
     phase: "understanding",
@@ -58,6 +61,27 @@ const waitingSnapshot = {
           label: "近 7 日均值",
           description: "此前七个完整自然日",
           recommended: false,
+        },
+      ],
+      questions: [
+        {
+          questionKey: "comparison_baseline",
+          question: "请选择比较基线",
+          explanation: "",
+          options: [
+            {
+              optionKey: "previous",
+              label: "前一天",
+              description: "前一个完整自然日",
+              recommended: true,
+            },
+            {
+              optionKey: "rolling",
+              label: "近 7 日均值",
+              description: "此前七个完整自然日",
+              recommended: false,
+            },
+          ],
         },
       ],
       allowFreeform: true,
@@ -113,6 +137,61 @@ function completedSnapshot(operationId = "operation-accepted") {
       actionHandle: null,
       actionKind: null,
       acceptedOperationIds: [operationId],
+    },
+  };
+}
+
+function multiQuestionWaitingSnapshot() {
+  const questions = [
+    {
+      questionKey: "month_phase_definition",
+      question: "月初、月中和月末分别包含哪些日期？",
+      explanation: "",
+      options: [
+        {
+          optionKey: "month-phase.ten-day",
+          label: "1—10日、11—20日、21日至月末",
+          description: "三个连续阶段覆盖整个月",
+          recommended: true,
+        },
+        {
+          optionKey: "month-phase.week-shaped",
+          label: "1—7日、8—21日、22日至月末",
+          description: "月初和月末采用七天长度",
+          recommended: false,
+        },
+      ],
+    },
+    {
+      questionKey: "phase_aggregation",
+      question: "比较每个阶段的总额还是日均金额？",
+      explanation: "",
+      options: [
+        {
+          optionKey: "phase-aggregation.daily-mean",
+          label: "比较日均金额",
+          description: "控制不同阶段的天数差异",
+          recommended: true,
+        },
+        {
+          optionKey: "phase-aggregation.total",
+          label: "比较阶段总额",
+          description: "比较每个阶段贡献的总金额",
+          recommended: false,
+        },
+      ],
+    },
+  ];
+  return {
+    ...waitingSnapshot,
+    state: {
+      ...waitingSnapshot.state,
+      input: {
+        ...waitingSnapshot.state.input,
+        question: questions[0].question,
+        options: questions[0].options,
+        questions,
+      },
     },
   };
 }
@@ -217,11 +296,14 @@ function readableCompletedSnapshot() {
 
 function idleSnapshot(threadHandle = "thread-created") {
   return {
-    schemaVersion: "customer-conversation.v2",
+    schemaVersion: "customer-conversation.v5",
     stateVersion: "1000",
     confirmedAt: "2026-07-20T00:00:01.000Z",
     thread: { title: "新分析", createdAt: "2026-07-20T00:00:01.000Z" },
     messages: [],
+    businessUnderstanding: null,
+    plannerIssues: [],
+    plannerIssueStates: [],
     state: {
       status: "idle",
       title: "准备开始分析",
@@ -258,6 +340,23 @@ function workingSnapshot(operationId: string, question: string) {
       text: question,
       createdAt: "2026-07-20T00:00:02.000Z",
     }],
+    businessUnderstanding: "你想检查当前指标的变化方向，并找出能够解释变化的业务因素。",
+    plannerIssues: [
+      "确认指标变化是否成立并量化幅度",
+      "检查能够解释变化的业务因素",
+    ],
+    plannerIssueStates: [
+      {
+        question: "确认指标变化是否成立并量化幅度",
+        status: "evidenced",
+        statusLabel: "已有证据",
+      },
+      {
+        question: "检查能够解释变化的业务因素",
+        status: "querying",
+        statusLabel: "查询中",
+      },
+    ],
     state: {
       status: "working",
       phase: "querying",
@@ -325,7 +424,9 @@ async function installConversationRoutes(
   initial: Record<string, unknown> = waitingSnapshot,
 ) {
   let current = initial;
+  const initialSnapshot = initial as typeof waitingSnapshot;
   let clarificationPosts = 0;
+  const clarificationBodies: Record<string, unknown>[] = [];
   await page.route("**/api/threads", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     const snapshot = current as typeof waitingSnapshot;
@@ -341,15 +442,21 @@ async function installConversationRoutes(
       }),
     });
   });
-  await page.route("**/api/threads/thread-handle", async (route) => {
+  await page.route(
+    `**/api/threads/${initialSnapshot.transport.threadHandle}`,
+    async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ snapshot: current }),
     });
-  });
+    },
+  );
   await page.route("**/api/runs/run-handle/clarifications", async (route) => {
     clarificationPosts += 1;
-    const body = route.request().postDataJSON() as { requestIdentity: string };
+    const body = route.request().postDataJSON() as Record<string, unknown> & {
+      requestIdentity: string;
+    };
+    clarificationBodies.push(body);
     current = completedSnapshot(body.requestIdentity);
     await route.fulfill({
       contentType: "application/json",
@@ -360,15 +467,160 @@ async function installConversationRoutes(
     get clarificationPosts() {
       return clarificationPosts;
     },
+    get clarificationBodies() {
+      return clarificationBodies;
+    },
   };
 }
+
+test("Planner 待解决问题显示在右上角独立状态卡", async ({ page }) => {
+  const initial = {
+    ...workingSnapshot("operation-planner", "检查本周转化变化"),
+    transport: {
+      ...baseTransport,
+      actionHandle: null,
+      actionKind: null,
+    },
+  };
+  await installConversationRoutes(page, initial);
+  await page.goto("/");
+
+  const card = page.getByLabel("本轮待解决问题");
+  await expect(card).toBeVisible();
+  await expect(card.getByText("分析中")).toBeVisible();
+  await expect(card.getByText("确认指标变化是否成立并量化幅度")).toBeVisible();
+  await expect(card.getByText("已有证据")).toBeVisible();
+  await expect(card.getByText("检查能够解释变化的业务因素")).toBeVisible();
+  await expect(card.getByText("查询中")).toBeVisible();
+  await card.getByRole("button").click();
+  await expect(card.getByText("确认指标变化是否成立并量化幅度")).toHaveCount(0);
+});
+
+test("主对话只保留 Planner，任务和查询集中在 composer 上方卡片", async ({ page }) => {
+  const initial = workingSnapshot("operation-reasoning", "检查本周转化变化");
+  await installConversationRoutes(page, initial);
+  await page.route("**/api/agent-runs/run-created/reasoning", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        reasoning: {
+          runId: "run-created",
+          businessUnderstanding: initial.businessUnderstanding,
+          planRevisionId: "plan-revision",
+          issues: [
+            {
+              issueId: "I1",
+              parentIssueId: null,
+              question: "本周转化变化是否成立？",
+              targetClaimKind: "direction",
+              status: "unresolved",
+              taskIds: ["task-1", "task-2"],
+              claimRefs: [],
+              usedClaimRefs: [],
+              limitationRefs: [],
+            },
+            {
+              issueId: "I2",
+              parentIssueId: "I1",
+              question: "哪些渠道贡献了变化？",
+              targetClaimKind: "driver",
+              status: "unresolved",
+              taskIds: ["task-2"],
+              claimRefs: [],
+              usedClaimRefs: [],
+              limitationRefs: [],
+            },
+          ],
+          tasks: [
+            {
+              taskId: "task-1",
+              rank: 1,
+              taskKey: "trend",
+              capabilityId: "metric_timeseries",
+              businessLabel: "核验转化趋势",
+              status: "succeeded",
+              queryStatus: "completed",
+              queryCount: 1,
+              queries: [{
+                resultRef: "result-1",
+                queryContractRef: "query-1",
+                label: "查询 1 · 每日转化趋势",
+                status: "completed",
+                rowCount: 14,
+              }],
+              resultRefs: ["result-1"],
+              evidenceRefs: ["evidence-1"],
+              claimRefs: [],
+              issueIds: ["I1"],
+              dependencyTaskIds: [],
+              limitationRefs: [],
+            },
+            {
+              taskId: "task-2",
+              rank: 2,
+              taskKey: "channel",
+              capabilityId: "candidate_dimension_screen",
+              businessLabel: "检查渠道贡献",
+              status: "not_started",
+              queryStatus: "not_run",
+              queryCount: 0,
+              queries: [],
+              resultRefs: [],
+              evidenceRefs: [],
+              claimRefs: [],
+              issueIds: ["I1", "I2"],
+              dependencyTaskIds: ["task-1"],
+              limitationRefs: [],
+            },
+          ],
+          claims: [],
+          answerBlocks: [],
+          counts: {
+            taskTotal: 2,
+            taskCompleted: 1,
+            queryTotal: 1,
+            evidenceTotal: 1,
+            claimTotal: 0,
+            claimUsedInAnswer: 0,
+          },
+        },
+      }),
+    });
+  });
+  await page.goto("/");
+
+  const timeline = page.getByLabel("分析问题");
+  await expect(timeline.getByText("本周转化变化是否成立？")).toBeVisible();
+  await expect(timeline.getByText("哪些渠道贡献了变化？")).toBeVisible();
+  await expect(page.getByLabel("分析执行过程")).toHaveCount(0);
+
+  const taskCard = page.getByLabel("分析任务");
+  await expect(taskCard.getByText("已结算 1/2")).toBeVisible();
+  await expect(taskCard.getByText("1 完成")).toBeVisible();
+  await expect(taskCard.getByText("1 待处理")).toBeVisible();
+  await expect(
+    taskCard.getByRole("button", { name: /^核验转化趋势 完成$/ }),
+  ).toBeVisible();
+  await expect(
+    taskCard.getByRole("button", { name: /^检查渠道贡献 等待$/ }),
+  ).toBeVisible();
+  await expect(taskCard.getByText("查询 1 · 每日转化趋势")).toHaveCount(0);
+
+  await taskCard.getByRole("button", { name: /核验转化趋势/ }).click();
+  await expect(taskCard.getByText("查询 1 · 每日转化趋势")).toBeVisible();
+  await expect(taskCard.getByText("完成 · 14 行")).toBeVisible();
+  await taskCard.getByRole("button", { name: /核验转化趋势/ }).click();
+  await expect(taskCard.getByText("查询 1 · 每日转化趋势")).toHaveCount(0);
+});
 
 test("澄清只可操作一次，刷新后恢复完整业务参考", async ({ page }) => {
   const observed = await installConversationRoutes(page);
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "请选择比较基线" })).toHaveCount(1);
-  await page.getByRole("button", { name: /前一天/ }).click();
+  await expect(page.getByText(/^我的理解：/)).toHaveCount(1);
+  await page.getByRole("radio", { name: /前一天/ }).check();
+  await page.getByRole("button", { name: "继续" }).click();
 
   await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "请选择比较基线" })).toHaveCount(0);
@@ -379,6 +631,53 @@ test("澄清只可操作一次，刷新后恢复完整业务参考", async ({ pa
   await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "请选择比较基线" })).toHaveCount(0);
   expect(observed.clarificationPosts).toBe(1);
+});
+
+test("多个 SQL 口径逐题确认并一次提交", async ({ page }) => {
+  const observed = await installConversationRoutes(
+    page,
+    multiQuestionWaitingSnapshot(),
+  );
+  await page.goto("/");
+
+  await page.getByRole("radio", { name: /1—7日/ }).check();
+  await page.getByRole("button", { name: "下一项" }).click();
+  await expect(
+    page.getByRole("heading", { name: "比较每个阶段的总额还是日均金额？" }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: /比较阶段总额/ }).check();
+  await page.getByRole("button", { name: "上一个问题" }).click();
+  await expect(page.getByRole("radio", { name: /1—7日/ })).toBeChecked();
+  await page.getByRole("button", { name: "下一个问题" }).click();
+  await expect(page.getByRole("radio", { name: /比较阶段总额/ })).toBeChecked();
+  await page.getByRole("button", { name: "继续" }).click();
+
+  expect(observed.clarificationPosts).toBe(1);
+  expect(observed.clarificationBodies[0].selectedOptionIds).toEqual([
+    "month-phase.week-shaped",
+    "phase-aggregation.total",
+  ]);
+});
+
+test("其他口径在澄清卡内填写且 composer 不接管确认", async ({ page }) => {
+  const observed = await installConversationRoutes(page);
+  await page.goto("/");
+
+  const composer = page.getByRole("textbox", { name: "业务问题", exact: true });
+  await expect(composer).toBeDisabled();
+  await expect(composer).toHaveAttribute("placeholder", "请先完成上方确认");
+  await page.getByRole("radio", { name: "补充其他口径" }).check();
+
+  const customAnswer = page.getByRole("textbox", { name: "补充其他口径" });
+  await expect(customAnswer).toBeVisible();
+  await customAnswer.fill("使用发薪日前三个完整自然日作为比较基线");
+  await page.getByRole("button", { name: "继续" }).click();
+
+  expect(observed.clarificationPosts).toBe(1);
+  expect(observed.clarificationBodies[0].selectedOptionIds).toEqual([]);
+  expect(observed.clarificationBodies[0].answer).toContain(
+    "使用发薪日前三个完整自然日作为比较基线",
+  );
 });
 
 test("Agent pending action 通过统一消息入口提交 typed resolution", async ({ page }) => {
@@ -423,7 +722,8 @@ test("Agent pending action 通过统一消息入口提交 typed resolution", asy
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: /前一天/ }).click();
+  await page.getByRole("radio", { name: /前一天/ }).check();
+  await page.getByRole("button", { name: "继续" }).click();
 
   await expect(page.getByText(/主要业务结论。这个结论包含足够长/)).toHaveCount(1);
   expect(submitted).toHaveLength(1);
@@ -721,19 +1021,20 @@ test("失败状态不会显示活跃进度或工程入口", async ({ page }) => 
   await page.goto("/");
 
   await expect(page.locator(".customer-status")).toHaveCount(1);
-  await expect(page.locator(".progress-timeline.failed")).toHaveCount(1);
-  await expect(page.locator(".progress-timeline.failed .progress-spinner")).toHaveCount(0);
+  await expect(page.locator(".analysis-task-card.failed")).toHaveCount(1);
+  await expect(page.locator(".analysis-task-card.failed .progress-spinner")).toHaveCount(0);
   await expect(page.locator("main").getByRole("alert")).toHaveCount(1);
   await expect(page.getByText("运行审计")).toHaveCount(0);
   await expect(page.getByText("已生成业务参考")).toHaveCount(0);
 });
 
-test("移动端历史使用抽屉且等待确认时不显示普通输入框", async ({ page }) => {
+test("移动端历史使用抽屉且等待确认时保留其他口径输入出口", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installConversationRoutes(page);
   await page.goto("/");
 
-  await expect(page.getByRole("textbox", { name: "业务问题", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "业务问题", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "请选择比较基线" })).toBeVisible();
   const toggle = page.getByRole("button", { name: "打开分析历史" });
   await toggle.focus();
   await toggle.press("Enter");
@@ -746,17 +1047,16 @@ test("移动端历史使用抽屉且等待确认时不显示普通输入框", as
   await expect(page.getByRole("button", { name: "打开分析历史" })).toBeFocused();
 });
 
-test("移动端恢复已完成任务时从业务参考开头阅读", async ({ page }) => {
+test("移动端恢复已完成任务时直接从业务回答阅读", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installConversationRoutes(page, completedSnapshot());
   await page.goto("/");
 
-  const answerTitle = page.getByRole("heading", {
-    name: "业务参考已生成，结论有适用边界",
-  });
-  await expect(answerTitle).toBeVisible();
-  const box = await answerTitle.boundingBox();
+  const answerStart = page.getByRole("heading", { name: "综合结论与发现" });
+  await expect(answerStart).toBeVisible();
+  const box = await answerStart.boundingBox();
   expect(box?.y ?? 9999).toBeLessThan(844);
+  await expect(page.getByText("业务参考已生成，结论有适用边界")).toHaveCount(0);
   await expect(page.locator(".answer-facts")).toHaveCount(0);
 });
 
@@ -766,13 +1066,13 @@ test("完成态只显示一份答案并优先于折叠的分析过程", async ({
 
   await expect(page.getByText(/付费金额较 Q1 增长 38\.62 亿元/)).toHaveCount(1);
   const answer = page.locator(".business-reference");
-  const progress = page.locator(".progress-timeline.completed_with_limits");
+  const progress = page.locator(".analysis-task-card.completed_with_limits");
   await expect(answer).toBeVisible();
   await expect(progress).toBeVisible();
   expect(await answer.evaluate((element, other) => (
     Boolean(element.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
   ), await progress.elementHandle())).toBe(true);
-  await expect(progress.locator(".completed-progress")).not.toHaveAttribute("open", "");
+  await expect(progress.locator(".analysis-task-detail")).toHaveCount(0);
 });
 
 test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区域", async ({ page }) => {
@@ -804,8 +1104,8 @@ test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区�
         lineHeight: Number.parseFloat(style.lineHeight),
       };
     });
-    expect(typography.fontSize).toBeGreaterThanOrEqual(16);
-    expect(typography.lineHeight).toBeGreaterThanOrEqual(27);
+    expect(typography.fontSize).toBe(14);
+    expect(typography.lineHeight).toBeGreaterThanOrEqual(24);
     const paragraphSpacing = await summaryCopy.locator("p").first().evaluate(
       (element) => Number.parseFloat(getComputedStyle(element).marginBottom),
     );

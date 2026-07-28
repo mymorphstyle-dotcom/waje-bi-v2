@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import json
 from pathlib import Path
 from threading import Event, Lock
@@ -15,8 +16,32 @@ from bi_agent.runtime.durable_call_journal import (
 )
 from bi_agent.runtime.evidence_authority import canonical_digest
 from bi_agent.runtime.llm_client import LLMOutputError, LLMProviderError
+from bi_agent.runtime.contracts import load_contract
+from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_runtime_contract_pins_global_llm_output_handling_policy():
+    payload = load_contract("contracts/runtime/clickhouse-analysis-bindings.yaml")
+    RuntimeContractRegistry(payload)
+    assert payload["llm_output_handling_policy"] == {
+        "schema_version": "llm-output-handling-policy.v2",
+        "consumable_contract_surplus": "project_record_and_continue",
+        "consumable_presentation_issue": "record_and_continue",
+        "output_contract_failure": "one_diagnostic_repair_then_stop",
+        "provider_transient_failure": "provider_retry_policy",
+    }
+    drifted = deepcopy(payload)
+    drifted["llm_output_handling_policy"]["output_contract_failure"] = (
+        "retry_without_diagnostic"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="runtime_llm_output_handling_policy_invalid",
+    ):
+        RuntimeContractRegistry(drifted)
 
 
 def _spec(*, input_value: str = "input") -> DurableCallSpec:
@@ -235,6 +260,7 @@ def _provider_call_spec() -> DurableCallSpec:
             {"role": "user", "content": "payload"},
         ),
         "required_keys": ("decision",),
+        "output_projector_ref": "runtime:required-output-fields.v1",
         "output_validator_ref": f"{__name__}:_accept_output",
         "model_tier": "critical",
         "thinking": None,
@@ -318,14 +344,36 @@ class _UnknownFailureProvider(_Provider):
         raise AssertionError("provider_programming_error")
 
 
+class _SurplusOutputProvider(_Provider):
+    def invoke_json(self, **kwargs):
+        with self._lock:
+            self.calls += 1
+        output = {
+            "decision": "accepted",
+            "duplicate_decision": "accepted",
+        }
+        return _ProviderResult(
+            output,
+            {
+                "task": kwargs["task"],
+                "provider": "provider-test",
+                "model": "model-test",
+                "attempt_count": 1,
+                "structured_output": output,
+            },
+        )
+
+
 class _ProviderWithoutValidatorCapability(_Provider):
     durable_max_attempts = 2
 
     def __init__(self) -> None:
         super().__init__()
         self.received_validator = False
+        self.invocations: list[dict[str, object]] = []
 
     def invoke_json(self, **kwargs):
+        self.invocations.append(dict(kwargs))
         self.received_validator = self.received_validator or (
             "output_validator" in kwargs
         )
@@ -360,6 +408,13 @@ class _ProviderWithoutValidatorCapability(_Provider):
             output,
             audit,
         )
+
+
+class _AlwaysInvalidProvider(_ProviderWithoutValidatorCapability):
+    def invoke_json(self, **kwargs):
+        result = super().invoke_json(**kwargs)
+        output = {"decision": "poison"}
+        return _ProviderResult(output, {**result.audit, "structured_output": output})
 
 
 def _reject_poison_output(output) -> None:
@@ -410,6 +465,62 @@ def test_provider_client_replays_persisted_result_and_exposes_stage_attempt_refs
     assert replay.accepted_attempt_refs == first.accepted_attempt_refs
 
 
+def test_provider_projects_consumable_surplus_without_retry_and_keeps_raw_audit():
+    journal = InMemoryDurableCallJournal()
+    provider = _SurplusOutputProvider()
+    client = DurableProviderClient(
+        provider,
+        journal=journal,
+        run_attempt_id="run-provider-projection",
+        intent_revision_id="intent-provider",
+        plan_revision_id="plan-provider",
+        call_kind="semantic_provider",
+        task_id=None,
+        stage_name="settle_claim_authority",
+    )
+
+    result = client.invoke_json(
+        task="single_authority_candidate_claim_proposal",
+        prompt_version="test.v1",
+        messages=(
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "payload"},
+        ),
+        required_keys=("decision",),
+        output_validator=_accept_output,
+        model_tier="critical",
+    )
+    attempts = journal.attempts_for_idempotency(
+        client.accepted_call_specs[0].idempotency_key
+    )
+
+    assert provider.calls == 1
+    assert len(attempts) == 1
+    assert result.output == {"decision": "accepted"}
+    assert result.raw_output == {
+        "decision": "accepted",
+        "duplicate_decision": "accepted",
+    }
+    assert result.audit["contract_projection"] == {
+        "schema_version": "llm-contract-projection.v1",
+        "disposition": "accepted_normalized",
+        "raw_output": {
+            "decision": "accepted",
+            "duplicate_decision": "accepted",
+        },
+        "raw_output_digest": canonical_digest(result.raw_output),
+        "canonical_output_digest": canonical_digest(result.output),
+        "mutation_count": 1,
+        "mutations": [
+            {
+                "path": "duplicate_decision",
+                "action": "discard_surplus_field",
+                "reason": "outside_consumer_contract",
+            }
+        ],
+    }
+
+
 def test_provider_retry_records_failed_attempt_then_accepts_second_attempt():
     journal = InMemoryDurableCallJournal()
     provider = _RetryingProvider()
@@ -451,7 +562,8 @@ def test_provider_retry_records_failed_attempt_then_accepts_second_attempt():
         "type": "rate_limit_error",
         "param": "messages",
     }
-    failed_audit = journal.events_for_attempt(attempts[0])[-1].failure_payload["audit"]
+    failed_payload = journal.events_for_attempt(attempts[0])[-1].failure_payload
+    failed_audit = failed_payload["audit"]
     assert failed_audit["provider_error"] == prior_failure["provider_error"]
     assert failed_audit["call_input_ref"] == attempts[0].spec.input_ref
     assert failed_audit["call_input_digest"] == attempts[0].spec.input_digest
@@ -469,7 +581,7 @@ def test_provider_retry_records_failed_attempt_then_accepts_second_attempt():
     assert client.accepted_attempt_refs == (attempts[1].attempt_ref,)
 
 
-def test_wrapper_rejects_poison_before_acceptance_without_provider_validator_support():
+def test_wrapper_repairs_poison_once_with_contract_diagnostic():
     journal = InMemoryDurableCallJournal()
     provider = _ProviderWithoutValidatorCapability()
     client = DurableProviderClient(
@@ -506,7 +618,8 @@ def test_wrapper_rejects_poison_before_acceptance_without_provider_validator_sup
         "failed",
         "succeeded",
     ]
-    failed_audit = journal.events_for_attempt(attempts[0])[-1].failure_payload["audit"]
+    failed_payload = journal.events_for_attempt(attempts[0])[-1].failure_payload
+    failed_audit = failed_payload["audit"]
     serialized_failure = json.dumps(failed_audit)
     assert failed_audit["task"] == ("single_authority_candidate_claim_proposal")
     assert failed_audit["provider"] == "provider-test"
@@ -534,7 +647,59 @@ def test_wrapper_rejects_poison_before_acceptance_without_provider_validator_sup
     assert "private-provider-response" not in serialized_failure
     assert "poison" not in serialized_failure
     assert len(serialized_failure) < 4096
+    assert failed_payload["invalid_output"] == {"decision": "poison"}
+    repair_message = json.loads(
+        provider.invocations[1]["messages"][-1]["content"]
+    )
+    assert repair_message["repair_request"] == {
+        "instruction": (
+            "The previous JSON could not be consumed. Return one complete "
+            "corrected JSON object that satisfies the original output contract. "
+            "Preserve valid business meaning and repair only the reported "
+            "contract issue."
+        ),
+        "validation_error": "planner_contract_rejected",
+        "previous_output": {"decision": "poison"},
+        "attempt_limit": "final_repair_attempt",
+    }
     assert client.accepted_attempt_refs == (attempts[1].attempt_ref,)
+
+
+def test_wrapper_stops_after_one_failed_contract_repair() -> None:
+    journal = InMemoryDurableCallJournal()
+    provider = _AlwaysInvalidProvider()
+    client = DurableProviderClient(
+        provider,
+        journal=journal,
+        run_attempt_id="run-provider",
+        intent_revision_id="intent-provider",
+        plan_revision_id="plan-provider",
+        call_kind="semantic_provider",
+        task_id=None,
+        stage_name="settle_claim_authority",
+    )
+
+    with pytest.raises(
+        LLMOutputError,
+        match="^planner_contract_rejected$",
+    ):
+        client.invoke_json(
+            task="single_authority_candidate_claim_proposal",
+            prompt_version="test.v1",
+            messages=(
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "payload"},
+            ),
+            required_keys=("decision",),
+            output_validator=_reject_poison_output,
+            model_tier="critical",
+        )
+
+    assert provider.calls == 2
+    assert len(provider.invocations) == 2
+    assert '"attempt_limit":"final_repair_attempt"' in (
+        provider.invocations[1]["messages"][-1]["content"]
+    )
 
 
 def test_wrapper_does_not_retry_non_retryable_output_contract_failure() -> None:
@@ -549,6 +714,7 @@ def test_wrapper_does_not_retry_non_retryable_output_contract_failure() -> None:
         "prompt_version": "test.v1",
         "messages": messages,
         "required_keys": ("decision",),
+        "output_projector_ref": "runtime:required-output-fields.v1",
         "output_validator_ref": (
             f"{__name__}:_reject_poison_output_without_retry"
         ),

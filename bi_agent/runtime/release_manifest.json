@@ -1,10 +1,10 @@
 {
-  "manifest_version": "single-authority.final.release.2026-07-24-v55",
+  "manifest_version": "single-authority.final.release.2026-07-29-v59",
   "components": [
     {
       "component": "contracts",
-      "paths": ["contracts/metrics", "contracts/dimensions", "contracts/sources", "contracts/events", "contracts/assumptions", "contracts/backlog", "contracts/runtime", "contracts/source-templates", "bi_agent/runtime/contracts.py", "bi_agent/runtime/contract_gaps.py", "bi_agent/runtime/canonical_values.py", "bi_agent/runtime/baseline_semantics.py", "bi_agent/runtime/window_resolver.py", "bi_agent/runtime/dataset_catalog.py", "tools/contracts/validate-contracts.rb", "tools/data", "tools/runtime/load-contracts-to-postgres.rb", "tools/runtime/postgres-runtime-mirror.sql"],
-      "active_ref": "sha256:1b248ca0d05bbf0a69b759a84bc5658b1ab352e52e7b42a7bf19824de1e9d6ff",
+      "paths": ["contracts/metrics", "contracts/dimensions", "contracts/sources", "contracts/events", "contracts/assumptions", "contracts/backlog", "contracts/runtime", "contracts/source-templates", "bi_agent/runtime/contracts.py", "bi_agent/runtime/contract_gaps.py", "bi_agent/runtime/canonical_values.py", "bi_agent/runtime/baseline_semantics.py", "bi_agent/runtime/window_resolver.py", "bi_agent/runtime/dataset_catalog.py", "compose.clickhouse.yaml", "ops/clickhouse", "tools/clickhouse", "tools/contracts/validate-contracts.rb", "tools/data", "tools/runtime/load-contracts-to-postgres.rb", "tools/runtime/postgres-runtime-mirror.sql"],
+      "active_ref": "sha256:b32896621ffbb36043c5096192bbb478d90f50053372d98ef3ede9965891a5bd",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "data_contract_owner",
       "required_checks": ["validate_contracts", "runtime_registry_tests", "affected_eval_slice", "full_acceptance_eval"],
@@ -21,8 +21,8 @@
     },
     {
       "component": "conversation_and_plan_authority",
-      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/analysis_performance.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/general_agent_deployment.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/thread_context_summary.py", "bi_agent/runtime/thread_summary_maintenance.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/agent_context_compactor.py", "bi_agent/runtime/agent_tool_discovery.py", "bi_agent/runtime/agent_runtime_admission.py", "bi_agent/runtime/capability_catalog_tool.py", "bi_agent/runtime/controlled_subagent_tools.py", "bi_agent/runtime/analysis_artifacts.py", "bi_agent/runtime/bi_analysis_tools.py", "bi_agent/runtime/agent_interaction_tools.py", "bi_agent/runtime/durable_tool_bridge.py", "bi_agent/runtime/agent_task_recovery.py", "bi_agent/runtime/agent_task_resume_outbox.py", "bi_agent/runtime/agent_turn_runtime.py", "bi_agent/runtime/general_agent_entry.py", "bi_agent/runtime/general_agent_turn_recovery.py", "requirements.txt"],
-      "active_ref": "sha256:e874aae4c348aba45ae1ff01653197754fad6679c93f5d747b4adf3c0854d6e4",
+      "paths": ["bi_agent/conversation", "bi_agent/runtime/single_authority.py", "bi_agent/runtime/authority_context_resolver.py", "bi_agent/runtime/context_manifest.py", "bi_agent/runtime/authoritative_plan_result.py", "bi_agent/runtime/analysis_contracts.py", "bi_agent/runtime/analysis_contract_compiler.py", "bi_agent/runtime/analysis_performance.py", "bi_agent/runtime/plan_authority.py", "bi_agent/runtime/plan_compiler.py", "bi_agent/runtime/recorded_plan_proposal.py", "bi_agent/runtime/runtime_contract_registry.py", "bi_agent/runtime/durable_call_journal.py", "bi_agent/runtime/llm_contract_projection.py", "bi_agent/runtime/llm_client.py", "bi_agent/runtime/llm_prompts.py", "bi_agent/runtime/langgraph_workflow.py", "bi_agent/runtime/claim_coverage.py", "bi_agent/runtime/temporal_comparison.py", "bi_agent/runtime/agent_sdk_contracts.py", "bi_agent/runtime/agents_sdk_adapter.py", "bi_agent/runtime/agents_sdk_trace.py", "bi_agent/runtime/mainland_model_provider.py", "bi_agent/runtime/provider_capability_probe.py", "bi_agent/runtime/general_agent_deployment.py", "bi_agent/runtime/thread_item_ledger.py", "bi_agent/runtime/postgres_agent_session.py", "bi_agent/runtime/thread_context_summary.py", "bi_agent/runtime/thread_summary_maintenance.py", "bi_agent/runtime/agent_context.py", "bi_agent/runtime/agent_context_compactor.py", "bi_agent/runtime/agent_tool_discovery.py", "bi_agent/runtime/agent_runtime_admission.py", "bi_agent/runtime/capability_catalog_tool.py", "bi_agent/runtime/controlled_subagent_tools.py", "bi_agent/runtime/analysis_artifacts.py", "bi_agent/runtime/bi_analysis_tools.py", "bi_agent/runtime/agent_interaction_tools.py", "bi_agent/runtime/durable_tool_bridge.py", "bi_agent/runtime/agent_task_recovery.py", "bi_agent/runtime/agent_task_resume_outbox.py", "bi_agent/runtime/agent_turn_runtime.py", "bi_agent/runtime/general_agent_entry.py", "bi_agent/runtime/general_agent_turn_recovery.py", "requirements.txt"],
+      "active_ref": "sha256:7c66bda49a80a47045d354b7822304c023618fcf7ac9a25ad7447a97b1b9a77a",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["single_authority_phase01_tests", "single_authority_phase02_tests", "single_authority_postgres_tests", "typed_conversation_tests", "gateway_phase02_planned_tests", "full_acceptance_eval"],
@@ -30,8 +30,8 @@
     },
     {
       "component": "capability_execution_authority",
-      "paths": ["contracts/capabilities", "bi_agent/capabilities", "bi_agent/runtime/capability_authority.py", "bi_agent/runtime/capability_execution.py", "bi_agent/runtime/capability_scheduler.py", "bi_agent/runtime/capability_task_adapter.py", "bi_agent/runtime/authoritative_task_inputs.py", "bi_agent/runtime/authoritative_execution_result.py", "bi_agent/runtime/source_metric_reconciliation.py", "bi_agent/runtime/factor_coverage.py", "bi_agent/runtime/formula_graph.py", "bi_agent/runtime/evidence_taxonomy.py", "bi_agent/runtime/evidence_authority.py", "bi_agent/runtime/analysis_runtime.py", "bi_agent/runtime/authoritative_query_chain.py", "bi_agent/runtime/clickhouse_query_compiler.py", "bi_agent/runtime/clickhouse_runtime.py", "bi_agent/runtime/query_audit.py", "bi_agent/runtime/query_completeness.py", "bi_agent/runtime/query_executor.py", "bi_agent/runtime/sql_safety.py", "bi_agent/runtime/window_metric_evidence.py", "bi_agent/runtime/runtime_persistence.py", "bi_agent/runtime/coverage_audit.py", "bi_agent/runtime/current_data_coverage.py", "bi_agent/runtime/degradation_policy.py", "bi_agent/runtime/exploration_budget_policy.py"],
-      "active_ref": "sha256:0546a2c21cc8cabdd7284bf5be5a660b4f49eeb6803369ff2ac3a4ba99d679fb",
+      "paths": ["contracts/capabilities", "bi_agent/capabilities", "bi_agent/runtime/capability_authority.py", "bi_agent/runtime/capability_execution.py", "bi_agent/runtime/capability_scheduler.py", "bi_agent/runtime/capability_task_adapter.py", "bi_agent/runtime/authoritative_task_inputs.py", "bi_agent/runtime/authoritative_execution_result.py", "bi_agent/runtime/source_metric_reconciliation.py", "bi_agent/runtime/factor_coverage.py", "bi_agent/runtime/formula_graph.py", "bi_agent/runtime/evidence_taxonomy.py", "bi_agent/runtime/evidence_authority.py", "bi_agent/runtime/analysis_runtime.py", "bi_agent/runtime/authoritative_query_chain.py", "bi_agent/runtime/clickhouse_query_compiler.py", "bi_agent/runtime/clickhouse_runtime.py", "bi_agent/runtime/query_audit.py", "bi_agent/runtime/query_completeness.py", "bi_agent/runtime/query_executor.py", "bi_agent/runtime/query_ir.py", "bi_agent/runtime/dimension_combination_derivation.py", "bi_agent/runtime/event_window_derivation.py", "bi_agent/runtime/sql_safety.py", "bi_agent/runtime/window_metric_evidence.py", "bi_agent/runtime/runtime_persistence.py", "bi_agent/runtime/coverage_audit.py", "bi_agent/runtime/current_data_coverage.py", "bi_agent/runtime/degradation_policy.py", "bi_agent/runtime/exploration_budget_policy.py"],
+      "active_ref": "sha256:48290388ee50da3b9232c56d38d410635bd7b68176316604b757a3537f23d825",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "agent_runtime_owner",
       "required_checks": ["phase4_capability_tests", "single_authority_phase03_tests", "p4_factor_coverage_tests", "capability_scheduler_postgres_tests", "affected_eval_slice", "p4_live_deepseek_acceptance", "full_acceptance_eval"],
@@ -40,7 +40,7 @@
     {
       "component": "claim_and_narrative_authority",
       "paths": ["contracts/authorities", "bi_agent/runtime/claim_authority.py", "bi_agent/runtime/claim_settlement.py", "bi_agent/runtime/semantic_authority_workflow.py", "bi_agent/runtime/authority_seal_persistence.py", "bi_agent/runtime/narrative_authority.py", "bi_agent/runtime/narrative_context.py", "bi_agent/runtime/narrative_materialization.py", "bi_agent/runtime/narrative_material_projection.py", "bi_agent/runtime/narrative_workflow.py", "bi_agent/runtime/answer_completeness.py", "bi_agent/runtime/public_fact_materialization.py", "bi_agent/runtime/publication_safety.py"],
-      "active_ref": "sha256:4c1feb40b7b936c96fa341e059b379bf6db0cba946bed02ee802bdc8d904421c",
+      "active_ref": "sha256:4de8a296162f449c0f8bc9387c43be6181ad1e4e1138948cca720ab35d1104e1",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "answer_safety_owner",
       "required_checks": ["claim_authority_tests", "semantic_authority_tests", "authority_seal_tests", "narrative_authority_tests", "narrative_workflow_tests", "publication_safety_tests", "full_acceptance_eval"],
@@ -48,17 +48,17 @@
     },
     {
       "component": "publication_and_delivery",
-      "paths": ["bi_agent/runtime/narrative_material_persistence.py", "bi_agent/runtime/publication_authority.py", "bi_agent/runtime/publication_flow.py", "bi_agent/runtime/publication_persistence.py", "bi_agent/runtime/post_execution_workflow.py", "bi_agent/runtime/post_seal_failure_persistence.py", "bi_agent/runtime/insight_governance_persistence.py", "tools/runtime/conversation-runtime.sql", "tools/runtime/cutover_single_authority_schema.py", "tools/runtime/validate_general_agent_deployment.py", "tools/runtime/load-conversation-runtime-schema.rb", "tools/runtime/recover_run_dispatches.py", "tools/runtime/prune_agent_traces.py", "tools/runtime/backup_waje_runtime.py"],
-      "active_ref": "sha256:8d23709bccf07fed63e3697ce6515384f53963a215ab7ed45ebea08cbb34b21a",
+      "paths": ["bi_agent/runtime/narrative_material_persistence.py", "bi_agent/runtime/publication_authority.py", "bi_agent/runtime/publication_flow.py", "bi_agent/runtime/publication_persistence.py", "bi_agent/runtime/post_execution_workflow.py", "bi_agent/runtime/controlled_investigation_runtime.py", "bi_agent/runtime/controlled_investigation_workflow.py", "bi_agent/runtime/post_seal_failure_persistence.py", "bi_agent/runtime/insight_governance_persistence.py", "tools/runtime/conversation-runtime.sql", "tools/runtime/cutover_single_authority_schema.py", "tools/runtime/validate_general_agent_deployment.py", "tools/runtime/load-conversation-runtime-schema.rb", "tools/runtime/recover_run_dispatches.py", "tools/runtime/prune_agent_traces.py", "tools/runtime/backup_waje_runtime.py"],
+      "active_ref": "sha256:e5b63f7bc7163e99c5b9f11772b9784234f3572312984a5d9b15b6baa757f28e",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "publication_runtime_owner",
-      "required_checks": ["publication_authority_tests", "publication_persistence_tests", "post_execution_workflow_tests", "single_authority_schema_tests", "delivery_state_tests", "full_acceptance_eval"],
+      "required_checks": ["publication_authority_tests", "publication_persistence_tests", "post_execution_workflow_tests", "controlled_investigation_tests", "single_authority_schema_tests", "delivery_state_tests", "full_acceptance_eval"],
       "rollback_action": "restore publication projection, outbox, delivery, governance, and schema together; validate the database migration digest before resuming delivery"
     },
     {
       "component": "gateway",
       "paths": ["app", "proxy.ts", "next.config.ts", "package.json", "package-lock.json"],
-      "active_ref": "sha256:8efe6ee09899ce80c8b97d004e5f40a73a4b47759c4e2d19c66dc123708fdccd",
+      "active_ref": "sha256:06a80fb9444bd268c229a780ec24d9bc49d323a70f0a68f535941db0f2e041bc",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "gateway_owner",
       "required_checks": ["gateway_typescript_check", "gateway_contract_tests", "gateway_customer_projection_tests", "gateway_crash_recovery_tests", "full_acceptance_eval"],
@@ -66,8 +66,8 @@
     },
     {
       "component": "eval_governance",
-      "paths": ["evals", "tools/evals", "tools/phase7", "bi_agent/runtime/release_manifest.py", "bi_agent/runtime/insight_quality_rubric.py", "docs/adr/2026-07-17-single-authority-agent-workflow.md"],
-      "active_ref": "sha256:a8dbc85fb1c22feee39c2c6fab62e7c18a8cc4f450d9bf7d668241b41c1a3153",
+      "paths": ["evals", "tools/evals", "tools/phase7", "tools/phase9", "bi_agent/runtime/release_manifest.py", "bi_agent/runtime/insight_quality_rubric.py", "docs/adr/2026-07-17-single-authority-agent-workflow.md"],
+      "active_ref": "sha256:0a38cefc4c232893dd7200c1d04551166a5628a4f8554c539196efb086e9f0d4",
       "rollback_ref": "git:1ec06ae93e816f2037b9eefb12c3801fa62b0bba",
       "owner": "eval_governance_owner",
       "required_checks": ["business_question_expectation_tests", "live_customer_publication_acceptance", "insight_governance_tests", "full_acceptance_eval"],

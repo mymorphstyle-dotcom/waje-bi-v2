@@ -203,7 +203,7 @@ def test_multi_day_pair_uses_baseline_window_and_target_start_context() -> None:
     assert context.required_complete_days == 31
 
 
-def test_calendar_partition_uses_evaluation_window_only() -> None:
+def test_calendar_partition_can_project_evaluation_range_as_capability_frame() -> None:
     authority = resolve_effective_comparison(
         time_spec={
             "kind": "date_range",
@@ -218,6 +218,11 @@ def test_calendar_partition_uses_evaluation_window_only() -> None:
             "target_members": ["start"],
             "baseline_members": ["mid", "end"],
             "aggregation": "mean_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
         },
         decision_ledger=DecisionLedger(),
         require_physical_baseline=False,
@@ -227,21 +232,29 @@ def test_calendar_partition_uses_evaluation_window_only() -> None:
         authority,
         context_window_specs=(
             {
-                "capability_id": "compare_period_phases",
-                "relation": "trailing_complete_periods",
-                "unit": "month",
-                "count": 24,
+                "capability_id": "cross_source_association",
+                "relation": "evaluation_range",
+                "unit": "day",
+                "count": 912,
             },
         ),
     )
 
-    assert len(result.windows) == 1
+    assert len(result.windows) == 2
     evaluation = result.windows[0]
     assert evaluation.window_id == "target_day"
     assert evaluation.start_inclusive == "2024-01-01"
     assert evaluation.end_exclusive == "2026-07-01"
     assert evaluation.required_complete_days == 912
     assert evaluation.aggregation == "mean_of_complete_days"
+    observation_frame = result.windows[1]
+    assert observation_frame.window_id == (
+        "context__cross_source_association__evaluation_range__912_day"
+    )
+    assert observation_frame.role == "reference"
+    assert observation_frame.start_inclusive == evaluation.start_inclusive
+    assert observation_frame.end_exclusive == evaluation.end_exclusive
+    assert observation_frame.required_complete_days == 912
 
 
 def test_event_decision_owns_physical_windows_for_custom_time() -> None:

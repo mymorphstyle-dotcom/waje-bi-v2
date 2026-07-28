@@ -1,6 +1,6 @@
 import type { CustomerPublication } from "./_customerPublicationContract";
 
-export const CUSTOMER_ANALYSIS_SCHEMA_VERSION = "customer-conversation.v2" as const;
+export const CUSTOMER_ANALYSIS_SCHEMA_VERSION = "customer-conversation.v5" as const;
 
 export const CUSTOMER_PHASES = [
   { id: "understanding", label: "理解业务问题" },
@@ -15,6 +15,7 @@ export type CustomerMainStatus =
   | "idle"
   | "working"
   | "needs_input"
+  | "checkpoint"
   | "completed"
   | "completed_with_limits"
   | "failed";
@@ -52,12 +53,20 @@ export type CustomerInputOption = {
   recommended: boolean;
 };
 
+export type CustomerInputQuestion = {
+  questionKey: string;
+  question: string;
+  explanation: string;
+  options: CustomerInputOption[];
+};
+
 export type CustomerInputRequest = {
   kind: "clarification" | "topic_choice";
   title: string;
   question: string;
   explanation: string;
   options: CustomerInputOption[];
+  questions: CustomerInputQuestion[];
   allowFreeform: boolean;
 };
 
@@ -95,6 +104,11 @@ export type CustomerAnalysisState =
       input: CustomerInputRequest;
     })
   | (CustomerStateBase & {
+      status: "checkpoint";
+      phase: CustomerPhase;
+      safeToClose: true;
+    })
+  | (CustomerStateBase & {
       status: "completed" | "completed_with_limits";
       phase: "delivering";
       answer: CustomerAnswer;
@@ -121,6 +135,12 @@ export type CustomerAnalysisTransport = {
   technicalDetailRef: string | null;
 };
 
+export type PlannerIssueState = {
+  question: string;
+  status: "pending" | "querying" | "evidenced" | "limited";
+  statusLabel: string;
+};
+
 export type CustomerAnalysisSnapshot = {
   schemaVersion: typeof CUSTOMER_ANALYSIS_SCHEMA_VERSION;
   stateVersion: string;
@@ -130,6 +150,9 @@ export type CustomerAnalysisSnapshot = {
     createdAt: string;
   };
   messages: CustomerMessage[];
+  businessUnderstanding: string | null;
+  plannerIssues: string[];
+  plannerIssueStates: PlannerIssueState[];
   state: CustomerAnalysisState;
   transport: CustomerAnalysisTransport;
 };
@@ -234,6 +257,52 @@ const PHASE_COPY: Record<CustomerPhase, { title: string; description: string }> 
   },
 };
 
+const STOPPED_CHECKPOINTS = {
+  phase02: {
+    runStatus: "planned",
+    phase: "planning",
+    title: "分析计划已确认",
+    description: "待解决问题、分析路径和执行顺序已经保存。",
+  },
+  phase03: {
+    runStatus: "evidence_ready",
+    phase: "querying",
+    title: "数据分析阶段已完成",
+    description: "查询结果和分析证据已经保存。",
+  },
+  phase04: {
+    runStatus: "authority_sealed",
+    phase: "synthesizing",
+    title: "结论校验阶段已完成",
+    description: "结论依据和证据边界已经保存。",
+  },
+  phase05: {
+    runStatus: "narrative_ready",
+    phase: "synthesizing",
+    title: "业务表达阶段已完成",
+    description: "业务结论和适用边界已经生成并保存。",
+  },
+} as const;
+
+function stoppedCheckpoint(
+  runStatus: string,
+  request: Record<string, unknown>,
+) {
+  const stopAfterPhase = stringValue(request.stop_after_phase);
+  const checkpoint = STOPPED_CHECKPOINTS[
+    stopAfterPhase as keyof typeof STOPPED_CHECKPOINTS
+  ];
+  return checkpoint?.runStatus === runStatus ? checkpoint : null;
+}
+
+export function isTerminalAnalysisCheckpoint(
+  runStatus: unknown,
+  request: Record<string, unknown>,
+) {
+  return typeof runStatus === "string"
+    && stoppedCheckpoint(runStatus, request) !== null;
+}
+
 const NODE_PHASES: Record<string, CustomerPhase> = {
   conversation_entry: "understanding",
   bind_intent: "understanding",
@@ -272,12 +341,19 @@ export function projectCustomerAnalysisSnapshot(
     agentState?.ownedMessageKey ?? null,
   );
   const title = conversationTitle(messages);
+  const plannerIssues = plannerIssuesFrom(source.run?.request);
   const base = {
     schemaVersion: CUSTOMER_ANALYSIS_SCHEMA_VERSION,
     stateVersion: source.stateVersion,
     confirmedAt: source.confirmedAt,
     thread: { title, createdAt: source.thread.createdAt },
     messages,
+    businessUnderstanding: businessUnderstandingFrom(source.run?.request),
+    plannerIssues,
+    plannerIssueStates: plannerIssueStatesFrom(
+      source.run?.request,
+      plannerIssues,
+    ),
   } as const;
 
   if (agentState) {
@@ -307,6 +383,7 @@ export function projectCustomerAnalysisSnapshot(
 
   const run = source.run;
   const phase = currentPhase(run.status, source.runNodes, source.progressPhase);
+  const checkpoint = stoppedCheckpoint(run.status, run.request);
   const interaction = customerInteraction(source.interactionResult);
   const clarification = run.status === "waiting_for_clarification"
     ? customerClarification(source.currentClarification)
@@ -359,6 +436,20 @@ export function projectCustomerAnalysisSnapshot(
     );
   } else if (run.status === "failed") {
     state = failedState(phase, run.request, source.runNodes, run.updatedAt);
+  } else if (checkpoint) {
+    state = {
+      status: "checkpoint",
+      phase: checkpoint.phase,
+      title: checkpoint.title,
+      description: checkpoint.description,
+      updates: progressUpdates(
+        checkpoint.phase,
+        "completed",
+        source.runNodes,
+        run.updatedAt,
+      ),
+      safeToClose: true,
+    };
   } else if ([
     "queued",
     "running",
@@ -395,6 +486,9 @@ export function parseCustomerAnalysisSnapshot(value: unknown): CustomerAnalysisS
     "confirmedAt",
     "thread",
     "messages",
+    "businessUnderstanding",
+    "plannerIssues",
+    "plannerIssueStates",
     "state",
     "transport",
   ], "customer_snapshot_invalid");
@@ -418,9 +512,120 @@ export function parseCustomerAnalysisSnapshot(value: unknown): CustomerAnalysisS
     requiredString(message.text, "customer_snapshot_invalid");
     requiredTimestamp(message.createdAt, "customer_snapshot_invalid");
   });
+  if (parsed.businessUnderstanding !== null) {
+    requiredString(parsed.businessUnderstanding, "customer_snapshot_invalid");
+  }
+  if (
+    !Array.isArray(parsed.plannerIssues)
+    || parsed.plannerIssues.some(
+      (issue) => typeof issue !== "string" || !issue.trim(),
+    )
+  ) {
+    throw new Error("customer_snapshot_invalid");
+  }
+  if (!Array.isArray(parsed.plannerIssueStates)) {
+    throw new Error("customer_snapshot_invalid");
+  }
+  parsed.plannerIssueStates.forEach((issue) => {
+    assertExactKeys(
+      issue,
+      ["question", "status", "statusLabel"],
+      "customer_snapshot_invalid",
+    );
+    requiredString(issue.question, "customer_snapshot_invalid");
+    requiredString(issue.statusLabel, "customer_snapshot_invalid");
+    if (!["pending", "querying", "evidenced", "limited"].includes(issue.status)) {
+      throw new Error("customer_snapshot_invalid");
+    }
+  });
   validateState(parsed.state);
   validateTransport(parsed.transport);
   return parsed;
+}
+
+function businessUnderstandingFrom(
+  request: Record<string, unknown> | undefined,
+) {
+  const value = request?.business_understanding;
+  const intentRevisionId = request?.business_understanding_intent_revision_id;
+  return typeof value === "string"
+    && value.trim() === value
+    && value
+    && typeof intentRevisionId === "string"
+    && intentRevisionId.trim() === intentRevisionId
+    && intentRevisionId
+    ? value
+    : null;
+}
+
+function plannerIssuesFrom(
+  request: Record<string, unknown> | undefined,
+): string[] {
+  const projection = optionalObject(request?.planner_problem_projection);
+  const planRefs = optionalObject(request?.plan_result_refs);
+  if (
+    projection?.schema_version !== "planner-problem-projection.v1"
+    || !planRefs
+    || stringValue(projection.plan_revision_id)
+      !== stringValue(planRefs.plan_revision_id)
+    || stringValue(projection.planner_proposal_id)
+      !== stringValue(planRefs.planner_proposal_id)
+    || !Array.isArray(projection.issues)
+  ) return [];
+  const issues = projection.issues.flatMap((value) => {
+    const issue = optionalObject(value);
+    const question = stringValue(issue?.question).trim();
+    const issueId = stringValue(issue?.issue_id);
+    if (!issueId || !question) return [];
+    return [question];
+  });
+  return [...new Set(issues)];
+}
+
+function plannerIssueStatesFrom(
+  request: Record<string, unknown> | undefined,
+  plannerIssues: string[],
+): PlannerIssueState[] {
+  const projection = optionalObject(request?.query_bundle_projection);
+  const planRefs = optionalObject(request?.plan_result_refs);
+  if (
+    projection?.schema_version !== "query-bundle-projection.v1"
+    || !planRefs
+    || stringValue(projection.plan_revision_id)
+      !== stringValue(planRefs.plan_revision_id)
+    || stringValue(projection.planner_proposal_id)
+      !== stringValue(planRefs.planner_proposal_id)
+    || !Array.isArray(projection.issues)
+  ) {
+    return plannerIssues.map((question) => ({
+      question,
+      status: "pending",
+      statusLabel: "待分析",
+    }));
+  }
+  const byQuestion = new Map<string, PlannerIssueState>();
+  projection.issues.forEach((value) => {
+    const issue = optionalObject(value);
+    const question = stringValue(issue?.question).trim();
+    const status = stringValue(issue?.status);
+    const statusLabel = stringValue(issue?.status_message).trim();
+    if (
+      question
+      && statusLabel
+      && ["pending", "querying", "evidenced", "limited"].includes(status)
+    ) {
+      byQuestion.set(question, {
+        question,
+        status: status as PlannerIssueState["status"],
+        statusLabel,
+      });
+    }
+  });
+  return plannerIssues.map((question) => byQuestion.get(question) ?? {
+    question,
+    status: "pending",
+    statusLabel: "待分析",
+  });
 }
 
 export function parseCustomerThreadSummaries(value: unknown): CustomerThreadSummary[] {
@@ -697,31 +902,50 @@ function answerBlockKind(
 function customerClarification(value: unknown): CustomerInputRequest | null {
   const clarification = optionalObject(value);
   if (!clarification || clarification.status !== "waiting") return null;
-  const question = stringValue(clarification.question);
-  if (!question || !Array.isArray(clarification.options)) return null;
-  const options = clarification.options.flatMap((raw) => {
-    const option = optionalObject(raw);
-    const optionKey = stringValue(option?.option_id);
-    const label = stringValue(option?.label);
-    const description = stringValue(option?.description);
-    if (!option || !optionKey || !label || !description) return [];
-    if (optionKey === "tell_agent_differently") return [];
+  if (!Array.isArray(clarification.questions)) return null;
+  const questions = clarification.questions.flatMap((rawQuestion) => {
+    const value = optionalObject(rawQuestion);
+    const questionKey = stringValue(value?.slot_id);
+    const question = stringValue(value?.question);
+    if (!questionKey || !question || !Array.isArray(value?.options)) return [];
+    const options = value.options.flatMap((raw) => {
+      const option = optionalObject(raw);
+      const optionKey = stringValue(option?.option_id);
+      const label = stringValue(option?.label);
+      const description = stringValue(option?.description);
+      if (!option || !optionKey || !label || !description) return [];
+      if (optionKey === "tell_agent_differently") return [];
+      return [{
+        optionKey,
+        label,
+        description,
+        recommended: option.recommended === true,
+      }];
+    });
+    if (options.length < 2 || options.length > 3) return [];
     return [{
-      optionKey,
-      label,
-      description,
-      recommended: option.recommended === true,
+      questionKey,
+      question,
+      explanation: stringValue(value.recommendation_reason),
+      options,
     }];
   });
-  if (options.length < 2 || options.length > 3) return null;
+  if (!questions.length || questions.length !== clarification.questions.length) {
+    return null;
+  }
+  const first = questions[0];
   return {
     kind: "clarification",
     title: "需要确认后继续",
-    question,
-    explanation: stringValue(clarification.recommendation_reason),
-    options,
-    allowFreeform: clarification.options.some((raw) =>
-      stringValue(optionalObject(raw)?.option_id) === "tell_agent_differently"
+    question: first.question,
+    explanation: first.explanation,
+    options: first.options,
+    questions,
+    allowFreeform: clarification.questions.some((rawQuestion) =>
+      Array.isArray(optionalObject(rawQuestion)?.options)
+      && (optionalObject(rawQuestion)?.options as unknown[]).some((raw) =>
+        stringValue(optionalObject(raw)?.option_id) === "tell_agent_differently"
+      )
     ),
   };
 }
@@ -760,6 +984,12 @@ function customerInteraction(value: unknown):
       question: responseText,
       explanation: "",
       options,
+      questions: [{
+        questionKey: "topic_choice",
+        question: responseText,
+        explanation: "",
+        options,
+      }],
       allowFreeform: interaction.allow_free_text === true,
     },
   };
@@ -961,6 +1191,14 @@ function customerConversationMessages(
       message.key === ownedMessageKey
       || (message.itemType && STATE_OWNED_ITEM_TYPES.has(message.itemType))
     ) return [];
+    if (message.itemType === "clarification_resolution") {
+      return [{
+        key: message.key,
+        role: "assistant" as const,
+        text: clarificationResolutionText(message.text),
+        createdAt: message.createdAt,
+      }];
+    }
     return [{
       key: message.key,
       role: message.role,
@@ -968,6 +1206,11 @@ function customerConversationMessages(
       createdAt: message.createdAt,
     }];
   });
+}
+
+function clarificationResolutionText(value: string) {
+  const answer = value.trim().replace(/[。；]+$/u, "");
+  return `我会按以下口径继续分析：${answer}。`;
 }
 
 function inputFromPendingAction(
@@ -994,19 +1237,32 @@ function inputFromPendingAction(
       question: prompt,
       explanation: "",
       options,
+      questions: [{
+        questionKey: actionRef,
+        question: prompt,
+        explanation: "",
+        options,
+      }],
       allowFreeform: true,
     };
   }
   if (actionType === "request_approval") {
+    const options = [
+      { optionKey: "approved", label: "批准", description: "允许执行所述操作。", recommended: false },
+      { optionKey: "rejected", label: "拒绝", description: "不执行所述操作。", recommended: false },
+    ];
     return {
       kind: "clarification",
       title: "需要批准后继续",
       question: prompt,
       explanation: stringValue(value.sideEffectScope),
-      options: [
-        { optionKey: "approved", label: "批准", description: "允许执行所述操作。", recommended: false },
-        { optionKey: "rejected", label: "拒绝", description: "不执行所述操作。", recommended: false },
-      ],
+      options,
+      questions: [{
+        questionKey: actionRef,
+        question: prompt,
+        explanation: stringValue(value.sideEffectScope),
+        options,
+      }],
       allowFreeform: false,
     };
   }
@@ -1048,7 +1304,7 @@ function validateState(value: unknown): asserts value is CustomerAnalysisState {
   });
   const expectedKeys = state.status === "idle"
     ? ["status", "title", "description", "updates"]
-    : state.status === "working"
+    : state.status === "working" || state.status === "checkpoint"
       ? ["status", "title", "description", "updates", "phase", "safeToClose"]
       : state.status === "needs_input"
         ? ["status", "title", "description", "updates", "phase", "input"]
@@ -1061,7 +1317,10 @@ function validateState(value: unknown): asserts value is CustomerAnalysisState {
       throw new Error("customer_snapshot_invalid");
     }
   }
-  if (state.status === "working" && state.safeToClose !== true) {
+  if (
+    (state.status === "working" || state.status === "checkpoint")
+    && state.safeToClose !== true
+  ) {
     throw new Error("customer_snapshot_invalid");
   }
   if (state.status === "needs_input") validateInput(state.input);
@@ -1082,6 +1341,7 @@ function validateInput(value: unknown) {
     "question",
     "explanation",
     "options",
+    "questions",
     "allowFreeform",
   ], "customer_snapshot_invalid");
   if (input.kind !== "clarification" && input.kind !== "topic_choice") {
@@ -1104,6 +1364,41 @@ function validateInput(value: unknown) {
     requiredString(item.label, "customer_snapshot_invalid");
     requiredString(item.description, "customer_snapshot_invalid");
     if (typeof item.recommended !== "boolean") throw new Error("customer_snapshot_invalid");
+  });
+  if (!Array.isArray(input.questions) || !input.questions.length) {
+    throw new Error("customer_snapshot_invalid");
+  }
+  input.questions.forEach((question) => {
+    const item = requiredObject(question, "customer_snapshot_invalid");
+    assertExactKeys(item, [
+      "questionKey",
+      "question",
+      "explanation",
+      "options",
+    ], "customer_snapshot_invalid");
+    requiredString(item.questionKey, "customer_snapshot_invalid");
+    requiredString(item.question, "customer_snapshot_invalid");
+    if (typeof item.explanation !== "string") {
+      throw new Error("customer_snapshot_invalid");
+    }
+    if (!Array.isArray(item.options) || item.options.length < 2 || item.options.length > 3) {
+      throw new Error("customer_snapshot_invalid");
+    }
+    item.options.forEach((option) => {
+      const candidate = requiredObject(option, "customer_snapshot_invalid");
+      assertExactKeys(candidate, [
+        "optionKey",
+        "label",
+        "description",
+        "recommended",
+      ], "customer_snapshot_invalid");
+      requiredString(candidate.optionKey, "customer_snapshot_invalid");
+      requiredString(candidate.label, "customer_snapshot_invalid");
+      requiredString(candidate.description, "customer_snapshot_invalid");
+      if (typeof candidate.recommended !== "boolean") {
+        throw new Error("customer_snapshot_invalid");
+      }
+    });
   });
   if (typeof input.allowFreeform !== "boolean") throw new Error("customer_snapshot_invalid");
 }
@@ -1203,6 +1498,7 @@ function isMainStatus(value: unknown): value is CustomerMainStatus {
     "idle",
     "working",
     "needs_input",
+    "checkpoint",
     "completed",
     "completed_with_limits",
     "failed",

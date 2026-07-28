@@ -73,7 +73,7 @@ class AgentCoreBridgeTest(unittest.TestCase):
             "resolutionId": "single-authority:request-clarification-dispatch",
             "attemptRunId": "run-clarification-dispatch",
             "answer": "采用上一日作为比较基线",
-            "selectedOptionId": "comparison_baseline.previous_day",
+            "selectedOptionIds": ["comparison_baseline.previous_day"],
             "source": "user",
             "retryAttempt": False,
         }

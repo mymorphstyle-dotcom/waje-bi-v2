@@ -171,6 +171,7 @@ _ACCEPTED_INTENT_CONTEXT_FIELDS = frozenset(
 )
 _ACCEPTED_PLAN_CONTEXT_FIELDS = frozenset(
     {
+        "accepted_question_graph",
         "user_required_obligations",
         "analysis_axes",
         "capability_route",
@@ -291,6 +292,14 @@ do not change publication or verifier authority.
 Consolidate claims and limitations that belong to the same reasoning move. Avoid one
 block per claim, one block per limitation, or restating machine metadata; integrated
 prose or a compact comparison table should carry the required handle coverage.
+When answer_context.business_context contains an object with
+schema_version=controlled-investigation-narrative-delta.v1, treat candidateDeltas as
+optional single-placement editorial guidance.
+Use a material delta in at most one block, prefer its preferredBlockRole, and omit it
+when the accepted authority material already makes the same decision point clear.
+Never copy a child report, repeat the overall answer, or restate source summaries from
+that context. The delta creates no factual authority; every published fact, limitation,
+and recommendation still requires the accepted handles supplied elsewhere.
 
 Bind every claim, recommendation, limitation, and material fact to the supplied handle.
 Material fact names, field identifiers, handles, enums, and snake_case tokens are
@@ -357,6 +366,13 @@ to claims meeting required_claim_strength. Mixed and contradicted retain their c
 claims, with limitation_handles carrying the strength gap or other boundary. These
 handle-coverage rules do not prescribe the prose, block count, ordering, roles,
 emphasis, comparison, or synthesis.
+
+accepted_plan_context.accepted_question_graph is the question-level answer SSOT. Answer
+every question in that graph explicitly, keeping the primary question first and then
+resolving each supporting question. The matching publication requirements carry the
+same issue_ref and business_question. If a requirement is unavailable, state that
+specific question as unresolved and explain its local boundary. Do not let one answered
+question stand in for another merely because they share a claim kind.
 
 requirement_limitation_scope gives the same obligations with each required limitation's
 binding topology and boundary_facet_handles. Resolve those handles through
@@ -2025,11 +2041,7 @@ def _invoke_provider(
         try:
             normalize_provider_output(output)
         except NarrativeWorkflowError as exc:
-            # Reissuing the same narrative request without a diagnostic patch
-            # cannot repair a deterministic WAJE contract violation. Transport
-            # failures and malformed provider JSON retain their provider-layer
-            # retry policy; this local validation result does not.
-            raise LLMOutputError(str(exc), retryable=False) from exc
+            raise LLMOutputError(str(exc)) from exc
 
     messages = (
         {"role": "system", "content": system_prompt},

@@ -372,6 +372,7 @@ def snapshot(
             "paid_amount_ngn",
             "user_id",
             "channel",
+            "country",
         ),
         "payment_final_outcome": (
             "snapshot_id",
@@ -466,15 +467,26 @@ def contract(
     dimensions=(),
     filters=(),
     query_parameters=None,
+    resolved_windows=None,
 ):
     selected_metrics = tuple(metrics) if metrics is not None else (metric(dataset_id),)
-    resolved = windows()
-    reviewed_shape = RuntimeContractRegistry.from_path(
+    resolved = (
+        tuple(resolved_windows)
+        if resolved_windows is not None
+        else windows()
+    )
+    registry = RuntimeContractRegistry.from_path(
         "contracts/runtime/clickhouse-analysis-bindings.yaml"
-    ).query_shape(query_intent)
+    )
+    reviewed_shape = registry.query_shape(query_intent)
     required_fields = list(reviewed_shape["required_fields"])
     required_fields.extend(item.metric_id for item in selected_metrics)
     required_fields.extend(item.dimension_id for item in dimensions)
+    if reviewed_shape.get("scope_invariant_output") == "violation_counts":
+        required_fields.extend(
+            f"{dimension_id}_scope_violation_count"
+            for dimension_id in registry.scope_invariant_dimension_ids(dataset_id)
+        )
     required_fields = list(dict.fromkeys(required_fields))
     unique_key = list(
         dict.fromkeys(
@@ -549,6 +561,137 @@ def resigned(base, **changes):
 
 
 class ClickHouseQueryCompilerTest(unittest.TestCase):
+    def test_every_reviewed_window_aggregate_shape_uses_contract_semantics(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        ordinary_window_aggregates = tuple(
+            query_intent
+            for query_intent in registry.query_shape_ids
+            if registry.query_shape(query_intent).get("result_semantics")
+            == "complete_window_aggregate"
+            and query_intent != "high_value_scan"
+        )
+
+        self.assertTrue(ordinary_window_aggregates)
+        for query_intent in ordinary_window_aggregates:
+            with self.subTest(query_intent=query_intent):
+                compiled = compile_clickhouse_query(
+                    contract(query_intent=query_intent),
+                    {
+                        "snapshot:paid_order_success:1": snapshot(),
+                    },
+                    registry=registry,
+                )
+
+                self.assertIn("window_aggregates AS (", compiled.sql_text)
+                self.assertIn(
+                    "`__window_id` AS `observation_key`",
+                    compiled.sql_text,
+                )
+
+    def test_unknown_result_semantics_is_rejected_before_sql_dispatch(self):
+        base = contract()
+        invalid = resigned(
+            base,
+            result_shape=replace(
+                base.result_shape,
+                result_semantics="invented_result_semantics",
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "^result_shape.result_semantics_invalid:invented_result_semantics$",
+        ):
+            compile_clickhouse_query(
+                invalid,
+                {"snapshot:paid_order_success:1": snapshot()},
+            )
+
+    def test_time_bucket_sql_uses_explicit_month_phase_boundaries(self):
+        base = contract(
+            query_intent="time_bucket_scan",
+            query_parameters={
+                "month_phase_member_definitions": (
+                    {"member": "start", "day_start": 1, "day_end": 7},
+                    {"member": "mid", "day_start": 8, "day_end": 21},
+                    {"member": "end", "day_start": 22, "day_end": 31},
+                )
+            },
+        )
+
+        compiled = compile_clickhouse_query(
+            base,
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "toDayOfMonth(`business_date_lagos`) <= 7",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "toDayOfMonth(`business_date_lagos`) <= 21",
+            compiled.sql_text,
+        )
+        self.assertNotIn(
+            "toDayOfMonth(`business_date_lagos`) <= 10",
+            compiled.sql_text,
+        )
+
+    def test_partition_role_frame_compiles_target_and_baseline_groups(self):
+        evaluation_window = ResolvedWindow(
+            "target_day",
+            "target",
+            "2026-06-01..2026-06-30",
+            "2026-06-01",
+            "2026-07-01",
+            "Africa/Lagos",
+            "mean_of_complete_days",
+            30,
+            "2026-06-30",
+        )
+        frame = {
+            "schema_version": "calendar-partition-role-frame.v1",
+            "partition_field": "month_phase",
+            "target_members": ("start",),
+            "baseline_members": ("mid", "end"),
+            "aggregation": "mean_of_complete_days",
+            "member_definitions": (
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ),
+        }
+        base = contract(
+            query_intent="component_driver_scan",
+            query_parameters={"calendar_partition_role_frame": frame},
+            resolved_windows=(evaluation_window,),
+        )
+
+        compiled = compile_clickhouse_query(
+            base,
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "has(%(partition_target_members)s, multiIf(",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "has(%(partition_baseline_members)s, multiIf(",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "uniqExact(`__observation_date`)",
+            compiled.sql_text,
+        )
+        self.assertEqual(compiled.parameters["partition_target_members"], ["start"])
+        self.assertEqual(
+            compiled.parameters["partition_baseline_members"],
+            ["mid", "end"],
+        )
+
     def test_window_aggregate_formula_metrics_preserve_sum_and_mean_closure(self):
         bindings = tuple(
             reviewed_paid_metric(metric_id)
@@ -623,11 +766,13 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             sql,
         )
         self.assertIn(
-            "uniqExact(order_id) / nullIf(uniqExact(user_id), 0) AS `paid_frequency`",
+            "toFloat64(uniqExact(order_id)) / "
+            "nullIf(toFloat64(uniqExact(user_id)), 0) AS `paid_frequency`",
             sql,
         )
         self.assertIn(
-            "sum(paid_amount_ngn) / nullIf(uniqExact(order_id), 0) "
+            "toFloat64(sum(paid_amount_ngn)) / "
+            "nullIf(toFloat64(uniqExact(order_id)), 0) "
             "AS `avg_order_amount`",
             sql,
         )
@@ -660,6 +805,13 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertIn(
             "ifNull(nullIf(trim(toString(`channel`)), ''), "
             "%(dimension_null_bucket_0)s) AS `channel`",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "GROUP BY `__window_id`, `__window_role`, `__window_aggregation`, "
+            "`__window_start`, `__window_end`, "
+            "ifNull(nullIf(trim(toString(`channel`)), ''), "
+            "%(dimension_null_bucket_0)s)",
             compiled.sql_text,
         )
         self.assertEqual(
@@ -703,6 +855,71 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             ">100000",
         )
         self.assertNotIn("CASE", compiled.sql_text)
+
+    def test_reviewed_categorical_map_dimension_compiles_business_members(self):
+        registry = RuntimeContractRegistry.from_path(
+            "contracts/runtime/clickhouse-analysis-bindings.yaml"
+        )
+        reviewed = registry.dimension(
+            "user_mix_bucket",
+            dataset_id="paid_order_success",
+        )
+        user_mix = DimensionBinding(
+            dimension_id="user_mix_bucket",
+            contract_ref=reviewed["contract_ref"],
+            dataset_id="paid_order_success",
+            source_field=reviewed["source_field"],
+            allowed_grains=tuple(reviewed["allowed_grains"]),
+            null_bucket=reviewed["null_bucket"],
+        )
+
+        compiled = compile_clickhouse_query(
+            contract(
+                query_intent="user_mix_joint_scan",
+                dimensions=(user_mix,),
+            ),
+            {
+                "snapshot:paid_order_success:1": snapshot(
+                    fields=(
+                        "business_date_lagos",
+                        "paid_amount_ngn",
+                        "user_id",
+                        "channel",
+                        "country",
+                        "is_new_user",
+                    )
+                )
+            },
+            registry=registry,
+        )
+
+        self.assertIn("AS `user_mix_bucket`", compiled.sql_text)
+        self.assertIn(
+            "lowerUTF8(trim(toString(`is_new_user`)))",
+            compiled.sql_text,
+        )
+        self.assertEqual(
+            compiled.parameters["dimension_map_0_value_0"],
+            "1",
+        )
+        self.assertEqual(
+            compiled.parameters["dimension_map_0_label_0"],
+            "new_user",
+        )
+        self.assertEqual(
+            compiled.parameters["dimension_map_0_default_label"],
+            "Unknown",
+        )
+        self.assertIn("window_aggregates AS (", compiled.sql_text)
+        self.assertIn(
+            "`__window_id` AS `observation_key`",
+            compiled.sql_text,
+        )
+        self.assertIn("AS `source_complete_days`", compiled.sql_text)
+        self.assertNotIn(
+            "toString(`business_date_lagos`) AS `observation_key`",
+            compiled.sql_text,
+        )
 
     def test_dashboard_bindings_require_verified_release_and_physical_revision(self):
         selected = snapshot(
@@ -841,6 +1058,11 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             "%(dimension_null_bucket_0)s) AS `channel`",
             compiled.sql_text,
         )
+        self.assertIn(
+            "ifNull(nullIf(trim(toString(`channel`)), ''), "
+            "%(dimension_null_bucket_0)s)",
+            compiled.sql_text.split("GROUP BY ", maxsplit=1)[1],
+        )
 
         mismatched = replace(
             selected,
@@ -873,6 +1095,30 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             {mismatched.snapshot_ref: mismatched},
         )
         self.assertIn("sum(paid_amount) AS `paid_amount`", compiled_total.sql_text)
+
+    def test_data_quality_probe_checks_registered_scope_invariants(self):
+        probe = contract(
+            query_intent="data_quality_probe",
+            metrics=(),
+        )
+
+        compiled = compile_clickhouse_query(
+            probe,
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "countIf(NOT has(%(scope_invariant_values_",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "AS `country_scope_violation_count`",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            ["nigeria", "ng"],
+            compiled.parameters.values(),
+        )
 
     def test_event_context_keeps_reviewed_count_with_metric_projection(self):
         compiled = compile_clickhouse_query(
@@ -968,7 +1214,8 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         )
 
         self.assertIn(
-            "sum(player_bet_amount) / nullIf(sum(player_bet_count), 0)",
+            "toFloat64(sum(player_bet_amount)) / "
+            "nullIf(toFloat64(sum(player_bet_count)), 0)",
             compiled.sql_text,
         )
         self.assertEqual(compiled.settings["prefer_column_name_to_alias"], 1)
@@ -1433,6 +1680,7 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertIn("%(window_id_2)s", compiled.sql_text)
         self.assertNotIn("limit 5000", compiled.sql_text.casefold())
         self.assertEqual(compiled.settings["result_overflow_mode"], "throw")
+        self.assertEqual(compiled.settings["max_result_rows"], 10000)
 
     def test_uses_validated_date_semantics_for_every_dataset_family(self):
         cases = {

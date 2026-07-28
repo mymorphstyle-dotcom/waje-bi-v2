@@ -311,6 +311,9 @@ class _MaterialContinuationConnection:
             },
         }
         self.pending_clarification_id = "run-source"
+        self.active_task_id = "run-source"
+        self.customer_state = "working"
+        self.state_version = 7
         self.source_dispatch = {
             "dispatch_id": "dispatch-source",
             "dispatch_state": "running",
@@ -344,6 +347,9 @@ class _MaterialContinuationConnection:
                 "thread_id": params["thread_id"],
                 "role": "user",
                 "text": params["text"],
+                "customer_visible": not (
+                    "customer_visible" in statement and "false" in statement
+                ),
             }
             return _Cursor(({"message_id": params["message_id"]},))
         if "material_revision_successor_dispatch_insert" in statement:
@@ -368,9 +374,15 @@ class _MaterialContinuationConnection:
             self.source["request"] = json.loads(params["request"])
             return _Cursor(({"run_id": self.source["run_id"]},))
         if "material_revision_pending_clarification_clear_cas" in statement:
-            if self.pending_clarification_id != params["source_run_id"]:
+            if (
+                self.pending_clarification_id != params["source_run_id"]
+                or self.active_task_id != params["source_run_id"]
+            ):
                 return _Cursor()
             self.pending_clarification_id = ""
+            self.active_task_id = params["successor_run_id"]
+            self.customer_state = "working"
+            self.state_version += 1
             return _Cursor(({"thread_id": params["thread_id"]},))
         if "INSERT INTO waje_runtime.run_lifecycle_state_revisions" in statement:
             self.lifecycle = json.loads(params["payload"])
@@ -417,7 +429,7 @@ class _MaterialContinuationConnection:
 def test_store_material_revision_commit_closes_source_and_leases_successor() -> None:
     directive = _directive()
     transition = DurableTransition.create(
-        node_name="bind_free_text_directive",
+        node_name="bind_free_text_submission",
         parent_transition_id="transition-waiting",
         run_attempt_id=directive.run_attempt_id,
         intent_revision_id=directive.intent_revision_id,
@@ -454,6 +466,9 @@ def test_store_material_revision_commit_closes_source_and_leases_successor() -> 
 
     assert connection.source["status"] == "interaction_completed"
     assert connection.pending_clarification_id == ""
+    assert connection.active_task_id == continuation.successor_run_id
+    assert connection.customer_state == "working"
+    assert connection.state_version == 8
     assert connection.source_dispatch["dispatch_state"] == "terminal"
     assert connection.source_dispatch["terminal_status"] == ("interaction_completed")
     assert connection.lifecycle["execution_state"] == "superseded"
@@ -469,6 +484,7 @@ def test_store_material_revision_commit_closes_source_and_leases_successor() -> 
     assert connection.successor_message["message_id"] == (
         continuation.successor_message_id
     )
+    assert connection.successor_message["customer_visible"] is False
     assert connection.successor_dispatch["dispatch_id"] == (
         continuation.successor_dispatch_id
     )

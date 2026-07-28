@@ -43,6 +43,11 @@ from bi_agent.runtime.capability_authority import (
     CapabilityFailure,
 )
 from bi_agent.runtime.evidence_authority import canonical_digest
+from bi_agent.runtime.event_window_derivation import (
+    EventWindowDerivationError,
+    validate_event_window_derivation_policy,
+    validate_event_window_set,
+)
 from bi_agent.runtime.evidence_taxonomy import (
     EvidenceTaxonomyContractError,
     publication_evidence_kind,
@@ -53,6 +58,7 @@ from bi_agent.runtime.formula_graph import (
 )
 from bi_agent.runtime.plan_authority import CapabilityTask, PlanRevision
 from bi_agent.runtime.window_metric_evidence import (
+    aggregate_derived_event_window_set,
     aggregate_window_metric_comparison,
     validate_event_window_metric_authority,
 )
@@ -80,6 +86,7 @@ _TRUST_BOUNDARY_WORDING_LIMITS = frozenset(
     {"context_only", "degraded", "supported", "trust_boundary"}
 )
 _EVENT_WINDOW_EVIDENCE_CONTRACT = "event-window-metric-comparison.v1"
+_EVENT_WINDOW_CLAIM_RECORD_LIMIT = 20
 
 
 def _required_string(value: Any, error: str) -> str:
@@ -551,7 +558,7 @@ def builtin_capability_adapter_registry() -> CapabilityTaskAdapterRegistry:
             "compare_periods", _window_metric_comparison_adapter
         ),
         CapabilityAdapterRegistration(
-            "market_health_compare", _window_metric_comparison_adapter
+            "market_health_compare", _multi_metric_window_comparison_adapter
         ),
         CapabilityAdapterRegistration(
             "post_payment_behavior_compare", _window_metric_comparison_adapter
@@ -634,7 +641,7 @@ def builtin_capability_adapter_registry() -> CapabilityTaskAdapterRegistry:
             _primitive_adapter(high_value_user_contribution),
         ),
         CapabilityAdapterRegistration(
-            "joint_attribution", _primitive_adapter(joint_attribution)
+            "joint_attribution", _joint_attribution_adapter
         ),
         CapabilityAdapterRegistration("outlier_scan", _primitive_adapter(outlier_scan)),
         CapabilityAdapterRegistration(
@@ -673,6 +680,114 @@ def _primitive_adapter(
         )
 
     return execute
+
+
+def _joint_attribution_adapter(
+    plan_revision: PlanRevision,
+    task: CapabilityTask,
+    _attempt: CapabilityAttempt,
+    scoped_input: TaskScopedCapabilityInput,
+) -> CapabilityAdapterOutput:
+    kwargs = dict(scoped_input.payload)
+    analyses = kwargs.pop("analyses", ())
+    if (
+        isinstance(analyses, (str, bytes))
+        or not isinstance(analyses, Sequence)
+        or not analyses
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "task_runtime_joint_analyses_invalid"
+        )
+    observations = []
+    limitations = []
+    for analysis in analyses:
+        if not isinstance(analysis, Mapping):
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_joint_analysis_invalid"
+            )
+        query_contract_ref = _required_string(
+            analysis.get("query_contract_ref"),
+            "task_runtime_joint_query_contract_ref_invalid",
+        )
+        dimension_keys = _string_tuple(
+            analysis.get("dimension_keys"),
+            "task_runtime_joint_dimension_keys_invalid",
+            allow_empty=False,
+        )
+        if len(dimension_keys) < 2:
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_joint_dimension_count_invalid"
+            )
+        rows = analysis.get("rows")
+        if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_joint_rows_invalid"
+            )
+        envelope = joint_attribution(
+            rows=tuple(rows),
+            dimension_keys=dimension_keys,
+            **kwargs,
+            result_refs=(),
+        )
+        limitations.extend(envelope.limitations)
+        observations.append(
+            {
+                "query_contract_ref": query_contract_ref,
+                "dimension_keys": dimension_keys,
+                "evidence_type": envelope.evidence_type,
+                "strength": envelope.strength,
+                "wording_limit": envelope.wording_limit,
+                "typed_payload": _plain(envelope.typed_payload),
+                "limitations": tuple(envelope.limitations),
+            }
+        )
+    supported = tuple(
+        item
+        for item in observations
+        if item["evidence_type"] == "accounting_contribution"
+    )
+    if not supported:
+        envelope = make_evidence_envelope(
+            task.capability_id,
+            evidence_type="insufficient_evidence",
+            strength="low",
+            wording_limit="insufficient",
+            typed_payload={
+                "evidence_contract": "multi-query-joint-attribution.v1",
+                "analysis_count": len(observations),
+                "supported_analysis_count": 0,
+                "analyses": tuple(observations),
+            },
+            limitations=tuple(dict.fromkeys(limitations)),
+            result_refs=scoped_input.result_refs,
+        )
+    else:
+        if len(supported) != len(observations):
+            limitations.append("partial_joint_dimension_coverage")
+        envelope = make_evidence_envelope(
+            task.capability_id,
+            evidence_type="accounting_contribution",
+            strength="medium",
+            wording_limit="candidate",
+            typed_payload={
+                "evidence_contract": "multi-query-joint-attribution.v1",
+                "analysis_count": len(observations),
+                "supported_analysis_count": len(supported),
+                "analyses": tuple(observations),
+                "claim_boundary": (
+                    "联合维度结果用于定位候选贡献组合，不能单独证明因果关系。"
+                ),
+            },
+            limitations=tuple(dict.fromkeys(limitations)),
+            result_refs=scoped_input.result_refs,
+        )
+    return _envelope_output(
+        plan_revision,
+        task,
+        scoped_input,
+        envelope,
+        hierarchy_paths=False,
+    )
 
 
 def _pattern_adapter(pattern_family: str) -> CapabilityTaskAdapter:
@@ -740,6 +855,65 @@ def _window_metric_comparison_adapter(
     )
 
 
+def _multi_metric_window_comparison_adapter(
+    plan_revision: PlanRevision,
+    task: CapabilityTask,
+    _attempt: CapabilityAttempt,
+    scoped_input: TaskScopedCapabilityInput,
+) -> CapabilityAdapterOutput:
+    kwargs = dict(scoped_input.payload)
+    metric_ids = tuple(kwargs.pop("metric_ids", ()))
+    if not metric_ids or any(
+        not isinstance(metric_id, str) or not metric_id
+        for metric_id in metric_ids
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "task_runtime_multi_metric_ids_invalid"
+        )
+    comparisons = tuple(
+        aggregate_window_metric_comparison(
+            **kwargs,
+            metric_id=metric_id,
+        )
+        for metric_id in metric_ids
+    )
+    numeric_facts = {
+        fact_key: fact_value
+        for comparison in comparisons
+        for fact_key, fact_value in (
+            (f"{comparison.metric_id}_target_value", comparison.target.value),
+            (
+                f"{comparison.metric_id}_baseline_value",
+                comparison.primary_baseline.value,
+            ),
+        )
+    }
+    envelope = make_evidence_envelope(
+        task.capability_id,
+        evidence_type="observed_comparison",
+        strength="directional",
+        wording_limit="comparative",
+        numeric_facts=numeric_facts,
+        typed_payload={
+            "comparison_set_contract": "multi-metric-window-comparison.v1",
+            "metric_ids": metric_ids,
+            "comparisons": tuple(
+                comparison.to_payload() for comparison in comparisons
+            ),
+        },
+        limitations=(),
+        result_refs=scoped_input.result_refs,
+        evidence_ref=f"multi-window-comparison:{task.task_id}",
+    )
+    return _envelope_output(
+        plan_revision,
+        task,
+        scoped_input,
+        envelope,
+        hierarchy_paths=False,
+    )
+
+
 def _event_evidence_adapter(
     plan_revision: PlanRevision,
     task: CapabilityTask,
@@ -754,6 +928,7 @@ def _event_evidence_adapter(
     temporal_authority = plan_revision.temporal_authority
     supplied_event_ref = kwargs.get("event_ref")
     supplied_authority_ref = kwargs.get("temporal_authority_ref")
+    supplied_event_window_set = kwargs.get("event_window_set")
     if temporal_authority.mode == "event_relative":
         if (
             supplied_event_ref != temporal_authority.event_ref
@@ -766,12 +941,40 @@ def _event_evidence_adapter(
         raise CapabilityTaskAdapterContractError(
             "task_runtime_event_temporal_authority_unexpected"
         )
+    if supplied_event_window_set is not None:
+        if temporal_authority.mode != "calendar_partition":
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_dynamic_event_authority_unexpected"
+            )
+        try:
+            policy = validate_event_window_derivation_policy(
+                supplied_event_window_set.get("derivation_policy"),
+                expected_source_dependency=task.capability_id,
+            )
+            validate_event_window_set(
+                supplied_event_window_set,
+                temporal_authority=temporal_authority,
+                policy=policy,
+            )
+        except (AttributeError, EventWindowDerivationError) as exc:
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_dynamic_event_authority_mismatch"
+            ) from exc
     envelope = event_evidence(
         **kwargs,
         result_refs=scoped_input.result_refs,
     )
     if (
         temporal_authority.mode == "event_relative"
+        and envelope.evidence_type != "insufficient_evidence"
+        and envelope.typed_payload.get("evidence_contract")
+        != EVENT_PRESENCE_EVIDENCE_CONTRACT
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "task_runtime_event_evidence_contract_mismatch"
+        )
+    if (
+        supplied_event_window_set is not None
         and envelope.evidence_type != "insufficient_evidence"
         and envelope.typed_payload.get("evidence_contract")
         != EVENT_PRESENCE_EVIDENCE_CONTRACT
@@ -795,6 +998,169 @@ def _event_window_metric_comparison_adapter(
     scoped_input: TaskScopedCapabilityInput,
 ) -> CapabilityAdapterOutput:
     kwargs = dict(scoped_input.payload)
+    if set(kwargs) == {
+        "contract",
+        "rows",
+        "metric_id",
+        "derivation_policy",
+        "event_window_set",
+    }:
+        temporal_authority = plan_revision.temporal_authority
+        registry = scoped_input.services.get("runtime_registry")
+        try:
+            capability_contract = registry.capability_inputs(task.capability_id)
+            expected_policy = validate_event_window_derivation_policy(
+                capability_contract.get("dynamic_event_window_policy"),
+            )
+            supplied_policy = validate_event_window_derivation_policy(
+                kwargs.pop("derivation_policy"),
+            )
+            if expected_policy != supplied_policy:
+                raise EventWindowDerivationError(
+                    "event_window_derivation_policy_mismatch"
+                )
+            comparison_set = aggregate_derived_event_window_set(
+                kwargs.pop("contract"),
+                kwargs.pop("rows"),
+                metric_id=kwargs.pop("metric_id"),
+                event_window_set=kwargs.pop("event_window_set"),
+                temporal_authority=temporal_authority,
+                derivation_policy=supplied_policy,
+            )
+        except (
+            AttributeError,
+            EventWindowDerivationError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise CapabilityTaskAdapterContractError(
+                "task_runtime_dynamic_event_window_invalid"
+            ) from exc
+        comparisons = tuple(comparison_set["comparisons"])
+        if not comparisons:
+            envelope = make_evidence_envelope(
+                task.capability_id,
+                evidence_type="insufficient_evidence",
+                strength="insufficient",
+                wording_limit="insufficient",
+                typed_payload={
+                    "event_ref": comparison_set["event_ref"],
+                    "temporal_authority_ref": comparison_set[
+                        "temporal_authority_ref"
+                    ],
+                    "source_temporal_authority_ref": comparison_set[
+                        "source_temporal_authority_ref"
+                    ],
+                    "metric": comparison_set["metric"],
+                    "event_occurrence_count": 0,
+                    "excluded_occurrence_counts": comparison_set[
+                        "excluded_occurrence_counts"
+                    ],
+                    "business_readout": "已发现活动，但评估范围内没有完整的活动前后窗口。",
+                    "claim_boundary": "没有完整前后窗口时不能判断活动与付费表现的方向关系。",
+                },
+                limitations=("no_complete_event_comparison_window",),
+                result_refs=scoped_input.result_refs,
+            )
+            return _envelope_output(
+                plan_revision,
+                task,
+                scoped_input,
+                envelope,
+                hierarchy_paths=False,
+            )
+        higher_count = sum(
+            item["direction"] == "higher" for item in comparisons
+        )
+        lower_count = sum(item["direction"] == "lower" for item in comparisons)
+        unchanged_count = len(comparisons) - higher_count - lower_count
+        ranked_comparisons = tuple(
+            sorted(
+                comparisons,
+                key=lambda item: (
+                    item.get("relative_change") is not None,
+                    abs(item.get("relative_change") or 0),
+                    abs(item.get("absolute_change") or 0),
+                    str(item.get("occurrence_ref") or ""),
+                ),
+                reverse=True,
+            )
+        )
+        displayed_comparisons = ranked_comparisons[
+            :_EVENT_WINDOW_CLAIM_RECORD_LIMIT
+        ]
+        claim_material_summary = {
+            "projection_kind": "claim_material_summary",
+            "evidence_contract": _EVENT_WINDOW_EVIDENCE_CONTRACT,
+            "event_ref": comparison_set["event_ref"],
+            "temporal_authority_ref": comparison_set[
+                "temporal_authority_ref"
+            ],
+            "source_temporal_authority_ref": comparison_set[
+                "source_temporal_authority_ref"
+            ],
+            "metric": comparison_set["metric"],
+            "event_occurrence_count": len(comparisons),
+            "post_event_higher_count": higher_count,
+            "post_event_lower_count": lower_count,
+            "post_event_unchanged_count": unchanged_count,
+            "displayed_comparison_count": len(displayed_comparisons),
+            "omitted_comparison_count": (
+                len(comparisons) - len(displayed_comparisons)
+            ),
+            "comparison_record_limit": _EVENT_WINDOW_CLAIM_RECORD_LIMIT,
+            "comparison_selection_policy": (
+                "largest_absolute_relative_then_absolute_change"
+            ),
+            "material_comparisons": displayed_comparisons,
+            "excluded_occurrence_counts": comparison_set[
+                "excluded_occurrence_counts"
+            ],
+            "interpretation_contract": comparison_set[
+                "interpretation_contract"
+            ],
+            "causal_interpretation_allowed": False,
+        }
+        typed_payload = {
+            "evidence_contract": _EVENT_WINDOW_EVIDENCE_CONTRACT,
+            "event_ref": comparison_set["event_ref"],
+            "temporal_authority_ref": comparison_set[
+                "temporal_authority_ref"
+            ],
+            "source_temporal_authority_ref": comparison_set[
+                "source_temporal_authority_ref"
+            ],
+            "metric_comparisons": comparison_set,
+            "interpretation_contract": comparison_set[
+                "interpretation_contract"
+            ],
+            "claim_material_observations": (claim_material_summary,),
+            "causal_interpretation_allowed": False,
+        }
+        envelope = make_evidence_envelope(
+            task.capability_id,
+            evidence_type="observed_comparison",
+            strength="directional",
+            wording_limit="candidate_non_causal",
+            numeric_facts={
+                "event_occurrence_count": len(comparisons),
+                "post_event_higher_count": higher_count,
+                "post_event_lower_count": lower_count,
+                "post_event_unchanged_count": unchanged_count,
+            },
+            typed_payload=typed_payload,
+            limitations=("event_window_comparison_is_non_causal",),
+            result_refs=scoped_input.result_refs,
+            evidence_ref=f"event-window-comparison:{task.task_id}",
+        )
+        return _envelope_output(
+            plan_revision,
+            task,
+            scoped_input,
+            envelope,
+            hierarchy_paths=False,
+        )
     expected_fields = {
         "contract",
         "rows",
@@ -835,12 +1201,22 @@ def _event_window_metric_comparison_adapter(
         comparison.primary_baseline,
     )
     comparison_payload = comparison.to_payload()
+    claim_material_summary = {
+        "projection_kind": "claim_material_summary",
+        "evidence_contract": _EVENT_WINDOW_EVIDENCE_CONTRACT,
+        "event_ref": event_ref,
+        "temporal_authority_ref": temporal_authority_ref,
+        "metric_comparison": comparison_payload,
+        "interpretation_contract": comparison_payload["interpretation_contract"],
+        "causal_interpretation_allowed": False,
+    }
     typed_payload = {
         "evidence_contract": _EVENT_WINDOW_EVIDENCE_CONTRACT,
         "event_ref": event_ref,
         "temporal_authority_ref": temporal_authority_ref,
         "metric_comparison": comparison_payload,
         "interpretation_contract": comparison_payload["interpretation_contract"],
+        "claim_material_observations": (claim_material_summary,),
         "causal_interpretation_allowed": False,
     }
     envelope = make_evidence_envelope(
@@ -1009,7 +1385,11 @@ def _formula_graph_adapter(
         execution_state="available",
         evidence_kind="derived",
         data_contract_state=scoped_input.data_contract_state,
-        supported_claim_kinds=_supported_claim_kinds(plan_revision, task),
+        supported_claim_kinds=_supported_claim_kinds(
+            plan_revision,
+            task,
+            scoped_input,
+        ),
         evidence_strength="reconciled",
         maximum_claim_strength=scoped_input.maximum_claim_strength,
         observation_facts=(payload,),
@@ -1163,6 +1543,42 @@ def _envelope_output(
         "typed_payload": typed_payload,
     }
     if envelope.evidence_type in _UNAVAILABLE_PRIMITIVE_EVIDENCE_TYPES:
+        continuation = _ready_continuation_contract(typed_payload)
+        if continuation is not None:
+            continuation_limitations = tuple(
+                dict.fromkeys(
+                    (*capability_limitations, "public_claim_support_unavailable")
+                )
+            )
+            return CapabilityAdapterOutput.create(
+                status="succeeded",
+                output_payload=output_payload,
+                evidence=(
+                    CapabilityEvidence.create(
+                        evidence_ref=f"evidence:{task.task_id}:continuation",
+                        binding_record_ref=scoped_input.binding_record_ref,
+                        execution_state="available",
+                        evidence_kind="boundary",
+                        data_contract_state=scoped_input.data_contract_state,
+                        supported_claim_kinds=(),
+                        evidence_strength="low",
+                        maximum_claim_strength=scoped_input.maximum_claim_strength,
+                        observation_facts=(
+                            {"continuation_contract": continuation},
+                        ),
+                        scope=scoped_input.scope_ref,
+                        window_refs=plan_revision.resolved_window_refs,
+                        dimension_path=(),
+                        limitation_refs=continuation_limitations,
+                        result_refs=result_refs,
+                        completeness_report_refs=scoped_input.completeness_report_refs,
+                        hierarchy_qualified=False,
+                    ),
+                ),
+                affected_obligation_ids=task.supports_obligation_ids,
+                limitation_refs=continuation_limitations,
+                retryability="never",
+            )
         return CapabilityAdapterOutput.create(
             status="unavailable",
             output_payload=output_payload,
@@ -1184,15 +1600,35 @@ def _envelope_output(
         raise CapabilityTaskAdapterContractError(
             "primitive_interpretation_contract_invalid"
         )
-    contract_observations = (
-        (typed_payload,)
-        if isinstance(typed_payload, Mapping) and "evidence_contract" in typed_payload
-        else (
-            ({"interpretation_contract": interpretation_contract},)
-            if interpretation_contract is not None
-            else ()
+    declared_observations = typed_payload.get("claim_material_observations")
+    if declared_observations is not None:
+        if (
+            isinstance(declared_observations, (str, bytes))
+            or not isinstance(declared_observations, Sequence)
+            or not declared_observations
+            or len(declared_observations) > 32
+            or any(
+                not isinstance(item, Mapping) or not item
+                for item in declared_observations
+            )
+        ):
+            raise CapabilityTaskAdapterContractError(
+                "primitive_claim_material_observations_invalid"
+            )
+        contract_observations = tuple(
+            _plain(item) for item in declared_observations
         )
-    )
+    else:
+        contract_observations = (
+            (typed_payload,)
+            if isinstance(typed_payload, Mapping)
+            and "evidence_contract" in typed_payload
+            else (
+                ({"interpretation_contract": interpretation_contract},)
+                if interpretation_contract is not None
+                else ()
+            )
+        )
     main_observations = (*contract_observations, *numeric_observations)
     if not main_observations:
         main_observations = (typed_payload,)
@@ -1203,7 +1639,11 @@ def _envelope_output(
             execution_state="available",
             evidence_kind=evidence_kind,
             data_contract_state=scoped_input.data_contract_state,
-            supported_claim_kinds=_supported_claim_kinds(plan_revision, task),
+            supported_claim_kinds=_supported_claim_kinds(
+                plan_revision,
+                task,
+                scoped_input,
+            ),
             evidence_strength=envelope.strength,
             maximum_claim_strength=scoped_input.maximum_claim_strength,
             observation_facts=main_observations,
@@ -1263,7 +1703,11 @@ def _envelope_output(
                     execution_state="available",
                     evidence_kind=evidence_kind,
                     data_contract_state=scoped_input.data_contract_state,
-                    supported_claim_kinds=_supported_claim_kinds(plan_revision, task),
+                    supported_claim_kinds=_supported_claim_kinds(
+                        plan_revision,
+                        task,
+                        scoped_input,
+                    ),
                     evidence_strength=envelope.strength,
                     maximum_claim_strength=scoped_input.maximum_claim_strength,
                     observation_facts=(finding_observation,),
@@ -1286,10 +1730,67 @@ def _envelope_output(
     )
 
 
+def _ready_continuation_contract(
+    typed_payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    continuation = typed_payload.get("continuation_contract")
+    if continuation is None:
+        return None
+    if not isinstance(continuation, Mapping) or set(continuation) != {
+        "state",
+        "purpose",
+        "material_ref",
+        "material_count",
+        "claim_support",
+    }:
+        raise CapabilityTaskAdapterContractError(
+            "primitive_continuation_contract_invalid"
+        )
+    if continuation.get("state") != "ready":
+        return None
+    purpose = continuation.get("purpose")
+    material_ref = continuation.get("material_ref")
+    material_count = continuation.get("material_count")
+    if (
+        not isinstance(purpose, str)
+        or not purpose
+        or purpose != purpose.strip()
+        or not isinstance(material_ref, str)
+        or not material_ref
+        or material_ref != material_ref.strip()
+        or type(material_count) is not int
+        or material_count <= 0
+        or continuation.get("claim_support") != "none"
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "primitive_continuation_contract_invalid"
+        )
+    material = typed_payload.get(material_ref)
+    if (
+        isinstance(material, (str, bytes))
+        or not isinstance(material, Sequence)
+        or len(material) != material_count
+        or any(not isinstance(item, Mapping) or not item for item in material)
+    ):
+        raise CapabilityTaskAdapterContractError(
+            "primitive_continuation_material_invalid"
+        )
+    return _plain(continuation)
+
+
 def _supported_claim_kinds(
     plan_revision: PlanRevision,
     task: CapabilityTask,
+    scoped_input: TaskScopedCapabilityInput,
 ) -> tuple[str, ...]:
+    bound = scoped_input.services.get("bound_capability_input")
+    contract_claim_kinds = getattr(bound, "supported_claim_types", None)
+    if contract_claim_kinds is not None:
+        return _string_tuple(
+            contract_claim_kinds,
+            "adapter_capability_claim_kinds_invalid",
+            allow_empty=False,
+        )
     obligations = {item.obligation_id: item for item in plan_revision.claim_obligations}
     try:
         return tuple(

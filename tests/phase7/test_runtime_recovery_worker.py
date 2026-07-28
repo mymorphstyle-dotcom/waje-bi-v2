@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -11,12 +12,36 @@ import pytest
 
 from bi_agent.conversation.postgres_store import _run_dispatch_lease_ms
 from tools.runtime.recover_run_dispatches import (
+    load_worker_env_file,
     run_runtime_recovery_cycle,
     run_runtime_recovery_worker,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_worker_env_file_fills_missing_values_without_overriding_deployment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "WAJE_RUNTIME_DATABASE_URL=postgresql://local\n"
+        "WAJE_RUNTIME_WORKER_POLL_SECONDS='3'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "WAJE_RUNTIME_DATABASE_URL",
+        "postgresql://deployment",
+    )
+    monkeypatch.delenv("WAJE_RUNTIME_WORKER_POLL_SECONDS", raising=False)
+
+    loaded = load_worker_env_file(str(env_file))
+
+    assert loaded == ("WAJE_RUNTIME_WORKER_POLL_SECONDS",)
+    assert os.environ["WAJE_RUNTIME_DATABASE_URL"] == "postgresql://deployment"
+    assert os.environ["WAJE_RUNTIME_WORKER_POLL_SECONDS"] == "3"
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", " 30000", "invalid"])
@@ -123,6 +148,48 @@ def test_scoped_runtime_cycle_never_leases_another_thread() -> None:
     assert summary_refreshes.call_args.kwargs["thread_id"] == "thread-eval-scoped"
 
 
+def test_one_recovery_source_failure_does_not_block_other_sources() -> None:
+    connection = SimpleNamespace(close=lambda: None)
+    store = SimpleNamespace(connection=connection)
+
+    with (
+        patch(
+            "tools.runtime.recover_run_dispatches.PostgresConversationStore.from_env",
+            return_value=store,
+        ),
+        patch(
+            "tools.runtime.recover_run_dispatches.recover_pending_run_dispatches",
+            return_value={"dispatched": [{"run_id": "bi-run-1"}]},
+        ),
+        patch(
+            "tools.runtime.recover_run_dispatches.recover_general_agent_turns",
+            return_value={"discovered": []},
+        ),
+        patch(
+            "tools.runtime.recover_run_dispatches.process_stale_thread_summaries",
+            return_value={"completed": []},
+        ),
+        patch(
+            "tools.runtime.recover_run_dispatches.process_agent_task_resume_outbox",
+            side_effect=RuntimeError("outbox schema drift with private detail"),
+        ),
+    ):
+        summary = run_runtime_recovery_cycle(
+            worker_id="worker-isolated-source",
+        )
+
+    assert summary["run_dispatches"] == {
+        "dispatched": [{"run_id": "bi-run-1"}]
+    }
+    assert summary["agent_task_resumes"] == {
+        "status": "failed",
+        "error_code": "runtime_recovery_source_failed",
+        "error_type": "RuntimeError",
+        "source": "agent_task_resumes",
+    }
+    assert "private detail" not in json.dumps(summary)
+
+
 def test_continuous_worker_repeats_cycles_and_stops_gracefully() -> None:
     output = io.StringIO()
     stop = threading.Event()
@@ -183,6 +250,32 @@ def test_continuous_worker_survives_a_transient_cycle_failure() -> None:
     assert records[0]["errorType"] == "ConnectionError"
     assert "sensitive detail" not in output.getvalue()
     assert records[1]["summary"] == {"recovered": True}
+
+
+def test_worker_can_scope_every_cycle_to_one_thread() -> None:
+    output = io.StringIO()
+    calls: list[dict[str, object]] = []
+
+    def cycle(**kwargs):
+        calls.append(kwargs)
+        return {"scoped": True}
+
+    exit_code = run_runtime_recovery_worker(
+        once=True,
+        thread_id="thread-acceptance-one",
+        worker_id="worker-scoped-one",
+        cycle_runner=cycle,
+        output=output,
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "limit": 100,
+            "worker_id": "worker-scoped-one",
+            "thread_id": "thread-acceptance-one",
+        }
+    ]
 
 
 def test_repository_exposes_continuous_worker_as_a_deployable_process() -> None:

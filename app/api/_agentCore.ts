@@ -23,7 +23,7 @@ type AgentCoreOptions = {
     resolutionId: string;
     attemptRunId: string;
     answer: string;
-    selectedOptionId: string | null;
+    selectedOptionIds: string[];
     source: "user";
     retryAttempt: boolean;
   };

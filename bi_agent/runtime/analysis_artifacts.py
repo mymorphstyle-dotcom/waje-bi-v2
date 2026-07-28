@@ -23,6 +23,8 @@ _MODEL_SAFE_FACT_LIMIT = 128
 _MODEL_SAFE_FACT_BYTE_LIMIT = 64 * 1024
 _MODEL_SAFE_BATCH_REF_LIMIT = 32
 _MODEL_SAFE_BATCH_BYTE_LIMIT = 32 * 1024
+_MODEL_SAFE_PUBLICATION_SUMMARY_BYTE_LIMIT = 20 * 1024
+_MODEL_SAFE_PUBLICATION_CLAIM_INVENTORY_BYTE_LIMIT = 8 * 1024
 _MODEL_ROUTING_SUMMARY_CHARACTER_LIMIT = 240
 
 
@@ -815,11 +817,13 @@ def _tool_result_batch(
     included_refs: list[str] = []
     material_refs: list[str] = []
     limitation_refs: list[str] = []
+    projection_truncated = False
     for item in found:
         detail = _mapping(item.detail)
+        content = _model_safe_artifact_content(item, detail=detail)
         projected = {
             "artifactRef": item.descriptor.artifact_ref,
-            "content": _model_safe_artifact_content(item, detail=detail),
+            "content": content,
         }
         candidate = [*projected_items, projected]
         candidate_bytes = len(
@@ -834,6 +838,9 @@ def _tool_result_batch(
             omitted_refs.append(item.descriptor.artifact_ref)
             continue
         projected_items.append(projected)
+        projection_truncated = (
+            projection_truncated or bool(content.get("projectionTruncated"))
+        )
         included_refs.append(item.descriptor.artifact_ref)
         material_refs.extend(
             (
@@ -855,7 +862,12 @@ def _tool_result_batch(
             customerSummary="已发布材料超过单次安全读取预算，请缩小读取范围。",
             technicalDetailRef=None,
         )
-    limited = bool(missing_refs or omitted_refs or limitation_refs)
+    limited = bool(
+        missing_refs
+        or omitted_refs
+        or limitation_refs
+        or projection_truncated
+    )
     return AgentToolResult(
         status="limited" if limited else "succeeded",
         output={
@@ -889,9 +901,17 @@ def _model_safe_artifact_content(
     detail: Mapping[str, Any],
 ) -> dict[str, Any]:
     artifact_type = str(detail.get("artifactType") or item.descriptor.artifact_type)
+    customer_summary, summary_truncated = _bounded_utf8_text(
+        item.descriptor.customer_summary,
+        (
+            _MODEL_SAFE_PUBLICATION_SUMMARY_BYTE_LIMIT
+            if artifact_type == "bi_publication"
+            else _MODEL_SAFE_BATCH_BYTE_LIMIT
+        ),
+    )
     content: dict[str, Any] = {
         "artifactType": artifact_type,
-        "customerSummary": item.descriptor.customer_summary,
+        "customerSummary": customer_summary,
     }
     publication = detail.get("publication")
     if artifact_type == "bi_publication" and isinstance(publication, Mapping):
@@ -900,7 +920,21 @@ def _model_safe_artifact_content(
             available_claims,
             (str, bytes),
         ):
-            content["availableClaims"] = canonical_value(available_claims)
+            claim_inventory, claims_truncated = _bounded_json_items(
+                available_claims,
+                byte_limit=_MODEL_SAFE_PUBLICATION_CLAIM_INVENTORY_BYTE_LIMIT,
+            )
+            content["availableClaims"] = claim_inventory
+            if summary_truncated or claims_truncated:
+                content.update(
+                    {
+                        "projectionTruncated": True,
+                        "customerSummaryTruncated": summary_truncated,
+                        "availableClaimsTruncated": claims_truncated,
+                        "availableClaimCount": len(available_claims),
+                        "includedAvailableClaimCount": len(claim_inventory),
+                    }
+                )
     claim = detail.get("claim")
     if artifact_type == "bi_claim" and isinstance(claim, Mapping):
         content["claim"] = _model_safe_claim(claim)
@@ -946,6 +980,42 @@ def _model_safe_artifact_content(
     if artifact_type == "score_explanation" and isinstance(score, Mapping):
         content["scoreExplanation"] = _model_safe_score_explanation(score)
     return content
+
+
+def _bounded_utf8_text(value: str, byte_limit: int) -> tuple[str, bool]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= byte_limit:
+        return value, False
+    clipped = encoded[: max(0, byte_limit - len("…".encode("utf-8")))]
+    while clipped:
+        try:
+            return clipped.decode("utf-8").rstrip() + "…", True
+        except UnicodeDecodeError:
+            clipped = clipped[:-1]
+    return "…", True
+
+
+def _bounded_json_items(
+    values: Sequence[Any],
+    *,
+    byte_limit: int,
+) -> tuple[list[Any], bool]:
+    selected: list[Any] = []
+    for value in values:
+        projected = canonical_value(value)
+        candidate = [*selected, projected]
+        candidate_bytes = len(
+            json.dumps(
+                candidate,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        if candidate_bytes > byte_limit:
+            return selected, True
+        selected.append(projected)
+    return selected, False
 
 
 def _model_safe_claim(value: Mapping[str, Any]) -> dict[str, Any]:

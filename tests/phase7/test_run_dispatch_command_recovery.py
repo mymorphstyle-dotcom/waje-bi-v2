@@ -35,6 +35,12 @@ def _lease(
     }
 
 
+def _resume_request() -> dict:
+    return {
+        "schema_version": "single-authority-phase02-waiting.v1",
+    }
+
+
 def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None:
     topic_selection = {
         "sourceRunId": "run-topic-choice-source",
@@ -55,7 +61,7 @@ def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None
         "resolutionId": "single-authority:request-clarification",
         "attemptRunId": "run-clarification",
         "answer": "采用上一日作为比较基线",
-        "selectedOptionId": "comparison_baseline.previous_day",
+        "selectedOptionIds": ["comparison_baseline.previous_day"],
         "source": "user",
         "retryAttempt": False,
     }
@@ -83,6 +89,7 @@ def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None
             {
                 "message": clarification["answer"],
                 "clarification": clarification,
+                "resumeRequest": _resume_request(),
             },
             producer_kind="clarification_resolution",
             scope_ref="run-clarification",
@@ -95,7 +102,8 @@ def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None
             return ()
 
         def lease_recoverable_run_dispatches(self, *, limit):
-            return leases
+            assert limit == 1
+            return leases[:1]
 
         def fail_owned_run_dispatch(self, **_kwargs):
             raise AssertionError("valid_command_was_terminalized_as_failed")
@@ -115,7 +123,7 @@ def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None
 
     assert summary["failed"] == []
     assert summary["dispatched"] == [
-        {"run_id": lease["run_id"], "status": "planned"} for lease in leases
+        {"run_id": leases[0]["run_id"], "status": "planned"}
     ]
     assert calls == [
         {
@@ -132,42 +140,6 @@ def test_crash_recovery_replays_each_exact_agent_core_command_envelope() -> None
                 "topic_id": topic_selection["topicId"],
             },
         },
-        {
-            "thread_id": "thread-recovery",
-            "run_id": "run-topic-choice-answer",
-            "user_message": topic_choice_answer["answer"],
-            "run_dispatch": {
-                "dispatch_id": "dispatch-topic-choice-answer",
-                "dispatch_owner_id": "recovery-owner-topic-choice-answer",
-                "lease_epoch": 3,
-            },
-            "topic_choice_answer": {
-                "source_run_id": topic_choice_answer["sourceRunId"],
-                "answer": topic_choice_answer["answer"],
-            },
-        },
-        {
-            "thread_id": "thread-recovery",
-            "run_id": "run-intent-revision",
-            "user_message": "改为按自然月比较收入",
-            "run_dispatch": {
-                "dispatch_id": "dispatch-intent-revision",
-                "dispatch_owner_id": "recovery-owner-intent-revision",
-                "lease_epoch": 3,
-            },
-            "intent_revision_context": intent_revision_context,
-        },
-        {
-            "thread_id": "thread-recovery",
-            "run_id": "run-clarification",
-            "user_message": clarification["answer"],
-            "run_dispatch": {
-                "dispatch_id": "dispatch-clarification",
-                "dispatch_owner_id": "recovery-owner-clarification",
-                "lease_epoch": 3,
-            },
-            "clarification": clarification,
-        },
     ]
 
 
@@ -177,13 +149,17 @@ def test_crash_recovery_accepts_exact_free_text_clarification_envelope() -> None
         "resolutionId": "single-authority:request-free-text",
         "attemptRunId": "run-free-text",
         "answer": "改成与最近七个完整自然日均值比较",
-        "selectedOptionId": None,
+        "selectedOptionIds": [],
         "source": "user",
         "retryAttempt": False,
     }
     lease = _lease(
         "free-text",
-        {"message": clarification["answer"], "clarification": clarification},
+        {
+            "message": clarification["answer"],
+            "clarification": clarification,
+            "resumeRequest": _resume_request(),
+        },
         producer_kind="clarification_resolution",
         scope_ref="run-free-text",
     )

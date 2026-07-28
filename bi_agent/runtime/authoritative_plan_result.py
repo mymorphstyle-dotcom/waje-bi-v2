@@ -338,6 +338,32 @@ def validate_proposal_admission_plan_closure(
     proposal_admission: ProposalAdmissionRecord,
     plan_revision: PlanRevision,
 ) -> None:
+    accepted_questions = tuple(
+        {
+            "issue_ref": item.issue_ref,
+            "parent_issue_ref": item.parent_issue_ref,
+            "business_question": item.business_question,
+            "target_claim_kind": item.target_claim_kind,
+        }
+        for item in plan_revision.accepted_question_graph
+    )
+    proposal_questions = tuple(
+        {
+            "issue_ref": str(item["issue_id"]),
+            "parent_issue_ref": (
+                str(item["parent_issue_id"])
+                if item["parent_issue_id"] is not None
+                else None
+            ),
+            "business_question": str(item["question"]),
+            "target_claim_kind": str(item["target_claim_kind"]),
+        }
+        for item in planner_proposal.issue_tree
+    )
+    if accepted_questions and accepted_questions != proposal_questions:
+        raise EvidenceIntegrityError(
+            "single_authority_plan_question_graph_closure_mismatch"
+        )
     proposal_items: dict[str, tuple[str, Mapping[str, Any]]] = {}
     for item_kind, items in (
         ("analysis_axis", planner_proposal.auxiliary_axes),
@@ -353,6 +379,9 @@ def validate_proposal_admission_plan_closure(
     admission_by_ref = {
         str(entry["proposal_item_ref"]): entry
         for entry in proposal_admission.admission_entries
+    }
+    issue_refs = {
+        str(item["issue_id"]) for item in planner_proposal.issue_tree
     }
     if set(admission_by_ref) != set(proposal_items):
         raise EvidenceIntegrityError(
@@ -380,6 +409,7 @@ def validate_proposal_admission_plan_closure(
             item_kind=item_kind,
             item_ref=item_ref,
             proposal_item=proposal_item,
+            issue_refs=issue_refs,
         )
         if status == "admitted":
             if normalized_ref != expected_execution_ref:
@@ -406,7 +436,11 @@ def validate_proposal_admission_plan_closure(
                         "single_authority_plan_proposal_admission_closure_mismatch"
                     )
             elif item_kind == "priority":
-                if normalized_ref not in plan_axis_ids:
+                target_ref = str(proposal_item["target_ref"])
+                if (
+                    target_ref not in issue_refs
+                    and normalized_ref not in plan_axis_ids
+                ):
                     raise EvidenceIntegrityError(
                         "single_authority_plan_proposal_admission_closure_mismatch"
                     )
@@ -434,13 +468,15 @@ def _proposal_execution_ref(
     item_kind: str,
     item_ref: str,
     proposal_item: Mapping[str, Any],
+    issue_refs: set[str],
 ) -> str:
     if item_kind == "analysis_axis":
         return str(proposal_item["axis_id"])
     if item_kind == "hypothesis":
         return f"hypothesis:{item_ref}"
     if item_kind == "priority":
-        return str(proposal_item["target_ref"])
+        target_ref = str(proposal_item["target_ref"])
+        return f"issue:{target_ref}" if target_ref in issue_refs else target_ref
     return f"assumption:{item_ref}"
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 import math
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from bi_agent.runtime.analysis_contracts import (
     AnalysisContract,
@@ -31,11 +31,9 @@ from bi_agent.runtime.dataset_catalog import (
     DatasetReleaseResolver,
     DatasetSnapshot,
 )
+from bi_agent.runtime.query_ir import compile_capability_query_route
 from bi_agent.runtime.runtime_contract_registry import RuntimeContractRegistry
-from bi_agent.runtime.temporal_comparison import (
-    EffectiveTemporalComparison,
-    capability_supports_temporal_authority,
-)
+from bi_agent.runtime.temporal_comparison import EffectiveTemporalComparison
 from bi_agent.runtime.window_resolver import (
     resolve_temporal_windows,
 )
@@ -60,6 +58,95 @@ class AnalysisCompileOutcome:
     analysis_contract: AnalysisContract
     query_contracts: tuple[QueryContract, ...]
     capability_plans: tuple[CapabilityExecutionPlan, ...]
+
+
+def expand_dynamic_dimension_queries(
+    outcome: AnalysisCompileOutcome,
+    *,
+    run_id: str,
+    capability_id: str,
+    selected_combinations: Sequence[Sequence[str]],
+    proposal: Mapping[str, Any],
+    snapshots: Sequence[DatasetSnapshot],
+    registry: RuntimeContractRegistry,
+    temporal_authority: EffectiveTemporalComparison,
+) -> AnalysisCompileOutcome:
+    if not isinstance(outcome, AnalysisCompileOutcome):
+        raise ValueError("dynamic_dimension_query_outcome_invalid")
+    capability = _registry_entry(registry.capability_inputs, capability_id)
+    if (
+        capability is None
+        or capability.get("dynamic_dimension_combination_policy") is None
+    ):
+        raise ValueError(
+            f"dynamic_dimension_query_policy_missing:{capability_id}"
+        )
+    normalized_combinations = _validated_dynamic_dimension_combinations(
+        selected_combinations,
+        available_dimensions={
+            item.dimension_id for item in outcome.analysis_contract.dimension_bindings
+        },
+    )
+    if not normalized_combinations:
+        return outcome
+    expanded_proposal = {
+        **dict(proposal),
+        "runtime_dimension_combinations": {
+            capability_id: normalized_combinations,
+        },
+    }
+    generated, _ = _build_query_contracts(
+        run_id,
+        outcome.analysis_contract.analysis_contract_id,
+        (capability_id,),
+        expanded_proposal,
+        tuple(snapshots),
+        outcome.analysis_contract.resolved_windows,
+        outcome.analysis_contract.metric_bindings,
+        outcome.analysis_contract.dimension_bindings,
+        registry,
+        temporal_authority=temporal_authority,
+    )
+    existing_signatures = {
+        item.contract_signature for item in outcome.query_contracts
+    }
+    additions = tuple(
+        item for item in generated if item.contract_signature not in existing_signatures
+    )
+    if not additions:
+        return outcome
+    next_index = len(outcome.query_contracts) + 1
+    additions = tuple(
+        replace(
+            item,
+            query_contract_id=f"query:{run_id}:dynamic:{next_index + index}",
+        )
+        for index, item in enumerate(additions)
+    )
+    all_contracts = (*outcome.query_contracts, *additions)
+    dynamic_refs = {
+        capability_id: tuple(item.query_contract_id for item in additions)
+    }
+    dynamic_plans = _build_capability_plans(
+        (capability_id,),
+        all_contracts,
+        dynamic_refs,
+        registry,
+        analysis_contract_ref=outcome.analysis_contract.analysis_contract_id,
+    )
+    if len(dynamic_plans) != 1:
+        raise ValueError(
+            f"dynamic_dimension_query_plan_invalid:{capability_id}"
+        )
+    plans = tuple(
+        dynamic_plans[0] if item.capability_id == capability_id else item
+        for item in outcome.capability_plans
+    )
+    return AnalysisCompileOutcome(
+        outcome.analysis_contract,
+        tuple(all_contracts),
+        plans,
+    )
 
 
 def _validated_capability_roles(
@@ -146,15 +233,24 @@ def compile_analysis_contract(
     capability_roles = _validated_capability_roles(proposal, capabilities)
     if not isinstance(temporal_authority, EffectiveTemporalComparison):
         raise ValueError("analysis_temporal_authority_invalid")
+    capability_query_routes: dict[str, Mapping[str, Any]] = {}
     for capability_id in capabilities:
         capability = _registry_entry(registry.capability_inputs, capability_id)
-        if capability is None or not capability_supports_temporal_authority(
-            capability,
-            temporal_authority,
-        ):
+        if capability is None:
             raise ValueError(
-                f"analysis_capability_temporal_unsupported:{capability_id}"
+                f"analysis_capability_contract_missing:{capability_id}"
             )
+        query_route = compile_capability_query_route(
+            capability_id=capability_id,
+            capability_contract=capability,
+            temporal_authority=temporal_authority,
+        )
+        if query_route["status"] == "unavailable":
+            raise ValueError(
+                "analysis_query_input_route_unavailable:"
+                f"{capability_id}:{query_route['boundary_code']}"
+            )
+        capability_query_routes[capability_id] = query_route
     proposal = {
         **proposal,
         "grain": _validated_execution_grain(proposal.get("grain")),
@@ -219,6 +315,18 @@ def compile_analysis_contract(
         proposal,
         accepted_capabilities=capabilities,
         registry=registry,
+        capability_query_routes=capability_query_routes,
+    )
+    context_window_specs = tuple(
+        spec
+        for spec in context_window_specs
+        if "reference"
+        in set(
+            capability_query_routes[str(spec["capability_id"])].get(
+                "window_roles"
+            )
+            or ()
+        )
     )
     resolution = resolve_temporal_windows(
         temporal_authority,
@@ -243,6 +351,7 @@ def compile_analysis_contract(
         dimension_bindings,
         registry,
         temporal_authority=temporal_authority,
+        capability_query_routes=capability_query_routes,
         capability_dependencies=capability_dependencies,
     )
     capability_plans = _build_capability_plans(
@@ -353,6 +462,21 @@ def _required_metric_ids(
     return _dedupe(metric_ids)
 
 
+def _required_dimension_ids(
+    proposal: Mapping[str, Any],
+    accepted_capabilities: tuple[str, ...],
+    registry: RuntimeContractRegistry,
+) -> tuple[str, ...]:
+    dimension_ids = list(_values(proposal, "requested_dimensions"))
+    for capability_id in accepted_capabilities:
+        contract = _registry_entry(registry.capability_inputs, capability_id)
+        if contract is not None:
+            dimension_ids.extend(
+                _mapping_values(contract, "required_dimensions")
+            )
+    return _dedupe(dimension_ids)
+
+
 def _capability_dependency_sets(
     proposal: Mapping[str, Any],
     accepted_capabilities: tuple[str, ...],
@@ -412,7 +536,14 @@ def _build_dependency_index(
     registry: RuntimeContractRegistry,
 ) -> _DependencyIndex:
     metric_ids = _required_metric_ids(proposal, accepted_capabilities, registry)
-    dimension_ids = _values(proposal, "requested_dimensions")
+    dimension_ids = _required_dimension_ids(
+        proposal,
+        accepted_capabilities,
+        registry,
+    )
+    explicitly_requested_dimensions = set(
+        _values(proposal, "requested_dimensions")
+    )
     explicit_metrics = set(
         (
             *_values(proposal, "target_metrics"),
@@ -466,7 +597,15 @@ def _build_dependency_index(
         if contract is None or str(contract.get("dimension_mode") or "") != "requested":
             continue
         allowed_dimensions = set(_mapping_values(contract, "allowed_dimensions"))
+        required_dimensions = set(
+            _mapping_values(contract, "required_dimensions")
+        )
         for dimension_id in dimension_ids:
+            if (
+                dimension_id not in explicitly_requested_dimensions
+                and dimension_id not in required_dimensions
+            ):
+                continue
             if allowed_dimensions and dimension_id not in allowed_dimensions:
                 continue
             _append_owner(dimension_owners, dimension_id, capability_id)
@@ -1407,6 +1546,7 @@ def _build_query_contracts(
     dimension_bindings: tuple[DimensionBinding, ...],
     registry: RuntimeContractRegistry,
     temporal_authority: EffectiveTemporalComparison,
+    capability_query_routes: Mapping[str, Mapping[str, Any]] | None = None,
     capability_dependencies: tuple[CapabilityDependencySet, ...] = (),
 ) -> tuple[tuple[QueryContract, ...], dict[str, tuple[str, ...]]]:
     if not isinstance(temporal_authority, EffectiveTemporalComparison):
@@ -1423,6 +1563,21 @@ def _build_query_contracts(
     dependencies_by_capability = {
         item.capability_id: item for item in capability_dependencies
     }
+    if capability_query_routes is None:
+        capability_query_routes = {
+            capability_id: compile_capability_query_route(
+                capability_id=capability_id,
+                capability_contract=(
+                    _registry_entry(
+                        registry.capability_inputs,
+                        capability_id,
+                    )
+                    or {}
+                ),
+                temporal_authority=temporal_authority,
+            )
+            for capability_id in accepted_capabilities
+        }
 
     def record_logical(logical: dict[str, Any], owner: str) -> None:
         dedupe_key = query_contract_signature(logical)
@@ -1438,11 +1593,26 @@ def _build_query_contracts(
         capability = _registry_entry(registry.capability_inputs, capability_id)
         if capability is None:
             continue
+        dynamic_dimension_policy = capability.get(
+            "dynamic_dimension_combination_policy"
+        )
+        raw_dynamic_combinations = proposal.get(
+            "runtime_dimension_combinations"
+        )
+        selected_dynamic_combinations = (
+            raw_dynamic_combinations.get(capability_id)
+            if isinstance(raw_dynamic_combinations, Mapping)
+            else None
+        )
+        if (
+            dynamic_dimension_policy is not None
+            and selected_dynamic_combinations is None
+        ):
+            continue
         query_windows = _query_windows_for_capability(
             capability_id=capability_id,
-            capability=capability,
+            query_route=capability_query_routes[capability_id],
             windows=canonical_windows,
-            temporal_authority=temporal_authority,
         )
         if not query_windows:
             continue
@@ -1565,7 +1735,20 @@ def _build_query_contracts(
                         (dimension,) for dimension in requested_dimensions
                     )
                 elif dimension_topology == "joint":
-                    dimension_groups = (requested_dimensions,)
+                    if dynamic_dimension_policy is not None:
+                        dimensions_by_id = {
+                            item.dimension_id: item
+                            for item in requested_dimensions
+                        }
+                        dimension_groups = tuple(
+                            tuple(dimensions_by_id[dimension_id] for dimension_id in group)
+                            for group in _validated_dynamic_dimension_combinations(
+                                selected_dynamic_combinations,
+                                available_dimensions=set(dimensions_by_id),
+                            )
+                        )
+                    else:
+                        dimension_groups = (requested_dimensions,)
                 else:
                     continue
                 for query_dimensions in dimension_groups:
@@ -1574,6 +1757,11 @@ def _build_query_contracts(
                         query_dimensions,
                         window_refs,
                         query_shape,
+                        scope_invariant_fields=_scope_invariant_result_fields(
+                            registry,
+                            dataset_id=dataset_id,
+                            query_shape=query_shape,
+                        ),
                     )
                     logical: dict[str, Any] = {
                         "analysis_contract_ref": analysis_contract_id,
@@ -1600,7 +1788,11 @@ def _build_query_contracts(
                         "workload_class": str(
                             capability.get("workload_class") or "interactive_aggregate"
                         ),
-                        "query_parameters": _query_parameters(query_shape),
+                        "query_parameters": _query_parameters(
+                            query_shape,
+                            temporal_authority=temporal_authority,
+                            query_route=capability_query_routes[capability_id],
+                        ),
                         "query_role_ref": "",
                         "reconciliation_binding": None,
                         "join_expectation": _join_expectation(query_shape),
@@ -1645,9 +1837,18 @@ def _build_query_contracts(
                                 (),
                                 window_refs,
                                 companion_shape_contract,
+                                scope_invariant_fields=(
+                                    _scope_invariant_result_fields(
+                                        registry,
+                                        dataset_id=dataset_id,
+                                        query_shape=companion_shape_contract,
+                                    )
+                                ),
                             ),
                             "query_parameters": _query_parameters(
-                                companion_shape_contract
+                                companion_shape_contract,
+                                temporal_authority=temporal_authority,
+                                query_route=capability_query_routes[capability_id],
                             ),
                             "reconciliation_binding": None,
                             "join_expectation": _join_expectation(
@@ -2012,6 +2213,8 @@ def _reconcile_capability_inputs(
         for slot in plan.required_input_slots:
             if slot.query_contract_refs:
                 continue
+            if contract.get("dynamic_dimension_combination_policy") is not None:
+                continue
             gap = _contract_gap(
                 gap_type="contract_partial",
                 gap_id=(
@@ -2027,6 +2230,38 @@ def _reconcile_capability_inputs(
             )
             gaps[gap.gap_id] = gap
     return tuple(gaps.values())
+
+
+def _validated_dynamic_dimension_combinations(
+    value: Any,
+    *,
+    available_dimensions: set[str],
+) -> tuple[tuple[str, ...], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError("dynamic_dimension_combinations_invalid")
+    normalized: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw_group in value:
+        if (
+            isinstance(raw_group, (str, bytes))
+            or not isinstance(raw_group, Sequence)
+        ):
+            raise ValueError("dynamic_dimension_combinations_invalid")
+        group = tuple(str(item) for item in raw_group)
+        if (
+            len(group) < 2
+            or len(group) != len(set(group))
+            or any(
+                not item
+                or item not in available_dimensions
+                for item in group
+            )
+            or group in seen
+        ):
+            raise ValueError("dynamic_dimension_combinations_invalid")
+        seen.add(group)
+        normalized.append(group)
+    return tuple(normalized)
 
 
 def _context_window_binding_state(
@@ -2070,6 +2305,8 @@ def _result_shape(
     dimension_bindings: tuple[DimensionBinding, ...],
     window_refs: tuple[str, ...],
     query_shape: Mapping[str, Any],
+    *,
+    scope_invariant_fields: tuple[str, ...] = (),
 ) -> ResultShape:
     dimension_ids = tuple(item.dimension_id for item in dimension_bindings)
     required_fields = _dedupe(
@@ -2077,6 +2314,7 @@ def _result_shape(
             *_mapping_values(query_shape, "required_fields"),
             *(item.metric_id for item in metric_bindings),
             *dimension_ids,
+            *scope_invariant_fields,
         )
     )
     unique_key = _dedupe((*_mapping_values(query_shape, "unique_key"), *dimension_ids))
@@ -2090,6 +2328,20 @@ def _result_shape(
             query_shape.get("result_semantics") or "complete_aggregate"
         ),
         dimension_presence_policy=str(query_shape["dimension_presence_policy"]),
+    )
+
+
+def _scope_invariant_result_fields(
+    registry: RuntimeContractRegistry,
+    *,
+    dataset_id: str,
+    query_shape: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if query_shape.get("scope_invariant_output") != "violation_counts":
+        return ()
+    return tuple(
+        f"{dimension_id}_scope_violation_count"
+        for dimension_id in registry.scope_invariant_dimension_ids(dataset_id)
     )
 
 
@@ -2380,46 +2632,45 @@ def _canonical_query_windows(
 def _query_windows_for_capability(
     *,
     capability_id: str,
-    capability: Mapping[str, Any],
+    query_route: Mapping[str, Any],
     windows: tuple[ResolvedWindow, ...],
-    temporal_authority: EffectiveTemporalComparison,
 ) -> tuple[ResolvedWindow, ...]:
-    """Select physical windows from the capability's reviewed temporal contract."""
+    """Select physical windows from the accepted Query IR adapter."""
 
-    if not capability_supports_temporal_authority(
-        capability,
-        temporal_authority,
+    roles = query_route.get("window_roles")
+    if (
+        query_route.get("status") == "unavailable"
+        or not isinstance(roles, list)
+        or not roles
+        or any(role not in {"target", "baseline", "reference"} for role in roles)
     ):
-        raise ValueError(f"capability_query_temporal_unsupported:{capability_id}")
-    compatibility = capability.get("temporal_compatibility")
-    if not isinstance(compatibility, Mapping):
-        raise ValueError(f"capability_query_temporal_contract_missing:{capability_id}")
-    roles = compatibility.get("window_roles")
-    semantics = compatibility.get("consumption_semantics")
-    if not isinstance(roles, (list, tuple)) or not isinstance(semantics, (list, tuple)):
-        raise ValueError(f"capability_query_temporal_contract_invalid:{capability_id}")
+        raise ValueError(f"capability_query_route_invalid:{capability_id}")
     role_set = set(roles)
-    if "capability_context" in set(semantics):
-        owned_context = tuple(
-            window
-            for window in windows
-            if window.role == "reference"
-            and capability_id in tuple(window.capability_refs or ())
-        )
-        if len(owned_context) != 1:
-            raise ValueError(f"capability_query_context_window_missing:{capability_id}")
-        primary_roles = role_set - {"reference"}
-        primary_windows = tuple(
-            window for window in windows if window.role in primary_roles
-        )
-        if "target" in primary_roles and not any(
-            window.role == "target" for window in primary_windows
-        ):
-            raise ValueError(f"capability_query_target_window_missing:{capability_id}")
-        return (*primary_windows, *owned_context)
     selected = tuple(window for window in windows if window.role in role_set)
-    if not selected or "target" not in role_set or selected[0].role != "target":
-        raise ValueError(f"capability_query_target_window_missing:{capability_id}")
+    for role in roles:
+        owned = tuple(
+            window
+            for window in selected
+            if window.role == role
+            and (
+                role != "reference"
+                or capability_id in tuple(window.capability_refs or ())
+            )
+        )
+        if len(owned) != 1:
+            raise ValueError(
+                f"capability_query_window_role_missing:{capability_id}:{role}"
+            )
+    selected = tuple(
+        window
+        for role in roles
+        for window in selected
+        if window.role == role
+        and (
+            role != "reference"
+            or capability_id in tuple(window.capability_refs or ())
+        )
+    )
     return selected
 
 
@@ -2885,6 +3136,7 @@ def _context_window_specs(
     *,
     accepted_capabilities: tuple[str, ...],
     registry: RuntimeContractRegistry,
+    capability_query_routes: Mapping[str, Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], ...]:
     raw = proposal.get("context_window_specs") or ()
     if not isinstance(raw, (list, tuple)) or any(
@@ -2907,8 +3159,22 @@ def _context_window_specs(
             )
         except KeyError:
             policy = None
+        query_route = capability_query_routes.get(capability_id)
         bounds = policy.get("count_bounds") if isinstance(policy, Mapping) else None
         unit_bounds = bounds.get(unit) if isinstance(bounds, Mapping) else None
+        derived_evaluation_range = (
+            isinstance(query_route, Mapping)
+            and query_route.get("status") == "derived_observation_frame"
+            and query_route.get("adapter_kind") == "daily_observation_frame"
+            and query_route.get("observation_grain") == "day"
+        )
+        expected_relation = (
+            "evaluation_range"
+            if derived_evaluation_range
+            else policy.get("relation")
+            if isinstance(policy, Mapping)
+            else None
+        )
         valid_count = (
             isinstance(count, int)
             and not isinstance(count, bool)
@@ -2919,7 +3185,7 @@ def _context_window_specs(
         if (
             capability_id not in accepted
             or not isinstance(policy, Mapping)
-            or relation != policy.get("relation")
+            or relation != expected_relation
             or unit not in set(policy.get("allowed_units") or ())
             or not valid_count
             or capability_id in seen_capabilities
@@ -2989,11 +3255,55 @@ def _join_expectation(query_shape: Mapping[str, Any]) -> JoinExpectation | None:
     )
 
 
-def _query_parameters(query_shape: Mapping[str, Any]) -> dict[str, Any]:
+def _query_parameters(
+    query_shape: Mapping[str, Any],
+    *,
+    temporal_authority: EffectiveTemporalComparison | None = None,
+    query_route: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     value = query_shape.get("query_parameters") or {}
     if not isinstance(value, Mapping):
         raise ValueError("query_shape_parameters_must_be_mapping")
-    return {str(key): _freeze_contract_value(item) for key, item in value.items()}
+    parameters = {
+        str(key): _freeze_contract_value(item) for key, item in value.items()
+    }
+    if (
+        temporal_authority is not None
+        and temporal_authority.mode == "calendar_partition"
+        and isinstance(temporal_authority.calendar_partition, Mapping)
+        and temporal_authority.calendar_partition.get("partition_field")
+        == "month_phase"
+        and "month_phase_member_definitions"
+        in set(query_shape.get("runtime_query_parameter_keys") or ())
+    ):
+        definitions = temporal_authority.calendar_partition.get(
+            "member_definitions"
+        )
+        if not isinstance(definitions, (list, tuple)) or not definitions:
+            raise ValueError(
+                "month_phase_member_definitions_authority_missing"
+            )
+        parameters["month_phase_member_definitions"] = _freeze_contract_value(
+            definitions
+        )
+    if (
+        isinstance(query_route, Mapping)
+        and query_route.get("adapter_kind") == "partition_role_frame"
+    ):
+        frame = query_route.get("partition_frame")
+        if not isinstance(frame, Mapping):
+            raise ValueError("partition_role_frame_authority_missing")
+        parameters["calendar_partition_role_frame"] = _freeze_contract_value(
+            {
+                "schema_version": "calendar-partition-role-frame.v1",
+                "partition_field": frame.get("partition_field"),
+                "target_members": frame.get("target_members"),
+                "baseline_members": frame.get("baseline_members"),
+                "aggregation": frame.get("aggregation"),
+                "member_definitions": frame.get("member_definitions", ()),
+            }
+        )
+    return parameters
 
 
 def _freeze_contract_value(value: Any) -> Any:

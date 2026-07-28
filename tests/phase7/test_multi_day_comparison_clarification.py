@@ -14,6 +14,10 @@ from bi_agent.runtime.llm_prompts import (
     SINGLE_AUTHORITY_PROMPT_VERSION,
     build_prompt,
 )
+from bi_agent.runtime.runtime_contract_registry import (
+    CANONICAL_RUNTIME_BINDINGS_PATH,
+    RuntimeContractRegistry,
+)
 from bi_agent.runtime.single_authority import (
     DecisionLedger,
     DecisionRecord,
@@ -42,6 +46,14 @@ def _comparison_window_slot() -> dict[str, object]:
         dict(slot)
         for slot in langgraph_workflow._single_authority_ambiguity_slot_catalog()
         if slot["slot_id"] == "comparison_window"
+    )
+
+
+def _comparison_interpretation_slot() -> dict[str, object]:
+    return next(
+        dict(slot)
+        for slot in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+        if slot["slot_id"] == "comparison_interpretation"
     )
 
 
@@ -146,6 +158,7 @@ def _intent(
     return IntentRevision.create(
         run_attempt_id="run-comparison-window",
         original_user_text=original,
+        business_summary="你希望分析指定时间范围内付费金额的变化。",
         goal_bindings=({"goal_id": "explain_change", "role": "primary"},),
         target_metric_refs=("paid_amount",),
         scope={"scope_type": "full_sample", "filters": []},
@@ -164,16 +177,64 @@ def _intent(
                 "text": original,
             },
         ),
-        schema_version="intent-revision.v2",
+        schema_version="intent-revision.v3",
         prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
         model_version="provider-test",
         known_ambiguity_value_refs={
-            "previous_day",
-            "rolling_7_day_baseline",
-            "same_weekday_last_week",
-            *COMPARISON_WINDOW_VALUE_REFS,
+            str(value_ref)
+            for slot in catalog.values()
+            for value_ref in slot["allowed_value_refs"]
         },
         known_ambiguity_slots=catalog,
+    )
+
+
+def test_provider_intent_accepts_sql_interpretation_clarification_slot() -> None:
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = intent.to_dict()
+    binding_fields = {
+        "goal_bindings",
+        "target_metric_refs",
+        "scope",
+        "time_spec",
+        "comparison_spec",
+        "direction_premise",
+        "requested_analysis_axes",
+        "requested_factor_refs",
+        "desired_decisions",
+        "ambiguity_slots",
+        "source_spans",
+    }
+    validated = langgraph_workflow._validated_single_authority_intent_output(
+        {
+            "intent_binding": {
+                key: payload[key]
+                for key in binding_fields
+            },
+            "business_summary": payload["business_summary"],
+            "status_message": "需要先确认月内阶段口径。",
+        },
+        run_attempt_id="run-provider-comparison-interpretation",
+        question=payload["original_user_text"],
+        registry=RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ),
+        prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+        model_version="provider-test",
+        supersedes_intent_revision_id=None,
+    )
+
+    assert validated.comparison_spec == {
+        "kind": "decision_slot",
+        "slot_id": "comparison_interpretation",
+    }
+    assert validated.ambiguity_slots[0]["allowed_value_refs"] == (
+        "interpretation_1",
+        "interpretation_2",
+        "interpretation_3",
     )
 
 
@@ -323,6 +384,495 @@ def test_comparison_window_provider_options_carry_complete_typed_specs() -> None
         )["option_id"]
         == records[0]["option_id"]
     )
+
+
+def test_sql_affecting_comparison_interpretations_are_distinct_typed_options() -> (
+    None
+):
+    slot = _comparison_interpretation_slot()
+    time_spec = {
+        "kind": "date_range",
+        "start": "2024-01-01",
+        "end": "2026-05-31",
+    }
+    output = {
+        "question": "月初、月中和月末按哪组日期及汇总方式比较？",
+        "options": [
+            {
+                "value_ref": "interpretation_1",
+                "typed_value": {
+                    "kind": "calendar_partition",
+                    "baseline_class": "same_month_phase",
+                    "period_grain": "month",
+                    "partition_field": "month_phase",
+                    "target_members": ["start"],
+                    "baseline_members": ["mid", "end"],
+                    "aggregation": "sum_of_complete_days",
+                    "member_definitions": [
+                        {"member": "start", "day_start": 1, "day_end": 10},
+                        {"member": "mid", "day_start": 11, "day_end": 20},
+                        {"member": "end", "day_start": 21, "day_end": 31},
+                    ],
+                },
+                "label": "1—10日、11—20日、21日至月末，比较阶段总额（推荐）",
+                "description": "适合判断三个阶段各自贡献的付费总额。",
+                "recommended": True,
+            },
+            {
+                "value_ref": "interpretation_2",
+                "typed_value": {
+                    "kind": "calendar_partition",
+                    "baseline_class": "same_month_phase",
+                    "period_grain": "month",
+                    "partition_field": "month_phase",
+                    "target_members": ["start"],
+                    "baseline_members": ["mid", "end"],
+                    "aggregation": "mean_of_complete_days",
+                    "member_definitions": [
+                        {"member": "start", "day_start": 1, "day_end": 7},
+                        {"member": "mid", "day_start": 8, "day_end": 21},
+                        {"member": "end", "day_start": 22, "day_end": 31},
+                    ],
+                },
+                "label": "1—7日、8—21日、22日至月末，比较日均金额",
+                "description": "适合控制三个阶段天数不同带来的影响。",
+                "recommended": False,
+            },
+        ],
+        "recommendation_reason": "十天分段是更常见且便于复核的业务解释。",
+        "status_message": "等待确认月内阶段口径。",
+    }
+
+    normalized = langgraph_workflow._validate_single_authority_clarification_output(
+        output,
+        slot=slot,
+        time_spec=time_spec,
+        required_recommended_value_ref="",
+        required_recommended_label="",
+    )
+    records = [
+        langgraph_workflow._single_authority_decision_option_record(
+            slot=slot,
+            time_spec=time_spec,
+            option=option,
+        )
+        for option in normalized
+    ]
+
+    assert len({record["option_id"] for record in records}) == 2
+    assert all(
+        record["option_id"].startswith(
+            "comparison_interpretation.interpretation_"
+        )
+        for record in records
+    )
+    intent = _intent(
+        time_spec=time_spec,
+        slot_id="comparison_interpretation",
+    )
+    decision = DecisionRecord.create(
+        intent_revision_id=intent.intent_revision_id,
+        slot_id="comparison_interpretation",
+        value=records[0]["typed_value"],
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=("baseline_refs", "resolved_window_refs"),
+        option_id=records[0]["option_id"],
+    )
+    authority = resolve_effective_comparison(
+        time_spec=intent.time_spec,
+        comparison_spec=intent.comparison_spec,
+        decision_ledger=DecisionLedger().append(decision),
+        require_physical_baseline=False,
+    )
+
+    assert authority.mode == "calendar_partition"
+    assert authority.calendar_partition["member_definitions"][0]["day_end"] == 10
+    assert authority.calendar_partition["aggregation"] == "sum_of_complete_days"
+
+
+def test_month_phase_clarification_keeps_boundaries_and_aggregation_atomic() -> None:
+    original_user_text = "比较每个月月初、月中和月末付费金额。"
+    time_spec = {
+        "kind": "date_range",
+        "start": "2024-01-01",
+        "end": "2026-05-31",
+    }
+    comparison_spec = {
+        "kind": "calendar_partition",
+        "baseline_class": "same_month_phase",
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ["start"],
+        "baseline_members": ["mid", "end"],
+        "aggregation": "mean_of_complete_days",
+        "member_definitions": [
+            {"member": "start", "day_start": 1, "day_end": 10},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 21, "day_end": 31},
+        ],
+    }
+    catalog = {
+        str(item["slot_id"]): item
+        for item in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+    }
+    selected_slots = [
+        catalog["month_phase_definition"],
+        catalog["phase_aggregation"],
+    ]
+    ambiguity_slots = tuple(
+        {
+            "slot_id": slot["slot_id"],
+            "slot_kind": slot["slot_kind"],
+            "materiality": slot["materiality"],
+            "status": "unresolved",
+            "question": (
+                "月初、月中和月末分别包含哪些日期？"
+                if slot["slot_id"] == "month_phase_definition"
+                else "比较每个阶段的总额还是日均金额？"
+            ),
+            "allowed_value_refs": slot["allowed_value_refs"],
+        }
+        for slot in selected_slots
+    )
+    intent = IntentRevision.create(
+        run_attempt_id="run-atomic-month-phase",
+        original_user_text=original_user_text,
+        business_summary=(
+            "按1—10日、11—20日、21日至月末分组，推荐比较日均付费金额。"
+        ),
+        goal_bindings=({"goal_id": "pattern_explanation", "role": "primary"},),
+        target_metric_refs=("paid_amount",),
+        scope={"scope_type": "full_sample", "filters": []},
+        time_spec=time_spec,
+        comparison_spec=comparison_spec,
+        direction_premise="unknown",
+        requested_factor_refs=(),
+        requested_analysis_axes=(),
+        desired_decisions=(),
+        ambiguity_slots=ambiguity_slots,
+        source_spans=(
+            {
+                "field": "original_user_text",
+                "start": 0,
+                "end": len(original_user_text),
+                "text": original_user_text,
+            },
+        ),
+        schema_version="intent-revision.v3",
+        prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+        model_version="provider-test",
+        known_ambiguity_value_refs={
+            value_ref
+            for slot in selected_slots
+            for value_ref in slot["allowed_value_refs"]
+        },
+        known_ambiguity_slots=catalog,
+    )
+    slot_contracts = [
+        langgraph_workflow._single_authority_clarification_slot_contract(
+            slot=slot,
+            comparison_spec=intent.comparison_spec,
+        )
+        for slot in intent.ambiguity_slots
+    ]
+    output = {
+        "questions": [
+            {
+                "slot_id": "month_phase_definition",
+                "question": "月初、月中和月末分别包含哪些日期？",
+                "options": [
+                    {
+                        "value_ref": "definition_1",
+                        "typed_value": {
+                            "value_ref": "definition_1",
+                            "member_definitions": comparison_spec[
+                                "member_definitions"
+                            ],
+                        },
+                        "label": "1—10日、11—20日、21日至月末（推荐）",
+                        "description": "三个连续阶段覆盖整个月。",
+                        "recommended": True,
+                    },
+                    {
+                        "value_ref": "definition_2",
+                        "typed_value": {
+                            "value_ref": "definition_2",
+                            "member_definitions": [
+                                {
+                                    "member": "start",
+                                    "day_start": 1,
+                                    "day_end": 7,
+                                },
+                                {
+                                    "member": "mid",
+                                    "day_start": 8,
+                                    "day_end": 21,
+                                },
+                                {
+                                    "member": "end",
+                                    "day_start": 22,
+                                    "day_end": 31,
+                                },
+                            ],
+                        },
+                        "label": "1—7日、8—21日、22日至月末",
+                        "description": "按周长度划分月初和月末。",
+                        "recommended": False,
+                    },
+                ],
+                "recommendation_reason": "十天分段便于逐月复核。",
+            },
+            {
+                "slot_id": "phase_aggregation",
+                "question": "比较每个阶段的总额还是日均金额？",
+                "options": [
+                    {
+                        "value_ref": "sum_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "sum_of_complete_days",
+                            "value_ref": "sum_of_complete_days",
+                        },
+                        "label": "比较阶段总额",
+                        "description": "回答各阶段贡献了多少付费金额。",
+                        "recommended": False,
+                    },
+                    {
+                        "value_ref": "mean_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "mean_of_complete_days",
+                            "value_ref": "mean_of_complete_days",
+                        },
+                        "label": "比较日均金额（推荐）",
+                        "description": "控制不同阶段天数差异。",
+                        "recommended": True,
+                    },
+                ],
+                "recommendation_reason": "日均口径便于公平比较。",
+            },
+        ],
+        "status_message": "等待确认两个独立口径。",
+    }
+    projection = (
+        langgraph_workflow._project_single_authority_clarification_output(
+            output,
+            slot_contracts=slot_contracts,
+        )
+    )
+    output = dict(projection.output)
+    assert projection.disposition == "accepted_normalized"
+    assert [dict(item) for item in projection.mutations] == [
+        {
+            "path": (
+                "questions[1].options[0].typed_value.value_ref"
+            ),
+            "action": "discard_surplus_field",
+            "reason": "outside_consumer_contract",
+        },
+        {
+            "path": (
+                "questions[1].options[1].typed_value.value_ref"
+            ),
+            "action": "discard_surplus_field",
+            "reason": "outside_consumer_contract",
+        },
+    ]
+    questions = (
+        langgraph_workflow._validate_single_authority_clarification_batch_output(
+            output,
+            slot_contracts=slot_contracts,
+            time_spec=time_spec,
+        )
+    )
+    assert [question["slot"]["slot_id"] for question in questions] == [
+        "month_phase_definition",
+        "phase_aggregation",
+    ]
+    records = [
+        langgraph_workflow._single_authority_decision_option_record(
+            slot=question["slot"],
+            time_spec=time_spec,
+            option=next(
+                option
+                for option in question["options"]
+                if option["recommended"]
+            ),
+        )
+        for question in questions
+    ]
+    ledger = DecisionLedger()
+    for record in records:
+        ledger = ledger.append(
+            DecisionRecord.create(
+                intent_revision_id=intent.intent_revision_id,
+                slot_id=record["slot_id"],
+                value=record["typed_value"],
+                source="user",
+                status="user_confirmed",
+                materiality="material",
+                affected_plan_fields=("resolved_window_refs",),
+                option_id=record["option_id"],
+            )
+        )
+    authority = resolve_effective_comparison(
+        time_spec=time_spec,
+        comparison_spec=intent.comparison_spec,
+        decision_ledger=ledger,
+        require_physical_baseline=False,
+    )
+    assert authority.source == "decision"
+    assert authority.calendar_partition["aggregation"] == "mean_of_complete_days"
+    assert authority.calendar_partition["member_definitions"][0]["day_end"] == 10
+
+
+def test_month_phase_projection_rejects_conflicting_duplicate_identity() -> None:
+    comparison_spec = {
+        "kind": "calendar_partition",
+        "baseline_class": "same_month_phase",
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ["start"],
+        "baseline_members": ["mid", "end"],
+        "aggregation": "sum_of_complete_days",
+        "member_definitions": [
+            {"member": "start", "day_start": 1, "day_end": 10},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 21, "day_end": 31},
+        ],
+    }
+    slot = next(
+        dict(item)
+        for item in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+        if item["slot_id"] == "phase_aggregation"
+    )
+    contract = langgraph_workflow._single_authority_clarification_slot_contract(
+        slot=slot,
+        comparison_spec=comparison_spec,
+    )
+    output = {
+        "questions": [
+            {
+                "slot_id": "phase_aggregation",
+                "question": "比较阶段总额还是日均金额？",
+                "options": [
+                    {
+                        "value_ref": "sum_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "sum_of_complete_days",
+                            "value_ref": "mean_of_complete_days",
+                        },
+                        "label": "比较阶段总额（推荐）",
+                        "description": "回答各阶段贡献规模。",
+                        "recommended": True,
+                    },
+                    {
+                        "value_ref": "mean_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "mean_of_complete_days",
+                        },
+                        "label": "比较日均金额",
+                        "description": "控制不同阶段天数差异。",
+                        "recommended": False,
+                    },
+                ],
+                "recommendation_reason": "阶段总额直接回答贡献规模。",
+            }
+        ],
+        "status_message": "等待确认。",
+    }
+
+    with pytest.raises(
+        LLMOutputError,
+        match=(
+            "single_authority_clarification_projection_conflict:"
+            r"questions\[0\]\.options\[0\]\.typed_value\.value_ref"
+        ),
+    ):
+        langgraph_workflow._project_single_authority_clarification_output(
+            output,
+            slot_contracts=(contract,),
+        )
+
+
+def test_month_phase_clarification_records_machine_identifiers_without_blocking() -> None:
+    slot = {
+        "slot_id": "phase_aggregation",
+        "slot_kind": "phase_aggregation",
+        "materiality": "material",
+        "status": "unresolved",
+        "question": "比较阶段总额还是日均金额？",
+        "allowed_value_refs": [
+            "sum_of_complete_days",
+            "mean_of_complete_days",
+        ],
+    }
+    output = {
+        "questions": [
+            {
+                "slot_id": "phase_aggregation",
+                "question": (
+                    "比较 sum_of_complete_days 还是 mean_of_complete_days？"
+                ),
+                "options": [
+                    {
+                        "value_ref": "sum_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "sum_of_complete_days",
+                        },
+                        "label": "比较阶段总额（推荐）",
+                        "description": "回答各阶段贡献了多少付费金额。",
+                        "recommended": True,
+                    },
+                    {
+                        "value_ref": "mean_of_complete_days",
+                        "typed_value": {
+                            "aggregation": "mean_of_complete_days",
+                        },
+                        "label": "比较日均金额",
+                        "description": "控制不同阶段天数差异。",
+                        "recommended": False,
+                    },
+                ],
+                "recommendation_reason": "阶段总额直接回答贡献规模。",
+            }
+        ],
+        "status_message": "等待确认。",
+    }
+    options = langgraph_workflow._validate_single_authority_clarification_output(
+        {
+            "question": output["questions"][0]["question"],
+            "options": output["questions"][0]["options"],
+            "recommendation_reason": output["questions"][0][
+                "recommendation_reason"
+            ],
+            "status_message": output["status_message"],
+        },
+        slot=slot,
+        time_spec={
+            "kind": "date_range",
+            "start": "2024-01-01",
+            "end": "2026-05-31",
+        },
+        required_recommended_value_ref="sum_of_complete_days",
+        required_recommended_label="",
+        required_recommended_typed_value={
+            "aggregation": "sum_of_complete_days",
+        },
+    )
+    issues = langgraph_workflow._clarification_public_language_issues(
+        output=output,
+        slot_contracts=({"slot": slot},),
+    )
+
+    assert len(options) == 2
+    assert issues == [
+        {
+            "issue_code": "machine_identifier_exposed",
+            "slot_id": "phase_aggregation",
+            "visible_fields": ["question"],
+        }
+    ]
 
 
 def test_daily_comparison_baseline_keeps_case_b_option_contract() -> None:
@@ -552,6 +1102,68 @@ def test_comparison_window_rejects_incomplete_provider_typed_value() -> None:
         )
 
 
+def test_clarification_repair_reports_the_exact_typed_structure_error() -> None:
+    time_spec = {
+        "kind": "date_range",
+        "start": "2024-01-01",
+        "end": "2026-05-31",
+    }
+    typed_value = {
+        "kind": "calendar_partition",
+        "baseline_class": "same_month_phase",
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ["start"],
+        "baseline_members": ["end"],
+        "aggregation": "sum_of_complete_days",
+        "member_definitions": {
+            "start": [1, 5],
+            "mid": [6, 24],
+            "end": [25, 31],
+        },
+    }
+    output = {
+        "question": "请选择月内阶段比较口径。",
+        "options": [
+            {
+                "value_ref": "interpretation_1",
+                "typed_value": typed_value,
+                "label": "按三个阶段比较总额（推荐）",
+                "description": "用于比较每月不同阶段的付费总额。",
+                "recommended": True,
+            },
+            {
+                "value_ref": "interpretation_2",
+                "typed_value": {
+                    **typed_value,
+                    "aggregation": "mean_of_complete_days",
+                },
+                "label": "按三个阶段比较日均金额",
+                "description": "用于控制阶段天数差异。",
+                "recommended": False,
+            },
+        ],
+        "recommendation_reason": "阶段总额与当前问题更一致。",
+        "status_message": "等待确认。",
+    }
+
+    with pytest.raises(
+        LLMOutputError,
+        match=(
+            "single_authority_clarification_typed_value_invalid:"
+            "slot=comparison_interpretation,"
+            "detail=member_definitions_list_required"
+        ),
+    ):
+        langgraph_workflow._validate_single_authority_clarification_output(
+            output,
+            slot=_comparison_interpretation_slot(),
+            time_spec=time_spec,
+            required_recommended_value_ref="",
+            required_recommended_label="",
+        )
+
+
 def test_time_structure_owns_the_missing_comparison_slot_without_duplicates() -> None:
     valid = _intent(time_spec=TARGET_RANGE, slot_id="comparison_window")
     assert valid.comparison_spec == {
@@ -649,7 +1261,7 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         message["content"] for message in clarification.messages
     )
 
-    assert prompt.prompt_version.endswith(".v13")
+    assert prompt.prompt_version.endswith(".v20")
     assert "return exactly one scalar value" in prompt_text
     assert "requested_factor_refs" in prompt_text
     assert "quarter-to-quarter" in prompt_text
@@ -659,9 +1271,70 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         "Do not choose between those slots from business-question keywords"
         in prompt_text
     )
+    assert "clarification remains an LLM semantic judgment" in prompt_text
+    assert "Never rely on a default implication" in prompt_text
+    assert "use the field-level slots described above" in prompt_text
+    assert "month_phase_definition" in prompt_text
+    assert "phase_aggregation" in prompt_text
+    assert "calendar_partition_contracts" in prompt_text
+    assert "Explicit anomaly or outlier inspection" in prompt_text
+    assert "member_definitions" in prompt_text
+    assert "business_summary is the accepted user-facing projection" in prompt_text
+    assert "Keep that question fully customer-facing" in prompt_text
     assert "typed_value must be one complete fixed_window or" in clarification_text
     assert "runtime supplies a separate free-text outlet" in clarification_text
+    assert "not approved display copy" in clarification_text
+    assert "absent from the supplied comparison_spec" in clarification_text
     assert _comparison_window_slot()["time_spec_kinds"] == ["date_range"]
+    payload = langgraph_workflow._single_authority_intent_payload(
+        question="比较月初、月中和月末付费金额。",
+        registry=RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ),
+    )
+    month_phase = payload["comparison_spec_contract"][
+        "calendar_partition_contracts"
+    ]["month_phase"]
+    assert month_phase == {
+        "period_grain": "month",
+        "baseline_classes": ["same_month_phase"],
+        "members": ["start", "mid", "end"],
+    }
+
+
+def test_successor_intent_receives_the_source_intent_as_revision_context() -> None:
+    source = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = langgraph_workflow._single_authority_intent_payload(
+        question="月初1—5日、月中6—24日、月末25—31日，比较阶段总额。",
+        registry=RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ),
+        source_intent_revision=source,
+        superseded_plan_fields=("baseline_refs", "resolved_window_refs"),
+    )
+
+    revision_context = payload["revision_context"]
+    assert revision_context["source_original_user_text"] == (
+        source.original_user_text
+    )
+    assert revision_context["source_intent_binding"]["goal_bindings"] == [
+        {"goal_id": "explain_change", "role": "primary"}
+    ]
+    assert revision_context["source_intent_binding"]["comparison_spec"] == {
+        "kind": "decision_slot",
+        "slot_id": "comparison_interpretation",
+    }
+    assert revision_context["superseded_plan_fields"] == [
+        "baseline_refs",
+        "resolved_window_refs",
+    ]
+    prompt = build_prompt("single_authority_intent", payload)
+    prompt_text = prompt.messages[-1]["content"]
+    assert "preserve every unchanged business judgment" in prompt_text
+    assert "Do not broaden a named target-versus-baseline judgment" in prompt_text
 
 
 def test_effective_temporal_comparison_from_dict_is_strict_and_content_addressed() -> (

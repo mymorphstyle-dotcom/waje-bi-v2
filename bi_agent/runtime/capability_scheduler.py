@@ -192,6 +192,7 @@ def execute_capability_plan(
                     attempt_journal=attempt_journal,
                 )
                 authority = _outcome_settlement_authority(
+                    plan_revision,
                     task,
                     candidate,
                     settlement_authority,
@@ -414,6 +415,7 @@ def _execute_ready_wave(
                 attempt_journal=attempt_journal,
             )
             authority = _outcome_settlement_authority(
+                plan_revision,
                 task,
                 candidate,
                 settlement_authority,
@@ -447,6 +449,7 @@ def _execute_ready_wave(
                     first_error = exc
                 continue
             authority = _outcome_settlement_authority(
+                plan_revision,
                 task,
                 candidate,
                 settlement_authority,
@@ -463,44 +466,124 @@ def _execute_ready_wave(
 
 
 def _outcome_settlement_authority(
+    plan_revision: PlanRevision,
     task: CapabilityTask,
     bundle: CapabilityOutcomeBundle,
     settlement_authority: CapabilitySettlementAuthority,
 ) -> CapabilitySettlementAuthority:
-    binding_refs = tuple(
-        sorted(
-            {
-                entry.binding_record_ref
-                for entry in bundle[2]
-                if entry.binding_record_ref is not None
-            }
-        )
+    task_by_id = {
+        candidate.task_id: candidate
+        for candidate in plan_revision.capability_tasks
+    }
+    dependency_tasks = tuple(
+        task_by_id.get(task_id) for task_id in task.dependency_task_ids
     )
-    selected = settlement_authority.for_binding_refs(binding_refs)
+    if any(candidate is None for candidate in dependency_tasks):
+        raise CapabilityAuthorityContractError(
+            "capability_settlement_dependency_task_missing"
+        )
+    allowed_capability_ids = {
+        task.capability_id,
+        *(
+            candidate.capability_id
+            for candidate in dependency_tasks
+            if candidate is not None
+        ),
+    }
     bindings_by_ref = {
+        record.record_ref: record
+        for record in settlement_authority.capability_binding_records
+        if record.capability_id in allowed_capability_ids
+    }
+    binding_refs: set[str] = set()
+    evidence_bindings: dict[str, tuple[object, ...]] = {}
+    for entry in bundle[2]:
+        primary_ref = entry.binding_record_ref
+        if primary_ref is None:
+            evidence_bindings[entry.evidence_ref] = ()
+            continue
+        primary = bindings_by_ref.get(primary_ref)
+        if primary is None or primary.capability_id != task.capability_id:
+            raise CapabilityAuthorityContractError(
+                "capability_settlement_binding_membership_mismatch"
+            )
+        result_refs = set(entry.result_refs)
+        report_refs = set(entry.completeness_report_refs)
+        contributing = tuple(
+            record
+            for record in bindings_by_ref.values()
+            if record.record_ref == primary_ref
+            or result_refs.intersection(
+                {
+                    *record.result_refs,
+                    *record.validation_result_refs,
+                }
+            )
+            or report_refs.intersection(
+                {
+                    *record.completeness_report_refs,
+                    *record.validation_completeness_report_refs,
+                }
+            )
+        )
+        expected_results = {
+            ref
+            for record in contributing
+            for ref in (
+                *record.result_refs,
+                *record.validation_result_refs,
+            )
+            if ref in result_refs
+        }
+        expected_reports = {
+            ref
+            for record in contributing
+            for ref in (
+                *record.completeness_report_refs,
+                *record.validation_completeness_report_refs,
+            )
+            if ref in report_refs
+        }
+        if expected_results != result_refs:
+            raise CapabilityAuthorityContractError(
+                "capability_settlement_result_membership_mismatch"
+            )
+        if expected_reports != report_refs:
+            raise CapabilityAuthorityContractError(
+                "capability_settlement_completeness_membership_mismatch"
+            )
+        evidence_bindings[entry.evidence_ref] = contributing
+        binding_refs.update(record.record_ref for record in contributing)
+    selected = settlement_authority.for_binding_refs(tuple(sorted(binding_refs)))
+    selected_bindings_by_ref = {
         record.record_ref: record for record in selected.capability_binding_records
     }
-    if set(bindings_by_ref) != set(binding_refs):
+    if set(selected_bindings_by_ref) != binding_refs:
         raise CapabilityAuthorityContractError(
             "capability_settlement_binding_membership_mismatch"
         )
     for entry in bundle[2]:
-        binding_ref = entry.binding_record_ref
-        if binding_ref is None:
+        if entry.binding_record_ref is None:
             continue
-        binding = bindings_by_ref[binding_ref]
+        contributing = evidence_bindings[entry.evidence_ref]
         expected_results = {
-            *binding.result_refs,
-            *binding.validation_result_refs,
+            ref
+            for record in contributing
+            for ref in (
+                *record.result_refs,
+                *record.validation_result_refs,
+            )
+            if ref in set(entry.result_refs)
         }
         expected_reports = {
-            *binding.completeness_report_refs,
-            *binding.validation_completeness_report_refs,
-        }
-        if binding.capability_id != task.capability_id:
-            raise CapabilityAuthorityContractError(
-                "capability_settlement_binding_capability_mismatch"
+            ref
+            for record in contributing
+            for ref in (
+                *record.completeness_report_refs,
+                *record.validation_completeness_report_refs,
             )
+            if ref in set(entry.completeness_report_refs)
+        }
         if set(entry.result_refs) != expected_results:
             raise CapabilityAuthorityContractError(
                 "capability_settlement_result_membership_mismatch"

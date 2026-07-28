@@ -54,44 +54,16 @@ def _audit(**overrides: object) -> dict[str, object]:
 def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
     schema, tables = _schema_contract()
 
-    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v15"
+    assert SINGLE_AUTHORITY_MIGRATION_ID == "single-authority-workflow.v23"
     assert SOURCE_MIGRATION_ID == "single-authority-workflow.v7"
     assert SOURCE_MIGRATION_DIGEST == (
         "b735fa8fb3d888a3d12be7f335711956e37ba4fc344d294bfbee59a92ac5e3cf"
     )
-    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v14"
+    assert IN_PLACE_SOURCE_MIGRATION_ID == "single-authority-workflow.v17"
     assert IN_PLACE_SOURCE_MIGRATION_DIGEST == (
-        "7d361b82a893bc9747b3fdbb6c632e4e1305c964f8a62b9ef6615283897aba9c"
+        "76a80e5f454b02b0a494c9e470a8d837caa19e96823cc1fd68bc0e988e39dd31"
     )
     assert IN_PLACE_SOURCE_CONTRACTS == {
-        (
-            "single-authority-workflow.v9",
-            "76216d3271244e452531bf563b5c3fa1344dcb499c04a78000452259d00817b1",
-        ): {
-            "agent_task_resume_outbox",
-            "agent_thread_summaries",
-            "agent_generated_artifacts",
-        },
-        (
-            "single-authority-workflow.v10",
-            "e76e7f0b4ca549e1457ab41eed767b178533d195e65424c79a7cd9ee5b1c8044",
-        ): {
-            "agent_task_resume_outbox",
-            "agent_thread_summaries",
-            "agent_generated_artifacts",
-        },
-        (
-            "single-authority-workflow.v11",
-            "33a53542d1f588c368433239a5a6c3be87bb705fd69de4392f65cd577beec5c3",
-        ): {"agent_thread_summaries", "agent_generated_artifacts"},
-        (
-            "single-authority-workflow.v12",
-            "eb21d255d9bec86b8a98ab5c2693b237b473357c37aa355cc1a605474411bfa3",
-        ): set(),
-        (
-            "single-authority-workflow.v13",
-            "9f8326004ce3c282e80435be6ca37ea96f1693db3e9dafa017c281b7f6c124af",
-        ): {"narrative_quality_audit_results"},
         (
             IN_PLACE_SOURCE_MIGRATION_ID,
             IN_PLACE_SOURCE_MIGRATION_DIGEST,
@@ -101,14 +73,17 @@ def test_cutover_is_pinned_to_the_complete_single_authority_slice() -> None:
         "conversation_messages",
         "investigation_threads",
         "block_verification_reports",
+        "insight_quality_evaluations",
     }
     assert IN_PLACE_ADDITIVE_TABLES == {
         "agent_thread_summaries",
         "agent_generated_artifacts",
         "narrative_quality_audit_results",
+        "controlled_investigation_operations",
+        "controlled_investigation_dispatches",
     }
     assert len(SINGLE_AUTHORITY_MIGRATION_DIGEST) == 64
-    assert len(tables) == 74
+    assert len(tables) == 76
     for table in (
         "intent_revisions",
         "plan_revisions",
@@ -434,12 +409,14 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
         lambda _schema: frozenset(
             {
                 "run_dispatches",
-                    "schema_migrations",
-                    "agent_thread_summaries",
-                    "agent_generated_artifacts",
-                    "narrative_quality_audit_results",
-                }
-            ),
+                "schema_migrations",
+                "agent_thread_summaries",
+                "agent_generated_artifacts",
+                "narrative_quality_audit_results",
+                "controlled_investigation_operations",
+                "controlled_investigation_dispatches",
+            }
+        ),
     )
     monkeypatch.setattr(
         cutover_module,
@@ -452,18 +429,22 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
         lambda _connection: (
             {
                 "run_dispatches",
-                    "schema_migrations",
-                    "agent_thread_summaries",
-                    "agent_generated_artifacts",
-                    "narrative_quality_audit_results",
-                }
-                if connection.target_present
-                else {
+                "schema_migrations",
+                "agent_thread_summaries",
+                "agent_generated_artifacts",
+                "narrative_quality_audit_results",
+                "controlled_investigation_operations",
+                "controlled_investigation_dispatches",
+            }
+            if connection.target_present
+            else {
                 "run_dispatches",
                 "schema_migrations",
                 "agent_thread_summaries",
                 "agent_generated_artifacts",
                 "narrative_quality_audit_results",
+                "controlled_investigation_operations",
+                "controlled_investigation_dispatches",
             }
         ),
     )
@@ -520,6 +501,8 @@ def test_in_place_upgrade_replaces_only_the_verified_migration_ledger(
     assert result["business_row_counts"] == {
         "agent_generated_artifacts": 0,
         "agent_thread_summaries": 0,
+        "controlled_investigation_dispatches": 0,
+        "controlled_investigation_operations": 0,
         "narrative_quality_audit_results": 0,
         "run_dispatches": 19,
     }
@@ -702,6 +685,24 @@ def test_v8_post_apply_validation_checks_dispatch_and_runtime_state() -> None:
                             True,
                             "UNIQUE (producer_kind, scope_ref, request_identity)",
                         ),
+                    ]
+                )
+            if "table_name = 'insight_quality_evaluations'" in statement:
+                return Result(
+                    [
+                        (name, "NO", data_type)
+                        for name, data_type in (
+                            ("rubric_ref", "text"),
+                            ("rubric_digest", "text"),
+                            ("rubric", "jsonb"),
+                            ("evaluation_case_ref", "text"),
+                            ("evaluation_case_digest", "text"),
+                            ("evaluation_case", "jsonb"),
+                            ("model_profile_ref", "text"),
+                            ("model_profile_digest", "text"),
+                            ("model_profile", "jsonb"),
+                            ("human_reasons", "jsonb"),
+                        )
                     ]
                 )
             if "information_schema.columns" in statement:

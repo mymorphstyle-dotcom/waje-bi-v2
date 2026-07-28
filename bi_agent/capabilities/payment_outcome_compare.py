@@ -246,6 +246,37 @@ def payment_outcome_compare(
     totals_by_role = {item["window_role"]: item for item in window_totals}
     baseline_totals = totals_by_role[baseline_group]
     target_totals = totals_by_role[target_group]
+    interpretation_contract = {
+        "contract_id": "payment-final-outcome-interpretation.v1",
+        "outcome_observation_scope": "final_status_as_of_snapshot",
+        "dimension_summary_selection_policy": (
+            "largest_target_terminal_order_volume"
+        ),
+        "dimension_summary_claim_scope": "representative_not_exhaustive",
+        "process_inference_allowed": False,
+        "causal_inference_allowed": False,
+    }
+    outcome_semantics = {
+        "successful": "pay_success under canonical success authority",
+        "not_paid_as_of_snapshot": (
+            "no pay_success observed for the order in the frozen snapshot"
+        ),
+    }
+    claim_material_summary = {
+        "projection_kind": "claim_material_summary",
+        "evidence_contract": "payment-final-outcome-comparison.v1",
+        "window_totals": window_totals,
+        "dimension_count": len(profiles),
+        "observation_count": observation_count,
+        "dimension_summaries": tuple(dimension_summaries),
+        "interpretation_contract": interpretation_contract,
+        "outcome_semantics": outcome_semantics,
+        "claim_ceiling": "directional",
+        "failure_reason_claim_allowed": False,
+        "failure_stage_claim_allowed": False,
+        "retry_or_latency_claim_allowed": False,
+        "causal_claim_allowed": False,
+    }
 
     return make_evidence_envelope(
         "payment_outcome_compare",
@@ -278,22 +309,9 @@ def payment_outcome_compare(
             "window_totals": window_totals,
             "profiles": tuple(profiles),
             "dimension_summaries": tuple(dimension_summaries),
-            "interpretation_contract": {
-                "contract_id": "payment-final-outcome-interpretation.v1",
-                "outcome_observation_scope": "final_status_as_of_snapshot",
-                "dimension_summary_selection_policy": (
-                    "largest_target_terminal_order_volume"
-                ),
-                "dimension_summary_claim_scope": "representative_not_exhaustive",
-                "process_inference_allowed": False,
-                "causal_inference_allowed": False,
-            },
-            "outcome_semantics": {
-                "successful": "pay_success under canonical success authority",
-                "not_paid_as_of_snapshot": (
-                    "no pay_success observed for the order in the frozen snapshot"
-                ),
-            },
+            "claim_material_observations": (claim_material_summary,),
+            "interpretation_contract": interpretation_contract,
+            "outcome_semantics": outcome_semantics,
             "claim_ceiling": "directional",
             "failure_reason_claim_allowed": False,
             "failure_stage_claim_allowed": False,

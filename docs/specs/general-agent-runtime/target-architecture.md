@@ -7,8 +7,7 @@
 追问。隔离 PostgreSQL v9→v12 升级及当前目标 v12→v13 升级、`REPEATABLE READ READ ONLY`
 审计和完整部署门禁通过。
 所有验收均显式清除 `OPENAI_API_KEY`，模型出站目标为 `https://api.deepseek.com`，OpenAI
-托管请求与默认 trace exporter 使用计数均为 0。P0 框架与 Provider 边界达到当前交付合同；
-完整 Conversation 切换、Case B 和多 Agent 不属于本轮验收结论。
+托管请求与默认 trace exporter 使用计数均为 0。P0 框架与 Provider 边界达到当前交付合同。
 
 2026-07-23 起，`WAJE Standard Pack v1` 接管通用 Agent Runtime 的评测合同，旧 10-case
 shape 和 `general-agent-runtime-live-eval.v2` runner 已退出。当前 catalog 含 48 个 scenario：
@@ -550,17 +549,42 @@ Workbench 审计链。修订形成新 revision，首次交付保持不可变。
 
 ## 多 Agent
 
-多 Agent 是可选的工具策略。主 Agent 始终拥有 thread 和最终回答权威。
+多 Agent 是 accepted Plan 之后、唯一 narrative 之前的受控调查策略。父 Agent 始终拥有
+IntentRevision、PlanRevision、Evidence、Claim、ThreadHead、Publication、Delivery 和客户状态
+权威。子 Agent 只生成带 source allowlist 的候选调查 artifact。
 
 适合委派：
 
-- 多个相互独立的数据源调查；
-- 可并行验证的竞争假设；
-- 独立报告章节；
-- 专业安全或质量审计。
+- accepted Plan 中相互独立的机制轴；
+- 结构集中点和抵消因素复核；
+- 竞争解释、反向证据和交叉信号；
+- 基于现有材料的行动优先级整理。
 
 简单追问、单个计算解释和共享上下文密集的同一推理链由主 Agent 直接处理。子 Agent
 返回结构化 artifact，不直接修改 ThreadHead 或客户对话。
+
+父级 operation 绑定 owner、thread、run、IntentRevision、PlanRevision、AuthorityContext、
+sealed AuthorityBundle、父 transition 和完整 `NarrativeMaterialProjection` digest。最多三个
+独立 child dispatch 通过 deterministic admission 进入执行；admission 校验 accepted axis、
+axis 不重叠、source allowlist 和读取预算。子任务没有工具入口，无法发起 BI query 或写入
+Evidence、Claim、Publication、Delivery。
+
+operation 和 dispatch 保存在 PostgreSQL。dispatch 记录稳定 child identity、input digest、
+idempotency key、lease epoch、accepted Provider attempt、候选 artifact 和 typed failure。
+过期 lease 可由其他 worker 领取；已经接受的 attempt 和 artifact 只重放，不重复生成逻辑
+结果。单个或全部子任务失败只形成局部 settlement，父级仍可用 sealed authority 材料生成唯一
+客户答案。
+
+Provider 规划目录使用列式 source catalog。子读取投影对 evidence facts 使用无损列式编码；
+任何单任务超过预算的 source 组合在 admission 阶段拒绝。完整权威对象、原始 Provider
+payload 和技术错误只进入 Workbench。客户页面只显示最终业务参考和既有客户安全投影。
+
+子任务 artifact 保留完整审计记录，进入唯一 narrative 的材料只包含 typed narrative delta：
+调查轴、finding 类型、推荐落位、增量文本和 source refs。父级不再把子任务标题、摘要、完整
+限制清单或小报告正文再次交给 writer。相同 finding 文本与来源闭包按 canonical digest 精确
+去重；语义判断不使用本地关键词或模糊相似度。writer 对每条 delta 最多使用一次，可以在
+sealed authority 已覆盖同一决策点时省略，所有事实仍需 accepted handle，质量评价继续留在
+交付后的 advisory 链。
 
 ## 客户投影与前端
 
@@ -932,6 +956,12 @@ P7 的执行与验收细节见
 `completed` 或 `unavailable`，并引用已经完成的 customer publication，不重写业务记录。
 后续每个部署目标都要重新生成自己的
 `general-agent-deployment.v1` 报告；缺少目标环境时不会伪造通过状态。
+
+2026-07-24 P9 先以 `single-authority-workflow.v16` 新增受控调查 operation 与 dispatch
+生命周期，再以 `single-authority-workflow.v17` 修复 advisory-quality 表的物理 schema
+验证和旧开发库缺列回填。Workbench 在同一个 `REPEATABLE READ READ ONLY` 快照中读取父
+transition、child run、lease、accepted attempt 和 artifact；客户 API 不读取这些内部表。P9
+保持 DeepSeek Chat Completions 唯一模型出口，OpenAI hosted runtime、trace 和 eval 继续关闭。
 
 ## 验收场景
 

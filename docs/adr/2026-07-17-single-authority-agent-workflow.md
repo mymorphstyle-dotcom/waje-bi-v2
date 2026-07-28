@@ -220,6 +220,16 @@ wide exploration
 - insight-quality evaluation is human-reviewed and advisory. An eval finding
   cannot become a runtime guardrail without a separate, generalizable policy
   decision with business and system ownership.
+- controlled investigation may run after the AuthorityBundle and customer-safe
+  narrative material are sealed. Its child records are advisory candidates
+  bound to one accepted PlanRevision and an allowlisted material set. They
+  cannot grant query, Evidence, Claim, ThreadHead, Publication, Delivery or
+  customer-state authority. The narrative writer receives a compact typed
+  delta projection, not each child's title, summary, limitation list, or full
+  report. Exact duplicate deltas are removed deterministically; every remaining
+  delta is optional, has one preferred narrative role, and may appear at most
+  once. This projection does not create factual authority or a quality-driven
+  publication gate.
 
 The records and checks for these responsibilities are introduced in their
 assigned migration phases. Phase 2 establishes proposal retention and execution
@@ -322,6 +332,7 @@ large mutable dictionaries.
 intent_revision_id
 supersedes_intent_revision_id?
 original_user_text
+business_summary
 goal_bindings[]
 target_metric_refs[]
 scope
@@ -336,6 +347,13 @@ prompt_version
 model_version
 content_digest
 ```
+
+`business_summary` is the concise customer-facing projection produced by the
+same typed LLM call as the structured intent binding. It becomes visible only
+after that `IntentRevision` is accepted. Conversation entry summaries remain
+thread-routing context and cannot populate the analysis understanding card.
+The summary participates in the revision content digest, while wording alone
+does not change the material binding digest used to compile the plan.
 
 `direction_premise` supports:
 
@@ -1402,6 +1420,12 @@ Gate:
 - a low insight-quality score remains advisory and preserves the sealed bundle
   and accepted narrative revision;
 - a single eval case or model preference cannot create a runtime guardrail.
+
+Controlled investigation uses a separate durable operation/dispatch lifecycle.
+It may recover leases and reuse accepted Provider attempts, while its settlement
+only contributes source-closed candidate context to the one narrative writer.
+Failure of any or every child leaves the sealed parent authority usable. A child
+artifact never enters publication as an independently authoritative record.
 
 ### Phase 7: Delete the old workflow and finish product acceptance
 

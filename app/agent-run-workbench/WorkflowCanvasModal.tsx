@@ -272,7 +272,7 @@ export function WorkflowCanvasModal({
               }}
               proOptions={{ hideAttribution: true }}
             >
-              <Background color="#2a2c32" gap={18} />
+              <Background color="var(--border-soft)" gap={18} />
               <MiniMap
                 maskColor="rgba(15, 16, 18, 0.72)"
                 nodeColor={(node) => {
@@ -282,10 +282,10 @@ export function WorkflowCanvasModal({
                     ? acceptedTaskMiniMapColor(acceptedTaskStatus(data.acceptedTask))
                     : undefined;
                   if (taskColor) return taskColor;
-                  if (data.kind === "capability") return "#8fc69c";
-                  if (data.outcome === "failed") return "#d88880";
-                  if (data.outcome === "waiting") return "#d7b16f";
-                  return data.revealed ? "#3a4a57" : "#27292e";
+                  if (data.kind === "capability") return "var(--green)";
+                  if (data.outcome === "failed") return "var(--red)";
+                  if (data.outcome === "waiting") return "var(--amber)";
+                  return data.revealed ? "#3a4a57" : "var(--border-soft)";
                 }}
                 pannable
                 zoomable
@@ -689,12 +689,12 @@ function canvasEdge(id: string, source: string, target: string, label: string): 
     target,
     type: "smoothstep",
     label,
-    markerEnd: { type: MarkerType.ArrowClosed, color: "#8fc69c" },
-    style: { stroke: "#8fc69c", strokeWidth: 1.6 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--green)" },
+    style: { stroke: "var(--green)", strokeWidth: 1.6 },
     labelBgPadding: [6, 3],
     labelBgBorderRadius: 6,
-    labelBgStyle: { fill: "#16171a", fillOpacity: 0.92 },
-    labelStyle: { fill: "#c8c9cf", fontSize: 11, fontWeight: 600 },
+    labelBgStyle: { fill: "var(--surface-raised)", fillOpacity: 0.92 },
+    labelStyle: { fill: "var(--waje-muted)", fontSize: 11, fontWeight: 600 },
   };
 }
 
@@ -834,12 +834,12 @@ function acceptedTaskMiniMapColor(status: AcceptedTaskStatus) {
   return (
     {
       not_started: "#6f7580",
-      unsettled: "#d7b16f",
-      succeeded: "#8fc69c",
-      unavailable: "#d7b16f",
-      integrity_failed: "#d88880",
-      technical_failed: "#d58d70",
-      skipped: "#777980",
+      unsettled: "var(--amber)",
+      succeeded: "var(--green)",
+      unavailable: "var(--amber)",
+      integrity_failed: "var(--red)",
+      technical_failed: "var(--red)",
+      skipped: "var(--subtle)",
       superseded: "#8f86a8",
     } satisfies Record<AcceptedTaskStatus, string>
   )[status];

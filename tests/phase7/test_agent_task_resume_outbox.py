@@ -199,6 +199,7 @@ def test_resume_outbox_is_discovered_from_terminal_bi_authority_and_checkpoint()
 
     assert "CREATE TABLE IF NOT EXISTS waje_runtime.agent_task_resume_outbox" in schema
     assert "UNIQUE(thread_id, task_ref)" in schema
+    assert "observation_ref" not in schema
     assert "run.status IN ('completed', 'failed')" in module
     assert "checkpointKind" in module
     assert "awaitedTaskRef" in module
