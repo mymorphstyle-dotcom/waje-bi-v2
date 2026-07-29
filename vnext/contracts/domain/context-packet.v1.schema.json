@@ -11,49 +11,50 @@
     "accepted_frame_revision_id",
     "accepted_plan_revision_id",
     "accepted_answer_version_id",
+    "accepted_frame_payload",
+    "accepted_plan_payload",
+    "accepted_answer_payload",
     "user_message",
     "relevant_event_cursor_start",
     "relevant_event_cursor_end",
+    "recent_events",
     "evidence_index",
-    "unresolved_reviewer_objection_ids",
-    "decision_record_ids",
+    "decision_index",
+    "reviewer_objection_index",
     "built_at",
     "content_sha256"
   ],
   "properties": {
     "packet_id": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/id"
     },
     "case_id": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/id"
     },
     "head_version": {
       "type": "integer",
       "minimum": 0
     },
     "accepted_frame_revision_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "$ref": "#/$defs/nullableId"
     },
     "accepted_plan_revision_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "$ref": "#/$defs/nullableId"
     },
     "accepted_answer_version_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "$ref": "#/$defs/nullableId"
+    },
+    "accepted_frame_payload": {
+      "$ref": "#/$defs/nullableObject"
+    },
+    "accepted_plan_payload": {
+      "$ref": "#/$defs/nullableObject"
+    },
+    "accepted_answer_payload": {
+      "$ref": "#/$defs/nullableObject"
     },
     "user_message": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/id"
     },
     "relevant_event_cursor_start": {
       "type": "integer",
@@ -63,63 +64,238 @@
       "type": "integer",
       "minimum": 0
     },
+    "recent_events": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/contextEvent"
+      }
+    },
     "evidence_index": {
       "type": "array",
+      "maxItems": 200,
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "evidence_record_id",
-          "evidence_type",
-          "strength",
-          "business_summary",
-          "limitation_count"
-        ],
-        "properties": {
-          "evidence_record_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "evidence_type": {
-            "type": "string",
-            "minLength": 1
-          },
-          "strength": {
-            "type": "string",
-            "minLength": 1
-          },
-          "business_summary": {
-            "type": "string",
-            "minLength": 1
-          },
-          "limitation_count": {
-            "type": "integer",
-            "minimum": 0
-          }
-        }
+        "$ref": "#/$defs/contextEvidence"
       }
     },
-    "unresolved_reviewer_objection_ids": {
+    "decision_index": {
       "type": "array",
+      "maxItems": 100,
       "items": {
-        "type": "string",
-        "minLength": 1
+        "$ref": "#/$defs/contextDecision"
       }
     },
-    "decision_record_ids": {
+    "reviewer_objection_index": {
       "type": "array",
+      "maxItems": 100,
       "items": {
-        "type": "string",
-        "minLength": 1
+        "$ref": "#/$defs/contextReviewerObjection"
       }
     },
     "built_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "content_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullableId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nullableObject": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "timestamp": {
       "type": "string",
       "format": "date-time"
     },
-    "content_sha256": {
+    "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "contextEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "event_type",
+        "authority_ref",
+        "business_projection"
+      ],
+      "properties": {
+        "cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_type": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_ref": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "business_projection": {
+          "type": "object"
+        }
+      }
+    },
+    "contextEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_record_id",
+        "evidence_type",
+        "strength",
+        "business_summary",
+        "limitation_count",
+        "frame_revision_id",
+        "plan_revision_id",
+        "task_id",
+        "snapshot_release_ref"
+      ],
+      "properties": {
+        "evidence_record_id": {
+          "$ref": "#/$defs/id"
+        },
+        "evidence_type": {
+          "$ref": "#/$defs/id"
+        },
+        "strength": {
+          "$ref": "#/$defs/id"
+        },
+        "business_summary": {
+          "$ref": "#/$defs/id"
+        },
+        "limitation_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frame_revision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "plan_revision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "snapshot_release_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "contextDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_record_id",
+        "question",
+        "selected_option_id",
+        "freeform_response",
+        "source"
+      ],
+      "properties": {
+        "decision_record_id": {
+          "$ref": "#/$defs/id"
+        },
+        "question": {
+          "$ref": "#/$defs/id"
+        },
+        "selected_option_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "freeform_response": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "source": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "selected_option_id": {
+              "$ref": "#/$defs/id"
+            },
+            "freeform_response": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "selected_option_id": {
+              "type": "null"
+            },
+            "freeform_response": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      ]
+    },
+    "contextReviewerObjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objection_id",
+        "objection_key",
+        "revision_number",
+        "answer_version_id",
+        "claim_id",
+        "severity",
+        "status",
+        "risk_type",
+        "evidence_gap",
+        "requested_action",
+        "disposition_note"
+      ],
+      "properties": {
+        "objection_id": {
+          "$ref": "#/$defs/id"
+        },
+        "objection_key": {
+          "$ref": "#/$defs/id"
+        },
+        "revision_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "answer_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "claim_id": {
+          "$ref": "#/$defs/id"
+        },
+        "severity": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "$ref": "#/$defs/id"
+        },
+        "risk_type": {
+          "$ref": "#/$defs/id"
+        },
+        "evidence_gap": {
+          "$ref": "#/$defs/id"
+        },
+        "requested_action": {
+          "$ref": "#/$defs/id"
+        },
+        "disposition_note": {
+          "$ref": "#/$defs/nullableId"
+        }
+      }
     }
   }
 }

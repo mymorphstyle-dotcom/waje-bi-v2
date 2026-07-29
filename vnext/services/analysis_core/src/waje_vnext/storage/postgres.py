@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 import psycopg
 from psycopg import Connection, Cursor, errors, sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from waje_vnext.domain.actions import (
+    ActionKind,
+    AskUserPayload,
+)
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerStatus,
@@ -26,15 +31,35 @@ from waje_vnext.domain.authority import (
     ReviewerObjection,
     WorkPlanRevision,
 )
+from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.controller import (
+    ControllerLease,
+    EffectAttemptRecord,
+    EffectAttemptStatus,
+    PersistedAction,
+    UserDecisionRequest,
+)
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.runtime_state import (
+    ActionReceipt,
+    CheckpointRecord,
+    OutboxMessage,
+)
 
 from .codec import (
     decode_answer,
+    decode_action_receipt,
+    decode_checkpoint,
+    decode_context_packet,
+    decode_decision_request,
     decode_decision,
     decode_evidence,
+    decode_effect_attempt,
     decode_frame,
     decode_interpretation,
     decode_objection,
+    decode_outbox_message,
+    decode_persisted_action,
     decode_plan,
     encode_record,
 )
@@ -42,12 +67,20 @@ from .ports import (
     AuthorityConflict,
     AuthorityNotFound,
     InvalidAuthorityTransition,
+    LeaseConflict,
+    LeaseFenceLost,
     StaleHead,
 )
 
 
 RecordT = TypeVar("RecordT")
 ENVIRONMENT_VARIABLE = "WAJE_VNEXT_DATABASE_URL"
+_EFFECT_ACTION_KINDS = {
+    ActionKind.INSPECT_SEMANTICS,
+    ActionKind.RUN_PROBE,
+    ActionKind.CALL_CAPABILITY,
+    ActionKind.RUN_SENSITIVITY,
+}
 
 
 def apply_gate1_migration(
@@ -57,10 +90,47 @@ def apply_gate1_migration(
 ) -> str:
     """Apply schema v1 once and return the migration file checksum."""
 
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=1,
+        name="gate1_authority",
+    )
+
+
+def apply_gate2_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply controller schema v2 once and return its checksum."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=2,
+        name="gate2_controller",
+    )
+
+
+def _apply_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+    version: int,
+    name: str,
+) -> str:
     migration_bytes = migration_path.read_bytes()
     checksum = hashlib.sha256(migration_bytes).hexdigest()
     with psycopg.connect(dsn) as connection:
         with connection.transaction(), connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtext('waje_vnext_schema_migrations')
+                )
+                """
+            )
             cursor.execute("SELECT to_regclass('waje_vnext.schema_migrations')")
             registry = cursor.fetchone()[0]
             if registry is not None:
@@ -68,14 +138,17 @@ def apply_gate1_migration(
                     """
                     SELECT checksum_sha256
                     FROM waje_vnext.schema_migrations
-                    WHERE version = 1
-                    """
+                    WHERE version = %s
+                    """,
+                    (version,),
                 )
                 existing = cursor.fetchone()
                 if existing is not None:
                     if existing[0] != checksum:
                         raise AuthorityConflict(
-                            "migration version 1 checksum does not match"
+                            "migration version {} checksum does not match".format(
+                                version
+                            )
                         )
                     return checksum
             cursor.execute(migration_bytes.decode("utf-8"))
@@ -83,9 +156,9 @@ def apply_gate1_migration(
                 """
                 INSERT INTO waje_vnext.schema_migrations (
                     version, name, checksum_sha256
-                ) VALUES (1, 'gate1_authority', %s)
+                ) VALUES (%s, %s, %s)
                 """,
-                (checksum,),
+                (version, name, checksum),
             )
     return checksum
 
@@ -111,6 +184,11 @@ class PostgresAuthorityStore:
     def close(self) -> None:
         self._connection.close()
 
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        with self._lock, self._connection.transaction():
+            yield
+
     def open_case(
         self,
         *,
@@ -126,6 +204,7 @@ class PostgresAuthorityStore:
                     if (
                         existing.event_type is JournalEventType.CASE_OPENED
                         and existing.case_id == case_id
+                        and existing.payload.get("thread_id") == thread_id
                     ):
                         return self._get_case(cursor, case_id)
                     raise AuthorityConflict(
@@ -210,6 +289,33 @@ class PostgresAuthorityStore:
             decoder=decode_answer,
         )
 
+    def list_evidence(self, case_id: str) -> tuple[EvidenceRecord, ...]:
+        return self._list_payloads(
+            table="evidence_records",
+            case_id=case_id,
+            order_by=("created_at", "evidence_record_id"),
+            decoder=decode_evidence,
+        )
+
+    def list_decisions(self, case_id: str) -> tuple[DecisionRecord, ...]:
+        return self._list_payloads(
+            table="decision_records",
+            case_id=case_id,
+            order_by=("created_at", "decision_record_id"),
+            decoder=decode_decision,
+        )
+
+    def list_reviewer_objections(
+        self,
+        case_id: str,
+    ) -> tuple[ReviewerObjection, ...]:
+        return self._list_payloads(
+            table="reviewer_objections",
+            case_id=case_id,
+            order_by=("objection_key", "revision_number"),
+            decoder=decode_objection,
+        )
+
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
@@ -248,6 +354,19 @@ class PostgresAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "frame revision does not extend the accepted frame"
                     )
+                for decision_id in frame.decision_record_ids:
+                    decision = self._get_payload(
+                        cursor,
+                        table="decision_records",
+                        id_column="decision_record_id",
+                        record_id=decision_id,
+                        label="decision",
+                        decoder=decode_decision,
+                    )
+                    if decision.case_id != frame.case_id:
+                        raise InvalidAuthorityTransition(
+                            "frame decision belongs to another case"
+                        )
                 payload = encode_record(frame)
                 self._insert_immutable(
                     cursor,
@@ -672,6 +791,736 @@ class PostgresAuthorityStore:
             label="reviewer objection",
         )
 
+    def transition_case_lifecycle(
+        self,
+        *,
+        case_id: str,
+        lifecycle: CaseLifecycle,
+        expected_head_version: int,
+        event_id: str,
+        action_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase:
+        if lifecycle not in {CaseLifecycle.STOPPED, CaseLifecycle.CLOSED}:
+            raise InvalidAuthorityTransition(
+                "controller can only transition a case to a terminal lifecycle"
+            )
+        event_type = (
+            JournalEventType.CASE_STOPPED
+            if lifecycle is CaseLifecycle.STOPPED
+            else JournalEventType.CASE_CLOSED
+        )
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                idempotent = self._idempotent_head_event(
+                    cursor,
+                    event_id=event_id,
+                    event_type=event_type,
+                    authority_ref=case_id,
+                    case_id=case_id,
+                )
+                if idempotent is not None:
+                    return idempotent
+                case = self._lock_case(
+                    cursor,
+                    case_id,
+                    expected_head_version,
+                )
+                if case.lifecycle in {
+                    CaseLifecycle.STOPPED,
+                    CaseLifecycle.CLOSED,
+                }:
+                    raise InvalidAuthorityTransition(
+                        "case is already terminal"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.investigation_cases
+                    SET
+                        lifecycle = %s,
+                        head_version = head_version + 1,
+                        updated_at = %s
+                    WHERE case_id = %s AND head_version = %s
+                    RETURNING *
+                    """,
+                    (
+                        lifecycle.value,
+                        recorded_at,
+                        case_id,
+                        case.head_version,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise StaleHead("case head changed during transaction")
+                updated = _case_from_row(row)
+                self._append_authority_event(
+                    cursor,
+                    case_id=case_id,
+                    event_id=event_id,
+                    event_type=event_type,
+                    recorded_at=recorded_at,
+                    action_id=action_id,
+                    authority_ref=case_id,
+                    payload={
+                        "lifecycle": lifecycle.value,
+                        "head_version": updated.head_version,
+                    },
+                )
+                return updated
+
+    def record_action(self, action: PersistedAction) -> PersistedAction:
+        payload = encode_record(action)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, action.action.case_id)
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="action_records",
+                        id_column="action_id",
+                        record_id=action.action.action_id,
+                        columns=(
+                            "case_id",
+                            "expected_head_version",
+                            "idempotency_key",
+                            "proposal_sha256",
+                            "payload",
+                            "recorded_at",
+                        ),
+                        values=(
+                            action.action.case_id,
+                            action.action.expected_head_version,
+                            action.action.idempotency_key,
+                            action.proposal_sha256,
+                            Jsonb(payload),
+                            action.recorded_at,
+                        ),
+                        payload=payload,
+                        label="action",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "action idempotency key already has different content"
+                    ) from error
+                return action
+
+    def get_action(self, action_id: str) -> PersistedAction:
+        return self._get_authority(
+            table="action_records",
+            id_column="action_id",
+            record_id=action_id,
+            label="action",
+            decoder=decode_persisted_action,
+        )
+
+    def record_context_packet(self, packet: ContextPacket) -> ContextPacket:
+        payload = encode_record(packet)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                case = self._get_case(cursor, packet.case_id)
+                if packet.head_version != case.head_version:
+                    raise StaleHead(
+                        "ContextPacket was built from a stale case head"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="context_packets",
+                    id_column="packet_id",
+                    record_id=packet.packet_id,
+                    columns=(
+                        "case_id",
+                        "head_version",
+                        "content_sha256",
+                        "payload",
+                        "built_at",
+                    ),
+                    values=(
+                        packet.case_id,
+                        packet.head_version,
+                        packet.content_sha256,
+                        Jsonb(payload),
+                        packet.built_at,
+                    ),
+                    payload=payload,
+                    label="ContextPacket",
+                )
+                return packet
+
+    def get_context_packet(self, packet_id: str) -> ContextPacket:
+        return self._get_authority(
+            table="context_packets",
+            id_column="packet_id",
+            record_id=packet_id,
+            label="ContextPacket",
+            decoder=decode_context_packet,
+        )
+
+    def record_action_receipt(
+        self,
+        receipt: ActionReceipt,
+    ) -> ActionReceipt:
+        payload = encode_record(receipt)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                action = self._get_payload(
+                    cursor,
+                    table="action_records",
+                    id_column="action_id",
+                    record_id=receipt.action_id,
+                    label="action",
+                    decoder=decode_persisted_action,
+                ).action
+                if action.case_id != receipt.case_id:
+                    raise InvalidAuthorityTransition(
+                        "action receipt case does not match action"
+                    )
+                if action.content_sha256 != receipt.request_sha256:
+                    raise AuthorityConflict(
+                        "action receipt request hash does not match action"
+                    )
+                self._require_event_cursor(
+                    cursor,
+                    receipt.case_id,
+                    receipt.event_cursor,
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.action_receipts (
+                        case_id,
+                        idempotency_key,
+                        action_id,
+                        request_sha256,
+                        result_sha256,
+                        event_cursor,
+                        payload,
+                        recorded_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (case_id, idempotency_key) DO NOTHING
+                    RETURNING action_id
+                    """,
+                    (
+                        receipt.case_id,
+                        receipt.idempotency_key,
+                        receipt.action_id,
+                        receipt.request_sha256,
+                        receipt.result_sha256,
+                        receipt.event_cursor,
+                        Jsonb(payload),
+                        receipt.recorded_at,
+                    ),
+                )
+                if cursor.fetchone() is None:
+                    existing = self._get_action_receipt(
+                        cursor,
+                        receipt.case_id,
+                        receipt.idempotency_key,
+                    )
+                    if existing != receipt:
+                        raise AuthorityConflict(
+                            "idempotency key already has a different receipt"
+                        )
+                return receipt
+
+    def get_action_receipt(
+        self,
+        case_id: str,
+        idempotency_key: str,
+    ) -> ActionReceipt | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                return self._get_action_receipt(
+                    cursor,
+                    case_id,
+                    idempotency_key,
+                )
+
+    def record_checkpoint(
+        self,
+        checkpoint: CheckpointRecord,
+    ) -> CheckpointRecord:
+        payload = encode_record(checkpoint)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                case = self._get_case(cursor, checkpoint.case_id)
+                if checkpoint.head_version != case.head_version:
+                    raise StaleHead(
+                        "checkpoint head does not match current case"
+                    )
+                packet = self._get_payload(
+                    cursor,
+                    table="context_packets",
+                    id_column="packet_id",
+                    record_id=checkpoint.context_packet_id,
+                    label="ContextPacket",
+                    decoder=decode_context_packet,
+                )
+                if (
+                    packet.case_id != checkpoint.case_id
+                    or packet.content_sha256 != checkpoint.context_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "checkpoint context binding is invalid"
+                    )
+                event = self._require_event_cursor(
+                    cursor,
+                    checkpoint.case_id,
+                    checkpoint.event_cursor,
+                )
+                if event.event_type is not JournalEventType.CHECKPOINT_RECORDED:
+                    raise InvalidAuthorityTransition(
+                        "checkpoint must bind a checkpoint event"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="checkpoint_records",
+                    id_column="checkpoint_id",
+                    record_id=checkpoint.checkpoint_id,
+                    columns=(
+                        "case_id",
+                        "head_version",
+                        "event_cursor",
+                        "context_packet_id",
+                        "context_sha256",
+                        "state_sha256",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        checkpoint.case_id,
+                        checkpoint.head_version,
+                        checkpoint.event_cursor,
+                        checkpoint.context_packet_id,
+                        checkpoint.context_sha256,
+                        checkpoint.state_sha256,
+                        Jsonb(payload),
+                        checkpoint.created_at,
+                    ),
+                    payload=payload,
+                    label="checkpoint",
+                )
+                return checkpoint
+
+    def latest_checkpoint(self, case_id: str) -> CheckpointRecord | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.checkpoint_records
+                    WHERE case_id = %s
+                    ORDER BY event_cursor DESC
+                    LIMIT 1
+                    """,
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                return (
+                    None
+                    if row is None
+                    else decode_checkpoint(row["payload"])
+                )
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
+        payload = encode_record(message)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, message.case_id)
+                self._require_event_cursor(
+                    cursor,
+                    message.case_id,
+                    message.source_event_cursor,
+                )
+                if message.action_id is not None:
+                    action = self._get_payload(
+                        cursor,
+                        table="action_records",
+                        id_column="action_id",
+                        record_id=message.action_id,
+                        label="action",
+                        decoder=decode_persisted_action,
+                    )
+                    if action.action.case_id != message.case_id:
+                        raise InvalidAuthorityTransition(
+                            "outbox action case does not match message"
+                        )
+                    if action.action.kind not in _EFFECT_ACTION_KINDS:
+                        raise InvalidAuthorityTransition(
+                            "outbox requires an effect action"
+                        )
+                    if (
+                        message.payload.get("action_kind")
+                        != action.action.kind.value
+                    ):
+                        raise InvalidAuthorityTransition(
+                            "outbox payload kind does not match action"
+                        )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="outbox_messages",
+                        id_column="outbox_message_id",
+                        record_id=message.outbox_message_id,
+                        columns=(
+                            "case_id",
+                            "source_event_cursor",
+                            "action_id",
+                            "idempotency_key",
+                            "destination",
+                            "contract_ref",
+                            "payload_sha256",
+                            "payload",
+                            "created_at",
+                        ),
+                        values=(
+                            message.case_id,
+                            message.source_event_cursor,
+                            message.action_id,
+                            message.idempotency_key,
+                            message.destination,
+                            message.contract_ref,
+                            message.payload_sha256,
+                            Jsonb(payload),
+                            message.created_at,
+                        ),
+                        payload=payload,
+                        label="outbox message",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "outbox idempotency key already has different content"
+                    ) from error
+                return message
+
+    def get_outbox_message(self, message_id: str) -> OutboxMessage:
+        return self._get_authority(
+            table="outbox_messages",
+            id_column="outbox_message_id",
+            record_id=message_id,
+            label="outbox message",
+            decoder=decode_outbox_message,
+        )
+
+    def record_decision_request(
+        self,
+        request: UserDecisionRequest,
+    ) -> UserDecisionRequest:
+        payload = encode_record(request)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                action = self._get_payload(
+                    cursor,
+                    table="action_records",
+                    id_column="action_id",
+                    record_id=request.action_id,
+                    label="action",
+                    decoder=decode_persisted_action,
+                )
+                if action.action.case_id != request.case_id:
+                    raise InvalidAuthorityTransition(
+                        "decision request case does not match action"
+                    )
+                action_payload = action.action.payload
+                if (
+                    action.action.kind is not ActionKind.ASK_USER
+                    or not isinstance(action_payload, AskUserPayload)
+                ):
+                    raise InvalidAuthorityTransition(
+                        "decision request requires an ask_user action"
+                    )
+                if (
+                    request.question != action_payload.question
+                    or request.options != action_payload.options
+                    or request.recommended_option_id
+                    != action_payload.recommended_option_id
+                    or request.allow_freeform
+                    != action_payload.allow_freeform
+                ):
+                    raise AuthorityConflict(
+                        "decision request does not match ask_user action"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="user_decision_requests",
+                        id_column="decision_request_id",
+                        record_id=request.decision_request_id,
+                        columns=(
+                            "case_id",
+                            "action_id",
+                            "payload",
+                            "requested_at",
+                        ),
+                        values=(
+                            request.case_id,
+                            request.action_id,
+                            Jsonb(payload),
+                            request.requested_at,
+                        ),
+                        payload=payload,
+                        label="decision request",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "action already has a decision request"
+                    ) from error
+                return request
+
+    def get_decision_request(
+        self,
+        request_id: str,
+    ) -> UserDecisionRequest:
+        return self._get_authority(
+            table="user_decision_requests",
+            id_column="decision_request_id",
+            record_id=request_id,
+            label="decision request",
+            decoder=decode_decision_request,
+        )
+
+    def record_effect_attempt(
+        self,
+        attempt: EffectAttemptRecord,
+    ) -> EffectAttemptRecord:
+        payload = encode_record(attempt)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                message = self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=attempt.outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                if message.case_id != attempt.case_id:
+                    raise InvalidAuthorityTransition(
+                        "effect attempt case does not match outbox"
+                    )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.effect_attempts
+                    WHERE outbox_message_id = %s
+                    ORDER BY attempt_number DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (attempt.outbox_message_id,),
+                )
+                row = cursor.fetchone()
+                current = (
+                    None
+                    if row is None
+                    else decode_effect_attempt(row["payload"])
+                )
+                if (
+                    current is not None
+                    and current.effect_attempt_id == attempt.effect_attempt_id
+                ):
+                    if current == attempt:
+                        return current
+                    raise AuthorityConflict(
+                        "effect attempt ID already has different content"
+                    )
+                expected_number = (
+                    1 if current is None else current.attempt_number + 1
+                )
+                expected_prior = (
+                    None if current is None else current.effect_attempt_id
+                )
+                if (
+                    current is not None
+                    and current.status
+                    is not EffectAttemptStatus.RETRYABLE_FAILURE
+                ):
+                    raise InvalidAuthorityTransition(
+                        "completed effect attempt chain cannot be extended"
+                    )
+                if (
+                    attempt.attempt_number != expected_number
+                    or attempt.prior_attempt_id != expected_prior
+                ):
+                    raise InvalidAuthorityTransition(
+                        "effect attempt does not extend the current attempt chain"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="effect_attempts",
+                        id_column="effect_attempt_id",
+                        record_id=attempt.effect_attempt_id,
+                        columns=(
+                            "outbox_message_id",
+                            "case_id",
+                            "attempt_number",
+                            "prior_attempt_id",
+                            "status",
+                            "payload",
+                            "started_at",
+                            "completed_at",
+                        ),
+                        values=(
+                            attempt.outbox_message_id,
+                            attempt.case_id,
+                            attempt.attempt_number,
+                            attempt.prior_attempt_id,
+                            attempt.status.value,
+                            Jsonb(payload),
+                            attempt.started_at,
+                            attempt.completed_at,
+                        ),
+                        payload=payload,
+                        label="effect attempt",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "effect attempt number already exists"
+                    ) from error
+                return attempt
+
+    def list_effect_attempts(
+        self,
+        outbox_message_id: str,
+    ) -> tuple[EffectAttemptRecord, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.effect_attempts
+                    WHERE outbox_message_id = %s
+                    ORDER BY attempt_number
+                    """,
+                    (outbox_message_id,),
+                )
+                return tuple(
+                    decode_effect_attempt(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def acquire_lease(
+        self,
+        *,
+        case_id: str,
+        run_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> ControllerLease:
+        proposed = ControllerLease(
+            case_id=case_id,
+            run_id=run_id,
+            owner_id=owner_id,
+            fencing_token=1,
+            acquired_at=now,
+            expires_at=expires_at,
+        )
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id, for_update=True)
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.controller_leases
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                current = None if row is None else _lease_from_row(row)
+                if (
+                    current is not None
+                    and current.expires_at > now
+                    and (
+                        current.run_id != run_id
+                        or current.owner_id != owner_id
+                    )
+                ):
+                    raise LeaseConflict(
+                        "case already has an active controller lease"
+                    )
+                token = (
+                    1
+                    if current is None
+                    else (
+                        current.fencing_token
+                        if current.run_id == run_id
+                        and current.owner_id == owner_id
+                        and current.expires_at > now
+                        else current.fencing_token + 1
+                    )
+                )
+                lease = ControllerLease(
+                    case_id=proposed.case_id,
+                    run_id=proposed.run_id,
+                    owner_id=proposed.owner_id,
+                    fencing_token=token,
+                    acquired_at=proposed.acquired_at,
+                    expires_at=proposed.expires_at,
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.controller_leases (
+                        case_id,
+                        run_id,
+                        owner_id,
+                        fencing_token,
+                        acquired_at,
+                        expires_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (case_id) DO UPDATE SET
+                        run_id = EXCLUDED.run_id,
+                        owner_id = EXCLUDED.owner_id,
+                        fencing_token = EXCLUDED.fencing_token,
+                        acquired_at = EXCLUDED.acquired_at,
+                        expires_at = EXCLUDED.expires_at
+                    """,
+                    (
+                        lease.case_id,
+                        lease.run_id,
+                        lease.owner_id,
+                        lease.fencing_token,
+                        lease.acquired_at,
+                        lease.expires_at,
+                    ),
+                )
+                return lease
+
+    def release_lease(self, lease: ControllerLease) -> None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM waje_vnext.controller_leases
+                    WHERE
+                        case_id = %s
+                        AND run_id = %s
+                        AND owner_id = %s
+                        AND fencing_token = %s
+                    """,
+                    (
+                        lease.case_id,
+                        lease.run_id,
+                        lease.owner_id,
+                        lease.fencing_token,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LeaseFenceLost(
+                        "controller lease fencing token was lost"
+                    )
+
     def append_event(
         self,
         *,
@@ -781,6 +1630,35 @@ class PostgresAuthorityStore:
                     record_id=record_id,
                     label=label,
                     decoder=decoder,
+                )
+
+    def _list_payloads(
+        self,
+        *,
+        table: str,
+        case_id: str,
+        order_by: tuple[str, ...],
+        decoder: Callable[[Mapping[str, Any]], RecordT],
+    ) -> tuple[RecordT, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT payload FROM waje_vnext.{} "
+                        "WHERE case_id = %s ORDER BY {}"
+                    ).format(
+                        sql.Identifier(table),
+                        sql.SQL(", ").join(
+                            sql.Identifier(column)
+                            for column in order_by
+                        ),
+                    ),
+                    (case_id,),
+                )
+                return tuple(
+                    decoder(row["payload"])
+                    for row in cursor.fetchall()
                 )
 
     def _get_payload(
@@ -940,6 +1818,100 @@ class PostgresAuthorityStore:
             )
         raise AuthorityConflict("{} ID already has different content".format(label))
 
+    def _insert_idempotent_immutable(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        *,
+        table: str,
+        id_column: str,
+        record_id: str,
+        columns: tuple[str, ...],
+        values: tuple[object, ...],
+        payload: Mapping[str, Any],
+        label: str,
+    ) -> None:
+        all_columns = (id_column,) + columns
+        placeholders = sql.SQL(", ").join(
+            sql.Placeholder() for _ in all_columns
+        )
+        cursor.execute(
+            sql.SQL(
+                "INSERT INTO waje_vnext.{} ({}) VALUES ({}) "
+                "ON CONFLICT ({}) DO NOTHING RETURNING {}"
+            ).format(
+                sql.Identifier(table),
+                sql.SQL(", ").join(
+                    sql.Identifier(name) for name in all_columns
+                ),
+                placeholders,
+                sql.Identifier(id_column),
+                sql.Identifier(id_column),
+            ),
+            (record_id,) + values,
+        )
+        if cursor.fetchone() is not None:
+            return
+        cursor.execute(
+            sql.SQL(
+                "SELECT payload FROM waje_vnext.{} WHERE {} = %s"
+            ).format(
+                sql.Identifier(table),
+                sql.Identifier(id_column),
+            ),
+            (record_id,),
+        )
+        existing = cursor.fetchone()
+        if existing is not None and existing["payload"] == payload:
+            return
+        raise AuthorityConflict(
+            "{} ID already has different content".format(label)
+        )
+
+    def _get_action_receipt(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        case_id: str,
+        idempotency_key: str,
+    ) -> ActionReceipt | None:
+        cursor.execute(
+            """
+            SELECT payload
+            FROM waje_vnext.action_receipts
+            WHERE case_id = %s AND idempotency_key = %s
+            """,
+            (case_id, idempotency_key),
+        )
+        row = cursor.fetchone()
+        return (
+            None
+            if row is None
+            else decode_action_receipt(row["payload"])
+        )
+
+    def _require_event_cursor(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        case_id: str,
+        event_cursor: int,
+    ) -> EventJournalEntry:
+        cursor.execute(
+            """
+            SELECT *
+            FROM waje_vnext.event_journal
+            WHERE case_id = %s AND cursor = %s
+            """,
+            (case_id, event_cursor),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise AuthorityNotFound(
+                "event cursor {} does not exist for case {!r}".format(
+                    event_cursor,
+                    case_id,
+                )
+            )
+        return self._event_from_row(row)
+
     def _move_heads(
         self,
         cursor: Cursor[Mapping[str, Any]],
@@ -1055,7 +2027,15 @@ class PostgresAuthorityStore:
                 "interpretation must bind the accepted frame"
             )
         for evidence_id in interpretation.evidence_record_ids:
-            self._get_evidence(cursor, evidence_id)
+            evidence = self._get_evidence(cursor, evidence_id)
+            if (
+                evidence.case_id != interpretation.case_id
+                or evidence.frame_revision_id
+                != interpretation.frame_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "interpretation evidence is incompatible with frame"
+                )
 
     def _validate_objection(
         self,
@@ -1282,4 +2262,15 @@ def _case_from_row(row: Mapping[str, Any]) -> InvestigationCase:
         accepted_answer_version_id=row["accepted_answer_version_id"],
         opened_at=row["opened_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _lease_from_row(row: Mapping[str, Any]) -> ControllerLease:
+    return ControllerLease(
+        case_id=row["case_id"],
+        run_id=row["run_id"],
+        owner_id=row["owner_id"],
+        fencing_token=row["fencing_token"],
+        acquired_at=row["acquired_at"],
+        expires_at=row["expires_at"],
     )

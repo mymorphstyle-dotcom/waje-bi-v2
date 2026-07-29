@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from threading import RLock
-from typing import Any, TypeVar
+from typing import Any, Iterator, TypeVar
 
+from waje_vnext.domain.actions import (
+    ActionKind,
+    AskUserPayload,
+)
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerStatus,
@@ -19,17 +24,38 @@ from waje_vnext.domain.authority import (
     ReviewerObjection,
     WorkPlanRevision,
 )
+from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.controller import (
+    ControllerLease,
+    EffectAttemptRecord,
+    EffectAttemptStatus,
+    PersistedAction,
+    UserDecisionRequest,
+)
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.runtime_state import (
+    ActionReceipt,
+    CheckpointRecord,
+    OutboxMessage,
+)
 
 from .ports import (
     AuthorityConflict,
     AuthorityNotFound,
     InvalidAuthorityTransition,
+    LeaseConflict,
+    LeaseFenceLost,
     StaleHead,
 )
 
 
 RecordT = TypeVar("RecordT")
+_EFFECT_ACTION_KINDS = {
+    ActionKind.INSPECT_SEMANTICS,
+    ActionKind.RUN_PROBE,
+    ActionKind.CALL_CAPABILITY,
+    ActionKind.RUN_SENSITIVITY,
+}
 
 
 class InMemoryAuthorityStore:
@@ -45,8 +71,27 @@ class InMemoryAuthorityStore:
         self._interpretations: dict[str, InterpretationRecord] = {}
         self._decisions: dict[str, DecisionRecord] = {}
         self._objections: dict[str, ReviewerObjection] = {}
+        self._actions: dict[str, PersistedAction] = {}
+        self._contexts: dict[str, ContextPacket] = {}
+        self._receipts: dict[tuple[str, str], ActionReceipt] = {}
+        self._receipt_action_ids: dict[str, tuple[str, str]] = {}
+        self._checkpoints: dict[str, CheckpointRecord] = {}
+        self._outbox: dict[str, OutboxMessage] = {}
+        self._decision_requests: dict[str, UserDecisionRequest] = {}
+        self._effect_attempts: dict[str, EffectAttemptRecord] = {}
+        self._leases: dict[str, ControllerLease] = {}
         self._events: dict[str, list[EventJournalEntry]] = {}
         self._events_by_id: dict[str, EventJournalEntry] = {}
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        with self._lock:
+            snapshot = self._snapshot()
+            try:
+                yield
+            except BaseException:
+                self._restore(snapshot)
+                raise
 
     def open_case(
         self,
@@ -62,6 +107,7 @@ class InMemoryAuthorityStore:
                 if (
                     existing_event.event_type is JournalEventType.CASE_OPENED
                     and existing_event.case_id == case_id
+                    and existing_event.payload.get("thread_id") == thread_id
                 ):
                     return self.get_case(case_id)
                 raise AuthorityConflict("event ID already has different content")
@@ -113,6 +159,60 @@ class InMemoryAuthorityStore:
         with self._lock:
             return _get(self._answers, answer_version_id, "answer")
 
+    def list_evidence(self, case_id: str) -> tuple[EvidenceRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        record
+                        for record in self._evidence.values()
+                        if record.case_id == case_id
+                    ),
+                    key=lambda record: (
+                        record.created_at,
+                        record.evidence_record_id,
+                    ),
+                )
+            )
+
+    def list_decisions(self, case_id: str) -> tuple[DecisionRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        record
+                        for record in self._decisions.values()
+                        if record.case_id == case_id
+                    ),
+                    key=lambda record: (
+                        record.created_at,
+                        record.decision_record_id,
+                    ),
+                )
+            )
+
+    def list_reviewer_objections(
+        self,
+        case_id: str,
+    ) -> tuple[ReviewerObjection, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        record
+                        for record in self._objections.values()
+                        if record.case_id == case_id
+                    ),
+                    key=lambda record: (
+                        record.objection_key,
+                        record.revision_number,
+                    ),
+                )
+            )
+
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
@@ -145,6 +245,16 @@ class InMemoryAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "frame revision does not extend the accepted frame"
                 )
+            for decision_id in frame.decision_record_ids:
+                decision = _get(
+                    self._decisions,
+                    decision_id,
+                    "decision",
+                )
+                if decision.case_id != frame.case_id:
+                    raise InvalidAuthorityTransition(
+                        "frame decision belongs to another case"
+                    )
             _put_immutable(self._frames, frame.frame_revision_id, frame, "frame")
             updated = replace(
                 case,
@@ -365,6 +475,58 @@ class InMemoryAuthorityStore:
             )
             return updated
 
+    def transition_case_lifecycle(
+        self,
+        *,
+        case_id: str,
+        lifecycle: CaseLifecycle,
+        expected_head_version: int,
+        event_id: str,
+        action_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase:
+        if lifecycle not in {CaseLifecycle.STOPPED, CaseLifecycle.CLOSED}:
+            raise InvalidAuthorityTransition(
+                "controller can only transition a case to a terminal lifecycle"
+            )
+        event_type = (
+            JournalEventType.CASE_STOPPED
+            if lifecycle is CaseLifecycle.STOPPED
+            else JournalEventType.CASE_CLOSED
+        )
+        with self._lock:
+            idempotent = self._idempotent_head_result(
+                event_id,
+                event_type,
+                case_id,
+                case_id,
+            )
+            if idempotent is not None:
+                return idempotent
+            case = self._cas_case(case_id, expected_head_version)
+            if case.lifecycle in {CaseLifecycle.STOPPED, CaseLifecycle.CLOSED}:
+                raise InvalidAuthorityTransition("case is already terminal")
+            updated = replace(
+                case,
+                lifecycle=lifecycle,
+                head_version=case.head_version + 1,
+                updated_at=recorded_at,
+            )
+            self._cases[case_id] = updated
+            self._append_authority_event_locked(
+                case_id=case_id,
+                event_id=event_id,
+                event_type=event_type,
+                authority_ref=case_id,
+                action_id=action_id,
+                recorded_at=recorded_at,
+                payload={
+                    "lifecycle": lifecycle.value,
+                    "head_version": updated.head_version,
+                },
+            )
+            return updated
+
     def record_interpretation(
         self,
         interpretation: InterpretationRecord,
@@ -388,7 +550,15 @@ class InMemoryAuthorityStore:
                     "interpretation must bind the accepted frame"
                 )
             for evidence_id in interpretation.evidence_record_ids:
-                self.get_evidence(evidence_id)
+                evidence = self.get_evidence(evidence_id)
+                if (
+                    evidence.case_id != interpretation.case_id
+                    or evidence.frame_revision_id
+                    != interpretation.frame_revision_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "interpretation evidence is incompatible with frame"
+                    )
             self._require_new_record(
                 self._interpretations,
                 interpretation.interpretation_id,
@@ -517,6 +687,351 @@ class InMemoryAuthorityStore:
                 action_id=None,
             )
             return objection
+
+    def record_action(self, action: PersistedAction) -> PersistedAction:
+        with self._lock:
+            self.get_case(action.action.case_id)
+            _put_idempotent_immutable(
+                self._actions,
+                action.action.action_id,
+                action,
+                "action",
+            )
+            return action
+
+    def get_action(self, action_id: str) -> PersistedAction:
+        with self._lock:
+            return _get(self._actions, action_id, "action")
+
+    def record_context_packet(self, packet: ContextPacket) -> ContextPacket:
+        with self._lock:
+            case = self.get_case(packet.case_id)
+            if packet.head_version != case.head_version:
+                raise StaleHead("ContextPacket was built from a stale case head")
+            _put_idempotent_immutable(
+                self._contexts,
+                packet.packet_id,
+                packet,
+                "ContextPacket",
+            )
+            return packet
+
+    def get_context_packet(self, packet_id: str) -> ContextPacket:
+        with self._lock:
+            return _get(self._contexts, packet_id, "ContextPacket")
+
+    def record_action_receipt(
+        self,
+        receipt: ActionReceipt,
+    ) -> ActionReceipt:
+        with self._lock:
+            action = self.get_action(receipt.action_id).action
+            if action.case_id != receipt.case_id:
+                raise InvalidAuthorityTransition(
+                    "action receipt case does not match action"
+                )
+            if action.content_sha256 != receipt.request_sha256:
+                raise AuthorityConflict(
+                    "action receipt request hash does not match action"
+                )
+            self._require_event_cursor(
+                receipt.case_id,
+                receipt.event_cursor,
+            )
+            key = (receipt.case_id, receipt.idempotency_key)
+            existing = self._receipts.get(key)
+            if existing is not None:
+                if existing == receipt:
+                    return existing
+                raise AuthorityConflict(
+                    "idempotency key already has a different receipt"
+                )
+            action_key = self._receipt_action_ids.get(receipt.action_id)
+            if action_key is not None:
+                raise AuthorityConflict("action already has a receipt")
+            self._receipts[key] = receipt
+            self._receipt_action_ids[receipt.action_id] = key
+            return receipt
+
+    def get_action_receipt(
+        self,
+        case_id: str,
+        idempotency_key: str,
+    ) -> ActionReceipt | None:
+        with self._lock:
+            return self._receipts.get((case_id, idempotency_key))
+
+    def record_checkpoint(
+        self,
+        checkpoint: CheckpointRecord,
+    ) -> CheckpointRecord:
+        with self._lock:
+            case = self.get_case(checkpoint.case_id)
+            if checkpoint.head_version != case.head_version:
+                raise StaleHead("checkpoint head does not match current case")
+            packet = self.get_context_packet(checkpoint.context_packet_id)
+            if (
+                packet.case_id != checkpoint.case_id
+                or packet.content_sha256 != checkpoint.context_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "checkpoint context binding is invalid"
+                )
+            event = self._require_event_cursor(
+                checkpoint.case_id,
+                checkpoint.event_cursor,
+            )
+            if event.event_type is not JournalEventType.CHECKPOINT_RECORDED:
+                raise InvalidAuthorityTransition(
+                    "checkpoint must bind a checkpoint event"
+                )
+            _put_idempotent_immutable(
+                self._checkpoints,
+                checkpoint.checkpoint_id,
+                checkpoint,
+                "checkpoint",
+            )
+            return checkpoint
+
+    def latest_checkpoint(self, case_id: str) -> CheckpointRecord | None:
+        with self._lock:
+            self.get_case(case_id)
+            return max(
+                (
+                    checkpoint
+                    for checkpoint in self._checkpoints.values()
+                    if checkpoint.case_id == case_id
+                ),
+                key=lambda checkpoint: checkpoint.event_cursor,
+                default=None,
+            )
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
+        with self._lock:
+            self.get_case(message.case_id)
+            self._require_event_cursor(
+                message.case_id,
+                message.source_event_cursor,
+            )
+            if message.action_id is not None:
+                action = self.get_action(message.action_id)
+                if action.action.case_id != message.case_id:
+                    raise InvalidAuthorityTransition(
+                        "outbox action case does not match message"
+                    )
+                if action.action.kind not in _EFFECT_ACTION_KINDS:
+                    raise InvalidAuthorityTransition(
+                        "outbox requires an effect action"
+                    )
+                if (
+                    message.payload.get("action_kind")
+                    != action.action.kind.value
+                ):
+                    raise InvalidAuthorityTransition(
+                        "outbox payload kind does not match action"
+                    )
+            duplicate_key = next(
+                (
+                    candidate
+                    for candidate in self._outbox.values()
+                    if candidate.case_id == message.case_id
+                    and candidate.idempotency_key == message.idempotency_key
+                ),
+                None,
+            )
+            if duplicate_key is not None:
+                if duplicate_key == message:
+                    return duplicate_key
+                raise AuthorityConflict(
+                    "outbox idempotency key already has different content"
+                )
+            _put_immutable(
+                self._outbox,
+                message.outbox_message_id,
+                message,
+                "outbox message",
+            )
+            return message
+
+    def get_outbox_message(self, message_id: str) -> OutboxMessage:
+        with self._lock:
+            return _get(self._outbox, message_id, "outbox message")
+
+    def record_decision_request(
+        self,
+        request: UserDecisionRequest,
+    ) -> UserDecisionRequest:
+        with self._lock:
+            self.get_case(request.case_id)
+            action = self.get_action(request.action_id)
+            if action.action.case_id != request.case_id:
+                raise InvalidAuthorityTransition(
+                    "decision request case does not match action"
+                )
+            payload = action.action.payload
+            if (
+                action.action.kind is not ActionKind.ASK_USER
+                or not isinstance(payload, AskUserPayload)
+            ):
+                raise InvalidAuthorityTransition(
+                    "decision request requires an ask_user action"
+                )
+            if (
+                request.question != payload.question
+                or request.options != payload.options
+                or request.recommended_option_id
+                != payload.recommended_option_id
+                or request.allow_freeform != payload.allow_freeform
+            ):
+                raise AuthorityConflict(
+                    "decision request does not match ask_user action"
+                )
+            _put_idempotent_immutable(
+                self._decision_requests,
+                request.decision_request_id,
+                request,
+                "decision request",
+            )
+            return request
+
+    def get_decision_request(
+        self,
+        request_id: str,
+    ) -> UserDecisionRequest:
+        with self._lock:
+            return _get(
+                self._decision_requests,
+                request_id,
+                "decision request",
+            )
+
+    def record_effect_attempt(
+        self,
+        attempt: EffectAttemptRecord,
+    ) -> EffectAttemptRecord:
+        with self._lock:
+            message = self.get_outbox_message(attempt.outbox_message_id)
+            if message.case_id != attempt.case_id:
+                raise InvalidAuthorityTransition(
+                    "effect attempt case does not match outbox"
+                )
+            existing = self._effect_attempts.get(attempt.effect_attempt_id)
+            if existing is not None:
+                if existing == attempt:
+                    return existing
+                raise AuthorityConflict(
+                    "effect attempt ID already has different content"
+                )
+            current = max(
+                (
+                    candidate
+                    for candidate in self._effect_attempts.values()
+                    if candidate.outbox_message_id
+                    == attempt.outbox_message_id
+                ),
+                key=lambda candidate: candidate.attempt_number,
+                default=None,
+            )
+            expected_number = (
+                1 if current is None else current.attempt_number + 1
+            )
+            expected_prior = (
+                None if current is None else current.effect_attempt_id
+            )
+            if (
+                current is not None
+                and current.status
+                is not EffectAttemptStatus.RETRYABLE_FAILURE
+            ):
+                raise InvalidAuthorityTransition(
+                    "completed effect attempt chain cannot be extended"
+                )
+            if (
+                attempt.attempt_number != expected_number
+                or attempt.prior_attempt_id != expected_prior
+            ):
+                raise InvalidAuthorityTransition(
+                    "effect attempt does not extend the current attempt chain"
+                )
+            _put_idempotent_immutable(
+                self._effect_attempts,
+                attempt.effect_attempt_id,
+                attempt,
+                "effect attempt",
+            )
+            return attempt
+
+    def list_effect_attempts(
+        self,
+        outbox_message_id: str,
+    ) -> tuple[EffectAttemptRecord, ...]:
+        with self._lock:
+            self.get_outbox_message(outbox_message_id)
+            return tuple(
+                sorted(
+                    (
+                        attempt
+                        for attempt in self._effect_attempts.values()
+                        if attempt.outbox_message_id == outbox_message_id
+                    ),
+                    key=lambda attempt: attempt.attempt_number,
+                )
+            )
+
+    def acquire_lease(
+        self,
+        *,
+        case_id: str,
+        run_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> ControllerLease:
+        with self._lock:
+            self.get_case(case_id)
+            current = self._leases.get(case_id)
+            if (
+                current is not None
+                and current.expires_at > now
+                and (
+                    current.run_id != run_id
+                    or current.owner_id != owner_id
+                )
+            ):
+                raise LeaseConflict("case already has an active controller lease")
+            token = (
+                1
+                if current is None
+                else (
+                    current.fencing_token
+                    if current.run_id == run_id
+                    and current.owner_id == owner_id
+                    and current.expires_at > now
+                    else current.fencing_token + 1
+                )
+            )
+            lease = ControllerLease(
+                case_id=case_id,
+                run_id=run_id,
+                owner_id=owner_id,
+                fencing_token=token,
+                acquired_at=now,
+                expires_at=expires_at,
+            )
+            self._leases[case_id] = lease
+            return lease
+
+    def release_lease(self, lease: ControllerLease) -> None:
+        with self._lock:
+            current = self._leases.get(lease.case_id)
+            if (
+                current is None
+                or current.run_id != lease.run_id
+                or current.owner_id != lease.owner_id
+                or current.fencing_token != lease.fencing_token
+            ):
+                raise LeaseFenceLost("controller lease fencing token was lost")
+            del self._leases[lease.case_id]
 
     def append_event(
         self,
@@ -731,6 +1246,52 @@ class InMemoryAuthorityStore:
         self._events_by_id[event_id] = entry
         return entry
 
+    def _require_event_cursor(
+        self,
+        case_id: str,
+        cursor: int,
+    ) -> EventJournalEntry:
+        self.get_case(case_id)
+        for event in self._events[case_id]:
+            if event.cursor == cursor:
+                return event
+        raise AuthorityNotFound(
+            "event cursor {} does not exist for case {!r}".format(
+                cursor,
+                case_id,
+            )
+        )
+
+    def _snapshot(self) -> dict[str, object]:
+        return {
+            "_cases": self._cases.copy(),
+            "_frames": self._frames.copy(),
+            "_plans": self._plans.copy(),
+            "_evidence": self._evidence.copy(),
+            "_answers": self._answers.copy(),
+            "_interpretations": self._interpretations.copy(),
+            "_decisions": self._decisions.copy(),
+            "_objections": self._objections.copy(),
+            "_actions": self._actions.copy(),
+            "_contexts": self._contexts.copy(),
+            "_receipts": self._receipts.copy(),
+            "_receipt_action_ids": self._receipt_action_ids.copy(),
+            "_checkpoints": self._checkpoints.copy(),
+            "_outbox": self._outbox.copy(),
+            "_decision_requests": self._decision_requests.copy(),
+            "_effect_attempts": self._effect_attempts.copy(),
+            "_leases": self._leases.copy(),
+            "_events": {
+                case_id: list(events)
+                for case_id, events in self._events.items()
+            },
+            "_events_by_id": self._events_by_id.copy(),
+        }
+
+    def _restore(self, snapshot: dict[str, object]) -> None:
+        for name, value in snapshot.items():
+            setattr(self, name, value)
+
 
 def _get(records: dict[str, RecordT], record_id: str, label: str) -> RecordT:
     try:
@@ -755,4 +1316,19 @@ def _put_immutable(
         raise AuthorityConflict(
             "{} was already persisted under another event".format(label)
         )
+    raise AuthorityConflict("{} ID already has different content".format(label))
+
+
+def _put_idempotent_immutable(
+    records: dict[str, RecordT],
+    record_id: str,
+    record: RecordT,
+    label: str,
+) -> None:
+    existing = records.get(record_id)
+    if existing is None:
+        records[record_id] = record
+        return
+    if existing == record:
+        return
     raise AuthorityConflict("{} ID already has different content".format(label))

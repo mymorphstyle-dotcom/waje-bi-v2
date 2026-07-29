@@ -19,6 +19,7 @@ class JournalEventType(StrEnum):
     CASE_OPENED = "case_opened"
     ACTION_ADMITTED = "action_admitted"
     ACTION_REJECTED = "action_rejected"
+    USER_DECISION_REQUESTED = "user_decision_requested"
     FRAME_ACCEPTED = "frame_accepted"
     PLAN_ACCEPTED = "plan_accepted"
     EVIDENCE_RECORDED = "evidence_recorded"
@@ -27,8 +28,12 @@ class JournalEventType(StrEnum):
     REVIEWER_OBJECTION_RECORDED = "reviewer_objection_recorded"
     ANSWER_ACCEPTED = "answer_accepted"
     CHECKPOINT_RECORDED = "checkpoint_recorded"
+    EFFECT_ENQUEUED = "effect_enqueued"
+    EFFECT_ATTEMPT_FAILED = "effect_attempt_failed"
+    EFFECT_COMPLETED = "effect_completed"
     RUN_RESUMED = "run_resumed"
     CASE_STOPPED = "case_stopped"
+    CASE_CLOSED = "case_closed"
 
 
 @dataclass(frozen=True, slots=True)

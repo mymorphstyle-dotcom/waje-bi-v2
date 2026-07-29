@@ -32,6 +32,7 @@ from waje_vnext.domain.authority import (
 )
 from waje_vnext.domain.context import (
     ContextEvidenceItem,
+    ContextEventItem,
     ContextPacket,
     build_context_packet,
 )
@@ -42,6 +43,27 @@ from waje_vnext.storage import (
     InvalidAuthorityTransition,
     StaleHead,
 )
+
+
+def make_frame_action_payload(reason: str) -> ReviseFramePayload:
+    frame = make_frame()
+    return ReviseFramePayload(
+        revision_reason=reason,
+        estimand=frame.estimand,
+        observation_unit=frame.observation_unit,
+        numerator=frame.numerator,
+        denominator=frame.denominator,
+        exposure=frame.exposure,
+        comparison=frame.comparison,
+        assumptions=frame.assumptions,
+        alternatives=frame.alternatives,
+        falsification_conditions=frame.falsification_conditions,
+        reversal_conditions=frame.reversal_conditions,
+        success_conditions=frame.success_conditions,
+        stop_conditions=frame.stop_conditions,
+        decision_record_ids=frame.decision_record_ids,
+        semantic_contract_refs=frame.semantic_contract_refs,
+    )
 
 
 class AuthorityModelTest(unittest.TestCase):
@@ -129,8 +151,8 @@ class AuthorityModelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "blocking objections"):
             make_answer(unresolved=("objection-1",))
 
-    def test_settled_answer_rejects_rejected_claim(self) -> None:
-        with self.assertRaisesRegex(ValueError, "rejected claims"):
+    def test_settled_answer_rejects_unverified_claim(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unverified claims"):
             make_answer(verifier_status=ClaimVerifierStatus.REJECTED)
 
     def test_settled_answer_rejects_forged_binding_fingerprint(self) -> None:
@@ -175,7 +197,6 @@ class TypedActionTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "freeform"):
             AskUserPayload(
-                decision_record_id="decision-1",
                 question="Which measurement should apply?",
                 options=options,
                 recommended_option_id="recommended",
@@ -226,7 +247,7 @@ class TypedActionTest(unittest.TestCase):
             expected_head_version=9,
             idempotency_key="frame-key",
             issued_at=NOW,
-            payload=ReviseFramePayload("frame-1", "Initial frame"),
+            payload=make_frame_action_payload("Initial frame"),
         )
 
         admission = admit_action(
@@ -285,7 +306,7 @@ class TypedActionTest(unittest.TestCase):
             expected_head_version=terminal.head_version,
             idempotency_key="terminal-key",
             issued_at=NOW,
-            payload=ReviseFramePayload("frame-1", "Try to reopen"),
+            payload=make_frame_action_payload("Try to reopen"),
         )
 
         admission = admit_action(
@@ -314,6 +335,10 @@ class ContextPacketTest(unittest.TestCase):
                 strength="quantified",
                 business_summary="Measured pattern",
                 limitation_count=1,
+                frame_revision_id="frame-1",
+                plan_revision_id="plan-1",
+                task_id="task-pattern",
+                snapshot_release_ref="release-1",
             ),
         )
 
@@ -323,9 +348,15 @@ class ContextPacketTest(unittest.TestCase):
             user_message="Why is the exposure period higher?",
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_frame=None,
+            accepted_plan=None,
+            accepted_answer=None,
+            recent_events=(
+                ContextEventItem.from_event(store.list_events("case-1")[0]),
+            ),
             evidence_index=evidence_index,
-            unresolved_reviewer_objection_ids=(),
-            decision_record_ids=(),
+            decision_index=(),
+            reviewer_objection_index=(),
             built_at=NOW,
         )
         second = build_context_packet(
@@ -334,9 +365,15 @@ class ContextPacketTest(unittest.TestCase):
             user_message="Why is the exposure period higher?",
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_frame=None,
+            accepted_plan=None,
+            accepted_answer=None,
+            recent_events=(
+                ContextEventItem.from_event(store.list_events("case-1")[0]),
+            ),
             evidence_index=evidence_index,
-            unresolved_reviewer_objection_ids=(),
-            decision_record_ids=(),
+            decision_index=(),
+            reviewer_objection_index=(),
             built_at=NOW,
         )
 

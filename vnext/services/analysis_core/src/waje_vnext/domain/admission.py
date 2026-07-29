@@ -38,20 +38,20 @@ def admit_action(
         return _rejected(case, "case_terminal")
 
     if action.kind is ActionKind.REVISE_FRAME:
-        payload = action.payload
-        assert isinstance(payload, ReviseFramePayload)
-        if payload.frame_revision_id == case.accepted_frame_revision_id:
-            return _rejected(case, "frame_already_current")
+        assert isinstance(action.payload, ReviseFramePayload)
         return _accepted(case, frame=True)
 
     if action.kind is ActionKind.REVISE_PLAN:
         if case.accepted_frame_revision_id is None:
             return _rejected(case, "plan_requires_frame")
-        payload = action.payload
-        assert isinstance(payload, RevisePlanPayload)
-        if payload.plan_revision_id == case.accepted_plan_revision_id:
-            return _rejected(case, "plan_already_current")
+        assert isinstance(action.payload, RevisePlanPayload)
         return _accepted(case, plan=True)
+
+    if (
+        action.kind is ActionKind.RUN_PROBE
+        and case.accepted_frame_revision_id is None
+    ):
+        return _rejected(case, "probe_requires_frame")
 
     if action.kind in {
         ActionKind.CALL_CAPABILITY,

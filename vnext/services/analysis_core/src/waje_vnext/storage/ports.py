@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import ContextManager, Protocol
 
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerVersion,
+    CaseLifecycle,
     DecisionRecord,
     EvidenceRecord,
     InvestigationCase,
@@ -15,7 +16,19 @@ from waje_vnext.domain.authority import (
     ReviewerObjection,
     WorkPlanRevision,
 )
+from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.controller import (
+    ControllerLease,
+    EffectAttemptRecord,
+    PersistedAction,
+    UserDecisionRequest,
+)
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.runtime_state import (
+    ActionReceipt,
+    CheckpointRecord,
+    OutboxMessage,
+)
 
 
 class AuthorityStoreError(RuntimeError):
@@ -38,7 +51,17 @@ class InvalidAuthorityTransition(AuthorityStoreError):
     pass
 
 
+class LeaseConflict(AuthorityStoreError):
+    pass
+
+
+class LeaseFenceLost(AuthorityStoreError):
+    pass
+
+
 class AuthorityStore(Protocol):
+    def atomic(self) -> ContextManager[None]: ...
+
     def open_case(
         self,
         *,
@@ -57,6 +80,15 @@ class AuthorityStore(Protocol):
     def get_evidence(self, evidence_record_id: str) -> EvidenceRecord: ...
 
     def get_answer(self, answer_version_id: str) -> AnswerVersion: ...
+
+    def list_evidence(self, case_id: str) -> tuple[EvidenceRecord, ...]: ...
+
+    def list_decisions(self, case_id: str) -> tuple[DecisionRecord, ...]: ...
+
+    def list_reviewer_objections(
+        self,
+        case_id: str,
+    ) -> tuple[ReviewerObjection, ...]: ...
 
     def accept_frame(
         self,
@@ -91,6 +123,17 @@ class AuthorityStore(Protocol):
         *,
         expected_head_version: int,
         event_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase: ...
+
+    def transition_case_lifecycle(
+        self,
+        *,
+        case_id: str,
+        lifecycle: CaseLifecycle,
+        expected_head_version: int,
+        event_id: str,
+        action_id: str,
         recorded_at: datetime,
     ) -> InvestigationCase: ...
 
@@ -135,3 +178,74 @@ class AuthorityStore(Protocol):
         *,
         after_cursor: int = 0,
     ) -> tuple[EventJournalEntry, ...]: ...
+
+    def record_action(
+        self,
+        action: PersistedAction,
+    ) -> PersistedAction: ...
+
+    def get_action(self, action_id: str) -> PersistedAction: ...
+
+    def record_context_packet(
+        self,
+        packet: ContextPacket,
+    ) -> ContextPacket: ...
+
+    def get_context_packet(self, packet_id: str) -> ContextPacket: ...
+
+    def record_action_receipt(
+        self,
+        receipt: ActionReceipt,
+    ) -> ActionReceipt: ...
+
+    def get_action_receipt(
+        self,
+        case_id: str,
+        idempotency_key: str,
+    ) -> ActionReceipt | None: ...
+
+    def record_checkpoint(
+        self,
+        checkpoint: CheckpointRecord,
+    ) -> CheckpointRecord: ...
+
+    def latest_checkpoint(self, case_id: str) -> CheckpointRecord | None: ...
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage: ...
+
+    def get_outbox_message(self, message_id: str) -> OutboxMessage: ...
+
+    def record_decision_request(
+        self,
+        request: UserDecisionRequest,
+    ) -> UserDecisionRequest: ...
+
+    def get_decision_request(
+        self,
+        request_id: str,
+    ) -> UserDecisionRequest: ...
+
+    def record_effect_attempt(
+        self,
+        attempt: EffectAttemptRecord,
+    ) -> EffectAttemptRecord: ...
+
+    def list_effect_attempts(
+        self,
+        outbox_message_id: str,
+    ) -> tuple[EffectAttemptRecord, ...]: ...
+
+    def acquire_lease(
+        self,
+        *,
+        case_id: str,
+        run_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> ControllerLease: ...
+
+    def release_lease(
+        self,
+        lease: ControllerLease,
+    ) -> None: ...

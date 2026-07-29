@@ -514,6 +514,7 @@
         },
         "verifier_status": {
           "enum": [
+            "pending",
             "accepted",
             "boundary_only",
             "rejected"

@@ -11,4 +11,6 @@ npm run generate:contracts
 npm run check:contracts
 ```
 
-当前目录不读取历史 contract runtime。
+Gate 2 在当前合同上加入 model-native proposal、完整 authority projection 的
+`ContextPacket` 和 `ControllerState`。当前目录不读取历史 contract runtime，也不维护旧
+action payload 的兼容分支。

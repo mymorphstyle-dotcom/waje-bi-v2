@@ -145,6 +145,6 @@ export interface AnswerClaim {
   evidence_record_ids: StringArray;
   boundary_ref: Id | null;
   limitations: StringArray;
-  verifier_status: "accepted" | "boundary_only" | "rejected";
+  verifier_status: "pending" | "accepted" | "boundary_only" | "rejected";
   reviewer_objection_ids: StringArray;
 }

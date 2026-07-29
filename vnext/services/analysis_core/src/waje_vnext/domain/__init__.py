@@ -1,12 +1,14 @@
 """Authority, action, context, and event contracts for vNext."""
 
 from .actions import (
+    AgentActionProposal,
     ActionEnvelope,
     ActionKind,
     AskUserPayload,
     CallCapabilityPayload,
     InspectSemanticsPayload,
     ProposeAnswerPayload,
+    ProposedClaim,
     RecordInterpretationPayload,
     ReviseFramePayload,
     RevisePlanPayload,
@@ -36,7 +38,24 @@ from .authority import (
     WorkTask,
     compute_answer_settlement_fingerprint,
 )
-from .context import ContextEvidenceItem, ContextPacket, build_context_packet
+from .context import (
+    ContextDecisionItem,
+    ContextEvidenceItem,
+    ContextEventItem,
+    ContextPacket,
+    ContextReviewerObjectionItem,
+    build_context_packet,
+)
+from .controller import (
+    ControllerLease,
+    ControllerPhase,
+    ControllerState,
+    EffectAttemptRecord,
+    EffectAttemptStatus,
+    PersistedAction,
+    PrimaryAgentRequest,
+    UserDecisionRequest,
+)
 from .events import EventJournalEntry, JournalEventType
 from .runtime_state import ActionReceipt, CheckpointRecord, OutboxMessage
 
@@ -44,6 +63,7 @@ __all__ = [
     "ActionEnvelope",
     "ActionKind",
     "ActionReceipt",
+    "AgentActionProposal",
     "AnalysisFrameRevision",
     "AnswerClaim",
     "AnswerStatus",
@@ -54,10 +74,18 @@ __all__ = [
     "CaseLifecycle",
     "ClaimVerifierStatus",
     "ContextEvidenceItem",
+    "ContextDecisionItem",
+    "ContextEventItem",
     "ContextPacket",
+    "ContextReviewerObjectionItem",
+    "ControllerLease",
+    "ControllerPhase",
+    "ControllerState",
     "DecisionOption",
     "DecisionRecord",
     "EventJournalEntry",
+    "EffectAttemptRecord",
+    "EffectAttemptStatus",
     "EvidenceRecord",
     "EvidenceStrength",
     "EvidenceType",
@@ -66,7 +94,10 @@ __all__ = [
     "InterpretationRecord",
     "JournalEventType",
     "OutboxMessage",
+    "PersistedAction",
+    "PrimaryAgentRequest",
     "ProposeAnswerPayload",
+    "ProposedClaim",
     "RecordInterpretationPayload",
     "ResultHandle",
     "ReviseFramePayload",
@@ -77,6 +108,7 @@ __all__ = [
     "RunProbePayload",
     "RunSensitivityPayload",
     "StopPayload",
+    "UserDecisionRequest",
     "WorkPlanRevision",
     "WorkTask",
     "build_context_packet",

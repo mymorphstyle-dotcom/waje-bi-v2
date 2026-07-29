@@ -1,7 +1,7 @@
 # WAJE BI Agent vNext
 
-`vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。Gate 0 隔离边界与 Gate 1
-权威/存储合同已建立。
+`vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。Gate 0 隔离边界、Gate 1
+权威/存储合同和 Gate 2 单主 Agent runtime 已建立。
 
 ## Day 0 边界
 
@@ -22,6 +22,7 @@ uv sync --frozen --no-install-project --python 3.12.13
 npm ci
 npm run check
 npm run test:postgres
+npm run test:postgres:gate2
 ```
 
 verifier 会：
@@ -51,4 +52,12 @@ PYTHONPATH=services/analysis_core/src .venv/bin/python -m waje_vnext health
 
 Python baseline 为 3.12.13 toolchain、`requires-python >=3.12` 和项目内 `.venv`。
 Gate 1 提供五类权威对象、typed actions、ContextPacket、event journal、runtime
-persistence envelopes、PostgreSQL adapter 与 migration。Workbench 从 Gate 6 完成产品验收。
+persistence envelopes、PostgreSQL adapter 与 migration。Gate 2 提供 WAJE-owned
+controller、typed Primary Agent provider、checkpoint/resume、lease、outbox、effect retry
+和 `ask_user` 中断。Workbench 从 Gate 6 完成产品验收。
+
+真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：
+
+```bash
+npm run test:provider:gate2
+```

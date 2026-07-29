@@ -11,6 +11,7 @@ export interface WAJEVNextEventJournalEntryV1 {
     | "case_opened"
     | "action_admitted"
     | "action_rejected"
+    | "user_decision_requested"
     | "frame_accepted"
     | "plan_accepted"
     | "evidence_recorded"
@@ -19,8 +20,12 @@ export interface WAJEVNextEventJournalEntryV1 {
     | "reviewer_objection_recorded"
     | "answer_accepted"
     | "checkpoint_recorded"
+    | "effect_enqueued"
+    | "effect_attempt_failed"
+    | "effect_completed"
     | "run_resumed"
-    | "case_stopped";
+    | "case_stopped"
+    | "case_closed";
   recorded_at: string;
   action_id: string | null;
   authority_ref: string | null;

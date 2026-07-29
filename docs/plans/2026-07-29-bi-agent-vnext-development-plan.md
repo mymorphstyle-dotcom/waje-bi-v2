@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 1 complete；Gate 2 entry pending |
+| 当前 Gate | Gate 2 complete；Gate 3 尚未执行入口判断 |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -374,6 +374,10 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - 评估 controller 框架、provider 约束和人工中断语义。
 - 默认推荐：WAJE-owned controller 掌握 typed action admission 与持久化；模型 provider 通过
   窄 adapter 接入；高价值节点默认等待真实回答。
+- 2026-07-29 用户确认 WAJE-owned controller 是唯一 runtime 权威；LangGraph 不进入
+  authoritative action loop。
+- provider timeout、高价值节点等待与 `ask_user` 阻塞边界已有项目合同。本 Gate
+  无需追加用户决策。
 
 **交付物**
 
@@ -385,11 +389,14 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 
 **Exit criteria**
 
-- [ ] 单一 Primary Agent 持有开放业务语义。
-- [ ] crash/restart 后从 accepted heads 与 event cursor 恢复。
-- [ ] stale action 不能覆盖新 head。
-- [ ] 内容问题局部修订，口径变化生成 FrameRevision。
-- [ ] timeout/retry 只在 provider 或 tool supervision 层发生。
+- [x] 单一 Primary Agent 持有开放业务语义。
+- [x] crash/restart 后从 accepted heads 与 event cursor 恢复。
+- [x] stale action 不能覆盖新 head。
+- [x] 内容问题局部修订，口径变化生成 FrameRevision。
+- [x] timeout/retry 只在 provider 或 tool supervision 层发生。
+
+Exit evidence：
+`docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md`。
 
 ### Gate 3：月初/月末全样本架构证明切片
 
@@ -664,7 +671,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 |---|---|---|---|
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
-| Gate 2 | Pending | 待执行 | — |
+| Gate 2 | Complete | 已确认 WAJE-owned controller；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md` |
 | Gate 3 | Pending | 待执行 | — |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
@@ -684,3 +691,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-29 | 第五类权威对象暂定 `InvestigationCase` | Gate 0 架构归纳 | Gate 1 入口复核；不影响 Gate 0 隔离 |
 | 2026-07-29 | Python 最低版本为 3.12，Gate 0 使用 3.12.13 virtualenv | 用户补充 | 宿主 Python 不影响 vNext baseline；clean-copy 验收重建 venv |
 | 2026-07-29 | 确认 `InvestigationCase` 为第五类权威对象 | 用户确认 | Gate 1 以稳定 case root + 四类 immutable content authority 建模 |
+| 2026-07-29 | WAJE-owned controller 为唯一 runtime 权威 | 用户确认 | LangGraph 不进入 authoritative action loop；typed state、CAS、journal 与 checkpoint 保持单一来源 |

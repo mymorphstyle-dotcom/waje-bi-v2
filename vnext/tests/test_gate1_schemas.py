@@ -9,10 +9,16 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from waje_vnext.domain.actions import (
     ActionEnvelope,
     ActionKind,
+    AgentActionProposal,
     CallCapabilityPayload,
 )
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
-from waje_vnext.domain.context import ContextEvidenceItem, build_context_packet
+from waje_vnext.domain.context import (
+    ContextEvidenceItem,
+    ContextEventItem,
+    build_context_packet,
+)
+from waje_vnext.domain.controller import ControllerPhase, ControllerState
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
@@ -39,6 +45,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             "contracts/domain/actions.v1.schema.json",
             "contracts/domain/context-packet.v1.schema.json",
             "contracts/domain/runtime-state.v1.schema.json",
+            "contracts/domain/controller-state.v1.schema.json",
             "contracts/events/journal-entry.v1.schema.json",
         )
         for path in paths:
@@ -97,6 +104,12 @@ class JsonSchemaContractTest(unittest.TestCase):
             user_message="Investigate the pattern",
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_frame=None,
+            accepted_plan=None,
+            accepted_answer=None,
+            recent_events=(
+                ContextEventItem.from_event(store.list_events("case-1")[0]),
+            ),
             evidence_index=(
                 ContextEvidenceItem(
                     evidence_record_id="evidence-1",
@@ -104,10 +117,14 @@ class JsonSchemaContractTest(unittest.TestCase):
                     strength="quantified",
                     business_summary="Measured pattern",
                     limitation_count=1,
+                    frame_revision_id="frame-1",
+                    plan_revision_id="plan-1",
+                    task_id="task-pattern",
+                    snapshot_release_ref="release-1",
                 ),
             ),
-            unresolved_reviewer_objection_ids=(),
-            decision_record_ids=(),
+            decision_index=(),
+            reviewer_objection_index=(),
             built_at=NOW,
         )
         event = EventJournalEntry(
@@ -141,6 +158,42 @@ class JsonSchemaContractTest(unittest.TestCase):
                     load_schema(path),
                     format_checker=self.format_checker,
                 ).validate(to_jsonable(value))
+
+        proposal = AgentActionProposal(
+            kind=action.kind,
+            payload=action.payload,
+        )
+        action_validator = Draft202012Validator(
+            load_schema("contracts/domain/actions.v1.schema.json"),
+            format_checker=self.format_checker,
+        )
+        action_validator.validate(to_jsonable(proposal))
+        partial_envelope = to_jsonable(proposal)
+        partial_envelope["action_id"] = "unbound-action"
+        with self.assertRaises(ValidationError):
+            action_validator.validate(partial_envelope)
+
+    def test_controller_state_matches_language_neutral_schema(self) -> None:
+        state = ControllerState(
+            run_id="run-1",
+            case_id="case-1",
+            phase=ControllerPhase.READY_FOR_AGENT,
+            step_number=2,
+            head_version=2,
+            last_event_cursor=8,
+            context_packet_id="packet-1",
+            latest_user_message="Investigate the pattern",
+            pending_action_id=None,
+            pending_outbox_message_id=None,
+            pending_decision_request_id=None,
+            accepted_answer_version_id=None,
+            consecutive_rejections=0,
+            updated_at=NOW,
+        )
+        Draft202012Validator(
+            load_schema("contracts/domain/controller-state.v1.schema.json"),
+            format_checker=self.format_checker,
+        ).validate(to_jsonable(state))
 
     def test_runtime_persistence_envelopes_match_schema(self) -> None:
         result_payload = {"admission": "accepted", "head_version": 2}
@@ -239,6 +292,16 @@ class MigrationContractTest(unittest.TestCase):
         self.assertIn("checkpoint_records", migration)
         self.assertIn("outbox_messages", migration)
         self.assertIn("reject_immutable_change", migration)
+
+    def test_gate2_migration_adds_controller_runtime_storage(self) -> None:
+        migration = (
+            ROOT / "storage/migrations/002_gate2_controller.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("action_records", migration)
+        self.assertIn("user_decision_requests", migration)
+        self.assertIn("effect_attempts", migration)
+        self.assertIn("controller_leases", migration)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:controller-state:v1",
+  "title": "WAJE vNext ControllerState v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "case_id",
+    "phase",
+    "step_number",
+    "head_version",
+    "last_event_cursor",
+    "context_packet_id",
+    "latest_user_message",
+    "pending_action_id",
+    "pending_outbox_message_id",
+    "pending_decision_request_id",
+    "accepted_answer_version_id",
+    "consecutive_rejections",
+    "updated_at"
+  ],
+  "properties": {
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "case_id": {
+      "$ref": "#/$defs/id"
+    },
+    "phase": {
+      "enum": [
+        "ready_for_agent",
+        "waiting_for_user",
+        "waiting_for_effect",
+        "completed",
+        "stopped"
+      ]
+    },
+    "step_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "head_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_event_cursor": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "context_packet_id": {
+      "$ref": "#/$defs/id"
+    },
+    "latest_user_message": {
+      "$ref": "#/$defs/id"
+    },
+    "pending_action_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "pending_outbox_message_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "pending_decision_request_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "accepted_answer_version_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "consecutive_rejections": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "waiting_for_user"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_decision_request_id": {
+            "$ref": "#/$defs/id"
+          },
+          "pending_outbox_message_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "waiting_for_effect"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_outbox_message_id": {
+            "$ref": "#/$defs/id"
+          },
+          "pending_decision_request_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "enum": [
+              "ready_for_agent",
+              "completed",
+              "stopped"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_outbox_message_id": {
+            "type": "null"
+          },
+          "pending_decision_request_id": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullableId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

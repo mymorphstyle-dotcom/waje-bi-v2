@@ -48,6 +48,7 @@ class AnswerStatus(StrEnum):
 
 
 class ClaimVerifierStatus(StrEnum):
+    PENDING = "pending"
     ACCEPTED = "accepted"
     BOUNDARY_ONLY = "boundary_only"
     REJECTED = "rejected"
@@ -392,14 +393,20 @@ class AnswerVersion:
             if not self.settlement_fingerprint:
                 raise ValueError("settled answer requires settlement_fingerprint")
             require_sha256(self.settlement_fingerprint, "settlement_fingerprint")
-            rejected = tuple(
+            unverified = tuple(
                 claim.claim_id
                 for claim in self.claims
-                if claim.verifier_status is ClaimVerifierStatus.REJECTED
+                if claim.verifier_status
+                not in {
+                    ClaimVerifierStatus.ACCEPTED,
+                    ClaimVerifierStatus.BOUNDARY_ONLY,
+                }
             )
-            if rejected:
+            if unverified:
                 raise ValueError(
-                    "settled answer cannot contain rejected claims: {}".format(rejected)
+                    "settled answer cannot contain unverified claims: {}".format(
+                        unverified
+                    )
                 )
             expected_fingerprint = compute_answer_settlement_fingerprint(
                 frame_revision_id=self.frame_revision_id,
@@ -464,7 +471,8 @@ class DecisionRecord:
     case_id: str
     question: str
     options: tuple[DecisionOption, ...]
-    selected_option_id: str
+    selected_option_id: str | None
+    freeform_response: str | None
     source: str
     created_at: datetime
 
@@ -479,8 +487,17 @@ class DecisionRecord:
         option_ids = tuple(option.option_id for option in self.options)
         if len(option_ids) != len(set(option_ids)):
             raise ValueError("decision option IDs must be unique")
-        if self.selected_option_id not in option_ids:
+        if (self.selected_option_id is None) == (self.freeform_response is None):
+            raise ValueError(
+                "decision requires exactly one selected option or freeform response"
+            )
+        if (
+            self.selected_option_id is not None
+            and self.selected_option_id not in option_ids
+        ):
             raise ValueError("selected option must be present")
+        if self.freeform_response is not None:
+            require_nonempty(self.freeform_response, "freeform_response")
         require_aware_datetime(self.created_at, "created_at")
 
 
