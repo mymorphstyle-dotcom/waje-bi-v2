@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import json
+import unittest
+from pathlib import Path
+
+from gate1_fixtures import NOW, make_answer, make_evidence, make_frame, make_plan
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+from waje_vnext.domain.actions import (
+    ActionEnvelope,
+    ActionKind,
+    CallCapabilityPayload,
+)
+from waje_vnext.domain.canonical import content_sha256, to_jsonable
+from waje_vnext.domain.context import ContextEvidenceItem, build_context_packet
+from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.runtime_state import (
+    ActionReceipt,
+    CheckpointRecord,
+    OutboxMessage,
+)
+from waje_vnext.storage import InMemoryAuthorityStore
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_schema(relative_path: str) -> dict[str, object]:
+    return json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+class JsonSchemaContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.format_checker = FormatChecker()
+
+    def test_all_gate1_schemas_are_valid_draft_2020_12(self) -> None:
+        paths = (
+            "contracts/domain/authority.v1.schema.json",
+            "contracts/domain/actions.v1.schema.json",
+            "contracts/domain/context-packet.v1.schema.json",
+            "contracts/domain/runtime-state.v1.schema.json",
+            "contracts/events/journal-entry.v1.schema.json",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                Draft202012Validator.check_schema(load_schema(path))
+
+    def test_five_authority_objects_match_language_neutral_schema(self) -> None:
+        schema = load_schema("contracts/domain/authority.v1.schema.json")
+        validator = Draft202012Validator(
+            schema,
+            format_checker=self.format_checker,
+        )
+        store = InMemoryAuthorityStore()
+        case = store.open_case(
+            case_id="case-1",
+            thread_id="thread-1",
+            event_id="event-open",
+            opened_at=NOW,
+        )
+        authorities = (
+            case,
+            make_frame(),
+            make_plan(),
+            make_evidence(),
+            make_answer(),
+        )
+
+        for authority in authorities:
+            with self.subTest(authority=type(authority).__name__):
+                validator.validate(to_jsonable(authority))
+
+    def test_action_context_and_event_match_schemas(self) -> None:
+        store = InMemoryAuthorityStore()
+        case = store.open_case(
+            case_id="case-1",
+            thread_id="thread-1",
+            event_id="event-open",
+            opened_at=NOW,
+        )
+        action = ActionEnvelope(
+            action_id="action-1",
+            case_id="case-1",
+            kind=ActionKind.CALL_CAPABILITY,
+            expected_head_version=0,
+            idempotency_key="key-1",
+            issued_at=NOW,
+            payload=CallCapabilityPayload(
+                task_id="task-pattern",
+                capability_name="periodic_pattern_compare",
+                parameters={"limit": 10},
+            ),
+        )
+        packet = build_context_packet(
+            packet_id="packet-1",
+            case=case,
+            user_message="Investigate the pattern",
+            relevant_event_cursor_start=1,
+            relevant_event_cursor_end=1,
+            evidence_index=(
+                ContextEvidenceItem(
+                    evidence_record_id="evidence-1",
+                    evidence_type="descriptive",
+                    strength="quantified",
+                    business_summary="Measured pattern",
+                    limitation_count=1,
+                ),
+            ),
+            unresolved_reviewer_objection_ids=(),
+            decision_record_ids=(),
+            built_at=NOW,
+        )
+        event = EventJournalEntry(
+            event_id="event-2",
+            case_id="case-1",
+            cursor=2,
+            event_type=JournalEventType.ACTION_ADMITTED,
+            recorded_at=NOW,
+            action_id="action-1",
+            authority_ref=None,
+            payload={"kind": "call_capability"},
+            customer_projection={"state": "investigating"},
+        )
+        cases = (
+            (
+                "contracts/domain/actions.v1.schema.json",
+                action,
+            ),
+            (
+                "contracts/domain/context-packet.v1.schema.json",
+                packet,
+            ),
+            (
+                "contracts/events/journal-entry.v1.schema.json",
+                event,
+            ),
+        )
+        for path, value in cases:
+            with self.subTest(path=path):
+                Draft202012Validator(
+                    load_schema(path),
+                    format_checker=self.format_checker,
+                ).validate(to_jsonable(value))
+
+    def test_runtime_persistence_envelopes_match_schema(self) -> None:
+        result_payload = {"admission": "accepted", "head_version": 2}
+        state_payload = {
+            "controller_contract": "controller-state.v1",
+            "next_action": "call_capability",
+        }
+        outbox_payload = {
+            "capability": "periodic_pattern_compare",
+            "task_id": "task-pattern",
+        }
+        envelopes = (
+            ActionReceipt(
+                case_id="case-1",
+                idempotency_key="action-key-1",
+                action_id="action-1",
+                request_sha256="1" * 64,
+                result_schema_ref="action-admission-result.v1",
+                result_payload=result_payload,
+                result_sha256=content_sha256(result_payload),
+                event_cursor=3,
+                recorded_at=NOW,
+            ),
+            CheckpointRecord(
+                checkpoint_id="checkpoint-1",
+                case_id="case-1",
+                head_version=2,
+                event_cursor=4,
+                context_packet_id="packet-1",
+                context_sha256="2" * 64,
+                state_schema_ref="controller-state.v1",
+                state_payload=state_payload,
+                state_sha256=content_sha256(state_payload),
+                created_at=NOW,
+            ),
+            OutboxMessage(
+                outbox_message_id="outbox-1",
+                case_id="case-1",
+                source_event_cursor=5,
+                action_id="action-1",
+                idempotency_key="effect-key-1",
+                destination="capability-fabric",
+                contract_ref="capability-request.v1",
+                payload=outbox_payload,
+                payload_sha256=content_sha256(outbox_payload),
+                created_at=NOW,
+            ),
+        )
+        validator = Draft202012Validator(
+            load_schema("contracts/domain/runtime-state.v1.schema.json"),
+            format_checker=self.format_checker,
+        )
+
+        for envelope in envelopes:
+            with self.subTest(envelope=type(envelope).__name__):
+                validator.validate(to_jsonable(envelope))
+
+    def test_action_schema_rejects_kind_payload_mismatch(self) -> None:
+        schema = load_schema("contracts/domain/actions.v1.schema.json")
+        action = ActionEnvelope(
+            action_id="action-1",
+            case_id="case-1",
+            kind=ActionKind.CALL_CAPABILITY,
+            expected_head_version=0,
+            idempotency_key="key-1",
+            issued_at=NOW,
+            payload=CallCapabilityPayload(
+                task_id="task-pattern",
+                capability_name="periodic_pattern_compare",
+                parameters={"limit": 10},
+            ),
+        )
+        invalid = to_jsonable(action)
+        invalid["kind"] = "revise_frame"
+
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(
+                schema,
+                format_checker=self.format_checker,
+            ).validate(invalid)
+
+
+class MigrationContractTest(unittest.TestCase):
+    def test_migration_uses_independent_schema_and_append_only_tables(self) -> None:
+        migration = (
+            ROOT / "storage/migrations/001_gate1_authority.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS waje_vnext", migration)
+        self.assertIn("analysis_frame_revisions", migration)
+        self.assertIn("work_plan_revisions", migration)
+        self.assertIn("evidence_records", migration)
+        self.assertIn("answer_versions", migration)
+        self.assertIn("event_journal", migration)
+        self.assertIn("action_receipts", migration)
+        self.assertIn("checkpoint_records", migration)
+        self.assertIn("outbox_messages", migration)
+        self.assertIn("reject_immutable_change", migration)
+
+
+if __name__ == "__main__":
+    unittest.main()

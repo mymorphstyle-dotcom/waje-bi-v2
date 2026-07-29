@@ -1,6 +1,7 @@
 # WAJE BI Agent vNext
 
-`vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。当前为 Gate 0 bootstrap。
+`vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。Gate 0 隔离边界与 Gate 1
+权威/存储合同已建立。
 
 ## Day 0 边界
 
@@ -12,13 +13,15 @@
   `waje_vnext`。
 - `tools/isolation-policy.json` 与 `tools/verify_isolation.py` 机械验证边界。
 
-## Gate 0 命令
+## 本地命令
 
 从本目录执行：
 
 ```bash
 uv sync --frozen --no-install-project --python 3.12.13
-.venv/bin/python tools/verify_isolation.py
+npm ci
+npm run check
+npm run test:postgres
 ```
 
 verifier 会：
@@ -26,8 +29,9 @@ verifier 会：
 1. 扫描可执行 source、SQL 和 dependency manifests；
 2. 检查 symlink、Python import 与 path dependency；
 3. 只复制本目录到临时空 workspace；
-4. 在临时 workspace 中重新创建 Python 3.12 virtualenv；
-5. 在该 virtualenv 中 build wheel、compile、运行 unit tests 和 health smoke。
+4. 在临时 workspace 中重新创建 Python 3.12.13 virtualenv 并执行 `npm ci`；
+5. 校验 JSON Schema 生成的 TypeScript bindings；
+6. 在该 virtualenv 中 build wheel、compile、运行 unit tests 和 health smoke。
 
 单独运行 bootstrap：
 
@@ -45,5 +49,6 @@ PYTHONPATH=services/analysis_core/src .venv/bin/python -m waje_vnext health
 - `tests/`、`evals/`：只验证 vNext 当前合同。
 - `ops/`、`tools/`：独立运行、构建、验证与发布入口。
 
-Gate 0 的 Python baseline 为 3.12.13 toolchain、`requires-python >=3.12` 和项目内
-`.venv`。业务权威对象从 Gate 1 开始实现，Workbench 从 Gate 6 完成产品验收。
+Python baseline 为 3.12.13 toolchain、`requires-python >=3.12` 和项目内 `.venv`。
+Gate 1 提供五类权威对象、typed actions、ContextPacket、event journal、runtime
+persistence envelopes、PostgreSQL adapter 与 migration。Workbench 从 Gate 6 完成产品验收。

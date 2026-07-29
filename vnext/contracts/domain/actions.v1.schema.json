@@ -1,0 +1,532 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:actions:v1",
+  "title": "WAJE vNext Primary Agent actions v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/reviseFrameAction"
+    },
+    {
+      "$ref": "#/$defs/revisePlanAction"
+    },
+    {
+      "$ref": "#/$defs/inspectSemanticsAction"
+    },
+    {
+      "$ref": "#/$defs/runProbeAction"
+    },
+    {
+      "$ref": "#/$defs/callCapabilityAction"
+    },
+    {
+      "$ref": "#/$defs/runSensitivityAction"
+    },
+    {
+      "$ref": "#/$defs/recordInterpretationAction"
+    },
+    {
+      "$ref": "#/$defs/askUserAction"
+    },
+    {
+      "$ref": "#/$defs/proposeAnswerAction"
+    },
+    {
+      "$ref": "#/$defs/stopAction"
+    }
+  ],
+  "$defs": {
+    "actionBase": {
+      "type": "object",
+      "required": [
+        "action_id",
+        "case_id",
+        "expected_head_version",
+        "idempotency_key",
+        "issued_at"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "case_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "reviseFrameAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "revise_frame"
+            },
+            "payload": {
+              "$ref": "#/$defs/reviseFrame"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "revisePlanAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "revise_plan"
+            },
+            "payload": {
+              "$ref": "#/$defs/revisePlan"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "inspectSemanticsAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "inspect_semantics"
+            },
+            "payload": {
+              "$ref": "#/$defs/inspectSemantics"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "runProbeAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "run_probe"
+            },
+            "payload": {
+              "$ref": "#/$defs/runProbe"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "callCapabilityAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "call_capability"
+            },
+            "payload": {
+              "$ref": "#/$defs/callCapability"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "runSensitivityAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "run_sensitivity"
+            },
+            "payload": {
+              "$ref": "#/$defs/runSensitivity"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "recordInterpretationAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "record_interpretation"
+            },
+            "payload": {
+              "$ref": "#/$defs/recordInterpretation"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "askUserAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ask_user"
+            },
+            "payload": {
+              "$ref": "#/$defs/askUser"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "proposeAnswerAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "propose_answer"
+            },
+            "payload": {
+              "$ref": "#/$defs/proposeAnswer"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "stopAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actionBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "const": "stop"
+            },
+            "payload": {
+              "$ref": "#/$defs/stop"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "reviseFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_revision_id",
+        "reason"
+      ],
+      "properties": {
+        "frame_revision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "revisePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_revision_id",
+        "reason"
+      ],
+      "properties": {
+        "plan_revision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "inspectSemantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "contract_refs"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_refs": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "runProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probe_kind",
+        "parameters"
+      ],
+      "properties": {
+        "probe_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        }
+      }
+    },
+    "callCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "capability_name",
+        "parameters"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capability_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        }
+      }
+    },
+    "runSensitivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "variant_label",
+        "parameters"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variant_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        }
+      }
+    },
+    "recordInterpretation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interpretation_id",
+        "evidence_record_ids"
+      ],
+      "properties": {
+        "interpretation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_record_ids": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "decisionOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "option_id",
+        "label",
+        "impact"
+      ],
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "impact": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "askUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_record_id",
+        "question",
+        "options",
+        "recommended_option_id",
+        "allow_freeform"
+      ],
+      "properties": {
+        "decision_record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/decisionOption"
+          }
+        },
+        "recommended_option_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allow_freeform": {
+          "const": true
+        }
+      }
+    },
+    "proposeAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer_version_id"
+      ],
+      "properties": {
+        "answer_version_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "terminal_state"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal_state": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

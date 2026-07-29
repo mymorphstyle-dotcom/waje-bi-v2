@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 0 complete；Gate 1 entry pending |
+| 当前 Gate | Gate 1 complete；Gate 2 entry pending |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -343,6 +343,11 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - 先评估第五类权威对象、AnswerVersion settled 语义、Frame acceptance 权限是否仍需用户决定。
 - 默认推荐：保留 `InvestigationCase` 为稳定 head 容器；Reviewer objection 作为从属 Trust
   record；settled 表示当前 Frame 下逐 claim 验证和风险 disposition 完成。
+- 2026-07-29 用户已确认 `InvestigationCase` 为第五类权威对象。它只保存 identity、
+  lifecycle 和 accepted heads 的 CAS 指针。
+- 其余 admission 与澄清边界已有项目合同：低风险推断可继续并记录；影响业务结论、
+  baseline、时间语义、数据安全、claim 强度或显著执行成本的歧义必须询问用户。本 Gate
+  无需第二项用户决策。
 
 **交付物**
 
@@ -350,16 +355,17 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - typed actions、admission result、ContextPacket 和 event journal contract。
 - PostgreSQL v1 migrations、repository ports/adapters、CAS 与 append-only 写入。
 - 状态机、revision supersession、idempotency、checkpoint、outbox contract。
-- generated TypeScript/Python contract bindings 与兼容性检查；只支持当前 schema version。
+- generated TypeScript contract bindings、Python typed domain 与双向 schema contract tests；
+  只支持当前 schema version，避免维护第二套生成式 Python runtime。
 
 **Exit criteria**
 
-- [ ] 所有 authority mutation 经过 CAS/admission。
-- [ ] EvidenceRecord 与 accepted revision 不可原地修改。
-- [ ] 工具 retry 不创建 Frame/Plan revision。
-- [ ] 口径变化缺少新 FrameRevision 时 admission 拒绝。
-- [ ] ContextPacket 可由持久化状态确定性重建并 hash 相同。
-- [ ] event journal 支持幂等 append、case 内单调 cursor 和 customer-safe projection。
+- [x] 所有 authority mutation 经过 CAS/admission。
+- [x] EvidenceRecord 与 accepted revision 不可原地修改。
+- [x] 工具 retry 不创建 Frame/Plan revision。
+- [x] 口径变化缺少新 FrameRevision 时 admission 拒绝。
+- [x] ContextPacket 可由持久化状态确定性重建并 hash 相同。
+- [x] event journal 支持幂等 append、case 内单调 cursor 和 customer-safe projection。
 
 ### Gate 2：单主 Agent runtime
 
@@ -657,7 +663,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate | 状态 | 入口访谈 | Exit evidence |
 |---|---|---|---|
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
-| Gate 1 | Pending | 待执行 | — |
+| Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Pending | 待执行 | — |
 | Gate 3 | Pending | 待执行 | — |
 | Gate 4 | Pending | 待执行 | — |
@@ -677,3 +683,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-29 | vNext 根目录为 `vnext/` | Gate 0 仓库调查 | 与全部旧生产目录形成可机械验证边界 |
 | 2026-07-29 | 第五类权威对象暂定 `InvestigationCase` | Gate 0 架构归纳 | Gate 1 入口复核；不影响 Gate 0 隔离 |
 | 2026-07-29 | Python 最低版本为 3.12，Gate 0 使用 3.12.13 virtualenv | 用户补充 | 宿主 Python 不影响 vNext baseline；clean-copy 验收重建 venv |
+| 2026-07-29 | 确认 `InvestigationCase` 为第五类权威对象 | 用户确认 | Gate 1 以稳定 case root + 四类 immutable content authority 建模 |

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:events:journal-entry:v1",
+  "title": "WAJE vNext event journal entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "case_id",
+    "cursor",
+    "event_type",
+    "recorded_at",
+    "action_id",
+    "authority_ref",
+    "payload",
+    "customer_projection"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "enum": [
+        "case_opened",
+        "action_admitted",
+        "action_rejected",
+        "frame_accepted",
+        "plan_accepted",
+        "evidence_recorded",
+        "interpretation_recorded",
+        "user_decision_recorded",
+        "reviewer_objection_recorded",
+        "answer_accepted",
+        "checkpoint_recorded",
+        "run_resumed",
+        "case_stopped"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "action_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "customer_projection": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  }
+}

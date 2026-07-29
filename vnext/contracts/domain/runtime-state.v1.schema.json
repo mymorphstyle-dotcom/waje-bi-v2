@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:runtime-state:v1",
+  "title": "WAJE vNext runtime persistence envelopes v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/actionReceipt"
+    },
+    {
+      "$ref": "#/$defs/checkpointRecord"
+    },
+    {
+      "$ref": "#/$defs/outboxMessage"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "objectPayload": {
+      "type": "object"
+    },
+    "actionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "idempotency_key",
+        "action_id",
+        "request_sha256",
+        "result_schema_ref",
+        "result_payload",
+        "result_sha256",
+        "event_cursor",
+        "recorded_at"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/id"
+        },
+        "action_id": {
+          "$ref": "#/$defs/id"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "result_schema_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "result_payload": {
+          "$ref": "#/$defs/objectPayload"
+        },
+        "result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "event_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "checkpointRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_id",
+        "case_id",
+        "head_version",
+        "event_cursor",
+        "context_packet_id",
+        "context_sha256",
+        "state_schema_ref",
+        "state_payload",
+        "state_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "checkpoint_id": {
+          "$ref": "#/$defs/id"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_packet_id": {
+          "$ref": "#/$defs/id"
+        },
+        "context_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "state_schema_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "state_payload": {
+          "$ref": "#/$defs/objectPayload"
+        },
+        "state_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "outboxMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_message_id",
+        "case_id",
+        "source_event_cursor",
+        "action_id",
+        "idempotency_key",
+        "destination",
+        "contract_ref",
+        "payload",
+        "payload_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "outbox_message_id": {
+          "$ref": "#/$defs/id"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_event_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/id"
+        },
+        "destination": {
+          "$ref": "#/$defs/id"
+        },
+        "contract_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "payload": {
+          "$ref": "#/$defs/objectPayload"
+        },
+        "payload_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

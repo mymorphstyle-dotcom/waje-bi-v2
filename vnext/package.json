@@ -5,7 +5,10 @@
   "scripts": {
     "bootstrap": "uv sync --frozen --no-install-project --python 3.12.13",
     "check": ".venv/bin/python tools/verify_isolation.py",
+    "generate:contracts": "node tools/generate-contract-bindings.mjs",
+    "check:contracts": "node tools/generate-contract-bindings.mjs --check",
     "test:bootstrap": "PYTHONPATH=services/analysis_core/src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
+    "test:postgres": ".venv/bin/python tools/run_gate1_postgres_acceptance.py",
     "run:bootstrap": "PYTHONPATH=services/analysis_core/src .venv/bin/python -m waje_vnext health"
   },
   "workspaces": [
@@ -14,5 +17,8 @@
   "engines": {
     "node": ">=22",
     "npm": ">=10"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "15.0.4"
   }
 }

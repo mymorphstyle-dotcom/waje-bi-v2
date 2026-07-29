@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:context-packet:v1",
+  "title": "WAJE vNext ContextPacket v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_id",
+    "case_id",
+    "head_version",
+    "accepted_frame_revision_id",
+    "accepted_plan_revision_id",
+    "accepted_answer_version_id",
+    "user_message",
+    "relevant_event_cursor_start",
+    "relevant_event_cursor_end",
+    "evidence_index",
+    "unresolved_reviewer_objection_ids",
+    "decision_record_ids",
+    "built_at",
+    "content_sha256"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "head_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "accepted_frame_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accepted_plan_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accepted_answer_version_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "user_message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relevant_event_cursor_start": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "relevant_event_cursor_end": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "evidence_index": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evidence_record_id",
+          "evidence_type",
+          "strength",
+          "business_summary",
+          "limitation_count"
+        ],
+        "properties": {
+          "evidence_record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "strength": {
+            "type": "string",
+            "minLength": 1
+          },
+          "business_summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limitation_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "unresolved_reviewer_objection_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "decision_record_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

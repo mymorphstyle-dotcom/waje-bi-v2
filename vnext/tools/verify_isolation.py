@@ -454,6 +454,60 @@ def _run_clean_copy(
                 )
             ], commands, artifacts
 
+        npm_executable = shutil.which("npm")
+        if npm_executable is None:
+            return [
+                Finding(
+                    "clean_copy_toolchain",
+                    ".",
+                    "npm is required to verify generated contract bindings",
+                )
+            ], commands, artifacts
+        npm_environment = _clean_environment()
+        npm_environment["npm_config_cache"] = str(Path(temporary) / "npm-cache")
+        npm_install_command = (
+            npm_executable,
+            "ci",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        )
+        npm_install_result = _run(
+            npm_install_command,
+            cwd=isolated_root,
+            environment=npm_environment,
+        )
+        commands.append(npm_install_result)
+        if npm_install_result["exit_code"] != 0:
+            return [
+                Finding(
+                    "clean_copy_toolchain",
+                    ".",
+                    "failed command: {}".format(
+                        " ".join(npm_install_command)
+                    ),
+                )
+            ], commands, artifacts
+        contract_check_command = (
+            npm_executable,
+            "run",
+            "check:contracts",
+        )
+        contract_check_result = _run(
+            contract_check_command,
+            cwd=isolated_root,
+            environment=npm_environment,
+        )
+        commands.append(contract_check_result)
+        if contract_check_result["exit_code"] != 0:
+            findings.append(
+                Finding(
+                    "clean_copy_contracts",
+                    ".",
+                    "generated TypeScript contract bindings are stale",
+                )
+            )
+
         isolated_python = isolated_root / ".venv" / "bin" / "python"
         if not isolated_python.is_file():
             return [
