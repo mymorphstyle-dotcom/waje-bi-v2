@@ -176,6 +176,62 @@ def test_business_understanding_requires_an_accepted_intent_revision_binding() -
     }
 
 
+def test_customer_snapshot_projects_only_business_repair_notices() -> None:
+    result = _run_projection(
+        textwrap.dedent(
+            BASE_SOURCE
+            + """
+            const snapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-repair", status: "running_workflow",
+                request: {},
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+              runNodes: [{
+                nodeName: "understand_business_intent",
+                status: "completed",
+                confirmedAt: base.confirmedAt,
+                repairNotices: [
+                  "检测到日期比较关系没有完整覆盖原问题，已重新分析并核验。",
+                  "检测到日期比较关系没有完整覆盖原问题，已重新分析并核验。",
+                ],
+                payload: {
+                  error_code: "temporal_calendar_partition_baseline_class_invalid",
+                },
+              }],
+            });
+            const retrySnapshot = projectCustomerAnalysisSnapshot({
+              ...base,
+              run: {
+                id: "run-retry", status: "running_workflow",
+                request: {},
+                createdAt: base.confirmedAt, updatedAt: base.confirmedAt,
+              },
+              retryNotices: [
+                "检测到生成的业务理解存在口径或结构问题，已重新分析并继续核验。",
+              ],
+            });
+            const restored = parseCustomerAnalysisSnapshot(snapshot);
+            console.log(JSON.stringify({
+              repairNotices: restored.repairNotices,
+              retryNotices: retrySnapshot.repairNotices,
+              hasPayload: "payload" in restored,
+              serialized: JSON.stringify(restored),
+            }));
+            """
+        )
+    )
+    assert result["repairNotices"] == [
+        "检测到日期比较关系没有完整覆盖原问题，已重新分析并核验。"
+    ]
+    assert result["retryNotices"] == [
+        "检测到生成的业务理解存在口径或结构问题，已重新分析并继续核验。"
+    ]
+    assert result["hasPayload"] is False
+    assert "temporal_calendar_partition_baseline_class_invalid" not in result["serialized"]
+
+
 def test_planner_issues_require_the_accepted_plan_binding() -> None:
     result = _run_projection(
         textwrap.dedent(

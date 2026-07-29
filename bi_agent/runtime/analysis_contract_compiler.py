@@ -3295,7 +3295,9 @@ def _query_parameters(
             raise ValueError("partition_role_frame_authority_missing")
         parameters["calendar_partition_role_frame"] = _freeze_contract_value(
             {
-                "schema_version": "calendar-partition-role-frame.v1",
+                "schema_version": "calendar-partition-role-frame.v2",
+                "baseline_class": frame.get("baseline_class"),
+                "period_grain": frame.get("period_grain"),
                 "partition_field": frame.get("partition_field"),
                 "target_members": frame.get("target_members"),
                 "baseline_members": frame.get("baseline_members"),

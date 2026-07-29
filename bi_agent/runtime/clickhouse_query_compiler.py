@@ -982,10 +982,53 @@ def _calendar_partition_role_sql(
         )
     parameters["partition_target_members"] = list(frame["target_members"])
     parameters["partition_baseline_members"] = list(frame["baseline_members"])
+    target_match = f"has(%(partition_target_members)s, {member_expression})"
+    baseline_match = f"has(%(partition_baseline_members)s, {member_expression})"
+    if frame["baseline_class"] == "prior_period":
+        targets = tuple(
+            window for window in contract.resolved_windows if window.role == "target"
+        )
+        if len(targets) != 1:
+            raise ValueError("calendar_partition_target_window_invalid")
+        period_grain = str(frame["period_grain"])
+        period_expression = {
+            "month": f"toStartOfMonth({date_expression})",
+            "week": f"toMonday({date_expression})",
+            "year": f"toStartOfYear({date_expression})",
+        }.get(period_grain)
+        if period_expression is None:
+            raise ValueError("calendar_partition_period_grain_invalid")
+        parameters["partition_evaluation_start"] = targets[0].start_inclusive
+        parameters["partition_evaluation_end_exclusive"] = targets[0].end_exclusive
+        evaluation_start = {
+            "month": "toStartOfMonth(toDate(%(partition_evaluation_start)s))",
+            "week": "toMonday(toDate(%(partition_evaluation_start)s))",
+            "year": "toStartOfYear(toDate(%(partition_evaluation_start)s))",
+        }[period_grain]
+        evaluation_end = {
+            "month": (
+                "toStartOfMonth(subtractDays("
+                "toDate(%(partition_evaluation_end_exclusive)s), 1))"
+            ),
+            "week": (
+                "toMonday(subtractDays("
+                "toDate(%(partition_evaluation_end_exclusive)s), 1))"
+            ),
+            "year": (
+                "toStartOfYear(subtractDays("
+                "toDate(%(partition_evaluation_end_exclusive)s), 1))"
+            ),
+        }[period_grain]
+        target_match = (
+            f"({target_match} AND {period_expression} > {evaluation_start})"
+        )
+        baseline_match = (
+            f"({baseline_match} AND {period_expression} < {evaluation_end})"
+        )
     return (
         "multiIf("
-        f"has(%(partition_target_members)s, {member_expression}), 'target', "
-        f"has(%(partition_baseline_members)s, {member_expression}), 'baseline', "
+        f"{target_match}, 'target', "
+        f"{baseline_match}, 'baseline', "
         "'excluded')"
     )
 

@@ -144,9 +144,11 @@ def _execution_result(
     run_attempt_id: str = "run-claim-settlement",
     temporal_authority: Any = None,
     composite_policies: Mapping[str, Mapping[str, Any]] | None = None,
+    obligation_success_policies: Mapping[str, Mapping[str, Any]] | None = None,
     evidence_scope: str = "scope:full-sample",
 ) -> AuthoritativeExecutionResult:
     composite_policies = composite_policies or {}
+    obligation_success_policies = obligation_success_policies or {}
     obligation_by_name = {
         name: ClaimObligation.create(
             claim_kind=claim_kind,
@@ -183,6 +185,7 @@ def _execution_result(
                     if name in composite_policies
                     else {}
                 ),
+                **dict(obligation_success_policies.get(name, {})),
             },
         )
         for index, (name, (claim_kind, minimum_evidence)) in enumerate(

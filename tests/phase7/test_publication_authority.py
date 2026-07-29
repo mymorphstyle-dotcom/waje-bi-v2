@@ -186,6 +186,7 @@ class _Context:
 def _authority(
     *,
     run_attempt_id: str = "run-claim-settlement",
+    link_required_change_to_issue: bool = False,
 ) -> tuple[
     AuthorityBundle,
     ClaimSettlement,
@@ -232,6 +233,25 @@ def _authority(
                     ),
                 ),
             ),
+        ),
+        obligation_success_policies=(
+            {
+                "required_change": {
+                    "issue_ref": "issue:required-change",
+                    "parent_issue_ref": None,
+                    "business_question": "Did paid amount increase?",
+                    "question_role": "primary",
+                    "answer_contract": {
+                        "contract_version": "question-answer-contract.v1",
+                        "completion_policy": (
+                            "direct_answer_or_explicitly_unresolved"
+                        ),
+                        "blocking": False,
+                    },
+                }
+            }
+            if link_required_change_to_issue
+            else None
         ),
     )
     namespace = ClaimAuthorityNamespace.create(
@@ -392,9 +412,11 @@ def _context(
     supersedes_publication: PublicationRevision | None = None,
     run_attempt_id: str = "run-claim-settlement",
     customer_term_labels: dict[str, str] | None = None,
+    link_to_first_requirement: bool = False,
 ) -> _Context:
     bundle, settlement, entries, claim, key, facts, limitations = _authority(
-        run_attempt_id=run_attempt_id
+        run_attempt_id=run_attempt_id,
+        link_required_change_to_issue=link_to_first_requirement,
     )
     policy = PublicationFieldVisibilityPolicy.fixed(
         policy_id="aggregate-answer",
@@ -417,8 +439,27 @@ def _context(
         claim_settlement=settlement,
         evidence_entries=entries,
     )
-    public_claim = next(
-        item for item in material_projection.claims if item.claim_ref == claim.claim_ref
+    linked_requirement = (
+        next(
+            requirement
+            for requirement in material_projection.publication_requirements
+            if requirement.issue_ref is not None
+        )
+        if link_to_first_requirement
+        else None
+    )
+    public_claim = (
+        next(
+            item
+            for item in material_projection.claims
+            if item.claim_handle in linked_requirement.claim_handles
+        )
+        if linked_requirement is not None
+        else next(
+            item
+            for item in material_projection.claims
+            if item.claim_ref == claim.claim_ref
+        )
     )
     projected_fact = next(
         item
@@ -445,6 +486,11 @@ def _context(
         material_fact_bindings=(binding,),
         statement_role="business_finding",
         required=True,
+        requirement_handles=(
+            (linked_requirement.requirement_handle,)
+            if linked_requirement is not None
+            else ()
+        ),
     )
     optional = NarrativeBlock.create(
         writer_attempt_id=attempt_id,
@@ -567,6 +613,41 @@ def test_customer_projection_replaces_fixed_metric_ids_and_preserves_audit_text(
         )
         == context.projection
     )
+
+
+def test_question_linked_answer_stays_in_reasoning_and_customer_payload_uses_synthesis() -> None:
+    context = _context(link_to_first_requirement=True)
+    linked_requirement = next(
+        requirement
+        for requirement in context.material_projection.publication_requirements
+        if requirement.issue_ref is not None
+    )
+
+    payload = context.projection.to_customer_payload(
+        authority_bundle=context.bundle,
+        material_projection=context.material_projection,
+        narrative=context.narrative,
+        local_report=context.local_report,
+        visibility_policy=context.policy,
+    )
+
+    assert context.narrative.blocks[0].requirement_handles == (
+        linked_requirement.requirement_handle,
+    )
+    assert context.narrative.blocks[0].block_id in context.projection.published_block_ids
+    assert len(payload["blocks"]) == 1
+    assert payload["blocks"][0]["text"] == context.narrative.blocks[1].text
+    assert payload["blocks"][0]["role"] == context.narrative.blocks[1].role
+    assert payload["blocks"][0]["claim_refs"] == [context.claim.claim_ref]
+    assert payload["blocks"][0]["material_fact_bindings"] == [
+        {
+            "name": "change_rate",
+            "fact_kind": "number",
+            "value": "0.125",
+            "range_end": None,
+            "unit": "ratio",
+        }
+    ]
 
 
 def _outbox(context: _Context) -> DeliveryOutboxRecord:

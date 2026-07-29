@@ -676,6 +676,14 @@ def test_pattern_adapter_carries_aggregate_statistics_into_claim_evidence() -> N
     assert interpretation["contract_id"] == (
         "pattern-scan-interpretation.v1"
     )
+    summary = output.output_payload["typed_payload"]["period_direction_summary"]
+    assert summary["dominant_direction"] == "positive"
+    assert summary["positive_period_count"] == 1
+    assert summary["exception_period_count"] == 0
+    assert any(
+        item.get("period_direction_summary") == summary
+        for item in evidence_facts
+    )
     assert {
         item["name"]: item["value"] for item in evidence_facts if "name" in item
     } == (

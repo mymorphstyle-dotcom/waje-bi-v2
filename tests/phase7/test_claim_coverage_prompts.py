@@ -21,6 +21,8 @@ def test_planner_prompt_binds_each_hypothesis_to_one_business_issue() -> None:
     prompt = spec.messages[1]["content"]
     assert "{proposal_item_id, issue_ref, statement, target_claim_kind" in prompt
     assert "issue_ref must reference exactly one issue_id" in prompt
+    assert "effective_temporal_comparison is the decision-applied temporal contract" in prompt
+    assert "do not repeat a superseded intent value" in prompt
     assert (
         "even when target_claim_kind describes a different evidence claim"
         in prompt

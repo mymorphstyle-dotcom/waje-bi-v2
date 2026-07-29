@@ -94,6 +94,7 @@ def _accepted_plan_context(authority_inputs: AuthorityBundleInputs) -> Mapping[s
         )
     )
     return {
+        "temporal_authority": plan.temporal_authority.to_dict(),
         "accepted_question_graph": accepted_question_graph,
         "user_required_obligations": user_required_obligations,
         "analysis_axes": analysis_axes,

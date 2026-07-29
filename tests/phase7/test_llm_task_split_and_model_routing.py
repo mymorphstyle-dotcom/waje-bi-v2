@@ -347,8 +347,15 @@ def test_workflow_uses_explicit_single_authority_model_profiles():
         {
             "single_authority_intent": {
                 "intent_binding": {},
+                "comparison_grounding": {
+                    "comparison_presence": "absent",
+                    "baseline_relation": "none",
+                    "target_member_refs": [],
+                    "baseline_member_refs": [],
+                    "target_text": None,
+                    "baseline_text": None,
+                },
                 "business_summary": "已识别本次业务目标。",
-                "status_message": "准备确认业务边界。",
             },
             "single_authority_clarification": {
                 "question": "需要按哪个基线比较？",

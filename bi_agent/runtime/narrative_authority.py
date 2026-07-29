@@ -94,6 +94,8 @@ NARRATIVE_BLOCK_ROLES = frozenset(
 LOCAL_BLOCK_ISSUE_CODES = frozenset(
     {
         "unknown_claim_handle",
+        "unknown_requirement_handle",
+        "question_requirement_scope_mismatch",
         "unknown_limitation_handle",
         "limitation_claim_scope_mismatch",
         "unknown_fact_handle",
@@ -128,7 +130,7 @@ def narrative_block_authority_handles_are_valid(
     if role not in NARRATIVE_BLOCK_ROLES:
         return False
     if role == "boundary":
-        return bool(limitation_handles)
+        return bool(limitation_handles or claim_handles)
     if role == "next_action":
         return bool(recommendation_handles)
     return bool(claim_handles or recommendation_handles)
@@ -2278,6 +2280,7 @@ class NarrativeBlock:
     writer_attempt_id: str
     role: str
     text: str
+    requirement_handles: tuple[str, ...]
     claim_handles: tuple[str, ...]
     recommendation_handles: tuple[str, ...]
     limitation_handles: tuple[str, ...]
@@ -2299,6 +2302,7 @@ class NarrativeBlock:
         material_fact_bindings: Sequence[NarrativeFactBinding],
         statement_role: str,
         required: bool,
+        requirement_handles: Sequence[str] = (),
     ) -> "NarrativeBlock":
         if role not in NARRATIVE_BLOCK_ROLES:
             raise NarrativeAuthorityContractError("narrative_block_role_invalid")
@@ -2309,6 +2313,10 @@ class NarrativeBlock:
         recommendations = _string_tuple(
             recommendation_handles,
             "narrative_block_recommendation_handles_invalid",
+        )
+        requirements = _string_tuple(
+            requirement_handles,
+            "narrative_block_requirement_handles_invalid",
         )
         limitations = _string_tuple(
             limitation_handles, "narrative_block_limitation_handles_invalid"
@@ -2341,6 +2349,7 @@ class NarrativeBlock:
             ),
             "role": role,
             "text": _raw_text(text, "narrative_block_text_invalid"),
+            "requirement_handles": requirements,
             "claim_handles": claims,
             "recommendation_handles": recommendations,
             "limitation_handles": limitations,
@@ -2371,6 +2380,7 @@ class NarrativeBlock:
             writer_attempt_id=payload["writer_attempt_id"],
             role=payload["role"],
             text=payload["text"],
+            requirement_handles=payload["requirement_handles"],
             claim_handles=payload["claim_handles"],
             recommendation_handles=payload["recommendation_handles"],
             limitation_handles=payload["limitation_handles"],
@@ -2823,6 +2833,10 @@ class BlockLocalValidationReport:
         limitations_by_handle = {
             item.limitation_handle: item for item in material_projection.limitations
         }
+        requirements_by_handle = {
+            item.requirement_handle: item
+            for item in material_projection.publication_requirements
+        }
         facts_by_handle: dict[str, tuple[str, Any]] = {}
         materials_by_handle = {
             item.material_handle: item
@@ -2853,6 +2867,20 @@ class BlockLocalValidationReport:
                 for handle in block.recommendation_handles
                 if handle in recommendations_by_handle
             )
+            known_requirements = tuple(
+                requirements_by_handle[handle]
+                for handle in block.requirement_handles
+                if handle in requirements_by_handle
+            )
+            for handle in block.requirement_handles:
+                if handle not in requirements_by_handle:
+                    block_issues.append(
+                        BlockLocalIssue.create(
+                            block_id=block.block_id,
+                            code="unknown_requirement_handle",
+                            affected_refs=(handle,),
+                        )
+                    )
             for handle in block.claim_handles:
                 if handle not in claims_by_handle:
                     block_issues.append(
@@ -2871,14 +2899,64 @@ class BlockLocalValidationReport:
                             affected_refs=(handle,),
                         )
                     )
-            allowed_limitation_handles = {
-                handle for claim in known_claims for handle in claim.limitation_handles
-            }
-            if block.role == "boundary":
+            if block.requirement_handles:
+                issue_refs = {
+                    requirement.issue_ref for requirement in known_requirements
+                }
+                allowed_claim_handles = {
+                    handle
+                    for requirement in known_requirements
+                    for handle in requirement.claim_handles
+                }
+                allowed_limitation_handles = {
+                    handle
+                    for requirement in known_requirements
+                    for handle in requirement.limitation_handles
+                }
+                allowed_limitation_handles.update(
+                    limitation_handle
+                    for claim_handle in allowed_claim_handles
+                    if claim_handle in claims_by_handle
+                    for limitation_handle in claims_by_handle[
+                        claim_handle
+                    ].limitation_handles
+                )
+                scope_violations = tuple(
+                    sorted(
+                        set(block.claim_handles) - allowed_claim_handles
+                        | set(block.recommendation_handles)
+                        | (
+                            set(block.limitation_handles)
+                            - allowed_limitation_handles
+                        )
+                    )
+                )
+                if (
+                    not known_requirements
+                    or None in issue_refs
+                    or len(issue_refs) != 1
+                    or scope_violations
+                ):
+                    block_issues.append(
+                        BlockLocalIssue.create(
+                            block_id=block.block_id,
+                            code="question_requirement_scope_mismatch",
+                            affected_refs=(
+                                scope_violations or block.requirement_handles
+                            ),
+                        )
+                    )
+            else:
+                allowed_limitation_handles = {
+                    handle
+                    for claim in known_claims
+                    for handle in claim.limitation_handles
+                }
+            if block.role == "boundary" and not block.requirement_handles:
                 allowed_limitation_handles = {
                     item.limitation_handle for item in material_projection.limitations
                 }
-            else:
+            elif not block.requirement_handles:
                 allowed_limitation_handles.update(
                     handle
                     for recommendation in known_recommendations

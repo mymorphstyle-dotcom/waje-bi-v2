@@ -1,6 +1,6 @@
 import type { CustomerPublication } from "./_customerPublicationContract";
 
-export const CUSTOMER_ANALYSIS_SCHEMA_VERSION = "customer-conversation.v5" as const;
+export const CUSTOMER_ANALYSIS_SCHEMA_VERSION = "customer-conversation.v6" as const;
 
 export const CUSTOMER_PHASES = [
   { id: "understanding", label: "理解业务问题" },
@@ -153,6 +153,7 @@ export type CustomerAnalysisSnapshot = {
   businessUnderstanding: string | null;
   plannerIssues: string[];
   plannerIssueStates: PlannerIssueState[];
+  repairNotices: string[];
   state: CustomerAnalysisState;
   transport: CustomerAnalysisTransport;
 };
@@ -199,7 +200,9 @@ export type CustomerSnapshotSource = {
     nodeName: string;
     status: string;
     confirmedAt: string | null;
+    repairNotices?: string[];
   }>;
+  retryNotices?: string[];
   currentClarification: unknown;
   interactionResult: unknown;
   customerPublication: CustomerPublication | null;
@@ -354,6 +357,10 @@ export function projectCustomerAnalysisSnapshot(
       source.run?.request,
       plannerIssues,
     ),
+    repairNotices: repairNoticesFrom(
+      source.runNodes,
+      source.retryNotices,
+    ),
   } as const;
 
   if (agentState) {
@@ -489,6 +496,7 @@ export function parseCustomerAnalysisSnapshot(value: unknown): CustomerAnalysisS
     "businessUnderstanding",
     "plannerIssues",
     "plannerIssueStates",
+    "repairNotices",
     "state",
     "transport",
   ], "customer_snapshot_invalid");
@@ -538,6 +546,14 @@ export function parseCustomerAnalysisSnapshot(value: unknown): CustomerAnalysisS
       throw new Error("customer_snapshot_invalid");
     }
   });
+  if (
+    !Array.isArray(parsed.repairNotices)
+    || parsed.repairNotices.some(
+      (notice) => typeof notice !== "string" || !notice.trim(),
+    )
+  ) {
+    throw new Error("customer_snapshot_invalid");
+  }
   validateState(parsed.state);
   validateTransport(parsed.transport);
   return parsed;
@@ -626,6 +642,23 @@ function plannerIssueStatesFrom(
     status: "pending",
     statusLabel: "待分析",
   });
+}
+
+function repairNoticesFrom(
+  runNodes: CustomerSnapshotSource["runNodes"],
+  retryNotices: string[] = [],
+): string[] {
+  const persistedNotices = [...new Set(
+    runNodes.flatMap((node) =>
+      (node.repairNotices ?? [])
+        .map((notice) => notice.trim())
+        .filter(Boolean)
+    ),
+  )];
+  if (persistedNotices.length) return persistedNotices;
+  return [...new Set(
+    retryNotices.map((notice) => notice.trim()).filter(Boolean),
+  )];
 }
 
 export function parseCustomerThreadSummaries(value: unknown): CustomerThreadSummary[] {
@@ -922,7 +955,17 @@ function customerClarification(value: unknown): CustomerInputRequest | null {
         recommended: option.recommended === true,
       }];
     });
-    if (options.length < 2 || options.length > 3) return [];
+    const hasFreeformEscape = value.options.some((raw) =>
+      stringValue(optionalObject(raw)?.option_id) === "tell_agent_differently"
+    );
+    // Contract projection can discard semantically invalid alternatives. One
+    // admitted recommendation remains a real user choice when the question
+    // also preserves the explicit free-form escape.
+    if (
+      options.length < 1
+      || options.length > 3
+      || (options.length === 1 && !hasFreeformEscape)
+    ) return [];
     return [{
       questionKey,
       question,
@@ -1347,9 +1390,20 @@ function validateInput(value: unknown) {
   if (input.kind !== "clarification" && input.kind !== "topic_choice") {
     throw new Error("customer_snapshot_invalid");
   }
+  if (typeof input.allowFreeform !== "boolean") {
+    throw new Error("customer_snapshot_invalid");
+  }
   requiredString(input.title, "customer_snapshot_invalid");
   requiredString(input.question, "customer_snapshot_invalid");
-  if (!Array.isArray(input.options) || input.options.length < 2 || input.options.length > 3) {
+  const minimumOptionCount = input.kind === "clarification"
+    && input.allowFreeform
+    ? 1
+    : 2;
+  if (
+    !Array.isArray(input.options)
+    || input.options.length < minimumOptionCount
+    || input.options.length > 3
+  ) {
     throw new Error("customer_snapshot_invalid");
   }
   input.options.forEach((option) => {
@@ -1381,7 +1435,11 @@ function validateInput(value: unknown) {
     if (typeof item.explanation !== "string") {
       throw new Error("customer_snapshot_invalid");
     }
-    if (!Array.isArray(item.options) || item.options.length < 2 || item.options.length > 3) {
+    if (
+      !Array.isArray(item.options)
+      || item.options.length < minimumOptionCount
+      || item.options.length > 3
+    ) {
       throw new Error("customer_snapshot_invalid");
     }
     item.options.forEach((option) => {
@@ -1400,7 +1458,6 @@ function validateInput(value: unknown) {
       }
     });
   });
-  if (typeof input.allowFreeform !== "boolean") throw new Error("customer_snapshot_invalid");
 }
 
 function validateAnswer(value: unknown) {

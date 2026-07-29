@@ -4,6 +4,7 @@ from bi_agent.runtime.analysis_contracts import CompletenessReport
 from bi_agent.runtime.capability_execution import (
     _primary_report_accepted,
     _report_slot_failure,
+    _soft_incomplete_report_accepted,
 )
 from bi_agent.runtime.degradation_policy import (
     degraded_binding_projection_is_authorized,
@@ -330,3 +331,40 @@ def test_reconciliation_failure_can_feed_only_an_explicit_boundary_binding():
     )
 
     assert _primary_report_accepted(report)
+
+
+def test_soft_incomplete_rows_remain_eligible_for_claim_level_degradation():
+    report = CompletenessReport(
+        report_ref="report:analytical-quality",
+        query_contract_ref="query:analytical-quality",
+        result_ref="result:analytical-quality",
+        completeness_status="partial",
+        analysis_readiness="degraded",
+        assertion_results=(
+            {
+                "assertion": "execution_succeeded",
+                "passed": True,
+                "failure_reasons": (),
+                "failure_classes": (),
+                "details": {},
+            },
+            {
+                "assertion": "coverage_quality",
+                "passed": False,
+                "failure_reasons": ("部分分析切面覆盖不足",),
+                "failure_classes": ("analytical_quality",),
+                "details": {},
+            },
+        ),
+        failure_reasons=("部分分析切面覆盖不足",),
+        coverage_summary={"row_count": 3},
+    )
+
+    assert _soft_incomplete_report_accepted(
+        report,
+        degradation_policy={"incomplete_input": "degrade_claim"},
+    )
+    assert not _soft_incomplete_report_accepted(
+        report,
+        degradation_policy={"incomplete_input": "block_claim"},
+    )

@@ -13,6 +13,14 @@ import type { PersistedRunReasoning } from "./_conversationStore";
 
 type JsonRecord = Record<string, unknown>;
 
+type ProjectedQuestionAnswer = {
+  issueId: string;
+  text: string;
+  status: TraceReasoningIssue["status"];
+  claimRefs: string[];
+  limitationRefs: string[];
+};
+
 const TASK_STATUSES = new Set<TraceCapabilityOutcomeStatus>([
   "succeeded",
   "unavailable",
@@ -58,6 +66,10 @@ export function traceReasoningFromPersistedState(
   const proposedToVerified = stringRecord(verifier?.proposed_to_verified);
   const verificationDecisions = recordArray(verifier?.verification_decisions);
   const answerBlocks = projectAnswerBlocks(input.customerPublication);
+  const questionAnswers = projectQuestionAnswers(
+    input.narrativeDocument,
+    input.materialProjection,
+  );
   const answerClaimRefs = new Set(
     answerBlocks.flatMap((block) => block.claimRefs),
   );
@@ -172,12 +184,8 @@ export function traceReasoningFromPersistedState(
     const answerBlockIds = answerBlocks
       .filter((block) => block.claimRefs.includes(verifiedClaimRef))
       .map((block) => block.blockId);
-    const supportingAnswer = answerBlocks.find((block) =>
-      block.claimRefs.includes(verifiedClaimRef)
-    );
-    const factualPayload = record(
-      accepted?.factual_payload ?? proposed.factual_payload,
-    );
+    const factualPayload = record(materialClaim?.verified_claim_payload)
+      ?? record(accepted?.factual_payload ?? proposed.factual_payload);
     const limitationRefs = unique([
       ...strings(proposed.limitation_refs),
       ...strings(accepted?.limitation_refs),
@@ -198,9 +206,10 @@ export function traceReasoningFromPersistedState(
       ...(string(decision?.reason_code)
         ? { reasonCode: string(decision?.reason_code) }
         : {}),
-      summary: supportingAnswer?.text
-        ? excerpt(businessText(supportingAnswer.text), 260)
-        : claimSummary(claimKind, factualPayload, facts),
+      summary: excerpt(
+        businessText(claimSummary(claimKind, factualPayload, facts)),
+        260,
+      ),
       taskIds,
       evidenceRefs,
       issueIds,
@@ -230,7 +239,7 @@ export function traceReasoningFromPersistedState(
     tasks,
     claims,
     coverageRows,
-    answerBlocks,
+    questionAnswers,
     issueIdByObligation,
   }));
 
@@ -239,12 +248,18 @@ export function traceReasoningFromPersistedState(
       .includes(task.status)
   ).length;
   const queryRefs = unique(tasks.flatMap((task) => task.resultRefs));
+  const repairNotices = unique(
+    (input.runNodes ?? []).flatMap((node) =>
+      strings(record(node.payload)?.repair_notices)
+    ),
+  );
   return {
     runId: input.runId,
     businessUnderstanding: string(input.request.business_understanding)
       || string(input.request.question)
       || string(input.request.user_message),
     planRevisionId: input.planRevisionId,
+    repairNotices,
     issues,
     tasks,
     claims,
@@ -372,7 +387,7 @@ function projectIssue({
   tasks,
   claims,
   coverageRows,
-  answerBlocks,
+  questionAnswers,
   issueIdByObligation,
 }: {
   issue: JsonRecord;
@@ -380,59 +395,129 @@ function projectIssue({
   tasks: TraceReasoningTask[];
   claims: TraceReasoningClaim[];
   coverageRows: JsonRecord[];
-  answerBlocks: TraceReasoningAnswerBlock[];
+  questionAnswers: ProjectedQuestionAnswer[];
   issueIdByObligation: Map<string, string[]>;
 }): TraceReasoningIssue {
   const issueId = string(issue.issue_id);
+  const questionAnswer = questionAnswers.find(
+    (answer) => answer.issueId === issueId,
+  );
   const obligationIds = obligations
     .filter((obligation) =>
       (issueIdByObligation.get(string(obligation.obligation_id)) ?? [])
         .includes(issueId)
     )
     .map((obligation) => string(obligation.obligation_id));
-  const issueClaims = claims.filter((claim) => claim.issueIds.includes(issueId));
+  const questionClaimRefs = new Set(questionAnswer?.claimRefs ?? []);
+  const issueClaims = claims.filter((claim) =>
+    claim.issueIds.includes(issueId) || questionClaimRefs.has(claim.claimRef)
+  );
   const acceptedClaims = issueClaims.filter(
     (claim) => claim.verificationStatus === "accepted",
   );
-  const usedClaims = acceptedClaims.filter((claim) => claim.usedInAnswer);
+  const explicitlyUsedClaims = acceptedClaims.filter((claim) =>
+    questionClaimRefs.has(claim.claimRef)
+  );
+  const finalAnswerClaims = acceptedClaims.filter((claim) => claim.usedInAnswer);
   const coverages = coverageRows.filter((coverage) =>
     obligationIds.includes(string(coverage.obligation_id))
   );
   const coverageStatuses = coverages.map((coverage) => string(coverage.status));
   let status: TraceReasoningIssue["status"];
-  if (!acceptedClaims.length) status = "unresolved";
-  else if (!usedClaims.length) status = "omitted";
+  if (questionAnswer) status = questionAnswer.status;
+  else if (finalAnswerClaims.length) status = "unbound";
+  else if (acceptedClaims.length) status = "omitted";
   else if (
-    coverageStatuses.some((value) =>
-      ["mixed", "unavailable", "unresolved", "contradicted"].includes(value)
-    )
-    || acceptedClaims.length > usedClaims.length
-  ) status = "partial";
-  else status = "answered";
-  const matchingBlocks = answerBlocks.filter((block) =>
-    block.claimRefs.some((claimRef) =>
-      usedClaims.some((claim) => claim.claimRef === claimRef)
-    )
-  );
+    coverageStatuses.some((value) => value === "unavailable")
+  ) status = "unresolved";
+  else status = "unresolved";
   return {
     issueId,
     parentIssueId: nullableString(issue.parent_issue_id),
     question: string(issue.question),
     targetClaimKind: string(issue.target_claim_kind),
     status,
-    ...(matchingBlocks[0]?.text
-      ? { answerText: excerpt(matchingBlocks[0].text, 260) }
+    ...(questionAnswer?.text
+      ? { answerText: excerpt(questionAnswer.text, 260) }
       : {}),
     taskIds: tasks
       .filter((task) => task.issueIds.includes(issueId))
       .map((task) => task.taskId),
     claimRefs: acceptedClaims.map((claim) => claim.claimRef),
-    usedClaimRefs: usedClaims.map((claim) => claim.claimRef),
+    usedClaimRefs: (
+      questionAnswer ? explicitlyUsedClaims : finalAnswerClaims
+    ).map((claim) => claim.claimRef),
     limitationRefs: unique([
       ...coverages.flatMap((coverage) => strings(coverage.limitation_refs)),
       ...acceptedClaims.flatMap((claim) => claim.limitationRefs),
+      ...(questionAnswer?.limitationRefs ?? []),
     ]),
   };
+}
+
+function projectQuestionAnswers(
+  narrative: JsonRecord,
+  materialProjection: JsonRecord,
+): ProjectedQuestionAnswer[] {
+  const requirementsByHandle = new Map(
+    recordArray(materialProjection.publication_requirements).map(
+      (requirement) => [string(requirement.requirement_handle), requirement],
+    ),
+  );
+  const claimRefByHandle = new Map(
+    recordArray(materialProjection.claims).map((claim) => [
+      string(claim.claim_handle),
+      string(claim.claim_ref),
+    ]),
+  );
+  const limitationRefByHandle = new Map(
+    recordArray(materialProjection.limitations).map((limitation) => [
+      string(limitation.limitation_handle),
+      string(limitation.limitation_ref),
+    ]),
+  );
+  return recordArray(narrative.blocks).flatMap((block) => {
+    const requirementHandles = strings(block.requirement_handles);
+    if (!requirementHandles.length) return [];
+    const requirements = requirementHandles.flatMap((handle) => {
+      const requirement = requirementsByHandle.get(handle);
+      return requirement ? [requirement] : [];
+    });
+    const issueIds = unique(
+      requirements.map((requirement) => string(requirement.issue_ref))
+        .filter(Boolean),
+    );
+    if (
+      requirements.length !== requirementHandles.length
+      || issueIds.length !== 1
+    ) return [];
+    const requirementStatuses = requirements.map(
+      (requirement) => string(requirement.status),
+    );
+    const status: TraceReasoningIssue["status"] =
+      requirementStatuses.every((value) => value === "unavailable")
+        ? "unresolved"
+        : requirementStatuses.some((value) =>
+          ["mixed", "unavailable", "unresolved"].includes(value)
+        )
+          ? "partial"
+          : "answered";
+    return [{
+      issueId: issueIds[0],
+      text: businessText(string(block.text)),
+      status,
+      claimRefs: unique(
+        strings(block.claim_handles)
+          .map((handle) => claimRefByHandle.get(handle) ?? "")
+          .filter(Boolean),
+      ),
+      limitationRefs: unique(
+        strings(block.limitation_handles)
+          .map((handle) => limitationRefByHandle.get(handle) ?? "")
+          .filter(Boolean),
+      ),
+    }];
+  });
 }
 
 function projectAnswerBlocks(

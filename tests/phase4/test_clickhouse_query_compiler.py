@@ -652,7 +652,9 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
             "2026-06-30",
         )
         frame = {
-            "schema_version": "calendar-partition-role-frame.v1",
+            "schema_version": "calendar-partition-role-frame.v2",
+            "baseline_class": "same_month_phase",
+            "period_grain": "month",
             "partition_field": "month_phase",
             "target_members": ("start",),
             "baseline_members": ("mid", "end"),
@@ -690,6 +692,64 @@ class ClickHouseQueryCompilerTest(unittest.TestCase):
         self.assertEqual(
             compiled.parameters["partition_baseline_members"],
             ["mid", "end"],
+        )
+        self.assertNotIn("partition_evaluation_start", compiled.parameters)
+
+    def test_prior_period_partition_aligns_each_target_with_previous_period(self):
+        evaluation_window = ResolvedWindow(
+            "target_day",
+            "target",
+            "2024-01-01..2024-03-31",
+            "2024-01-01",
+            "2024-04-01",
+            "Africa/Lagos",
+            "sum_of_complete_days",
+            91,
+            "2024-03-31",
+        )
+        frame = {
+            "schema_version": "calendar-partition-role-frame.v2",
+            "baseline_class": "prior_period",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ("start",),
+            "baseline_members": ("end",),
+            "aggregation": "sum_of_complete_days",
+            "member_definitions": (
+                {"member": "start", "day_start": 1, "day_end": 5},
+                {"member": "mid", "day_start": 6, "day_end": 24},
+                {"member": "end", "day_start": 25, "day_end": 31},
+            ),
+        }
+        base = contract(
+            query_intent="component_driver_scan",
+            query_parameters={"calendar_partition_role_frame": frame},
+            resolved_windows=(evaluation_window,),
+        )
+
+        compiled = compile_clickhouse_query(
+            base,
+            {"snapshot:paid_order_success:1": snapshot()},
+        )
+
+        self.assertIn(
+            "toStartOfMonth(`business_date_lagos`) > "
+            "toStartOfMonth(toDate(%(partition_evaluation_start)s))",
+            compiled.sql_text,
+        )
+        self.assertIn(
+            "toStartOfMonth(`business_date_lagos`) < "
+            "toStartOfMonth(subtractDays("
+            "toDate(%(partition_evaluation_end_exclusive)s), 1))",
+            compiled.sql_text,
+        )
+        self.assertEqual(
+            compiled.parameters["partition_evaluation_start"],
+            "2024-01-01",
+        )
+        self.assertEqual(
+            compiled.parameters["partition_evaluation_end_exclusive"],
+            "2024-04-01",
         )
 
     def test_window_aggregate_formula_metrics_preserve_sum_and_mean_closure(self):

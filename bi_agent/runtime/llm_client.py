@@ -50,6 +50,7 @@ class LLMOutputError(RuntimeError):
         retryable: bool = True,
         audit: Mapping[str, Any] | None = None,
         invalid_output: Mapping[str, Any] | None = None,
+        repair_contract: Mapping[str, Any] | None = None,
     ):
         if type(retryable) is not bool:
             raise ValueError("llm_output_failure_retryability_invalid")
@@ -58,6 +59,11 @@ class LLMOutputError(RuntimeError):
         self.audit = dict(audit or {})
         self.invalid_output = (
             dict(invalid_output) if isinstance(invalid_output, Mapping) else None
+        )
+        self.repair_contract = (
+            dict(repair_contract)
+            if isinstance(repair_contract, Mapping)
+            else None
         )
 
 

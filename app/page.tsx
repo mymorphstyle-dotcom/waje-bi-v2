@@ -23,7 +23,10 @@ import type {
   TraceReasoningClaim,
   TraceReasoningIssue,
 } from "./run-reasoning-contracts";
-import { ReasoningTimeline } from "./reasoning-timeline";
+import {
+  ReasoningRepairNotices,
+  ReasoningTimeline,
+} from "./reasoning-timeline";
 import {
   Conversation,
   ConversationContent,
@@ -405,15 +408,16 @@ function PlannerQuestionReview({
                 {reviewStatusLabel(issue.status)}
               </small>
             </header>
-            <p>
-              {issue.answerText ?? reviewFallbackText(issue)}
-            </p>
+            {issue.answerText ? (
+              <p className="planner-question-answer">{issue.answerText}</p>
+            ) : null}
             <InlineEvidence
               claimRefs={
                 issue.usedClaimRefs.length
                   ? issue.usedClaimRefs
                   : issue.claimRefs
               }
+              contextNote={reviewEvidenceNote(issue)}
               reasoning={reasoning}
             />
           </li>
@@ -427,16 +431,20 @@ function reviewStatusLabel(status: TraceReasoningIssue["status"]) {
   return ({
     answered: "已回答",
     partial: "部分回答",
+    unbound: "仅综合覆盖",
     omitted: "有事实，未作答",
     unresolved: "本次未解决",
   } as const)[status];
 }
 
-function reviewFallbackText(issue: TraceReasoningIssue) {
-  if (issue.status === "omitted") {
-    return "本次形成了相关事实，但它没有进入最终回答；当前不把这条事实当作这个问题的直接答案。";
+function reviewEvidenceNote(issue: TraceReasoningIssue) {
+  if (issue.status === "unbound") {
+    return "最终综合回答使用了以下相关事实，但本次运行没有为这个问题单独写出答案。以下内容只用于查看依据，不能代替逐题回答。";
   }
-  return "本次没有形成足以回答这个问题的已核验事实。";
+  if (issue.status === "omitted") {
+    return "本次形成了以下相关事实，但这些事实没有进入最终综合回答。";
+  }
+  return undefined;
 }
 
 function AnswerClaimRefs({
@@ -458,9 +466,11 @@ function AnswerClaimRefs({
 
 function InlineEvidence({
   claimRefs,
+  contextNote,
   reasoning,
 }: {
   claimRefs: string[];
+  contextNote?: string;
   reasoning: TraceReasoning;
 }) {
   const facts = claimRefs.flatMap((claimRef) => {
@@ -472,6 +482,7 @@ function InlineEvidence({
     <details className="answer-inline-evidence">
       <summary>查看依据 · {facts.length} 条已核验事实</summary>
       <div>
+        {contextNote ? <p className="answer-evidence-note">{contextNote}</p> : null}
         {facts.map((fact) => (
           <EvidenceFact fact={fact} key={fact.claimRef} />
         ))}
@@ -1154,6 +1165,10 @@ export default function Home() {
   const customerState = snapshot?.state ?? null;
   const answerComplete = customerState?.status === "completed"
     || customerState?.status === "completed_with_limits";
+  const reasoningRepairNotices = new Set(reasoning?.repairNotices ?? []);
+  const liveRepairNotices = snapshot?.repairNotices.filter(
+    (notice) => !reasoningRepairNotices.has(notice),
+  ) ?? [];
   const composerBlocked = Boolean(
     loading
     || pending
@@ -1303,6 +1318,14 @@ export default function Home() {
                     <strong>我的理解：</strong>
                     {snapshot.businessUnderstanding}
                   </p>
+                </MessageContent>
+              </Message>
+            ) : null}
+
+            {liveRepairNotices.length ? (
+              <Message className="customer-reasoning-message" from="assistant">
+                <MessageContent className="customer-reasoning-content">
+                  <ReasoningRepairNotices notices={liveRepairNotices} />
                 </MessageContent>
               </Message>
             ) : null}

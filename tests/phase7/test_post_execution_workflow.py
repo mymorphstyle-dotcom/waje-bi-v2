@@ -96,6 +96,7 @@ class _NarrativeLLM:
                     {
                         "role": "executive_answer",
                         "text": "Accepted executive answer statement.",
+                        "p": [],
                         "c": [claim["claim_handle"]],
                         "r": (
                             [recommendations[0]["recommendation_handle"]]

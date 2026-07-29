@@ -1,6 +1,6 @@
 "use client";
 
-import { Check } from "lucide-react";
+import { Check, RefreshCw } from "lucide-react";
 
 import type {
   TraceReasoning,
@@ -19,9 +19,12 @@ export function ReasoningTimeline({
   const rootIssues = reasoning.issues.filter(
     (issue) => !issue.parentIssueId || !issueIds.has(issue.parentIssueId),
   );
+  const repairNotices = reasoning.repairNotices ?? [];
 
   return (
     <div className="reasoning-timeline">
+      <ReasoningRepairNotices notices={repairNotices} />
+
       {reasoning.issues.length ? (
         <section className="reasoning-plan" aria-label="分析问题">
           <div className="reasoning-question-trees">
@@ -62,6 +65,27 @@ export function ReasoningTimeline({
         </section>
       ) : null}
     </div>
+  );
+}
+
+export function ReasoningRepairNotices({
+  notices,
+}: {
+  notices: string[];
+}) {
+  if (!notices.length) return null;
+  return (
+    <section className="reasoning-repairs" aria-label="分析过程修正">
+      <div className="reasoning-repair-heading">
+        <RefreshCw aria-hidden="true" size={14} />
+        <strong>分析过程修正</strong>
+      </div>
+      <ol>
+        {notices.map((notice) => (
+          <li key={notice}>{notice}</li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

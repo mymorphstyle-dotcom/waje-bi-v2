@@ -362,7 +362,9 @@ def test_cancel_submission_returns_the_typed_terminal_to_agent_core(monkeypatch)
     assert store.audit_events[0][0] == "single_authority_directive_recorded"
 
 
-def test_clarification_batch_requires_one_option_per_material_slot() -> None:
+def test_clarification_batch_settles_fixed_and_custom_slots_once(
+    monkeypatch,
+) -> None:
     class _Record:
         def __init__(self, decision_id: str) -> None:
             self.decision_id = decision_id
@@ -468,15 +470,47 @@ def test_clarification_batch_requires_one_option_per_material_slot() -> None:
         store.accepted
     )
 
-    with pytest.raises(
-        EvidenceIntegrityError,
-        match="clarification_selected_slot_coverage_invalid",
-    ):
-        agent_core._record_single_authority_clarification_submission(
-            store=_Store(),
-            llm_client=None,
-            thread_id="thread-source",
-            run_id="run-source",
-            user_message="只回答一个问题",
-            clarification={"selectedOptionIds": ["definition.ten-day"]},
+    custom_targets: list[str] = []
+
+    def bind_custom(**kwargs):
+        custom_targets.append(kwargs["clarification_slot_id"])
+        recorded = kwargs["store"].accept_decision_option(
+            run_attempt_id=kwargs["run_id"],
+            option_id="aggregation.daily-mean",
+            source="user",
         )
+        return (
+            {"status": "decision_recorded", **recorded},
+            {
+                "binding_kind": "fill_current_slot",
+                "slot_id": "phase_aggregation",
+                "value_ref": "daily_mean",
+            },
+            {"provider": "provider-test"},
+        )
+
+    monkeypatch.setattr(
+        agent_core,
+        "_bind_single_authority_free_text",
+        bind_custom,
+    )
+    mixed_store = _Store()
+    mixed_result = agent_core._record_single_authority_clarification_submission(
+        store=mixed_store,
+        llm_client=object(),
+        thread_id="thread-source",
+        run_id="run-source",
+        user_message="月初按自定义分段，金额口径沿用总额",
+        clarification={"selectedOptionIds": ["definition.ten-day"]},
+    )
+
+    assert custom_targets == ["phase_aggregation"]
+    assert mixed_store.accepted == [
+        "aggregation.daily-mean",
+        "definition.ten-day",
+    ]
+    assert mixed_store.cleared is True
+    assert mixed_result["decision_ledger"]["position"] == 2
+    assert mixed_result["raw_decision_binding"]["slot_id"] == (
+        "phase_aggregation"
+    )

@@ -714,43 +714,59 @@ def _journaled_adapter_output(
     output_factory: Callable[[CapabilityAttempt], CapabilityAdapterOutput],
 ) -> tuple[CapabilityAttempt, CapabilityAdapterOutput]:
     spec = _capability_call_spec(plan_revision, task)
-    claim = attempt_journal.claim(spec)
-    call_attempt = claim.attempt
-    attempt = CapabilityAttempt.create(
-        plan_revision,
-        task,
-        execution_attempt=call_attempt.attempt_number,
-    )
-    if call_attempt.attempt_ref != attempt.attempt_id or call_attempt.spec != spec:
-        raise CapabilityAuthorityContractError(
-            "capability_scheduler_attempt_journal_mismatch"
+    first_failure: Exception | None = None
+    while True:
+        claim = attempt_journal.claim(spec)
+        call_attempt = claim.attempt
+        attempt = CapabilityAttempt.create(
+            plan_revision,
+            task,
+            execution_attempt=call_attempt.attempt_number,
         )
-    if claim.replayed:
+        if call_attempt.attempt_ref != attempt.attempt_id or call_attempt.spec != spec:
+            raise CapabilityAuthorityContractError(
+                "capability_scheduler_attempt_journal_mismatch"
+            )
+        if claim.replayed:
+            try:
+                return attempt, CapabilityAdapterOutput.from_dict(
+                    claim.output_payload or {}
+                )
+            except (TypeError, ValueError) as exc:
+                raise CapabilityAuthorityContractError(
+                    "capability_scheduler_journaled_output_invalid"
+                ) from exc
         try:
-            return attempt, CapabilityAdapterOutput.from_dict(
-                claim.output_payload or {}
+            adapter_output = output_factory(attempt)
+            if not isinstance(adapter_output, CapabilityAdapterOutput):
+                raise CapabilityAuthorityContractError(
+                    "capability_scheduler_adapter_output_invalid"
+                )
+            adapter_output = CapabilityAdapterOutput.from_dict(
+                adapter_output.to_dict()
             )
-        except (TypeError, ValueError) as exc:
-            raise CapabilityAuthorityContractError(
-                "capability_scheduler_journaled_output_invalid"
-            ) from exc
-    try:
-        adapter_output = output_factory(attempt)
-        if not isinstance(adapter_output, CapabilityAdapterOutput):
-            raise CapabilityAuthorityContractError(
-                "capability_scheduler_adapter_output_invalid"
+        except Exception as exc:
+            if first_failure is None:
+                first_failure = exc
+                attempt_journal.fail(
+                    call_attempt,
+                    failure_code=type(exc).__name__,
+                    failure_payload=_capability_attempt_failure_payload(
+                        exc,
+                        repair_attempt=0,
+                    ),
+                )
+                continue
+            adapter_output = _capability_retry_exhausted_output(
+                task,
+                exc,
+                first_failure=first_failure,
             )
-        adapter_output = CapabilityAdapterOutput.from_dict(adapter_output.to_dict())
-    except Exception as exc:
-        attempt_journal.fail(
+        completion = attempt_journal.succeed(
             call_attempt,
-            failure_code=type(exc).__name__,
+            adapter_output.to_dict(),
         )
-        raise
-    completion = attempt_journal.succeed(
-        call_attempt,
-        adapter_output.to_dict(),
-    )
+        break
     if (
         completion.disposition != "accepted"
         or completion.acceptance is None
@@ -777,6 +793,87 @@ def _journaled_adapter_output(
             "capability_scheduler_journaled_output_invalid"
         ) from exc
     return accepted_attempt, accepted_output
+
+
+def _capability_attempt_failure_payload(
+    exc: Exception,
+    *,
+    repair_attempt: int,
+) -> dict[str, object]:
+    detail = str(exc).strip()
+    return {
+        "exception_type": type(exc).__name__,
+        "error_code": detail[:256],
+        "repair_attempt": repair_attempt,
+        "technical_detail_digest": canonical_digest(
+            {
+                "exception_type": type(exc).__name__,
+                "detail": detail,
+            }
+        ),
+    }
+
+
+def _capability_retry_exhausted_output(
+    task: CapabilityTask,
+    exc: Exception,
+    *,
+    first_failure: Exception,
+) -> CapabilityAdapterOutput:
+    integrity_failure = isinstance(exc, ValueError)
+    status = "integrity_failed" if integrity_failure else "technical_failed"
+    kind = (
+        "capability_contract_check_failed_after_retry"
+        if integrity_failure
+        else "capability_execution_failed_after_retry"
+    )
+    failure_payload = _capability_attempt_failure_payload(
+        exc,
+        repair_attempt=1,
+    )
+    first_failure_payload = _capability_attempt_failure_payload(
+        first_failure,
+        repair_attempt=0,
+    )
+    technical_detail_ref = (
+        "capability-retry:"
+        + canonical_digest(
+            {
+                "task_id": task.task_id,
+                "first_failure": first_failure_payload,
+                "final_failure": failure_payload,
+            }
+        )
+    )
+    failure = CapabilityFailure.create(
+        layer="capability",
+        kind=kind,
+        scope="task",
+        affected_refs=(task.task_id, *task.supports_obligation_ids),
+        integrity_level="task",
+        retryability="replan_required",
+        user_actionable=False,
+        business_boundary="analysis_path_failed_verification_after_retry",
+        technical_detail_ref=technical_detail_ref,
+    )
+    return CapabilityAdapterOutput.create(
+        status=status,
+        output_payload={
+            "repair_attempted": True,
+            "repair_attempts": 1,
+            "failure_kind": kind,
+            "technical_detail_ref": technical_detail_ref,
+            "repair_log": {
+                "first_failure": first_failure_payload,
+                "final_failure": failure_payload,
+            },
+        },
+        evidence=(),
+        affected_obligation_ids=task.supports_obligation_ids,
+        limitation_refs=("limitation:analysis_path_failed_after_retry",),
+        retryability="replan_required",
+        failure=failure,
+    )
 
 
 def _capability_call_spec(

@@ -8,6 +8,7 @@
     "start": "next start --hostname 127.0.0.1",
     "worker": "\"${WAJE_PYTHON_EXECUTABLE:-.venv/bin/python}\" -m tools.runtime.recover_run_dispatches",
     "prune:agent-traces": "\"${WAJE_PYTHON_EXECUTABLE:-.venv/bin/python}\" -m tools.runtime.prune_agent_traces",
+    "release:package": "\"${WAJE_PYTHON_EXECUTABLE:-.venv/bin/python}\" -m tools.runtime.build_production_release",
     "test:ui": "playwright test"
   },
   "dependencies": {

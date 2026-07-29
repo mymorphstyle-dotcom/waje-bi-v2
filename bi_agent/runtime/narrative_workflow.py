@@ -98,7 +98,7 @@ class NarrativeProviderCallError(RuntimeError):
 
 _PROVIDER_PURPOSES = frozenset({"narrative_writer", "block_verification"})
 NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT = 512 * 1024
-_NARRATIVE_PROMPT_VERSION = "single-authority-phase05.v25"
+_NARRATIVE_PROMPT_VERSION = "single-authority-phase05.v33"
 _MATERIAL_FACT_COLUMNS = (
     "fact_handle",
     "name",
@@ -108,8 +108,9 @@ _MATERIAL_FACT_COLUMNS = (
     "unit",
 )
 _MATERIAL_FACT_TRANSPORT_ENCODING = "columnar-material-facts.v1"
+_MATERIAL_FACT_REPAIR_MODE = "required-fact-claim-complete.v1"
 _REFERENCE_TRANSPORT_ENCODING = "short-authority-alias.v1"
-_WRITER_OUTPUT_TRANSPORT_ENCODING = "compact-narrative-blocks.v1"
+_WRITER_OUTPUT_TRANSPORT_ENCODING = "compact-narrative-blocks.v2"
 _WRITER_CONTRACT_FINDINGS_AUDIT_FIELD = "writer_contract_findings"
 _VERIFIER_CONTRACT_FINDINGS_AUDIT_FIELD = "verifier_contract_findings"
 _THINKING_MODE_BY_PROVIDER_PURPOSE = {
@@ -120,6 +121,7 @@ _WRITER_BLOCK_FIELDS = frozenset(
     {
         "role",
         "text",
+        "requirement_handles",
         "claim_handles",
         "recommendation_handles",
         "limitation_handles",
@@ -138,6 +140,7 @@ _COMPACT_WRITER_BLOCK_FIELDS = frozenset(
     {
         "role",
         "text",
+        "p",
         "c",
         "r",
         "l",
@@ -171,6 +174,7 @@ _ACCEPTED_INTENT_CONTEXT_FIELDS = frozenset(
 )
 _ACCEPTED_PLAN_CONTEXT_FIELDS = frozenset(
     {
+        "temporal_authority",
         "accepted_question_graph",
         "user_required_obligations",
         "analysis_axes",
@@ -292,6 +296,14 @@ do not change publication or verifier authority.
 Consolidate claims and limitations that belong to the same reasoning move. Avoid one
 block per claim, one block per limitation, or restating machine metadata; integrated
 prose or a compact comparison table should carry the required handle coverage.
+The provider output has a finite completion envelope. Finish a complete, closed JSON
+object within that envelope. Cover the accepted question graph and mandatory
+publication requirements first. Every supplied verified claim must contribute to at
+least one final synthesis block with p=[]; related or answer-equivalent claims may share
+one piece of prose, but retain every claim handle so its provenance remains visible.
+Then include only non-claim optional evidence that materially improves the decision. Do
+not enumerate the evidence catalog, capability route, or every available limitation
+merely because it is present.
 When answer_context.business_context contains an object with
 schema_version=controlled-investigation-narrative-delta.v1, treat candidateDeltas as
 optional single-placement editorial guidance.
@@ -331,13 +343,15 @@ an authorized synthesis or comparison basis. Keep the exact prose you want publi
 in each text field. The runtime wire contract uses short aliases for authority
 references. Treat every alias as opaque and return it exactly; never expand or edit it.
 Return one JSON object with exactly this compact shape:
-{"blocks":[{"role":string,"text":string,"c":[claim_alias],
+{"blocks":[{"role":string,"text":string,"p":[requirement_alias],"c":[claim_alias],
 "r":[recommendation_alias],"l":[limitation_alias],
 "f":[[claim_alias,fact_alias]],"s":string,"q":boolean}]}.
-Here c means claim handles, r recommendation handles, l limitation handles, f material
-fact bindings, s statement_role, and q required. Fact-binding pairs contain aliases
-only; the runtime restores their canonical handles and resolves fact kind, value, range
-end, and unit from the supplied projection. Do not add fields outside this schema.
+Here p means publication requirement handles, c claim handles, r recommendation
+handles, l limitation handles, f material fact bindings, s statement_role, and q
+required. Always include p; use an empty list for final synthesis blocks. Fact-binding
+pairs contain aliases only; the runtime restores their canonical handles and resolves
+fact kind, value, range end, and unit from the supplied projection. Do not add fields
+outside this schema.
 Choose the block count, ordering,
 roles, emphasis, and synthesis that best answer the question. Valid roles are
 executive_answer, direction, accounting_drivers, dimension_localization,
@@ -367,12 +381,41 @@ claims, with limitation_handles carrying the strength gap or other boundary. The
 handle-coverage rules do not prescribe the prose, block count, ordering, roles,
 emphasis, comparison, or synthesis.
 
-accepted_plan_context.accepted_question_graph is the question-level answer SSOT. Answer
+accepted_plan_context.accepted_question_graph is the question-level coverage SSOT. Answer
 every question in that graph explicitly, keeping the primary question first and then
-resolving each supporting question. The matching publication requirements carry the
-same issue_ref and business_question. If a requirement is unavailable, state that
-specific question as unresolved and explain its local boundary. Do not let one answered
-question stand in for another merely because they share a claim kind.
+resolving each supporting question. accepted_plan_context.temporal_authority is the
+decision-applied authority for aggregation, partition, target-versus-baseline, and date
+semantics. Use its effective_comparison_spec and resolved windows in customer wording
+whenever an issue question or the earlier intent draft conflicts with it; retain the
+issue's business purpose while correcting that stale wording. Numeric day or date
+boundaries in issue questions are descriptive text only: copy those boundaries from the
+typed effective comparison member definitions and resolved windows so stale question
+wording cannot override the accepted decision. Emit exactly one required
+question-answer block for each issue_ref. Put every publication requirement handle for
+that issue_ref in p, and put no other requirement handles there. A question-answer block
+binds no recommendation, and its claims, limitations, and facts stay within those
+requirements. A limitation attached directly to one of those allowed claims remains in
+the same issue scope even when it is not repeated on the publication requirement. Write
+a concise direct answer, partial answer, or unresolved statement for that block's
+business_question under the authoritative temporal semantics. Final synthesis blocks use
+p=[] and remain separate. Integrate the
+issue answers into one overall response there without repeating every question answer
+or requirement handle. The question-answer blocks carry exhaustive per-question
+coverage; the final synthesis selects the primary conclusion, key drivers, exceptions,
+and material boundaries needed for one coherent overall answer. In claim_bearing mode,
+at least one required final synthesis block with p=[] must bind a supplied claim and
+state the primary conclusion. Across those p=[] blocks, bind every supplied verified
+claim at least once. Combine related claims into the same reasoning move when that reads
+more naturally; full handle coverage does not require repeated prose. A boundary-only
+synthesis may qualify that conclusion but cannot be the entire final response. Do not
+copy a single question-answer block as the whole final synthesis. If a requirement is
+unavailable, state that specific question as unresolved and explain its local boundary.
+Do not let one answered question stand in for another merely because they share a claim
+kind.
+When authorized material supplies period_direction_summary for a matching exception
+question, name every displayed exception period and its direction in the answer. If
+exception_periods_truncated is true, state that the displayed list is bounded and give
+the supplied total; never infer omitted period identities.
 
 requirement_limitation_scope gives the same obligations with each required limitation's
 binding topology and boundary_facet_handles. Resolve those handles through
@@ -389,6 +432,10 @@ Never repeat capability identifiers, retryability, provider fields, or other int
 metadata verbatim. Each bound limitation must be expressed through its own facets. Block
 coverage is empty on the initial writer call because the runtime has not received your
 blocks yet.
+When material_projection.transport_repair_mode is present, the runtime has retained
+every verified claim and every required fact while keeping unrequired detail rows in the
+server-side evidence ledger. Use every supplied claim handle in the final synthesis as
+usual; do not treat the compacted detail rows as missing evidence.
 """
 _VERIFIER_SYSTEM_PROMPT = """\
 Independently evaluate each supplied narrative block against the public material
@@ -397,11 +444,19 @@ evidence_materials, recommendations, limitation-to-boundary_facet membership, an
 block's declared handle-only fact bindings. Resolve fact details from evidence_materials;
 under columnar-material-facts.v1, resolve each facts row using the evidence material's
 fact_columns before evaluating the bound fact_handle.
+Every bound claim's complete authorized material constrains the semantic meaning of the
+prose, including qualitative statements that do not quote a number. Compare the prose
+direction, majority/minority wording, stability wording, exception direction, driver
+ordering, and positive/negative contribution wording against all facts belonging to
+that claim. Material facts remain semantic constraints even when they are not selected
+as explicit material_fact_bindings. Veto prose that reverses or contradicts those facts,
+or that describes a minority direction as the majority. Use
+claim_evidence_semantic_mismatch as the exact reason_code.
 The runtime wire contract replaces authority references with opaque short aliases.
 Return every block, claim, recommendation, and limitation alias exactly as supplied;
 never expand, edit, or synthesize one. The runtime restores canonical references before
 applying the verifier contract.
-the block cannot restate or override them. Enforce every evidence interpretation_contract
+The block cannot restate or override them. Enforce every evidence interpretation_contract
 and synthesis_contract: reject cross-slice addition, contribution wording, or ranking on
 an undeclared basis; require the declared synthesis fact group to remain complete. Check
 every multi-item ranking against its bound ranking_measure and
@@ -465,6 +520,10 @@ does not bind. Missing coverage alone is not a block veto because required cover
 be distributed across blocks. Use it when testing whether prose overstates completeness,
 scope, or consistency. When a block binds a required limitation, its prose must express
 that limitation's own boundary facets; another limitation cannot stand in for it.
+For a block with requirement_handles, resolve those handles to one issue_ref and
+business_question. Verify that the block directly answers that question at the
+authorized strength, or explicitly marks its local partial or unresolved boundary. A
+separate final synthesis block cannot supply the missing question-level answer.
 
 verification_scope declares whether this is a full verification or a focused retry. In
 full mode, independently evaluate every block and return one decision per target_block_id.
@@ -1929,6 +1988,7 @@ def _decode_compact_writer_output(
             )
         block = {
             "text": raw_block["text"],
+            "requirement_handles": raw_block["p"],
             "claim_handles": raw_block["c"],
             "recommendation_handles": raw_block["r"],
             "limitation_handles": raw_block["l"],
@@ -2006,11 +2066,22 @@ class _NarrativeProviderTransport:
         return _decode_compact_writer_output(decoded_references)
 
     def audit_payload(self, *, outbound_bytes: int) -> dict[str, Any]:
+        material_projection = self.provider_payload.get("material_projection")
+        repair_mode = (
+            material_projection.get("transport_repair_mode")
+            if isinstance(material_projection, Mapping)
+            else None
+        )
         return {
             "reference_encoding": _REFERENCE_TRANSPORT_ENCODING,
             "writer_output_encoding": self.writer_output_encoding,
             "reference_alias_count": len(self.reference_to_alias),
             "outbound_bytes": outbound_bytes,
+            **(
+                {"material_transport_repair_mode": repair_mode}
+                if isinstance(repair_mode, str) and repair_mode
+                else {}
+            ),
         }
 
 
@@ -2025,8 +2096,13 @@ def _invoke_provider(
         [Mapping[str, Any]], tuple[Mapping[str, Any], tuple[str, ...]]
     ]
     | None = None,
+    candidate_verifier: Callable[
+        [Mapping[str, Any], Sequence[str]], None
+    ]
+    | None = None,
 ) -> _ProviderInvocation:
     transport = _NarrativeProviderTransport.create(call_input=call_input)
+    writer_repair_requested = False
 
     def normalize_provider_output(
         output: Mapping[str, Any],
@@ -2038,8 +2114,22 @@ def _invoke_provider(
         return decoded_output, ()
 
     def provider_output_validator(output: Mapping[str, Any]) -> None:
+        nonlocal writer_repair_requested
         try:
-            normalize_provider_output(output)
+            normalized_output, findings = normalize_provider_output(output)
+            if candidate_verifier is not None:
+                candidate_verifier(normalized_output, findings)
+                return
+            repair_finding = _narrative_writer_repair_finding(findings)
+            if (
+                call_input.purpose == "narrative_writer"
+                and repair_finding is not None
+                and not writer_repair_requested
+            ):
+                writer_repair_requested = True
+                raise NarrativeWorkflowError(
+                    f"narrative_writer_{repair_finding}"
+                )
         except NarrativeWorkflowError as exc:
             raise LLMOutputError(str(exc)) from exc
 
@@ -2173,15 +2263,37 @@ def _invoke_provider(
     )
 
 
+def _narrative_writer_repair_finding(
+    findings: Sequence[str],
+) -> str | None:
+    return next(
+        (
+            finding
+            for finding in (
+                "question_answer_coverage_incomplete",
+                "claim_bearing_synthesis_missing",
+                "public_claim_coverage_incomplete",
+            )
+            if finding in findings
+        ),
+        None,
+    )
+
+
 def _writer_block_shape(
     block: Mapping[str, Any],
     *,
     material_projection: NarrativeMaterialProjection,
+    enforce_question_scope: bool = True,
 ) -> None:
     _strict_mapping(block, _WRITER_BLOCK_FIELDS, "narrative_writer_block_shape_invalid")
     if block["role"] not in NARRATIVE_BLOCK_ROLES:
         raise NarrativeWorkflowError("narrative_writer_block_role_invalid")
     _raw_text(block["text"], "narrative_writer_block_text_invalid")
+    requirement_handles = _sorted_string_tuple(
+        block["requirement_handles"],
+        "narrative_writer_requirement_handles_invalid",
+    )
     claim_handles = _sorted_string_tuple(
         block["claim_handles"], "narrative_writer_claim_handles_invalid"
     )
@@ -2203,6 +2315,12 @@ def _writer_block_shape(
     known_limitation_handles = {
         item.limitation_handle for item in material_projection.limitations
     }
+    requirements_by_handle = {
+        item.requirement_handle: item
+        for item in _answer_publication_requirements(material_projection)
+    }
+    if not set(requirement_handles).issubset(requirements_by_handle):
+        raise NarrativeWorkflowError("narrative_writer_requirement_handle_unknown")
     if not set(claim_handles).issubset(known_claim_handles):
         raise NarrativeWorkflowError("narrative_writer_claim_handle_unknown")
     if not set(recommendation_handles).issubset(
@@ -2223,6 +2341,40 @@ def _writer_block_shape(
     _required_string(block["statement_role"], "narrative_writer_statement_role_invalid")
     if type(block["required"]) is not bool:
         raise NarrativeWorkflowError("narrative_writer_required_invalid")
+    if requirement_handles:
+        requirements = tuple(
+            requirements_by_handle[handle] for handle in requirement_handles
+        )
+        issue_refs = {requirement.issue_ref for requirement in requirements}
+        allowed_claim_handles = {
+            handle
+            for requirement in requirements
+            for handle in requirement.claim_handles
+        }
+        allowed_limitation_handles = {
+            handle
+            for requirement in requirements
+            for handle in requirement.limitation_handles
+        }
+        allowed_limitation_handles.update(
+            handle
+            for claim in material_projection.claims
+            if claim.claim_handle in allowed_claim_handles
+            for handle in claim.limitation_handles
+        )
+        if enforce_question_scope and (
+            None in issue_refs
+            or len(issue_refs) != 1
+            or recommendation_handles
+            or block["required"] is not True
+            or not set(claim_handles).issubset(allowed_claim_handles)
+            or not set(limitation_handles).issubset(
+                allowed_limitation_handles
+            )
+        ):
+            raise NarrativeWorkflowError(
+                "narrative_writer_question_answer_scope_invalid"
+            )
     resolved_bindings = tuple(
         _fact_binding_from_output(
             binding,
@@ -2249,7 +2401,7 @@ def _publication_requirements_covered(
     fact_binding_pairs: frozenset[tuple[str, str]],
     limitation_handles: frozenset[str],
 ) -> bool:
-    for requirement in material_projection.publication_requirements:
+    for requirement in _answer_publication_requirements(material_projection):
         if requirement.status in {"satisfied", "mixed", "contradicted"}:
             if claim_handles.isdisjoint(requirement.claim_handles):
                 return False
@@ -2268,6 +2420,192 @@ def _publication_requirements_covered(
         if not frozenset(requirement.limitation_handles).issubset(limitation_handles):
             return False
     return True
+
+
+def _answer_publication_requirements(
+    material_projection: NarrativeMaterialProjection,
+) -> tuple[Any, ...]:
+    """Return obligations that originate from the accepted question graph."""
+
+    requirements = tuple(material_projection.publication_requirements)
+    selected = tuple(
+        requirement
+        for requirement in requirements
+        if requirement.issue_ref is not None
+    )
+    return selected or requirements
+
+
+def _answer_equivalent_claim_signature(claim: Any) -> str:
+    verified_payload = canonical_value(
+        getattr(
+            claim,
+            "verified_claim_payload",
+            {"claim_handle": claim.claim_handle},
+        )
+    )
+    if isinstance(verified_payload, Mapping):
+        verified_payload = {
+            key: value
+            for key, value in verified_payload.items()
+            if key != "obligation_id"
+        }
+    publication_ceiling = (
+        claim.publication_ceiling.to_dict()
+        if hasattr(getattr(claim, "publication_ceiling", None), "to_dict")
+        else canonical_value(getattr(claim, "publication_ceiling", None))
+    )
+    return canonical_digest(
+        {
+            "claim_class": claim.claim_class,
+            "publication_ceiling": publication_ceiling,
+            "scope": getattr(claim, "scope", None),
+            "grain": getattr(claim, "grain", None),
+            "dimension_path": tuple(getattr(claim, "dimension_path", ())),
+            "material_handles": tuple(claim.material_handles),
+            "limitation_handles": tuple(claim.limitation_handles),
+            "verified_claim_payload": verified_payload,
+        }
+    )
+
+
+def _close_answer_equivalent_claim_coverage(
+    *,
+    material_projection: NarrativeMaterialProjection,
+    publication_blocks: Sequence[dict[str, Any]],
+) -> bool:
+    claims_by_handle = {
+        claim.claim_handle: claim for claim in material_projection.claims
+    }
+    covered_handles = {
+        handle
+        for block in publication_blocks
+        for handle in block["claim_handles"]
+        if handle in claims_by_handle
+    }
+    covered_by_signature: dict[str, list[str]] = {}
+    for claim in material_projection.claims:
+        if claim.claim_handle in covered_handles:
+            covered_by_signature.setdefault(
+                _answer_equivalent_claim_signature(claim),
+                [],
+            ).append(claim.claim_handle)
+
+    changed = False
+    for claim in material_projection.claims:
+        if claim.claim_handle in covered_handles:
+            continue
+        equivalent_handles = covered_by_signature.get(
+            _answer_equivalent_claim_signature(claim),
+            (),
+        )
+        target_block = next(
+            (
+                block
+                for block in publication_blocks
+                if any(
+                    handle in block["claim_handles"]
+                    for handle in equivalent_handles
+                )
+            ),
+            None,
+        )
+        if target_block is None:
+            continue
+        target_block["claim_handles"] = sorted(
+            {*target_block["claim_handles"], claim.claim_handle}
+        )
+        covered_handles.add(claim.claim_handle)
+        covered_by_signature.setdefault(
+            _answer_equivalent_claim_signature(claim),
+            [],
+        ).append(claim.claim_handle)
+        changed = True
+    return changed
+
+
+def _question_answer_requirements_covered(
+    *,
+    material_projection: NarrativeMaterialProjection,
+    blocks: Sequence[Mapping[str, Any]],
+) -> bool:
+    requirements = tuple(
+        requirement
+        for requirement in _answer_publication_requirements(material_projection)
+        if requirement.issue_ref is not None
+    )
+    question_blocks = tuple(
+        block for block in blocks if block["requirement_handles"]
+    )
+    if not requirements:
+        return not question_blocks
+    requirements_by_issue: dict[str, list[Any]] = {}
+    for requirement in requirements:
+        requirements_by_issue.setdefault(requirement.issue_ref, []).append(requirement)
+    if len(question_blocks) != len(requirements_by_issue):
+        return False
+    for issue_ref, issue_requirements in requirements_by_issue.items():
+        expected_handles = frozenset(
+            requirement.requirement_handle
+            for requirement in issue_requirements
+        )
+        matching_blocks = tuple(
+            block
+            for block in question_blocks
+            if frozenset(block["requirement_handles"]) == expected_handles
+        )
+        if len(matching_blocks) != 1:
+            return False
+        block = matching_blocks[0]
+        claim_handles = frozenset(block["claim_handles"])
+        limitation_handles = frozenset(block["limitation_handles"])
+        fact_binding_pairs = frozenset(
+            (binding["claim_handle"], binding["fact_handle"])
+            for binding in block["material_fact_bindings"]
+        )
+        for requirement in issue_requirements:
+            requirement_claims = frozenset(requirement.claim_handles)
+            if requirement.status in {"satisfied", "mixed", "contradicted"}:
+                if claim_handles.isdisjoint(requirement_claims):
+                    return False
+            elif requirement.status != "unavailable":
+                raise NarrativeWorkflowError(
+                    "narrative_publication_requirement_status_invalid"
+                )
+            if any(
+                not any(
+                    (claim_handle, fact_handle) in fact_binding_pairs
+                    for claim_handle in requirement_claims
+                )
+                for fact_handle in requirement.required_fact_handles
+            ):
+                return False
+            if not frozenset(requirement.limitation_handles).issubset(
+                limitation_handles
+            ):
+                return False
+    return True
+
+
+def _answer_requirement_payloads(
+    requirements: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for requirement in requirements:
+        issue_ref = requirement.get("issue_ref")
+        business_question = requirement.get("business_question")
+        answer_contract = requirement.get("answer_contract")
+        if (
+            isinstance(issue_ref, str)
+            and bool(issue_ref)
+            and isinstance(business_question, str)
+            and bool(business_question)
+            and isinstance(answer_contract, Mapping)
+            and answer_contract.get("contract_version")
+            == "question-answer-contract.v1"
+        ):
+            selected.append(dict(requirement))
+    return selected or [dict(requirement) for requirement in requirements]
 
 
 def _requested_factor_comparison_focus(
@@ -2505,45 +2843,36 @@ def _initial_writer_validator(
         _writer_block_shape(
             block,
             material_projection=material_projection,
+            enforce_question_scope=False,
         )
-    required = tuple(block for block in blocks if block["required"] is True)
+    if not _question_answer_requirements_covered(
+        material_projection=material_projection,
+        blocks=blocks,
+    ):
+        raise NarrativeWorkflowError(
+            "narrative_writer_question_answer_coverage_invalid"
+        )
+    publication_blocks = tuple(
+        block for block in blocks if not block["requirement_handles"]
+    )
+    required = tuple(
+        block for block in publication_blocks if block["required"] is True
+    )
     if not required:
         raise NarrativeWorkflowError("narrative_writer_required_coverage_invalid")
     if authority_mode == "boundary_only":
         if (
-            len(blocks) != 1
-            or blocks[0]["role"] != "boundary"
-            or blocks[0]["required"] is not True
-            or blocks[0]["claim_handles"]
-            or blocks[0]["recommendation_handles"]
-            or blocks[0]["material_fact_bindings"]
-            or not blocks[0]["limitation_handles"]
+            len(publication_blocks) != 1
+            or publication_blocks[0]["role"] != "boundary"
+            or publication_blocks[0]["required"] is not True
+            or publication_blocks[0]["claim_handles"]
+            or publication_blocks[0]["recommendation_handles"]
+            or publication_blocks[0]["material_fact_bindings"]
+            or not publication_blocks[0]["limitation_handles"]
         ):
             raise NarrativeWorkflowError("narrative_writer_boundary_output_invalid")
     elif not any(block["claim_handles"] for block in required):
         raise NarrativeWorkflowError("narrative_writer_required_coverage_invalid")
-    required_claim_handles = frozenset(
-        handle for block in required for handle in block["claim_handles"]
-    )
-    required_limitation_handles = frozenset(
-        handle for block in required for handle in block["limitation_handles"]
-    )
-    required_fact_binding_pairs = frozenset(
-        (binding["claim_handle"], binding["fact_handle"])
-        for block in required
-        for binding in block["material_fact_bindings"]
-    )
-    if not _publication_requirements_covered(
-        material_projection=material_projection,
-        claim_handles=required_claim_handles,
-        fact_binding_pairs=required_fact_binding_pairs,
-        limitation_handles=required_limitation_handles,
-    ):
-        raise NarrativeWorkflowError(
-            "narrative_writer_publication_requirement_coverage_invalid"
-        )
-
-
 def _normalize_initial_writer_output_for_delivery(
     output: Mapping[str, Any],
     *,
@@ -2578,6 +2907,10 @@ def _normalize_initial_writer_output_for_delivery(
     claim_order = {
         claim.claim_handle: index
         for index, claim in enumerate(material_projection.claims)
+    }
+    requirement_by_handle = {
+        requirement.requirement_handle: requirement
+        for requirement in _answer_publication_requirements(material_projection)
     }
     for raw_block in raw_blocks:
         block_findings: list[str] = []
@@ -2726,15 +3059,73 @@ def _normalize_initial_writer_output_for_delivery(
                 material_projection=material_projection,
             )
             block_findings.append("block_role_derived_from_authority_handles")
+        if (
+            block.get("role") == "boundary"
+            and block.get("claim_handles")
+            and not block.get("limitation_handles")
+        ):
+            block_findings.append("claim_backed_boundary")
+        if block.get("requirement_handles"):
+            try:
+                _writer_block_shape(
+                    block,
+                    material_projection=material_projection,
+                )
+            except NarrativeWorkflowError as exc:
+                if str(exc) != "narrative_writer_question_answer_scope_invalid":
+                    raise
+                issue_refs = {
+                    requirement_by_handle[handle].issue_ref
+                    for handle in block["requirement_handles"]
+                    if handle in requirement_by_handle
+                }
+                if len(issue_refs) == 1 and None not in issue_refs:
+                    block_findings.append(
+                        "question_answer_scope_retained_as_partial"
+                    )
+                else:
+                    block["requirement_handles"] = []
+                    block_findings.append(
+                        "integrated_block_requirement_scope_removed"
+                    )
         _writer_block_shape(
             block,
             material_projection=material_projection,
+            enforce_question_scope=False,
         )
         normalized_blocks.append(block)
         findings.extend(block_findings)
 
+    if not _question_answer_requirements_covered(
+        material_projection=material_projection,
+        blocks=normalized_blocks,
+    ):
+        findings.append("question_answer_coverage_incomplete")
+    publication_blocks = tuple(
+        block for block in normalized_blocks if not block["requirement_handles"]
+    )
+    if _close_answer_equivalent_claim_coverage(
+        material_projection=material_projection,
+        publication_blocks=publication_blocks,
+    ):
+        findings.append("answer_equivalent_claim_coverage_closed")
+        for block in publication_blocks:
+            _writer_block_shape(
+                block,
+                material_projection=material_projection,
+                enforce_question_scope=False,
+            )
+    covered_public_claim_handles = {
+        handle
+        for block in publication_blocks
+        for handle in block["claim_handles"]
+    }
+    if authority_mode != "boundary_only" and not {
+        claim.claim_handle for claim in material_projection.claims
+    }.issubset(covered_public_claim_handles):
+        findings.append("public_claim_coverage_incomplete")
     if authority_mode == "boundary_only":
-        block = normalized_blocks[0] if len(normalized_blocks) == 1 else None
+        block = publication_blocks[0] if len(publication_blocks) == 1 else None
         if (
             block is None
             or block["role"] != "boundary"
@@ -2747,31 +3138,17 @@ def _normalize_initial_writer_output_for_delivery(
             raise NarrativeWorkflowError("narrative_writer_boundary_output_invalid")
 
     required_blocks = tuple(
-        block for block in normalized_blocks if block["required"] is True
+        block for block in publication_blocks if block["required"] is True
     )
     if authority_mode != "boundary_only" and (
         not required_blocks
         or not any(block["claim_handles"] for block in required_blocks)
     ):
         findings.append("required_block_coverage_incomplete")
-    required_claim_handles = frozenset(
-        handle for block in required_blocks for handle in block["claim_handles"]
-    )
-    required_limitation_handles = frozenset(
-        handle for block in required_blocks for handle in block["limitation_handles"]
-    )
-    required_fact_binding_pairs = frozenset(
-        (binding["claim_handle"], binding["fact_handle"])
-        for block in required_blocks
-        for binding in block["material_fact_bindings"]
-    )
-    if not _publication_requirements_covered(
-        material_projection=material_projection,
-        claim_handles=required_claim_handles,
-        fact_binding_pairs=required_fact_binding_pairs,
-        limitation_handles=required_limitation_handles,
+    if authority_mode != "boundary_only" and not any(
+        block["claim_handles"] for block in publication_blocks
     ):
-        findings.append("publication_requirement_coverage_incomplete")
+        findings.append("claim_bearing_synthesis_missing")
     return (
         {"blocks": normalized_blocks},
         tuple(dict.fromkeys(findings)),
@@ -2910,6 +3287,7 @@ def _block_from_output(
         writer_attempt_id=writer_attempt_id,
         role=payload["role"],
         text=payload["text"],
+        requirement_handles=payload["requirement_handles"],
         claim_handles=payload["claim_handles"],
         recommendation_handles=payload["recommendation_handles"],
         limitation_handles=payload["limitation_handles"],
@@ -2929,6 +3307,7 @@ def _block_to_provider_payload(block: NarrativeBlock) -> dict[str, Any]:
     return {
         "role": block.role,
         "text": block.text,
+        "requirement_handles": list(block.requirement_handles),
         "claim_handles": list(block.claim_handles),
         "recommendation_handles": list(block.recommendation_handles),
         "limitation_handles": list(block.limitation_handles),
@@ -3034,7 +3413,7 @@ def _requirement_limitation_scope(
         for fact in material.facts
     }
     scope: list[dict[str, Any]] = []
-    for requirement in material_projection.publication_requirements:
+    for requirement in _answer_publication_requirements(material_projection):
         claim_options = tuple(requirement.claim_handles)
         required_limitations = tuple(requirement.limitation_handles)
         try:
@@ -3141,6 +3520,8 @@ def _requirement_limitation_scope(
 
 def _columnar_material_fact_transport(
     material_view: Mapping[str, Any],
+    *,
+    compact_unscoped_materials: bool = False,
 ) -> dict[str, Any]:
     """Encode public facts losslessly without repeating field names per fact."""
 
@@ -3150,7 +3531,8 @@ def _columnar_material_fact_transport(
     ):
         raise NarrativeWorkflowError("narrative_material_fact_transport_invalid")
     normalized = _contract_scoped_material_fact_view(
-        canonical_value(material_view)
+        canonical_value(material_view),
+        compact_unscoped_materials=compact_unscoped_materials,
     )
     materials = _mapping_sequence(
         normalized.get("evidence_materials"),
@@ -3215,13 +3597,42 @@ def _columnar_material_fact_transport(
     }
 
 
-def _contract_scoped_material_fact_view(
+def _narrative_material_fact_transport(
     material_view: Mapping[str, Any],
 ) -> dict[str, Any]:
-    requirements = _mapping_sequence(
+    """Recompile oversized writer material without removing accepted claims."""
+
+    primary = _columnar_material_fact_transport(material_view)
+    primary_bytes = len(
+        json.dumps(
+            primary,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    if primary_bytes <= NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT:
+        return primary
+    repaired = _columnar_material_fact_transport(
+        material_view,
+        compact_unscoped_materials=True,
+    )
+    return {
+        **repaired,
+        "transport_repair_mode": _MATERIAL_FACT_REPAIR_MODE,
+    }
+
+
+def _contract_scoped_material_fact_view(
+    material_view: Mapping[str, Any],
+    *,
+    compact_unscoped_materials: bool = False,
+) -> dict[str, Any]:
+    all_requirements = _mapping_sequence(
         material_view.get("publication_requirements"),
         "narrative_material_fact_transport_invalid",
     )
+    requirements = _answer_requirement_payloads(all_requirements)
     required_fact_handles = {
         handle
         for requirement in requirements
@@ -3321,6 +3732,7 @@ def _contract_scoped_material_fact_view(
             isinstance(material_handle, str)
             and bool(facts)
             and not selected
+            and not writer_fact_names
             and not contract
             and claim_classes_by_material.get(material_handle)
             == {"candidate_mechanism"}
@@ -3345,7 +3757,16 @@ def _contract_scoped_material_fact_view(
             writer_selected = tuple(
                 fact
                 for fact in facts
-                if fact.get("name") in allowed_names
+                if (
+                    fact.get("name") in allowed_names
+                    or (
+                        isinstance(fact.get("name"), str)
+                        and any(
+                            fact["name"].endswith("." + allowed_name)
+                            for allowed_name in allowed_names
+                        )
+                    )
+                )
                 or (
                     isinstance(fact.get("fact_handle"), str)
                     and fact["fact_handle"] in required_fact_handles
@@ -3383,10 +3804,24 @@ def _contract_scoped_material_fact_view(
                     },
                 }
             )
+        elif compact_unscoped_materials and len(selected) < len(facts):
+            selected_materials.append(
+                {
+                    **material,
+                    "facts": list(selected),
+                    "fact_selection": {
+                        "mode": _MATERIAL_FACT_REPAIR_MODE,
+                        "source_fact_count": len(facts),
+                        "selected_fact_count": len(selected),
+                        "omitted_fact_count": len(facts) - len(selected),
+                    },
+                }
+            )
         else:
             selected_materials.append(dict(material))
     return {
         **material_view,
+        "publication_requirements": requirements,
         "evidence_materials": selected_materials,
     }
 
@@ -3414,7 +3849,12 @@ def _verification_scoped_material_view(
     limitations_by_handle = {
         item["limitation_handle"]: item for item in full["limitations"]
     }
-    requirements = full["publication_requirements"]
+    requirements = _answer_requirement_payloads(
+        _mapping_sequence(
+            full["publication_requirements"],
+            "narrative_material_fact_transport_invalid",
+        )
+    )
 
     changed = True
     while changed:
@@ -3744,6 +4184,133 @@ def _verify_narrative(
     return invocation, attempt, report
 
 
+def _candidate_writer_blocks(
+    *,
+    output: Mapping[str, Any],
+    material_projection: NarrativeMaterialProjection,
+) -> tuple[NarrativeBlock, ...]:
+    raw_blocks = _mapping_sequence(
+        output.get("blocks"),
+        "narrative_writer_blocks_invalid",
+    )
+    candidate_digest = canonical_digest(output)
+    return tuple(
+        _block_from_output(
+            raw_block,
+            writer_attempt_id=(
+                "narrative-candidate-writer-attempt:sha256:"
+                + canonical_digest(
+                    {
+                        "candidate_digest": candidate_digest,
+                        "block_index": index,
+                    }
+                )
+            ),
+            material_projection=material_projection,
+        )
+        for index, raw_block in enumerate(raw_blocks)
+    )
+
+
+def _verify_candidate_writer_output(
+    *,
+    authority_bundle: AuthorityBundle,
+    material_projection: NarrativeMaterialProjection,
+    answer_context: NarrativeAnswerContext,
+    llm_client: TypedNarrativeLLM,
+    output: Mapping[str, Any],
+    contract_findings: Sequence[str],
+) -> None:
+    blocks = _candidate_writer_blocks(
+        output=output,
+        material_projection=material_projection,
+    )
+    verification_scope = {
+        "mode": "full",
+        "verifier_prompt_version": _NARRATIVE_PROMPT_VERSION,
+        "material_projection_ref": material_projection.projection_ref,
+        "material_projection_digest": material_projection.content_digest,
+        "target_block_ids": [item.block_id for item in blocks],
+    }
+    payload = {
+        "material_projection": _verification_scoped_material_view(
+            material_projection=material_projection,
+            blocks=blocks,
+        ),
+        "answer_context": answer_context.to_writer_payload(),
+        "verification_scope": verification_scope,
+        "requirement_limitation_scope": _requirement_limitation_scope(
+            material_projection=material_projection,
+            blocks=blocks,
+        ),
+        "blocks": [_verifier_block_payload(item) for item in blocks],
+    }
+    call_input = NarrativeProviderCallInput.create(
+        purpose="block_verification",
+        authority_bundle=authority_bundle,
+        material_projection=material_projection,
+        payload=payload,
+    )
+    invocation = _invoke_provider(
+        llm_client,
+        call_input=call_input,
+        system_prompt=_VERIFIER_SYSTEM_PROMPT,
+        required_key="decisions",
+        validator=lambda candidate: _verifier_validator(
+            candidate,
+            blocks=blocks,
+        ),
+        output_normalizer=lambda candidate: (
+            _normalize_verifier_output_for_delivery(
+                candidate,
+                blocks=blocks,
+            )
+        ),
+    )
+    block_index_by_id = {
+        block.block_id: index for index, block in enumerate(blocks, start=1)
+    }
+    vetoes = tuple(
+        {
+            "block_index": block_index_by_id[item["block_id"]],
+            "reason_code": item["reason_code"],
+        }
+        for item in invocation.output["decisions"]
+        if item["disposition"] == "vetoed"
+    )
+    repair_findings = tuple(
+        finding
+        for finding in contract_findings
+        if finding
+        in {
+            "question_answer_coverage_incomplete",
+            "claim_bearing_synthesis_missing",
+            "public_claim_coverage_incomplete",
+        }
+    )
+    if not vetoes and not repair_findings:
+        return
+    raise LLMOutputError(
+        "narrative_writer_prepublication_verification_failed",
+        retryable=True,
+        invalid_output=canonical_value(output),
+        repair_contract={
+            "schema_version": "narrative-writer-repair.v2",
+            "contract_findings": list(repair_findings),
+            "vetoed_blocks": list(vetoes),
+            "repair_rule": (
+                "Rewrite the complete answer once. Preserve the required question "
+                "hierarchy and all authorized handles. Resolve every listed coverage "
+                "finding and verifier veto together. Align qualitative direction, "
+                "majority or minority wording, stability, exceptions, driver ordering, "
+                "numbers, and limitations with the complete authorized material for "
+                "each bound claim. Keep per-question answers separate from the final "
+                "synthesis."
+            ),
+        },
+    )
+
+
 def _workflow_result(
     *,
     authority_bundle: AuthorityBundle,
@@ -3856,7 +4423,7 @@ def _workflow_result(
         raise NarrativeWorkflowError("narrative_workflow_response_closure_invalid")
     responses_by_ref = {item.response_ref: item for item in responses}
     expected_initial_writer_payload = {
-        "material_projection": _columnar_material_fact_transport(
+        "material_projection": _narrative_material_fact_transport(
             material_projection.to_writer_payload()
         ),
         "requirement_limitation_scope": _requirement_limitation_scope(
@@ -4179,6 +4746,7 @@ def run_narrative_workflow(
     answer_context: NarrativeAnswerContext,
     llm_client: TypedNarrativeLLM,
     sensitive_output_inspector: SensitiveOutputInspector,
+    prepublication_verification: bool = False,
 ) -> NarrativeWorkflowResult:
     settlement, policy, _, expected_projection = _prepare_narrative_material_projection(
         authority_bundle=authority_bundle,
@@ -4208,8 +4776,12 @@ def run_narrative_workflow(
     )
     if expected_context != answer_context:
         raise NarrativeWorkflowError("narrative_answer_context_invalid")
+    if type(prepublication_verification) is not bool:
+        raise NarrativeWorkflowError(
+            "narrative_prepublication_verification_invalid"
+        )
     initial_payload = {
-        "material_projection": _columnar_material_fact_transport(
+        "material_projection": _narrative_material_fact_transport(
             material_projection.to_writer_payload()
         ),
         "requirement_limitation_scope": _requirement_limitation_scope(
@@ -4246,6 +4818,20 @@ def run_narrative_workflow(
             output,
             authority_mode=authority_bundle.authority_mode,
             material_projection=material_projection,
+        ),
+        candidate_verifier=(
+            (
+                lambda output, findings: _verify_candidate_writer_output(
+                    authority_bundle=authority_bundle,
+                    material_projection=material_projection,
+                    answer_context=answer_context,
+                    llm_client=llm_client,
+                    output=output,
+                    contract_findings=findings,
+                )
+            )
+            if prepublication_verification
+            else None
         ),
     )
     writer_attempt, narrative = _initial_writer_attempt_and_document(

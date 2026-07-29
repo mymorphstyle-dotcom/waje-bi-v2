@@ -956,7 +956,7 @@ def test_recommendation_proposal_reuses_verified_claim_graph_without_evidence_re
         (2, "supporting_claims", "decision"),
     ):
         assert client.calls[call_index]["prompt_version"] == (
-            "single-authority-phase04.v13"
+            "single-authority-phase04.v14"
         )
         assert output_key in client.calls[call_index]["messages"][0]["content"]
         payload = client.calls[call_index]["call_input"]["payload"]
@@ -1057,7 +1057,7 @@ def test_candidate_claim_is_one_typed_proposal_call_bound_to_known_refs() -> Non
         "factual_payload is a non-empty JSON object"
         in (client.calls[0]["messages"][0]["content"])
     )
-    assert client.calls[0]["prompt_version"] == "single-authority-phase04.v13"
+    assert client.calls[0]["prompt_version"] == "single-authority-phase04.v14"
     assert set(client.calls[0]["call_input"]["payload"]) == {
         "obligations",
         "aggregate_evidence",
@@ -1356,7 +1356,7 @@ def test_claim_verifier_allows_reasoned_veto_without_borrowed_limitation() -> No
 def test_claim_verification_prompt_is_class_relative() -> None:
     prompt = semantic_workflow._PROMPTS["claim_verification"]
 
-    assert semantic_workflow._SEMANTIC_PROMPT_VERSION == "single-authority-phase04.v13"
+    assert semantic_workflow._SEMANTIC_PROMPT_VERSION == "single-authority-phase04.v14"
     assert "declared claim_class and publication_ceiling" in prompt
     assert "success_policy" in prompt
     assert "required_claim_strength" in prompt

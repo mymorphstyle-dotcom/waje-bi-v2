@@ -37,6 +37,9 @@ class PatternScanTest(unittest.TestCase):
             month_rows(110, 90, 95),
             pattern_family="intra_period",
             target_phase="start",
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="mean_of_complete_days",
             materiality_floor=0.03,
         )
 
@@ -51,6 +54,9 @@ class PatternScanTest(unittest.TestCase):
             month_rows(100, 120, 95),
             pattern_family="intra_period",
             target_phase="start",
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="mean_of_complete_days",
             materiality_floor=0.03,
         )
 
@@ -63,6 +69,9 @@ class PatternScanTest(unittest.TestCase):
             pattern_family="intra_period",
             target_phases=("start",),
             baseline_phases=("mid", "end"),
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="mean_of_complete_days",
             materiality_floor=0.03,
         )
 
@@ -73,6 +82,89 @@ class PatternScanTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.median_uplift,
             (target_daily - baseline_daily) / baseline_daily,
+        )
+
+    def test_intra_period_consumes_the_accepted_sum_or_mean_aggregation(self):
+        rows = []
+        for month in ("2024-01", "2024-02"):
+            rows.extend(
+                (
+                    {"month": month, "phase": "start", "amount": 500, "days": 5},
+                    {"month": month, "phase": "end", "amount": 620, "days": 7},
+                )
+            )
+
+        summed = scan_pattern(
+            rows,
+            pattern_family="intra_period",
+            target_phase="start",
+            baseline_phase="end",
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="sum_of_complete_days",
+            materiality_floor=0.0,
+            min_periods=2,
+        )
+        averaged = scan_pattern(
+            rows,
+            pattern_family="intra_period",
+            target_phase="start",
+            baseline_phase="end",
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="mean_of_complete_days",
+            materiality_floor=0.0,
+            min_periods=2,
+        )
+
+        self.assertLess(summed.median_uplift, 0)
+        self.assertGreater(averaged.median_uplift, 0)
+        self.assertEqual(
+            summed.typed_payload["aggregation"],
+            "sum_of_complete_days",
+        )
+        self.assertEqual(
+            averaged.typed_payload["aggregation"],
+            "mean_of_complete_days",
+        )
+
+    def test_intra_period_can_pair_target_members_with_the_previous_period(self):
+        result = scan_pattern(
+            [
+                {"month": "2024-01", "phase": "start", "amount": 90},
+                {"month": "2024-01", "phase": "end", "amount": 100},
+                {"month": "2024-02", "phase": "start", "amount": 120},
+                {"month": "2024-02", "phase": "end", "amount": 80},
+                {"month": "2024-03", "phase": "start", "amount": 70},
+                {"month": "2024-03", "phase": "end", "amount": 60},
+            ],
+            pattern_family="intra_period",
+            target_phase="start",
+            baseline_phase="end",
+            baseline_class="prior_period",
+            period_grain="month",
+            aggregation="sum_of_complete_days",
+            materiality_floor=0.0,
+            min_periods=2,
+        )
+
+        comparisons = result.typed_payload["period_comparisons"]
+        self.assertEqual(
+            [
+                (item["period"], item["baseline_period"], item["uplift"])
+                for item in comparisons
+            ],
+            [
+                ("2024-02", "2024-01", 0.2),
+                ("2024-03", "2024-02", -0.125),
+            ],
+        )
+        self.assertEqual(result.comparable_periods, 2)
+        self.assertTrue(
+            any(
+                item["period"] == "2024-01" and item["reason"] == "incomplete"
+                for item in result.exceptions
+            )
         )
 
     def test_custom_baseline_compares_named_groups(self):
@@ -126,6 +218,49 @@ class PatternScanTest(unittest.TestCase):
             "must_be_mathematically_entailed",
         )
 
+    def test_pattern_scan_carries_bounded_minority_periods_for_exception_answers(self):
+        rows = []
+        for period, target in (
+            ("2024-01", 140),
+            ("2024-02", 110),
+            ("2024-03", 90),
+            ("2024-04", 85),
+            ("2024-05", 80),
+            ("2024-06", 75),
+            ("2024-07", 70),
+        ):
+            rows.extend(
+                (
+                    {"period": period, "group": "target", "amount": target},
+                    {"period": period, "group": "baseline", "amount": 100},
+                )
+            )
+
+        result = scan_pattern(
+            rows,
+            pattern_family="custom_baseline",
+            target_group="target",
+            baseline_group="baseline",
+            materiality_floor=0.0,
+            min_periods=2,
+        )
+
+        summary = result.typed_payload["period_direction_summary"]
+        self.assertEqual(summary["dominant_direction"], "negative")
+        self.assertEqual(summary["minority_direction"], "positive")
+        self.assertEqual(summary["positive_period_count"], 2)
+        self.assertEqual(summary["negative_period_count"], 5)
+        self.assertEqual(summary["exception_period_count"], 2)
+        self.assertEqual(
+            [item["period"] for item in summary["exception_periods"]],
+            ["2024-01", "2024-02"],
+        )
+        self.assertIs(summary["exception_periods_truncated"], False)
+        self.assertIn(
+            {"period_direction_summary": summary},
+            result.typed_payload["claim_material_observations"],
+        )
+
     def test_weekly_pattern_can_use_selected_baseline_weekdays(self):
         rows = []
         for week in ("w1", "w2", "w3"):
@@ -144,6 +279,9 @@ class PatternScanTest(unittest.TestCase):
             weekday_key="weekday",
             target_weekdays=(5,),
             baseline_weekdays=(1, 7),
+            baseline_class="custom_control_window",
+            period_grain="week",
+            aggregation="mean_of_complete_days",
             materiality_floor=0.03,
             min_periods=3,
         )
@@ -156,6 +294,9 @@ class PatternScanTest(unittest.TestCase):
             [],
             pattern_family="intra_period",
             target_phase="start",
+            baseline_class="same_month_phase",
+            period_grain="month",
+            aggregation="mean_of_complete_days",
             materiality_floor=0.03,
         )
 

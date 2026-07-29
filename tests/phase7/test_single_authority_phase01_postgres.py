@@ -26,10 +26,12 @@ def _accepted_provider_attempt_ref(
     intent_revision_id: str | None,
     call_kind: str,
     stage_name: str,
+    attempt_suffix: str = "",
 ) -> str:
     input_payload = {
         "test_provider_call": stage_name,
         "run_attempt_id": run_id,
+        "attempt_suffix": attempt_suffix,
     }
     input_digest = canonical_digest(input_payload)
     spec = DurableCallSpec.create(
@@ -39,7 +41,7 @@ def _accepted_provider_attempt_ref(
         task_id=None,
         stage_name=stage_name,
         call_kind=call_kind,
-        operation_name=f"test_{stage_name}",
+        operation_name=f"test_{stage_name}{attempt_suffix}",
         input_ref="provider-call-input:sha256:" + input_digest,
         input_payload=input_payload,
     )
@@ -355,6 +357,129 @@ class SingleAuthorityPostgresIntegrationTest(unittest.TestCase):
             {"run_id": run_id},
         )
         self.assertEqual(tuple(counts), (1, 1))
+
+    def test_clarification_display_drift_keeps_typed_options_authoritative(self):
+        run_id = f"phase01-contract-run-{uuid4().hex}"
+        revision, intent_transition = self._accepted_revision(run_id)
+        options = [
+            {
+                "slot_id": "comparison_baseline",
+                "option_id": "comparison_baseline.previous_day",
+                "typed_value": {"baseline_id": "previous_day"},
+                "display_label": "跟前一天比较（推荐）",
+                "display_description": "比较目标日期与前一天。",
+                "recommended": True,
+            },
+            {
+                "slot_id": "comparison_baseline",
+                "option_id": "comparison_baseline.same_weekday_last_week",
+                "typed_value": {"baseline_id": "same_weekday_last_week"},
+                "display_label": "跟上周同一天比较",
+                "display_description": "比较目标日期与上周同一天。",
+                "recommended": False,
+            },
+        ]
+        first_input = {
+            "intent_revision_id": revision.intent_revision_id,
+            "generation": 1,
+        }
+        first_output = {"options": options}
+        first_transition = _transition(
+            node="generate_clarification",
+            run_id=run_id,
+            revision_id=revision.intent_revision_id,
+            position=0,
+            input_payload=first_input,
+            output_payload=first_output,
+            parent=intent_transition.transition_id,
+            next_transition="persist_waiting_for_decision",
+        )
+        original_digest = self.store.save_decision_options_transition(
+            intent_revision_id=revision.intent_revision_id,
+            options=options,
+            transition=first_transition,
+            input_payload=first_input,
+            output_payload=first_output,
+            accepted_attempt_refs=(
+                _accepted_provider_attempt_ref(
+                    self.store,
+                    run_id=run_id,
+                    intent_revision_id=revision.intent_revision_id,
+                    call_kind="clarification_provider",
+                    stage_name="generate_clarification",
+                    attempt_suffix="-first",
+                ),
+            ),
+        )
+        drifted = [
+            {
+                **options[0],
+                "display_description": "和上一自然日做对比。",
+            },
+            {
+                **options[1],
+                "display_label": "与上周同日比较",
+            },
+        ]
+        second_input = {
+            "intent_revision_id": revision.intent_revision_id,
+            "generation": 2,
+        }
+        second_output = {"options": drifted}
+        second_transition = _transition(
+            node="generate_clarification",
+            run_id=run_id,
+            revision_id=revision.intent_revision_id,
+            position=0,
+            input_payload=second_input,
+            output_payload=second_output,
+            parent=first_transition.transition_id,
+            next_transition="persist_waiting_for_decision",
+        )
+
+        replay_digest = self.store.save_decision_options_transition(
+            intent_revision_id=revision.intent_revision_id,
+            options=drifted,
+            transition=second_transition,
+            input_payload=second_input,
+            output_payload=second_output,
+            accepted_attempt_refs=(
+                _accepted_provider_attempt_ref(
+                    self.store,
+                    run_id=run_id,
+                    intent_revision_id=revision.intent_revision_id,
+                    call_kind="clarification_provider",
+                    stage_name="generate_clarification",
+                    attempt_suffix="-second",
+                ),
+            ),
+        )
+
+        self.assertEqual(replay_digest, original_digest)
+        self.assertEqual(
+            list(self.store.load_decision_options(revision.intent_revision_id)),
+            options,
+        )
+        audit_rows = self.store._fetchall(
+            """
+            SELECT payload
+            FROM waje_runtime.audit_events
+            WHERE run_id = %(run_id)s
+              AND event_type = 'decision_option_display_drift_recorded'
+            """,
+            {"run_id": run_id},
+        )
+        self.assertEqual(len(audit_rows), 1)
+        self.assertEqual(
+            set(audit_rows[0][0]["drifted_option_refs"]),
+            {
+                "comparison_baseline:comparison_baseline.previous_day",
+                (
+                    "comparison_baseline:"
+                    "comparison_baseline.same_weekday_last_week"
+                ),
+            },
+        )
 
     def test_decision_resume_supersession_cancellation_and_publication_fence(self):
         original_run = f"phase01-contract-run-{uuid4().hex}"

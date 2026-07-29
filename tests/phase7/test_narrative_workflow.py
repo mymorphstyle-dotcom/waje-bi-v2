@@ -16,7 +16,7 @@ from bi_agent.runtime.claim_settlement import (
     settle_claim_checkpoint,
 )
 from bi_agent.runtime.evidence_authority import canonical_value
-from bi_agent.runtime.llm_client import LLMProviderError, LLMResult
+from bi_agent.runtime.llm_client import LLMOutputError, LLMProviderError, LLMResult
 from bi_agent.runtime.narrative_authority import (
     NarrativeAuthorityContractError,
     NarrativeBlock,
@@ -54,6 +54,7 @@ def _compact_fake_writer_output(
     if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Sequence):
         return dict(output)
     field_map = {
+        "requirement_handles": "p",
         "claim_handles": "c",
         "recommendation_handles": "r",
         "limitation_handles": "l",
@@ -100,6 +101,13 @@ _TEST_ACCEPTED_INTENT_CONTEXT = {
     ),
 }
 _TEST_ACCEPTED_PLAN_CONTEXT = {
+    "temporal_authority": {
+        "mode": "window_pair",
+        "effective_comparison_spec": {
+            "kind": "fixed_window",
+            "aggregation": "sum_of_complete_days",
+        },
+    },
     "accepted_question_graph": (),
     "user_required_obligations": (
         {
@@ -160,7 +168,7 @@ class _FakeNarrativeLLM:
         if (
             task.endswith("narrative_writer")
             and payload.get("_wire", {}).get("writer_output_encoding")
-            == "compact-narrative-blocks.v1"
+            == "compact-narrative-blocks.v2"
         ):
             output = _compact_fake_writer_output(output)
         validator = kwargs.get("output_validator")
@@ -623,6 +631,7 @@ def _claim_block(
     return {
         "role": role,
         "text": text,
+        "requirement_handles": [],
         "claim_handles": [claim["claim_handle"]],
         "recommendation_handles": [],
         "limitation_handles": list(claim["limitation_handles"]),
@@ -747,7 +756,7 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     }
     assert client.calls[0]["payload"]["_wire"] == {
         "reference_encoding": "short-authority-alias.v1",
-        "writer_output_encoding": "compact-narrative-blocks.v1",
+        "writer_output_encoding": "compact-narrative-blocks.v2",
     }
     writer_requirements = client.calls[0]["payload"]["material_projection"][
         "publication_requirements"
@@ -771,7 +780,7 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
             "limitation_handles",
     }
     assert all(
-        call["prompt_version"] == "single-authority-phase05.v25"
+        call["prompt_version"] == "single-authority-phase05.v33"
         for call in client.calls
     )
     writer_prompt = client.calls[0]["messages"][0]["content"]
@@ -818,6 +827,7 @@ def test_writer_original_text_and_every_provider_attempt_are_projection_ready() 
     assert set(client.calls[0]["output"]["blocks"][0]) == {
         "role",
         "text",
+        "p",
         "c",
         "r",
         "l",
@@ -1249,6 +1259,80 @@ def test_writer_adds_one_global_fact_owner_when_block_omits_it() -> None:
     )
 
 
+def test_writer_retains_answer_equivalent_claim_handles_in_final_synthesis() -> (
+    None
+):
+    authority = _authority_fixture()
+    projection = _prepared_projection(authority)
+    claim = projection.claims[0]
+    equivalent_payload = canonical_value(claim.verified_claim_payload)
+    equivalent_payload["obligation_id"] = "claim-obligation:equivalent"
+    equivalent_claim = replace(
+        claim,
+        claim_handle="c_answer_equivalent",
+        verified_claim_payload=equivalent_payload,
+    )
+    projection_with_equivalent_claim = replace(
+        projection,
+        claims=(*projection.claims, equivalent_claim),
+    )
+    block = _claim_block(
+        narrative_workflow_module._columnar_material_fact_transport(
+            projection.to_writer_payload()
+        ),
+        role="executive_answer",
+        text="One business statement carries both answer-equivalent claim authorities.",
+    )
+
+    normalized, findings = (
+        narrative_workflow_module._normalize_initial_writer_output_for_delivery(
+            {"blocks": [block]},
+            authority_mode=authority.bundle.authority_mode,
+            material_projection=projection_with_equivalent_claim,
+        )
+    )
+
+    assert normalized["blocks"][0]["claim_handles"] == sorted(
+        [claim.claim_handle, equivalent_claim.claim_handle]
+    )
+    assert findings == ("answer_equivalent_claim_coverage_closed",)
+
+
+def test_writer_audits_a_distinct_claim_missing_from_final_synthesis() -> None:
+    authority = _authority_fixture()
+    projection = _prepared_projection(authority)
+    claim = projection.claims[0]
+    distinct_payload = canonical_value(claim.verified_claim_payload)
+    distinct_payload["claim_kind"] = "different_business_proposition"
+    distinct_claim = replace(
+        claim,
+        claim_handle="c_distinct_missing",
+        verified_claim_payload=distinct_payload,
+    )
+    projection_with_distinct_claim = replace(
+        projection,
+        claims=(*projection.claims, distinct_claim),
+    )
+    block = _claim_block(
+        narrative_workflow_module._columnar_material_fact_transport(
+            projection.to_writer_payload()
+        ),
+        role="executive_answer",
+        text="Only the supplied claim is represented in this final synthesis.",
+    )
+
+    normalized, findings = (
+        narrative_workflow_module._normalize_initial_writer_output_for_delivery(
+            {"blocks": [block]},
+            authority_mode=authority.bundle.authority_mode,
+            material_projection=projection_with_distinct_claim,
+        )
+    )
+
+    assert normalized["blocks"][0]["claim_handles"] == [claim.claim_handle]
+    assert findings == ("public_claim_coverage_incomplete",)
+
+
 def test_candidate_claim_without_required_facts_uses_claim_only_transport() -> None:
     def fact(handle: str) -> dict[str, Any]:
         return {
@@ -1303,6 +1387,250 @@ def test_candidate_claim_without_required_facts_uses_claim_only_transport() -> N
         "selected_fact_count": 0,
         "omitted_fact_count": 2,
     }
+
+
+def test_writer_transport_keeps_only_question_graph_publication_requirements() -> None:
+    answer_contract = {
+        "contract_version": "question-answer-contract.v1",
+        "completion_policy": "direct_answer_or_explicitly_unresolved",
+        "blocking": False,
+    }
+    encoded = narrative_workflow_module._columnar_material_fact_transport(
+        {
+            "authority_mode": "claim_bearing",
+            "claims": [
+                {
+                    "claim_handle": "c_answer",
+                    "claim_class": "observed_fact",
+                    "material_handles": ["m_answer"],
+                }
+            ],
+            "publication_requirements": [
+                {
+                    "requirement_handle": "q_answer",
+                    "issue_ref": "issue:answer",
+                    "business_question": "What changed?",
+                    "answer_contract": answer_contract,
+                    "claim_handles": ["c_answer"],
+                    "required_fact_handles": ["f_answer"],
+                },
+                {
+                    "requirement_handle": "q_auxiliary",
+                    "issue_ref": None,
+                    "business_question": None,
+                    "answer_contract": {},
+                    "claim_handles": ["c_answer"],
+                    "required_fact_handles": ["f_auxiliary"],
+                },
+            ],
+            "evidence_materials": [
+                {
+                    "material_handle": "m_answer",
+                    "evidence_kind": "observed",
+                    "evidence_strength": "high",
+                    "maximum_claim_strength": "observed_fact",
+                    "scope": "scope:test",
+                    "dimension_path": [],
+                    "interpretation_contract": {
+                        "dimension_summary_claim_scope": (
+                            "representative_not_exhaustive"
+                        ),
+                        "dimension_summary_selection_policy": (
+                            "largest_target_volume"
+                        ),
+                    },
+                    "facts": [
+                        {
+                            "fact_handle": "f_answer",
+                            "name": "answer",
+                            "fact_kind": "number",
+                            "value": 1,
+                            "range_end": None,
+                            "unit": "count",
+                        },
+                        {
+                            "fact_handle": "f_auxiliary",
+                            "name": "auxiliary",
+                            "fact_kind": "number",
+                            "value": 2,
+                            "range_end": None,
+                            "unit": "count",
+                        },
+                    ],
+                }
+            ],
+            "recommendations": [],
+            "limitations": [],
+            "boundary_facets": [],
+        }
+    )
+
+    assert [
+        item["requirement_handle"]
+        for item in encoded["publication_requirements"]
+    ] == ["q_answer"]
+    facts = _provider_material_facts(encoded["evidence_materials"][0])
+    assert [item["fact_handle"] for item in facts] == ["f_answer"]
+
+
+def test_question_answers_require_one_explicit_block_per_planner_issue() -> None:
+    requirements = (
+        SimpleNamespace(
+            requirement_handle="pr_primary",
+            issue_ref="issue:primary",
+            status="satisfied",
+            claim_handles=("c_primary",),
+            required_fact_handles=("f_primary",),
+            limitation_handles=(),
+        ),
+        SimpleNamespace(
+            requirement_handle="pr_driver",
+            issue_ref="issue:driver",
+            status="mixed",
+            claim_handles=("c_driver",),
+            required_fact_handles=("f_driver",),
+            limitation_handles=("l_driver",),
+        ),
+    )
+    projection = SimpleNamespace(publication_requirements=requirements)
+    primary_answer = {
+        "requirement_handles": ["pr_primary"],
+        "claim_handles": ["c_primary"],
+        "limitation_handles": [],
+        "material_fact_bindings": [
+            {"claim_handle": "c_primary", "fact_handle": "f_primary"}
+        ],
+    }
+    driver_answer = {
+        "requirement_handles": ["pr_driver"],
+        "claim_handles": ["c_driver"],
+        "limitation_handles": ["l_driver"],
+        "material_fact_bindings": [
+            {"claim_handle": "c_driver", "fact_handle": "f_driver"}
+        ],
+    }
+    final_synthesis = {
+        "requirement_handles": [],
+        "claim_handles": ["c_primary", "c_driver"],
+        "limitation_handles": ["l_driver"],
+        "material_fact_bindings": [
+            {"claim_handle": "c_primary", "fact_handle": "f_primary"},
+            {"claim_handle": "c_driver", "fact_handle": "f_driver"},
+        ],
+    }
+
+    assert narrative_workflow_module._question_answer_requirements_covered(
+        material_projection=projection,
+        blocks=(primary_answer, driver_answer, final_synthesis),
+    )
+    assert not narrative_workflow_module._question_answer_requirements_covered(
+        material_projection=projection,
+        blocks=(final_synthesis,),
+    )
+    assert not narrative_workflow_module._question_answer_requirements_covered(
+        material_projection=projection,
+        blocks=(primary_answer, final_synthesis),
+    )
+
+
+def test_question_answer_scope_includes_local_limitations_of_allowed_claims() -> None:
+    projection = SimpleNamespace(
+        publication_requirements=(
+            SimpleNamespace(
+                requirement_handle="pr_boundary",
+                issue_ref="issue:boundary",
+                status="satisfied",
+                claim_handles=("c_boundary",),
+                required_fact_handles=(),
+                limitation_handles=(),
+            ),
+        ),
+        claims=(
+            SimpleNamespace(
+                claim_handle="c_boundary",
+                material_handles=(),
+                limitation_handles=("l_local",),
+            ),
+        ),
+        recommendations=(),
+        limitations=(SimpleNamespace(limitation_handle="l_local"),),
+        evidence_materials=(),
+    )
+    block = {
+        "role": "direction",
+        "text": "现有数据支持这条边界结论，并保留该事实自身的数据限制。",
+        "requirement_handles": ["pr_boundary"],
+        "claim_handles": ["c_boundary"],
+        "recommendation_handles": [],
+        "limitation_handles": ["l_local"],
+        "material_fact_bindings": [],
+        "statement_role": "business_answer",
+        "required": True,
+    }
+
+    narrative_workflow_module._writer_block_shape(
+        block,
+        material_projection=projection,
+    )
+
+
+def test_soft_question_answer_scope_drift_stays_question_linked_and_is_audited() -> None:
+    projection = SimpleNamespace(
+        publication_requirements=(
+            SimpleNamespace(
+                requirement_handle="pr_primary",
+                issue_ref="issue:primary",
+                status="satisfied",
+                claim_handles=("c_primary",),
+                required_fact_handles=(),
+                limitation_handles=(),
+            ),
+        ),
+        claims=(
+            SimpleNamespace(
+                claim_handle="c_primary",
+                claim_class="observed_fact",
+                material_handles=(),
+                limitation_handles=(),
+            ),
+            SimpleNamespace(
+                claim_handle="c_other",
+                claim_class="observed_fact",
+                material_handles=(),
+                limitation_handles=(),
+            ),
+        ),
+        recommendations=(),
+        limitations=(),
+        evidence_materials=(),
+    )
+    output = {
+        "blocks": [
+            {
+                "role": "direction",
+                "text": "这段内容引用了另一个问题的事实。",
+                "requirement_handles": ["pr_primary"],
+                "claim_handles": ["c_primary", "c_other"],
+                "recommendation_handles": [],
+                "limitation_handles": [],
+                "material_fact_bindings": [],
+                "statement_role": "business_answer",
+                "required": True,
+            }
+        ]
+    }
+
+    normalized, findings = (
+        narrative_workflow_module._normalize_initial_writer_output_for_delivery(
+            output,
+            authority_mode="claim_bearing",
+            material_projection=projection,
+        )
+    )
+
+    assert normalized["blocks"][0]["requirement_handles"] == ["pr_primary"]
+    assert "question_answer_scope_retained_as_partial" in findings
+    assert "question_answer_coverage_incomplete" not in findings
 
 
 def test_writer_resolves_multiple_legal_fact_owners_by_authority_order() -> None:
@@ -1395,12 +1723,14 @@ def test_writer_assembles_ambiguous_global_fact_owner_by_authority_order() -> No
     ] == claim.claim_handle
     assert normalized_block["claim_handles"] == [
         claim.claim_handle,
+        "c_second_legal_owner",
         "c_wrong_owner",
     ]
     assert findings == (
         "fact_binding_owner_normalized",
         "fact_binding_ambiguous_owner_deterministically_resolved",
         "fact_binding_global_owner_added",
+        "answer_equivalent_claim_coverage_closed",
     )
 
 
@@ -1604,7 +1934,77 @@ def test_large_authoritative_fact_set_uses_lossless_columnar_transport() -> None
     ]
     assert transport_audit["reference_alias_count"] >= len(original_facts)
     assert transport_audit["writer_output_encoding"] == (
-        "compact-narrative-blocks.v1"
+        "compact-narrative-blocks.v2"
+    )
+
+
+def test_oversized_writer_material_is_recompiled_without_dropping_claims() -> None:
+    authority = _authority_fixture()
+    claim = authority.settlement.accepted_claims[0]
+    source_material_ref = claim.support_edge_refs[0]
+    additional_facts = tuple(
+        PublicFactDescriptor.create(
+            claim=claim,
+            public_name=f"oversized_transport_fact_{index:05d}",
+            fact_kind="number",
+            value=str(index),
+            range_end=None,
+            unit="count",
+            source_material_ref=source_material_ref,
+        )
+        for index in range(9_000)
+    )
+    materialization = ReviewedPublicFactMaterialization.create(
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        review_ref="public-fact-review:oversized-transport-repair",
+        reviewed_by="review-policy:aggregate-public-facts-v1",
+        public_facts=authority.materialization.public_facts + additional_facts,
+        public_limitations=authority.materialization.public_limitations,
+    )
+    authority = replace(authority, materialization=materialization)
+    projection = _prepared_projection(authority)
+    material_view = projection.to_writer_payload()
+    primary = narrative_workflow_module._columnar_material_fact_transport(
+        material_view
+    )
+    repaired = narrative_workflow_module._narrative_material_fact_transport(
+        material_view
+    )
+
+    assert len(
+        json.dumps(
+            primary,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ) > NARRATIVE_MESSAGE_ENVELOPE_BYTE_LIMIT
+    assert repaired["transport_repair_mode"] == (
+        "required-fact-claim-complete.v1"
+    )
+    assert {
+        item["claim_handle"] for item in repaired["claims"]
+    } == {
+        item.claim_handle for item in projection.claims
+    }
+    required_fact_handles = {
+        handle
+        for requirement in projection.publication_requirements
+        for handle in requirement.required_fact_handles
+    }
+    transported_fact_handles = {
+        fact["fact_handle"]
+        for material in repaired["evidence_materials"]
+        for fact in _provider_material_facts(material)
+    }
+    assert required_fact_handles <= transported_fact_handles
+    assert len(transported_fact_handles) < len(
+        {
+            fact.fact_handle
+            for material in projection.evidence_materials
+            for fact in material.facts
+        }
     )
 
 
@@ -1687,7 +2087,7 @@ def test_writer_owns_claim_bearing_block_structure() -> None:
 
 
 @pytest.mark.parametrize("coverage_location", ("omitted", "optional_only"))
-def test_writer_requires_user_required_coverage_in_required_blocks(
+def test_final_synthesis_may_select_key_findings_without_repeating_every_obligation(
     coverage_location: str,
 ) -> None:
     from tests.phase7 import test_narrative_material_projection as projection_contracts
@@ -1719,15 +2119,11 @@ def test_writer_requires_user_required_coverage_in_required_blocks(
         optional["required"] = False
         blocks.append(optional)
 
-    with pytest.raises(
-        narrative_workflow_module.NarrativeWorkflowError,
-        match="narrative_writer_publication_requirement_coverage_invalid",
-    ):
-        narrative_workflow_module._initial_writer_validator(
-            {"blocks": blocks},
-            authority_mode="claim_bearing",
-            material_projection=projection,
-        )
+    narrative_workflow_module._initial_writer_validator(
+        {"blocks": blocks},
+        authority_mode="claim_bearing",
+        material_projection=projection,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1742,7 +2138,7 @@ def test_writer_requires_user_required_coverage_in_required_blocks(
         ("direction", "none", True, "claim", True),
         ("direction", "none", False, "none", False),
         ("direction", "none", False, "claim", False),
-        ("boundary", "claim", False, "none", False),
+        ("boundary", "claim", False, "none", True),
         ("boundary", "none", False, "claim", True),
         ("next_action", "claim", False, "claim", False),
         ("next_action", "none", True, "none", True),
@@ -1774,6 +2170,7 @@ def test_writer_validator_and_narrative_block_share_authority_handle_grammar(
     candidate = {
         "role": role,
         "text": "This block exercises the shared authority-handle grammar.",
+        "requirement_handles": [],
         "claim_handles": ([claim["claim_handle"]] if claim_source == "claim" else []),
         "recommendation_handles": recommendation_handles,
         "limitation_handles": (
@@ -2196,7 +2593,7 @@ def test_locale_and_recommendation_direction_quality_is_audited_without_blocking
     assert "recommendation_subject_direction_mismatch" in verifier_prompt
     assert "recommendation_subject_direction_ambiguous" in verifier_prompt
     assert all(
-        call["prompt_version"] == "single-authority-phase05.v25"
+        call["prompt_version"] == "single-authority-phase05.v33"
         for call in client.calls
     )
 
@@ -2283,7 +2680,6 @@ def test_incomplete_writer_coverage_is_audited_without_blocking_publication() ->
 
     assert result.writer_contract_findings == (
         "required_block_coverage_incomplete",
-        "publication_requirement_coverage_incomplete",
     )
     assert result.publication_ready is True
     assert result.completeness_assessments[0].status == "incomplete"
@@ -2296,6 +2692,130 @@ def test_incomplete_writer_coverage_is_audited_without_blocking_publication() ->
             recommendations=authority.recommendations,
         )
         == result
+    )
+
+
+def test_claimless_final_synthesis_requests_one_provider_repair() -> None:
+    authority = _authority_fixture()
+
+    class RepairingNarrativeLLM:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.repair_error: str | None = None
+
+        def invoke_json(self, **kwargs: Any) -> LLMResult:
+            payload = json.loads(kwargs["messages"][1]["content"])
+            projection = payload["material_projection"]
+            limitation = projection["limitations"][0]
+            first_output = _compact_fake_writer_output(
+                {
+                    "blocks": [
+                        {
+                            "role": "boundary",
+                            "text": (
+                                "The available evidence has a material boundary."
+                            ),
+                            "requirement_handles": [],
+                            "claim_handles": [],
+                            "recommendation_handles": [],
+                            "limitation_handles": [
+                                limitation["limitation_handle"]
+                            ],
+                            "material_fact_bindings": [],
+                            "statement_role": "evidence_boundary",
+                            "required": True,
+                        }
+                    ]
+                }
+            )
+            validator = kwargs["output_validator"]
+            try:
+                validator(first_output)
+            except LLMOutputError as exc:
+                self.repair_error = str(exc)
+            else:
+                raise AssertionError("claimless_synthesis_was_not_rejected_once")
+
+            final_output = _compact_fake_writer_output(
+                _initial_writer(kwargs["task"], payload)
+            )
+            validator(final_output)
+            self.calls.append(
+                {
+                    **kwargs,
+                    "payload": payload,
+                    "output": final_output,
+                }
+            )
+            final_raw = json.dumps(
+                final_output,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            first_raw = json.dumps(
+                first_output,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return LLMResult(
+                output=final_output,
+                audit={
+                    "provider": "provider:test",
+                    "model": "model:narrative-test",
+                    "prompt_version": kwargs["prompt_version"],
+                    "attempt_count": 2,
+                    "response_id": "response:repair:final",
+                    "raw_response_content": final_raw,
+                    "structured_output": final_output,
+                    "attempt_failures": (
+                        {
+                            "attempt": 1,
+                            "response_id": "response:repair:first",
+                            "raw_response_content": first_raw,
+                        },
+                    ),
+                },
+            )
+
+    client = RepairingNarrativeLLM()
+    result = run_narrative_workflow(
+        authority_bundle=authority.bundle,
+        claim_settlement=authority.settlement,
+        evidence_entries=authority.evidence_entries,
+        recommendations=authority.recommendations,
+        public_materialization=authority.materialization,
+        visibility_policy=authority.policy,
+        material_projection=_prepared_projection(authority),
+        answer_context=_context(),
+        llm_client=client,
+        sensitive_output_inspector=_NoSensitiveOutput(),
+    )
+
+    assert (
+        client.repair_error
+        == "narrative_writer_claim_bearing_synthesis_missing"
+    )
+    assert result.writer_contract_findings == ()
+    assert any(
+        block.claim_handles
+        for block in result.delivery_narrative.blocks
+        if not block.requirement_handles
+    )
+    assert len(result.provider_responses) == 2
+    assert result.publication_ready is True
+
+
+def test_missing_question_answers_are_the_first_provider_repair_target() -> None:
+    assert (
+        narrative_workflow_module._narrative_writer_repair_finding(
+            (
+                "public_claim_coverage_incomplete",
+                "question_answer_coverage_incomplete",
+            )
+        )
+        == "question_answer_coverage_incomplete"
     )
 
 
@@ -2612,6 +3132,7 @@ def test_boundary_only_writer_is_limitation_bound_and_cannot_add_claims() -> Non
                 {
                     "role": "boundary",
                     "text": "Current authority supports only this explicit limitation.",
+                    "requirement_handles": [],
                     "claim_handles": [],
                     "recommendation_handles": [],
                     "limitation_handles": [limitation["limitation_handle"]],

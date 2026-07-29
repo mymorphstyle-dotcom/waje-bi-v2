@@ -82,7 +82,7 @@ _FORBIDDEN_PROJECTION_FIELDS = frozenset(
         "token",
     }
 )
-_SEMANTIC_PROMPT_VERSION = "single-authority-phase04.v13"
+_SEMANTIC_PROMPT_VERSION = "single-authority-phase04.v14"
 _THINKING_MODE_BY_PURPOSE = MappingProxyType(
     {
         "candidate_claim_proposal": "disabled",
@@ -209,7 +209,11 @@ _PROMPTS = MappingProxyType(
             + "Propose zero or more candidate claims from the supplied aggregate "
             "evidence. Bind every reference to the supplied identifiers. Returning "
             "an empty list is valid when the evidence does not support a useful "
-            "candidate."
+            "candidate. When aggregate evidence supplies period_direction_summary, "
+            "preserve its dominant-direction counts and bounded exception_periods in "
+            "the factual_payload of a matching pattern-stability or exception "
+            "obligation. Preserve its truncation metadata and do not infer omitted "
+            "periods."
         ),
         "claim_verification": (
             _SEMANTIC_ENCODING_GUIDANCE

@@ -388,7 +388,7 @@ def test_calendar_partition_canonicalizes_member_sets_and_maps_same_month_phase(
 def test_month_phase_comparison_rejects_implicit_sql_boundaries() -> None:
     with pytest.raises(
         TemporalComparisonContractError,
-        match="temporal_comparison_spec_invalid",
+        match="temporal_calendar_partition_shape_invalid",
     ):
         resolve_effective_comparison(
             time_spec={

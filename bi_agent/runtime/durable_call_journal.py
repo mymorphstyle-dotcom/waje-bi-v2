@@ -1951,6 +1951,16 @@ class DurableProviderClient:
                                 attempt_number=claim.attempt.attempt_number,
                                 call_spec=claim.attempt.spec,
                             ),
+                            invalid_output=(
+                                exc.invalid_output
+                                if isinstance(exc, LLMOutputError)
+                                else None
+                            ),
+                            repair_contract=(
+                                exc.repair_contract
+                                if isinstance(exc, LLMOutputError)
+                                else None
+                            ),
                         ) from exc
                 provider_payload = {
                     "output": canonical_value(projected_output),
@@ -1971,6 +1981,11 @@ class DurableProviderClient:
                 )
                 if invalid_output is None:
                     invalid_output = candidate_output
+                repair_contract = (
+                    getattr(exc, "repair_contract", None)
+                    if isinstance(exc, LLMOutputError)
+                    else None
+                )
                 failure_payload = {
                     "audit": _provider_failure_journal_audit(
                         raw_audit,
@@ -1983,6 +1998,10 @@ class DurableProviderClient:
                 if invalid_output is not None:
                     failure_payload["invalid_output"] = canonical_value(
                         invalid_output
+                    )
+                if isinstance(repair_contract, Mapping):
+                    failure_payload["repair_contract"] = canonical_value(
+                        repair_contract
                     )
                 self._journal.fail(
                     claim.attempt,
@@ -1997,6 +2016,10 @@ class DurableProviderClient:
                             "failure_code": failure_code,
                             "invalid_output": canonical_value(invalid_output),
                         }
+                        if isinstance(repair_contract, Mapping):
+                            repair_feedback["repair_contract"] = canonical_value(
+                                repair_contract
+                            )
                         should_retry = True
                     elif (
                         not isinstance(exc, LLMOutputError)
@@ -2072,25 +2095,31 @@ def _messages_with_output_contract_repair(
         repair_feedback.get("failure_code"),
         "provider_output_repair_failure_code_invalid",
     )
+    repair_contract = repair_feedback.get("repair_contract")
+    if repair_contract is not None and not isinstance(repair_contract, Mapping):
+        raise DurableCallJournalError("provider_output_repair_contract_invalid")
+    repair_request: dict[str, Any] = {
+        "instruction": (
+            "The previous JSON could not be consumed. Return one "
+            "complete corrected JSON object that satisfies the "
+            "original output contract. Preserve valid business "
+            "meaning and repair only the reported contract issue."
+        ),
+        "validation_error": failure_code,
+        "previous_output": canonical_value(
+            repair_feedback.get("invalid_output")
+        ),
+        "attempt_limit": "final_repair_attempt",
+    }
+    if isinstance(repair_contract, Mapping):
+        repair_request["expected_contract"] = canonical_value(repair_contract)
     return (
         *normalized,
         {
             "role": "user",
             "content": json.dumps(
                 {
-                    "repair_request": {
-                        "instruction": (
-                            "The previous JSON could not be consumed. Return one "
-                            "complete corrected JSON object that satisfies the "
-                            "original output contract. Preserve valid business "
-                            "meaning and repair only the reported contract issue."
-                        ),
-                        "validation_error": failure_code,
-                        "previous_output": canonical_value(
-                            repair_feedback.get("invalid_output")
-                        ),
-                        "attempt_limit": "final_repair_attempt",
-                    }
+                    "repair_request": repair_request
                 },
                 ensure_ascii=False,
                 sort_keys=True,

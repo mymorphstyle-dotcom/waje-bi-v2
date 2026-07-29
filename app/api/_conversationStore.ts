@@ -305,11 +305,13 @@ export type PersistedRunReasoning = {
   plannerProposal: Record<string, unknown>;
   claimSettlement: Record<string, unknown>;
   materialProjection: Record<string, unknown>;
+  narrativeDocument: Record<string, unknown>;
   customerPublication: Record<string, unknown>;
   taskOutcomes: Record<string, unknown>[];
   evidenceEntries: Record<string, unknown>[];
   supportEdges: Record<string, unknown>[];
   queryRuns: Record<string, unknown>[];
+  runNodes?: Record<string, unknown>[];
 };
 
 type ReadQueryClient = Pick<PoolClient, "query">;
@@ -693,10 +695,15 @@ export async function loadCustomerAnalysisSnapshot(input: {
       dispatchResult,
       publication,
       progressResult,
+      retryResult,
     ] = await Promise.all([
       pool().query(
         `
-        SELECT node_name, status, COALESCE(finished_at, started_at) AS confirmed_at
+        SELECT
+          node_name,
+          status,
+          COALESCE(finished_at, started_at) AS confirmed_at,
+          COALESCE(payload -> 'repair_notices', '[]'::jsonb) AS repair_notices
         FROM waje_runtime.run_nodes
         WHERE run_id = $1
         ORDER BY finished_at NULLS LAST, started_at NULLS LAST, node_id
@@ -748,6 +755,24 @@ export async function loadCustomerAnalysisSnapshot(input: {
         `,
         [runId],
       ),
+      pool().query(
+        `
+        SELECT DISTINCT ON (stage_name, call_kind, operation_name)
+          stage_name,
+          call_kind,
+          operation_name,
+          attempt_number
+        FROM waje_runtime.durable_call_attempts
+        WHERE run_attempt_id = $1
+          AND attempt_number > 1
+        ORDER BY
+          stage_name,
+          call_kind,
+          operation_name,
+          attempt_number DESC
+        `,
+        [runId],
+      ),
     ]);
     const request = isGatewayRecord(row.request) ? row.request : {};
     const version = versionResult.rows[0];
@@ -772,7 +797,13 @@ export async function loadCustomerAnalysisSnapshot(input: {
         confirmedAt: node.confirmed_at
           ? new Date(node.confirmed_at).toISOString()
           : null,
+        repairNotices: Array.isArray(node.repair_notices)
+          ? node.repair_notices.flatMap((notice: unknown) =>
+              typeof notice === "string" && notice.trim() ? [notice.trim()] : []
+            )
+          : [],
       })),
+      retryNotices: retryResult.rows.map(customerRepairNoticeForRetry),
       currentClarification: clarificationResult.rows[0]?.payload ?? null,
       interactionResult: projectInteractionResultForCustomer(
         request.interaction_result,
@@ -900,6 +931,13 @@ async function customerStateVersion(threadId: string) {
           SELECT max(event.created_at)
           FROM waje_runtime.audit_events event
           WHERE event.thread_id = thread.thread_id
+        ), thread.updated_at),
+        COALESCE((
+          SELECT max(attempt.created_at)
+          FROM waje_runtime.durable_call_attempts attempt
+          JOIN waje_runtime.analysis_runs run
+            ON run.run_id = attempt.run_attempt_id
+          WHERE run.thread_id = thread.thread_id
         ), thread.updated_at)
       ) AS confirmed_at,
       thread.state_version,
@@ -3490,6 +3528,7 @@ export async function loadPersistedRunReasoning(
         proposal.payload AS planner_proposal,
         settlement.payload AS claim_settlement,
         material.payload AS material_projection,
+        narrative.payload AS narrative_document,
         customer.customer_payload
       FROM waje_runtime.analysis_runs r
       JOIN LATERAL (
@@ -3523,6 +3562,17 @@ export async function loadPersistedRunReasoning(
         ORDER BY publication.created_at DESC
         LIMIT 1
       ) customer ON true
+      LEFT JOIN LATERAL (
+        SELECT document.payload
+        FROM waje_runtime.publication_revisions publication
+        JOIN waje_runtime.narrative_documents document
+          ON document.owner_ref = publication.owner_ref
+         AND document.run_attempt_id = publication.run_attempt_id
+         AND document.narrative_id = publication.narrative_id
+        WHERE publication.run_attempt_id = r.run_id
+        ORDER BY publication.revision DESC, publication.created_at DESC
+        LIMIT 1
+      ) narrative ON true
       WHERE r.run_id = $1
       `,
       [runId],
@@ -3539,6 +3589,7 @@ export async function loadPersistedRunReasoning(
       { rows: evidenceEntries },
       { rows: supportEdges },
       { rows: queryRuns },
+      { rows: runNodes },
     ] = await Promise.all([
       client.query(
         `
@@ -3624,6 +3675,15 @@ export async function loadPersistedRunReasoning(
         `,
         [runId],
       ),
+      client.query(
+        `
+        SELECT node_name, status, payload
+        FROM waje_runtime.run_nodes
+        WHERE run_id = $1
+        ORDER BY started_at, node_id
+        `,
+        [runId],
+      ),
     ]);
     await client.query("COMMIT");
     transactionOpen = false;
@@ -3640,6 +3700,9 @@ export async function loadPersistedRunReasoning(
         : {},
       materialProjection: isGatewayRecord(authority.material_projection)
         ? authority.material_projection
+        : {},
+      narrativeDocument: isGatewayRecord(authority.narrative_document)
+        ? authority.narrative_document
         : {},
       customerPublication: isGatewayRecord(authority.customer_payload)
         ? authority.customer_payload
@@ -3679,6 +3742,11 @@ export async function loadPersistedRunReasoning(
         row_count: row.row_count,
         completeness_status: row.completeness_status,
         analysis_readiness: row.analysis_readiness,
+      })),
+      runNodes: runNodes.map((row) => ({
+        node_name: row.node_name,
+        status: row.status,
+        payload: isGatewayRecord(row.payload) ? row.payload : {},
       })),
     };
   } catch (error) {
@@ -7533,6 +7601,42 @@ function runRecordFromRow(row: {
 
 function isGatewayRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function customerRepairNoticeForRetry(value: Record<string, unknown>): string {
+  const stageName = String(value.stage_name ?? "");
+  const callKind = String(value.call_kind ?? "");
+  const stageNotices: Record<string, string> = {
+    bind_intent:
+      "检测到生成的业务理解存在口径或结构问题，已重新分析，正在继续核验后续步骤。",
+    generate_clarification:
+      "检测到生成的澄清问题存在口径或结构问题，已重新整理并继续核验。",
+    bind_free_text_submission:
+      "检测到澄清答复的口径绑定存在问题，已重新理解答复并继续核验。",
+    compile_authoritative_plan:
+      "检测到生成的分析计划存在任务或证据边界问题，已重新编排并继续核验。",
+    compile_plan_patch:
+      "检测到调整后的分析计划存在任务或证据边界问题，已重新编排并继续核验。",
+    evaluate_claim_coverage:
+      "检测到部分结论的证据覆盖存在问题，已重新核对结论与依据。",
+    settle_claim_authority:
+      "检测到部分结论与依据的关联存在问题，已重新核对并继续分析。",
+    compose_claim_aware_narrative:
+      "检测到生成的回答与已核验事实在方向、数字或证据边界上存在冲突，已依据核验反馈重新组织答案并再次确认。",
+    verifier_result:
+      "检测到业务回答未通过最终核验，已根据核验结果重新分析。",
+  };
+  if (stageNotices[stageName]) return stageNotices[stageName];
+  if (callKind === "query") {
+    return "检测到一项数据查询没有通过执行或结果完整性检查，已重新查询并继续核验。";
+  }
+  if (callKind === "capability") {
+    return "检测到一项分析任务没有通过结果完整性检查，已重新计算并继续核验。";
+  }
+  if (callKind === "narrative_provider") {
+    return "检测到生成的业务回答存在完整性问题，已重新组织并继续核验。";
+  }
+  return "检测到一个分析阶段没有通过完整性检查，已重新分析并继续核验。";
 }
 
 function auditTracePayload({

@@ -56,6 +56,8 @@ from bi_agent.runtime.authoritative_execution_result import (
 )
 
 from bi_agent.runtime.capability_authority import (
+    CapabilityAttempt,
+    CapabilityOutcome,
     ExecutionSnapshot,
     ExplorationStopRecord,
 )
@@ -124,6 +126,7 @@ from bi_agent.runtime.single_authority import (
 )
 
 from bi_agent.runtime.temporal_comparison import (
+    COMPARISON_DECISION_SLOT_IDS,
     COMPARISON_WINDOW_VALUE_REFS,
     MONTH_PHASE_DEFINITION_VALUE_REFS,
     PHASE_AGGREGATION_VALUE_REFS,
@@ -875,7 +878,7 @@ def _single_authority_intent_payload(
                 "none": {"kind": "none"},
                 "decision_slot": {
                     "kind": "decision_slot",
-                    "slot_id": "ambiguity_slot_catalog.slot_id",
+                    "slot_id": sorted(COMPARISON_DECISION_SLOT_IDS),
                 },
                 "fixed_window": {
                     "kind": "fixed_window",
@@ -1149,18 +1152,18 @@ def _validated_single_authority_intent_output(
 ) -> IntentRevision:
     if not isinstance(output, Mapping) or set(output) != {
         "intent_binding",
+        "comparison_grounding",
         "business_summary",
-        "status_message",
     }:
         raise LLMOutputError("single_authority_intent_output_shape_invalid")
-    if any(
-        not isinstance(output[field], str) or not output[field].strip()
-        for field in ("business_summary", "status_message")
+    if (
+        not isinstance(output["business_summary"], str)
+        or not output["business_summary"].strip()
     ):
         raise LLMOutputError("single_authority_intent_narrative_invalid")
     normalized_binding = _normalize_provider_intent_binding(output["intent_binding"])
     try:
-        return IntentRevision.from_provider_binding(
+        revision = IntentRevision.from_provider_binding(
             normalized_binding,
             run_attempt_id=run_attempt_id,
             supersedes_intent_revision_id=supersedes_intent_revision_id,
@@ -1196,6 +1199,179 @@ def _validated_single_authority_intent_output(
         )
     except (TypeError, ValueError) as exc:
         raise LLMOutputError(_exception_reason(exc)) from exc
+    _validate_intent_comparison_grounding(
+        output["comparison_grounding"],
+        revision=revision,
+        question=question,
+    )
+    _validate_intent_goal_temporal_binding(revision, registry=registry)
+    return revision
+
+
+def _validate_intent_comparison_grounding(
+    value: Any,
+    *,
+    revision: IntentRevision,
+    question: str,
+) -> None:
+    expected_fields = {
+        "comparison_presence",
+        "baseline_relation",
+        "target_member_refs",
+        "baseline_member_refs",
+        "target_text",
+        "baseline_text",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_shape_invalid"
+        )
+    presence = value.get("comparison_presence")
+    relation = value.get("baseline_relation")
+    if presence not in {"explicit", "implicit", "absent"} or relation not in {
+        *COMPARISON_WINDOW_VALUE_REFS,
+        "event_relative",
+        "unresolved",
+        "none",
+    }:
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_shape_invalid"
+        )
+    raw_target_members = value.get("target_member_refs")
+    raw_baseline_members = value.get("baseline_member_refs")
+    if (
+        isinstance(raw_target_members, (str, bytes))
+        or not isinstance(raw_target_members, Sequence)
+        or isinstance(raw_baseline_members, (str, bytes))
+        or not isinstance(raw_baseline_members, Sequence)
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_shape_invalid"
+        )
+    target_members = tuple(canonical_value(raw_target_members))
+    baseline_members = tuple(canonical_value(raw_baseline_members))
+    target_text = value.get("target_text")
+    baseline_text = value.get("baseline_text")
+    for text in (target_text, baseline_text):
+        if text is not None and (
+            not isinstance(text, str)
+            or not text
+            or text not in question
+        ):
+            raise LLMOutputError(
+                "single_authority_intent_comparison_grounding_source_invalid"
+            )
+    if presence == "explicit" and (
+        not isinstance(target_text, str)
+        or not isinstance(baseline_text, str)
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_source_invalid"
+        )
+    if presence == "absent" and (
+        target_text is not None or baseline_text is not None
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_source_invalid"
+        )
+
+    comparison_spec = revision.comparison_spec
+    comparison_kind = str(comparison_spec.get("kind") or "")
+    expected_presence = (
+        {"absent"}
+        if comparison_kind == "none"
+        else {"explicit", "implicit"}
+    )
+    if comparison_kind == "none":
+        expected_relation = "none"
+        expected_target_members: tuple[Any, ...] = ()
+        expected_baseline_members: tuple[Any, ...] = ()
+    elif comparison_kind == "decision_slot":
+        expected_relation = "unresolved"
+        expected_target_members = ()
+        expected_baseline_members = ()
+    elif comparison_kind == "event_relative_window":
+        expected_relation = "event_relative"
+        expected_target_members = ()
+        expected_baseline_members = ()
+    else:
+        expected_relation = str(comparison_spec.get("baseline_class") or "")
+        if comparison_kind == "calendar_partition":
+            expected_target_members = tuple(
+                canonical_value(comparison_spec.get("target_members") or ())
+            )
+            expected_baseline_members = tuple(
+                canonical_value(comparison_spec.get("baseline_members") or ())
+            )
+        else:
+            expected_target_members = ()
+            expected_baseline_members = ()
+    if (
+        presence not in expected_presence
+        or relation != expected_relation
+        or target_members != expected_target_members
+        or baseline_members != expected_baseline_members
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_comparison_grounding_invalid",
+            repair_contract={
+                "authority": "original_user_text",
+                "observed_mismatch": {
+                    "comparison_grounding": canonical_value(value),
+                    "intent_comparison_spec": canonical_value(comparison_spec),
+                },
+                "repair_rule": (
+                    "Re-read the original user comparison roles and period relation. "
+                    "Repair comparison_grounding and intent_binding.comparison_spec "
+                    "together. Do not treat either observed value as authoritative, "
+                    "and do not weaken or discard an explicit comparison."
+                ),
+            },
+        )
+
+
+def _validate_intent_goal_temporal_binding(
+    revision: IntentRevision,
+    *,
+    registry: RuntimeContractRegistry,
+) -> None:
+    goal_id = str(revision.goal_bindings[0]["goal_id"])
+    obligation = registry.analysis_goal_obligation(goal_id)
+    requires_physical_baseline = any(
+        item.get("role") == "required"
+        and registry.analysis_axis(str(item.get("axis_id"))).get("selection_policy")
+        == "primary_baseline_required"
+        for item in obligation.get("analysis_axes", ())
+        if isinstance(item, Mapping)
+    )
+    if (
+        requires_physical_baseline
+        and revision.comparison_spec.get("kind")
+        not in {"fixed_window", "event_relative_window", "decision_slot"}
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_physical_baseline_binding_invalid"
+        )
+    requested_comparison_axis = any(
+        registry.analysis_axis(axis_id).get("selection_policy")
+        == "primary_baseline_required"
+        for axis_id in revision.requested_analysis_axes
+    )
+    if (
+        requested_comparison_axis
+        and revision.comparison_spec.get("kind") == "none"
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_requested_comparison_binding_invalid"
+        )
+    if (
+        revision.direction_premise
+        in {"user_hypothesis_positive", "user_hypothesis_negative"}
+        and revision.comparison_spec.get("kind") == "none"
+    ):
+        raise LLMOutputError(
+            "single_authority_intent_directional_comparison_binding_invalid"
+        )
 
 
 def _normalize_provider_intent_binding(value: Any) -> Any:
@@ -1584,16 +1760,26 @@ def _single_authority_clarification_slot_contract(
         required_recommended_label = (
             f"跟{baseline_catalog[recommended_value_ref]['label']}比较（推荐）"
         )
-    elif slot_kind == "month_phase_definition":
+    elif (
+        slot_kind == "month_phase_definition"
+        and comparison_spec.get("kind") == "calendar_partition"
+        and comparison_spec.get("partition_field") == "month_phase"
+        and comparison_spec.get("member_definitions")
+    ):
         recommended_value_ref = "definition_1"
         required_recommended_typed_value = {
             "value_ref": recommended_value_ref,
             "member_definitions": canonical_value(
-                comparison_spec.get("member_definitions") or ()
+                comparison_spec["member_definitions"]
             ),
         }
-    elif slot_kind == "phase_aggregation":
-        recommended_value_ref = str(comparison_spec.get("aggregation") or "")
+    elif (
+        slot_kind == "phase_aggregation"
+        and comparison_spec.get("kind") == "calendar_partition"
+        and comparison_spec.get("partition_field") == "month_phase"
+        and comparison_spec.get("aggregation") in PHASE_AGGREGATION_VALUE_REFS
+    ):
+        recommended_value_ref = str(comparison_spec["aggregation"])
         required_recommended_typed_value = {
             "aggregation": recommended_value_ref,
         }
@@ -1768,6 +1954,7 @@ def _generate_clarification(state: WorkflowState) -> WorkflowState:
                 _project_single_authority_clarification_output(
                     candidate,
                     slot_contracts=slot_contracts,
+                    time_spec=state["intent_revision"]["time_spec"],
                 )
             ),
             output_validator=lambda candidate: (
@@ -1987,6 +2174,7 @@ def _project_single_authority_clarification_output(
     output: Mapping[str, Any],
     *,
     slot_contracts: Sequence[Mapping[str, Any]],
+    time_spec: Mapping[str, Any],
 ) -> ContractProjection:
     mutations: list[Mapping[str, str]] = []
     projected = project_mapping_fields(
@@ -2030,7 +2218,12 @@ def _project_single_authority_clarification_output(
         ):
             projected_questions.append(question)
             continue
+        if len(raw_options) not in {2, 3}:
+            raise LLMOutputError(
+                "single_authority_clarification_options_invalid"
+            )
         projected_options: list[Any] = []
+        invalid_optional_option_indexes: set[int] = set()
         for option_index, raw_option in enumerate(raw_options):
             option_path = f"{question_path}.options[{option_index}]"
             option = project_mapping_fields(
@@ -2073,11 +2266,98 @@ def _project_single_authority_clarification_output(
                         path=typed_path,
                         mutations=mutations,
                     )
+                    projected_typed_value = option.get("typed_value")
+                    if (
+                        isinstance(projected_typed_value, dict)
+                        and projected_typed_value.get("kind")
+                        == "calendar_partition"
+                        and projected_typed_value.get("partition_field")
+                        == "month_phase"
+                    ):
+                        normalized_definitions = (
+                            _project_compact_month_phase_member_definitions(
+                                projected_typed_value.get("member_definitions")
+                            )
+                        )
+                        if normalized_definitions is not None:
+                            projected_typed_value["member_definitions"] = (
+                                normalized_definitions
+                            )
+                            mutations.append(
+                                {
+                                    "path": (
+                                        f"{typed_path}.member_definitions"
+                                    ),
+                                    "action": "normalize_typed_structure",
+                                    "reason": "equivalent_contract_encoding",
+                                }
+                            )
+            slot = contract.get("slot")
+            if (
+                isinstance(slot, Mapping)
+                and option.get("recommended") is False
+            ):
+                try:
+                    _normalized_clarification_typed_value(
+                        option=option,
+                        slot=slot,
+                        time_spec=time_spec,
+                    )
+                except LLMOutputError:
+                    invalid_optional_option_indexes.add(option_index)
             projected_options.append(option)
+        if (
+            invalid_optional_option_indexes
+            and len(projected_options) - len(invalid_optional_option_indexes) >= 1
+        ):
+            projected_options = [
+                option
+                for option_index, option in enumerate(projected_options)
+                if option_index not in invalid_optional_option_indexes
+            ]
+            mutations.extend(
+                {
+                    "path": f"{question_path}.options[{option_index}]",
+                    "action": "discard_invalid_option",
+                    "reason": "typed_value_outside_consumer_contract",
+                }
+                for option_index in sorted(invalid_optional_option_indexes)
+            )
         question["options"] = projected_options
         projected_questions.append(question)
     projected["questions"] = projected_questions
     return ContractProjection.create(output=projected, mutations=mutations)
+
+
+def _project_compact_month_phase_member_definitions(
+    value: Any,
+) -> list[dict[str, int | str]] | None:
+    members = ("start", "mid", "end")
+    raw_ranges: Sequence[Any]
+    if isinstance(value, Mapping) and set(value) == set(members):
+        raw_ranges = tuple(value[member] for member in members)
+    elif (
+        isinstance(value, (list, tuple))
+        and len(value) == len(members)
+        and all(isinstance(item, (list, tuple)) for item in value)
+    ):
+        raw_ranges = value
+    else:
+        return None
+    if any(
+        len(item) != 2
+        or any(isinstance(bound, bool) or not isinstance(bound, int) for bound in item)
+        for item in raw_ranges
+    ):
+        return None
+    return [
+        {
+            "member": member,
+            "day_start": int(raw_range[0]),
+            "day_end": int(raw_range[1]),
+        }
+        for member, raw_range in zip(members, raw_ranges, strict=True)
+    ]
 
 
 def _validate_single_authority_clarification_output(
@@ -2102,7 +2382,7 @@ def _validate_single_authority_clarification_output(
     raw_options = output.get("options")
     if (
         not isinstance(raw_options, list)
-        or len(raw_options) not in {2, 3}
+        or len(raw_options) not in {1, 2, 3}
         or any(not isinstance(option, Mapping) for option in raw_options)
     ):
         raise LLMOutputError("single_authority_clarification_options_invalid")
@@ -2143,61 +2423,13 @@ def _validate_single_authority_clarification_output(
         ):
             raise LLMOutputError("single_authority_clarification_option_invalid")
         normalized_option = dict(option)
-        if typed_comparison:
-            typed_value = option.get("typed_value")
-            try:
-                normalized_typed_value = validate_comparison_spec(
-                    typed_value,
-                    time_spec=time_spec,
-                )
-            except (TypeError, ValueError) as exc:
-                raise LLMOutputError(
-                    _clarification_typed_value_failure_code(
-                        slot=slot,
-                        typed_value=typed_value,
-                        cause=exc,
-                    )
-                ) from exc
-            if normalized_typed_value["kind"] not in {
-                "fixed_window",
-                "calendar_partition",
-            }:
-                raise LLMOutputError(
-                    "single_authority_clarification_typed_value_invalid"
-                )
-            if (
-                slot_kind == "comparison_window"
-                and normalized_typed_value["baseline_class"] != value_ref
-            ):
-                raise LLMOutputError(
-                    "single_authority_clarification_typed_value_invalid"
-                )
-            normalized_option["typed_value"] = canonical_value(normalized_typed_value)
-        elif typed_decision:
-            typed_value = option.get("typed_value")
-            try:
-                normalized_typed_value, normalized_value_ref = (
-                    normalize_temporal_decision_value(
-                        slot_id=str(slot["slot_id"]),
-                        value=typed_value,
-                        time_spec=time_spec,
-                    )
-                )
-            except (TypeError, ValueError) as exc:
-                raise LLMOutputError(
-                    _clarification_typed_value_failure_code(
-                        slot=slot,
-                        typed_value=typed_value,
-                        cause=exc,
-                    )
-                ) from exc
-            if normalized_value_ref != value_ref:
-                raise LLMOutputError(
-                    "single_authority_clarification_typed_value_invalid"
-                )
-            normalized_option["typed_value"] = canonical_value(
-                normalized_typed_value
-            )
+        normalized_typed_value = _normalized_clarification_typed_value(
+            option=option,
+            slot=slot,
+            time_spec=time_spec,
+        )
+        if normalized_typed_value is not None:
+            normalized_option["typed_value"] = normalized_typed_value
         if recommended != label.endswith("（推荐）"):
             raise LLMOutputError(
                 "single_authority_clarification_recommendation_label_invalid"
@@ -2208,15 +2440,21 @@ def _validate_single_authority_clarification_output(
         or sum(bool(option["recommended"]) for option in normalized) != 1
     ):
         raise LLMOutputError("single_authority_clarification_recommendation_invalid")
-    if typed_decision and len(
-        {
-            canonical_digest(option["typed_value"])
+    if typed_decision:
+        typed_semantics = [
+            (
+                option["typed_value"]["member_definitions"]
+                if slot_kind == "month_phase_definition"
+                else option["typed_value"]
+            )
             for option in normalized
-        }
-    ) != len(normalized):
-        raise LLMOutputError(
-            "single_authority_clarification_typed_value_duplicate"
-        )
+        ]
+        if len(
+            {canonical_digest(value) for value in typed_semantics}
+        ) != len(normalized):
+            raise LLMOutputError(
+                "single_authority_clarification_typed_value_duplicate"
+            )
     recommended = next(option for option in normalized if option["recommended"])
     if required_recommended_value_ref and (
         recommended["value_ref"] != required_recommended_value_ref
@@ -2246,6 +2484,76 @@ def _validate_single_authority_clarification_output(
                 "single_authority_clarification_recommendation_contract_invalid"
             )
     return normalized
+
+
+def _normalized_clarification_typed_value(
+    *,
+    option: Mapping[str, Any],
+    slot: Mapping[str, Any],
+    time_spec: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    slot_kind = str(slot.get("slot_kind") or "")
+    typed_value = option.get("typed_value")
+    if slot_kind in {"comparison_window", "comparison_interpretation"}:
+        try:
+            normalized_typed_value = validate_comparison_spec(
+                typed_value,
+                time_spec=time_spec,
+            )
+        except (TypeError, ValueError) as exc:
+            raise LLMOutputError(
+                _clarification_typed_value_failure_code(
+                    slot=slot,
+                    typed_value=typed_value,
+                    cause=exc,
+                ),
+                repair_contract=_clarification_typed_value_repair_contract(
+                    slot=slot,
+                    typed_value=typed_value,
+                ),
+            ) from exc
+        if normalized_typed_value["kind"] not in {
+            "fixed_window",
+            "calendar_partition",
+        }:
+            raise LLMOutputError(
+                "single_authority_clarification_typed_value_invalid"
+            )
+        if (
+            slot_kind == "comparison_window"
+            and normalized_typed_value["baseline_class"] != option.get("value_ref")
+        ):
+            raise LLMOutputError(
+                "single_authority_clarification_typed_value_invalid"
+            )
+        return canonical_value(normalized_typed_value)
+    if slot_kind not in {"month_phase_definition", "phase_aggregation"}:
+        return None
+    try:
+        normalized_typed_value, normalized_value_ref = (
+            normalize_temporal_decision_value(
+                slot_id=str(slot["slot_id"]),
+                value=typed_value,
+                time_spec=time_spec,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise LLMOutputError(
+            _clarification_typed_value_failure_code(
+                slot=slot,
+                typed_value=typed_value,
+                cause=exc,
+            ),
+            repair_contract=_clarification_typed_value_repair_contract(
+                slot=slot,
+                typed_value=typed_value,
+            ),
+        ) from exc
+    if normalized_value_ref != option.get("value_ref"):
+        raise LLMOutputError(
+            "single_authority_clarification_typed_value_invalid"
+        )
+    return canonical_value(normalized_typed_value)
 
 
 def _clarification_typed_value_failure_code(
@@ -2281,6 +2589,85 @@ def _clarification_typed_value_failure_code(
         "single_authority_clarification_typed_value_invalid:"
         f"slot={slot_id},detail={detail}"
     )
+
+
+def _clarification_typed_value_repair_contract(
+    *,
+    slot: Mapping[str, Any],
+    typed_value: Any,
+) -> Mapping[str, Any]:
+    member_definitions_contract = {
+        "type": "array",
+        "length": 3,
+        "items_in_order": [
+            {
+                "member": "start",
+                "day_start": "integer",
+                "day_end": "integer",
+            },
+            {
+                "member": "mid",
+                "day_start": "integer",
+                "day_end": "integer",
+            },
+            {
+                "member": "end",
+                "day_start": "integer",
+                "day_end": "integer",
+            },
+        ],
+        "item_exact_fields": ["member", "day_start", "day_end"],
+        "constraints": [
+            "ranges_are_contiguous",
+            "ranges_cover_days_1_through_31",
+        ],
+    }
+    slot_kind = str(slot.get("slot_kind") or "")
+    if (
+        isinstance(typed_value, Mapping)
+        and typed_value.get("kind") == "calendar_partition"
+    ):
+        exact_fields = [
+            "kind",
+            "baseline_class",
+            "period_grain",
+            "partition_field",
+            "target_members",
+            "baseline_members",
+            "aggregation",
+        ]
+        field_contracts: dict[str, Any] = {
+            "kind": "calendar_partition",
+            "target_members": "array",
+            "baseline_members": "array",
+        }
+        if typed_value.get("partition_field") == "month_phase":
+            exact_fields.append("member_definitions")
+            field_contracts["member_definitions"] = member_definitions_contract
+        return {
+            "typed_value": {
+                "type": "object",
+                "exact_fields": exact_fields,
+                "field_contracts": field_contracts,
+            }
+        }
+    if slot_kind == "month_phase_definition":
+        return {
+            "typed_value": {
+                "type": "object",
+                "exact_fields": ["value_ref", "member_definitions"],
+                "field_contracts": {
+                    "value_ref": "copy_the_option_value_ref",
+                    "member_definitions": member_definitions_contract,
+                },
+            }
+        }
+    return {
+        "typed_value": {
+            "type": "object",
+            "instruction": "match_the_original_typed_value_contract_exactly",
+        }
+    }
 
 
 def _clarification_public_language_issues(
@@ -2752,11 +3139,16 @@ def _single_authority_plan_proposal_payload(
             for capability_id in registry.analysis_axis(axis_id)["capability_refs"]
         )
     )
+    effective_temporal_comparison = _planner_effective_temporal_comparison(
+        intent_revision=intent_revision,
+        decision_ledger=decision_ledger,
+    )
     return {
         "intent_revision": intent_revision.to_dict(),
         "active_decisions": [
             record.to_dict() for record in decision_ledger.active_records()
         ],
+        "effective_temporal_comparison": effective_temporal_comparison,
         "authority_context": authority_context.to_dict(),
         "goal_contracts": [
             {
@@ -2774,6 +3166,25 @@ def _single_authority_plan_proposal_payload(
             for capability_id in relevant_capabilities
         ],
     }
+
+
+def _planner_effective_temporal_comparison(
+    *,
+    intent_revision: IntentRevision,
+    decision_ledger: DecisionLedger,
+) -> dict[str, Any]:
+    try:
+        return resolve_effective_comparison(
+            time_spec=intent_revision.time_spec,
+            comparison_spec=intent_revision.comparison_spec,
+            decision_ledger=decision_ledger,
+            require_physical_baseline=False,
+        ).to_dict()
+    except TemporalComparisonContractError as exc:
+        raise WorkflowFailure(
+            f"planner_temporal_context_invalid:{_exception_reason(exc)}",
+            failure_type="contract",
+        ) from exc
 
 
 def _planner_capability_summary(
@@ -3222,6 +3633,20 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
             parent_transition_id=parent_transition_id,
             decision_ledger_position=decision_ledger.position,
         )
+        repair_notices = _capability_repair_notices(
+            plan_revision=plan_revision,
+            authority_store=authority_store,
+        )
+        if repair_notices and state.get("checkpoint_events"):
+            event = _current_event(state)
+            event["repair_notices"] = list(
+                dict.fromkeys(
+                    (
+                        *(event.get("repair_notices") or ()),
+                        *repair_notices,
+                    )
+                )
+            )
         accepted = authority_store.load_accepted_transition(
             run_attempt_id=plan_revision.run_attempt_id,
             node_name="execute_capability_dag",
@@ -3340,6 +3765,44 @@ def _execute_capability_dag(state: WorkflowState) -> WorkflowState:
     state["investigation_synthesis"] = investigation_synthesis.to_dict()
     state["workflow_status"] = "evidence_ready"
     return state
+
+
+def _capability_repair_notices(
+    *,
+    plan_revision: PlanRevision,
+    authority_store: Any,
+) -> tuple[str, ...]:
+    retried_statuses: list[str] = []
+    for task in plan_revision.capability_tasks:
+        bundle = authority_store.load_capability_outcome(
+            plan_revision.plan_revision_id,
+            task.task_id,
+        )
+        if (
+            not isinstance(bundle, tuple)
+            or len(bundle) != 4
+            or not isinstance(bundle[0], CapabilityAttempt)
+            or not isinstance(bundle[1], CapabilityOutcome)
+            or bundle[0].execution_attempt <= 1
+        ):
+            continue
+        retried_statuses.append(bundle[1].status)
+    if not retried_statuses:
+        return ()
+    notices: list[str] = []
+    succeeded_count = sum(status == "succeeded" for status in retried_statuses)
+    limited_count = len(retried_statuses) - succeeded_count
+    if succeeded_count:
+        notices.append(
+            f"在 {succeeded_count} 项分析结果中检测到完整性问题，"
+            "已重新计算并核验通过。"
+        )
+    if limited_count:
+        notices.append(
+            f"有 {limited_count} 项分析结果在重新计算后仍未通过核验，"
+            "相关结论已按证据边界降级，其余分析继续完成。"
+        )
+    return tuple(notices)
 
 
 def _route_after_capability_execution(state: WorkflowState) -> str:
@@ -4017,6 +4480,7 @@ def _run_post_execution_stage(
         controlled_investigation_enabled=bool(
             request.get("controlled_investigation_enabled", False)
         ),
+        prepublication_verification=True,
     )
     if type(result) is not PostExecutionWorkflowResult:
         raise WorkflowFailure(
@@ -4038,7 +4502,61 @@ def _run_post_execution_stage(
         else result.authority_transition.to_dict()
     )
     state["workflow_status"] = result.status
+    if stop_after == "phase05":
+        repair_notices = _narrative_repair_notices(result)
+        if repair_notices and state.get("checkpoint_events"):
+            event = _current_event(state)
+            event["repair_notices"] = list(
+                dict.fromkeys(
+                    (
+                        *(event.get("repair_notices") or ()),
+                        *repair_notices,
+                    )
+                )
+            )
     return state
+
+
+def _narrative_repair_notices(
+    result: PostExecutionWorkflowResult,
+) -> tuple[str, ...]:
+    narrative = result.narrative_workflow
+    if narrative is None or not narrative.provider_audits:
+        return ()
+    audit = narrative.provider_audits[0]
+    provider_transport = audit.audit_payload.get(
+        "provider_transport"
+    )
+    notices: list[str] = []
+    failures = audit.audit_payload.get("attempt_failures")
+    failure_codes = tuple(
+        str(item.get("failure_code") or "")
+        for item in failures
+        if isinstance(item, Mapping)
+    ) if isinstance(failures, Sequence) and not isinstance(
+        failures, (str, bytes)
+    ) else ()
+    if "narrative_writer_prepublication_verification_failed" in failure_codes:
+        notices.append(
+            "检测到生成的回答与已核验事实在方向、数字或证据边界上存在冲突，"
+            "已依据核验反馈重新组织答案并再次确认。"
+        )
+    elif audit.attempt_count > 1:
+        notices.append(
+            "检测到生成的业务回答存在结论或依据关联问题，"
+            "已重新组织并继续核验。"
+        )
+    if isinstance(provider_transport, Mapping) and (
+        provider_transport.get("material_transport_repair_mode")
+        != "required-fact-claim-complete.v1"
+    ):
+        provider_transport = None
+    if isinstance(provider_transport, Mapping):
+        notices.append(
+            "生成最终回答时检测到分析材料超出单次处理范围，"
+            "已保留全部结论与必需事实，重新组织证据并完成核验。"
+        )
+    return tuple(dict.fromkeys(notices))
 
 
 def _route_after_authority_settlement(state: WorkflowState) -> str:
@@ -4151,8 +4669,85 @@ def _invoke_llm(
         if isinstance(failure_audit, Mapping) and failure_audit:
             state["llm_calls"].append(dict(failure_audit))
         raise WorkflowFailure(_exception_reason(exc), failure_type="llm") from exc
-    state["llm_calls"].append(dict(canonical_value(result.audit)))
+    audit = dict(canonical_value(result.audit))
+    state["llm_calls"].append(audit)
+    repair_notices = _provider_repair_notices(task=task, audit=audit)
+    if repair_notices and state.get("checkpoint_events"):
+        event = _current_event(state)
+        event["repair_notices"] = list(
+            dict.fromkeys(
+                (
+                    *(event.get("repair_notices") or ()),
+                    *repair_notices,
+                )
+            )
+        )
     return dict(canonical_value(result.output))
+
+
+def _provider_repair_notices(
+    *,
+    task: str,
+    audit: Mapping[str, Any],
+) -> tuple[str, ...]:
+    attempt_count = audit.get("attempt_count")
+    failures = audit.get("attempt_failures")
+    if (
+        isinstance(attempt_count, bool)
+        or not isinstance(attempt_count, int)
+        or attempt_count <= 1
+        or isinstance(failures, (str, bytes))
+        or not isinstance(failures, Sequence)
+        or not failures
+    ):
+        return ()
+    failure_codes = tuple(
+        str(item.get("failure_code") or "")
+        for item in failures
+        if isinstance(item, Mapping)
+    )
+    notices: list[str] = []
+    if any(
+        code.startswith("temporal_")
+        or code
+        in {
+            "single_authority_intent_physical_baseline_binding_invalid",
+            "single_authority_intent_requested_comparison_binding_invalid",
+            "single_authority_intent_directional_comparison_binding_invalid",
+            "single_authority_intent_comparison_grounding_shape_invalid",
+            "single_authority_intent_comparison_grounding_source_invalid",
+            "single_authority_intent_comparison_grounding_invalid",
+        }
+        for code in failure_codes
+    ):
+        notices.append(
+            "检测到生成的日期比较口径没有完整覆盖业务问题，"
+            "已重新理解时间关系并核验修正后的分析口径。"
+        )
+    elif task == "single_authority_intent":
+        notices.append(
+            "检测到生成的业务理解没有通过完整性检查，"
+            "已根据检查结果重新生成并核验。"
+        )
+    elif task == "single_authority_clarification":
+        notices.append(
+            "检测到生成的澄清口径存在结构缺失，"
+            "已按完整的日期与金额口径重新分析并核验。"
+        )
+    elif task in {
+        "single_authority_plan_proposal",
+        "single_authority_plan_patch_proposal",
+    }:
+        notices.append(
+            "检测到生成的分析计划存在任务或证据边界问题，"
+            "已根据检查结果重新编排并核验。"
+        )
+    else:
+        notices.append(
+            "检测到本阶段生成结果没有通过完整性检查，"
+            "已根据检查结果重新分析并核验。"
+        )
+    return tuple(notices)
 
 
 def _provider_journal(state: WorkflowState) -> DurableCallJournal:

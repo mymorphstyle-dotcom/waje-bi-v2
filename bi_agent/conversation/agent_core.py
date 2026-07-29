@@ -819,6 +819,23 @@ class ConversationAgentCore:
             "context_manifest": canonical_value(context_manifest),
             "authority_store": self.store,
         }
+        lineage_fields = (
+            "supersedes_intent_revision_id",
+            "superseded_plan_fields",
+            "parent_transition_id",
+            "intent_revision_reason_ref",
+        )
+        present_lineage_fields = tuple(
+            field for field in lineage_fields if field in runtime_descriptors
+        )
+        if present_lineage_fields and set(present_lineage_fields) != set(
+            lineage_fields
+        ):
+            raise EvidenceIntegrityError(
+                "single_authority_resume_intent_lineage_invalid"
+            )
+        for field in present_lineage_fields:
+            request[field] = canonical_value(runtime_descriptors[field])
         for authority_ref_field in (
             "plan_result_refs",
             "execution_result_refs",
@@ -2147,49 +2164,132 @@ def _record_single_authority_clarification_submission(
         raise EvidenceIntegrityError("decision_intent_not_active")
     selected_option_ids = clarification.get("selectedOptionIds")
     llm_calls: list[dict[str, Any]] = []
-    raw_binding: dict[str, Any] = {}
+    raw_bindings: list[dict[str, Any]] = []
     accepted_results: list[Mapping[str, Any]] = []
-    if isinstance(selected_option_ids, list) and selected_option_ids:
-        material_slot_ids = tuple(
-            str(slot.get("slot_id") or "")
-            for slot in active_revision.ambiguity_slots
-            if slot.get("materiality") == "material"
-            and slot.get("status") == "unresolved"
+
+    def directive_result(
+        accepted: Mapping[str, Any],
+        raw_binding: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        store.add_audit_event(
+            "single_authority_directive_recorded",
+            thread_id=thread_id,
+            topic_id=str(run_state.get("topic_id") or ""),
+            run_id=run_id,
+            ref=str(accepted["directive"]["directive_id"]),
+            payload={
+                "kind": accepted["directive"]["kind"],
+                "accepted_transition_id": accepted["durable_checkpoint"][
+                    "transition_id"
+                ],
+                "replayed": accepted["replayed"],
+            },
         )
-        decision_options = {
+        result = {
+            **{
+                key: value
+                for key, value in accepted.items()
+                if key not in {"source_terminal", "source_waiting"}
+            },
+            "run_id": run_id,
+            "turn_id": str(run_state.get("turn_id") or ""),
+            "topic_id": str(run_state.get("topic_id") or "") or None,
+            "intent_revision_id": active_revision.intent_revision_id,
+            "raw_decision_binding": canonical_value(raw_binding),
+            "llm_calls": llm_calls,
+        }
+        if accepted["status"] != "run_cancelled":
+            return result
+        source_terminal = accepted.get("source_terminal")
+        interaction_result = (
+            source_terminal.get("interaction_result")
+            if isinstance(source_terminal, Mapping)
+            else None
+        )
+        if (
+            not isinstance(source_terminal, Mapping)
+            or source_terminal.get("status") != "interaction_completed"
+            or source_terminal.get("run_id") != run_id
+            or source_terminal.get("intent") != "analysis_cancellation"
+            or source_terminal.get("topic_relation") != "analysis_cancellation"
+            or not isinstance(source_terminal.get("context_manifest"), Mapping)
+            or not isinstance(interaction_result, Mapping)
+            or interaction_result.get("schema_version") != "typed-interaction.v1"
+            or interaction_result.get("intent") != "analysis_cancellation"
+            or not str(interaction_result.get("response_text") or "").strip()
+        ):
+            raise EvidenceIntegrityError("analysis_cancellation_terminal_invalid")
+        return {
+            **result,
+            **canonical_value(source_terminal),
+        }
+
+    revision_slots = tuple(getattr(active_revision, "ambiguity_slots", ()))
+    ledger_before = (
+        store.load_decision_ledger(active_revision.intent_revision_id)
+        if revision_slots
+        else None
+    )
+    active_for_slot = getattr(ledger_before, "active_for_slot", None)
+    material_slot_ids = tuple(
+        str(slot.get("slot_id") or "")
+        for slot in revision_slots
+        if slot.get("materiality") == "material"
+        and slot.get("status") == "unresolved"
+        and (
+            not callable(active_for_slot)
+            or active_for_slot(str(slot.get("slot_id") or "")) is None
+        )
+    )
+    decision_options = (
+        {
             str(option.get("option_id") or ""): option
             for option in store.load_decision_options(
                 active_revision.intent_revision_id
             )
         }
-        selected_by_slot: dict[str, str] = {}
+        if revision_slots
+        else {}
+    )
+    selected_by_slot: dict[str, str] = {}
+    if isinstance(selected_option_ids, list):
         for raw_option_id in selected_option_ids:
             option_id = raw_option_id.strip()
             option = decision_options.get(option_id)
             if option is None:
-                raise EvidenceIntegrityError(
-                    "clarification_selected_option_unknown"
-                )
+                raise EvidenceIntegrityError("clarification_selected_option_unknown")
             slot_id = str(option.get("slot_id") or "")
+            if slot_id not in material_slot_ids:
+                raise EvidenceIntegrityError(
+                    "clarification_selected_slot_not_pending"
+                )
             if slot_id in selected_by_slot:
                 raise EvidenceIntegrityError(
                     "clarification_selected_slot_duplicated"
                 )
             selected_by_slot[slot_id] = option_id
-        if set(selected_by_slot) != set(material_slot_ids):
-            raise EvidenceIntegrityError(
-                "clarification_selected_slot_coverage_invalid"
-            )
-        for slot_id in material_slot_ids:
-            accepted_results.append(
-                store.accept_decision_option(
-                    run_attempt_id=run_id,
-                    option_id=selected_by_slot[slot_id],
-                    source="user",
-                )
-            )
-        accepted = accepted_results[-1]
-    else:
+
+    custom_slot_ids = tuple(
+        slot_id for slot_id in material_slot_ids if slot_id not in selected_by_slot
+    )
+    for slot_id in custom_slot_ids:
+        accepted, raw_binding, audit = _bind_single_authority_free_text(
+            store=store,
+            llm_client=llm_client,
+            thread_id=thread_id,
+            run_id=run_id,
+            active_revision=active_revision,
+            user_message=user_message,
+            clarification_slot_id=slot_id,
+        )
+        raw_bindings.append(raw_binding)
+        if audit is not None:
+            llm_calls.append(audit)
+        if accepted["status"] != "decision_recorded":
+            return directive_result(accepted, raw_binding)
+        accepted_results.append(accepted)
+
+    if not material_slot_ids:
         accepted, raw_binding, audit = _bind_single_authority_free_text(
             store=store,
             llm_client=llm_client,
@@ -2198,61 +2298,26 @@ def _record_single_authority_clarification_submission(
             active_revision=active_revision,
             user_message=user_message,
         )
+        raw_bindings.append(raw_binding)
         if audit is not None:
             llm_calls.append(audit)
         if accepted["status"] != "decision_recorded":
-            store.add_audit_event(
-                "single_authority_directive_recorded",
-                thread_id=thread_id,
-                topic_id=str(run_state.get("topic_id") or ""),
-                run_id=run_id,
-                ref=str(accepted["directive"]["directive_id"]),
-                payload={
-                    "kind": accepted["directive"]["kind"],
-                    "accepted_transition_id": accepted["durable_checkpoint"][
-                        "transition_id"
-                    ],
-                    "replayed": accepted["replayed"],
-                },
+            return directive_result(accepted, raw_binding)
+        accepted_results.append(accepted)
+
+    for slot_id in material_slot_ids:
+        if slot_id not in selected_by_slot:
+            continue
+        accepted_results.append(
+            store.accept_decision_option(
+                run_attempt_id=run_id,
+                option_id=selected_by_slot[slot_id],
+                source="user",
             )
-            directive_result = {
-                **{
-                    key: value
-                    for key, value in accepted.items()
-                    if key not in {"source_terminal", "source_waiting"}
-                },
-                "run_id": run_id,
-                "turn_id": str(run_state.get("turn_id") or ""),
-                "topic_id": str(run_state.get("topic_id") or "") or None,
-                "intent_revision_id": active_revision.intent_revision_id,
-                "raw_decision_binding": canonical_value(raw_binding),
-                "llm_calls": llm_calls,
-            }
-            if accepted["status"] != "run_cancelled":
-                return directive_result
-            source_terminal = accepted.get("source_terminal")
-            interaction_result = (
-                source_terminal.get("interaction_result")
-                if isinstance(source_terminal, Mapping)
-                else None
-            )
-            if (
-                not isinstance(source_terminal, Mapping)
-                or source_terminal.get("status") != "interaction_completed"
-                or source_terminal.get("run_id") != run_id
-                or source_terminal.get("intent") != "analysis_cancellation"
-                or source_terminal.get("topic_relation") != "analysis_cancellation"
-                or not isinstance(source_terminal.get("context_manifest"), Mapping)
-                or not isinstance(interaction_result, Mapping)
-                or interaction_result.get("schema_version") != "typed-interaction.v1"
-                or interaction_result.get("intent") != "analysis_cancellation"
-                or not str(interaction_result.get("response_text") or "").strip()
-            ):
-                raise EvidenceIntegrityError("analysis_cancellation_terminal_invalid")
-            return {
-                **directive_result,
-                **canonical_value(source_terminal),
-            }
+        )
+    if not accepted_results:
+        raise EvidenceIntegrityError("clarification_submission_unresolved")
+    accepted = accepted_results[-1]
     ledger = store.load_decision_ledger(active_revision.intent_revision_id)
     store.clear_pending_clarification(thread_id)
     recorded_results = accepted_results or [accepted]
@@ -2290,7 +2355,13 @@ def _record_single_authority_clarification_submission(
         },
         "durable_checkpoint": canonical_value(accepted["durable_checkpoint"]),
         "replayed": bool(accepted["replayed"]),
-        "raw_decision_binding": canonical_value(raw_binding),
+        "raw_decision_binding": canonical_value(
+            raw_bindings[0]
+            if len(raw_bindings) == 1
+            else {"bindings": raw_bindings}
+            if raw_bindings
+            else {}
+        ),
         "llm_calls": llm_calls,
     }
 
@@ -2319,6 +2390,7 @@ def _bind_single_authority_free_text(
     run_id: str,
     active_revision: Any,
     user_message: str,
+    clarification_slot_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     if llm_client is None or not callable(getattr(llm_client, "invoke_json", None)):
         raise EvidenceIntegrityError("free_text_binding_llm_missing")
@@ -2328,6 +2400,7 @@ def _bind_single_authority_free_text(
     replayed = store.load_accepted_free_text_submission(
         run_attempt_id=run_id,
         original_user_text=user_message,
+        clarification_slot_id=clarification_slot_id,
     )
     if replayed is not None:
         try:
@@ -2405,6 +2478,31 @@ def _bind_single_authority_free_text(
 
     ledger = store.load_decision_ledger(active_revision.intent_revision_id)
     options = store.load_decision_options(active_revision.intent_revision_id)
+    ambiguity_slots = tuple(active_revision.ambiguity_slots)
+    if clarification_slot_id is not None:
+        target_slot = next(
+            (
+                slot
+                for slot in ambiguity_slots
+                if str(slot.get("slot_id") or "") == clarification_slot_id
+            ),
+            None,
+        )
+        if (
+            target_slot is None
+            or target_slot.get("materiality") != "material"
+            or target_slot.get("status") != "unresolved"
+            or ledger.active_for_slot(clarification_slot_id) is not None
+        ):
+            raise EvidenceIntegrityError("clarification_target_slot_not_pending")
+        ambiguity_slots = (target_slot,)
+        options = tuple(
+            option
+            for option in options
+            if str(option.get("slot_id") or "") == clarification_slot_id
+        )
+        if not options:
+            raise EvidenceIntegrityError("clarification_target_options_missing")
     active_decisions = [decision.to_dict() for decision in ledger.active_records()]
     challenge_target_refs = [
         active_revision.intent_revision_id,
@@ -2414,8 +2512,9 @@ def _bind_single_authority_free_text(
         "original_user_text": user_message,
         "active_intent_revision": active_revision.to_dict(),
         "active_decisions": active_decisions,
+        "current_clarification_slot_id": clarification_slot_id or "",
         "ambiguity_slots": [
-            canonical_value(slot) for slot in active_revision.ambiguity_slots
+            canonical_value(slot) for slot in ambiguity_slots
         ],
         "allowed_slot_values": [
             {
@@ -2425,6 +2524,7 @@ def _bind_single_authority_free_text(
                     time_spec=active_revision.time_spec,
                 ),
                 "business_label": str(option.get("display_label") or ""),
+                "typed_value": canonical_value(option.get("typed_value")),
             }
             for option in options
         ],
@@ -2485,6 +2585,7 @@ def _bind_single_authority_free_text(
             slot_id=str(raw_binding["slot_id"]),
             value_ref=str(raw_binding["value_ref"]),
             original_user_text=user_message,
+            clarification_slot_id=clarification_slot_id,
             binding_kind=kind,
             provider_ref=str(result.audit.get("provider") or "llm_provider"),
             model_ref=str(result.audit.get("model") or "configured-model"),
@@ -2513,6 +2614,7 @@ def _bind_single_authority_free_text(
         "original_user_text": user_message,
         "intent_revision_id": active_revision.intent_revision_id,
         "binding_kind": kind,
+        "clarification_slot_id": clarification_slot_id or "",
     }
     output_payload = {
         "directive": directive.to_dict(),

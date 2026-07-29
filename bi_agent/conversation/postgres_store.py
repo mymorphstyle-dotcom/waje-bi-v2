@@ -64,6 +64,21 @@ CONVERSATION_SCHEMA_SQL = (
 ).read_text(encoding="utf-8")
 
 
+def _decision_option_value_ref_is_admitted(
+    *,
+    slot: Mapping[str, Any],
+    normalized_value_ref: str,
+    option_count: int,
+) -> bool:
+    allowed_value_refs = tuple(slot.get("allowed_value_refs") or ())
+    if str(slot.get("slot_kind") or "") == "comparison_interpretation":
+        # Interpretation refs name the 2-3 alternatives inside one card. The
+        # persisted authority uses a content-stable option id derived from the
+        # complete typed comparison, so the two identity domains do not match.
+        return 0 < option_count <= len(allowed_value_refs)
+    return normalized_value_ref in allowed_value_refs
+
+
 class PostgresConversationStore:
     def __init__(self, connection: Any) -> None:
         from bi_agent.runtime.durable_call_journal import (
@@ -1063,14 +1078,14 @@ class PostgresConversationStore:
               AND status = 'succeeded'
               AND acceptance_state = 'accepted'
             ORDER BY created_at DESC, attempt_id DESC
-            LIMIT 2
+            LIMIT 1
             """,
             {
                 "run_attempt_id": pending_run_id,
                 "intent_revision_id": intent.intent_revision_id,
             },
         )
-        if len(transition_rows) != 1:
+        if not transition_rows:
             raise EvidenceIntegrityError("pending_clarification_transition_invalid")
         accepted = self.load_accepted_transition(
             run_attempt_id=pending_run_id,
@@ -1082,11 +1097,13 @@ class PostgresConversationStore:
         transition = accepted["transition"]
         transition_input = accepted.get("input_payload") or {}
         clarification_slots = transition_input.get("clarification_slots")
+        decision_ledger = self.load_decision_ledger(intent.intent_revision_id)
         active_slots = {
             str(slot["slot_id"]): slot
             for slot in intent.ambiguity_slots
             if slot.get("materiality") == "material"
             and slot.get("status") == "unresolved"
+            and decision_ledger.active_for_slot(str(slot["slot_id"])) is None
         }
         supplied_slots = (
             [
@@ -1129,15 +1146,48 @@ class PostgresConversationStore:
             not isinstance(transition_options, list)
             or not transition_options
             or not isinstance(outcome, Mapping)
-            or canonical_value(transition_options) != canonical_value(persisted_options)
         ):
             raise EvidenceIntegrityError(
                 "pending_clarification_decision_options_invalid"
             )
-        for option in persisted_options:
+        persisted_by_key = {
+            (str(option["slot_id"]), str(option["option_id"])): option
+            for option in persisted_options
+        }
+        transition_by_key = {
+            (str(option.get("slot_id") or ""), str(option.get("option_id") or "")): (
+                option
+            )
+            for option in transition_options
+            if isinstance(option, Mapping)
+        }
+        if len(transition_by_key) != len(transition_options) or any(
+            {
+                key
+                for key in transition_by_key
+                if key[0] == slot_id
+            }
+            != {
+                key
+                for key in persisted_by_key
+                if key[0] == slot_id
+            }
+            for slot_id in active_slots
+        ):
+            raise EvidenceIntegrityError(
+                "pending_clarification_decision_options_invalid"
+            )
+        for key, option in transition_by_key.items():
             slot_id = str(option["slot_id"])
             slot = active_slots.get(slot_id)
-            if slot is None:
+            persisted = persisted_by_key.get(key)
+            if (
+                slot is None
+                or persisted is None
+                or canonical_value(option.get("typed_value"))
+                != canonical_value(persisted["typed_value"])
+                or option.get("recommended") != persisted["recommended"]
+            ):
                 raise EvidenceIntegrityError(
                     "pending_clarification_decision_options_invalid"
                 )
@@ -1157,7 +1207,15 @@ class PostgresConversationStore:
                     "pending_clarification_decision_options_invalid"
                 ) from exc
             if (
-                value_ref not in set(slot.get("allowed_value_refs") or ())
+                not _decision_option_value_ref_is_admitted(
+                    slot=slot,
+                    normalized_value_ref=value_ref,
+                    option_count=sum(
+                        1
+                        for candidate in transition_options
+                        if candidate.get("slot_id") == slot_id
+                    ),
+                )
                 or canonical_value(option["typed_value"])
                 != canonical_value(normalized_value)
                 or option["option_id"] != expected_option_id
@@ -1190,7 +1248,7 @@ class PostgresConversationStore:
                 )
             slot_options = [
                 option
-                for option in persisted_options
+                for option in transition_options
                 if option["slot_id"] == slot_id
             ]
             expected_options = [
@@ -1311,7 +1369,7 @@ class PostgresConversationStore:
         expected_waiting_input = {
             "intent_revision_id": intent.intent_revision_id,
             "decision_ledger_position": transition.decision_ledger_position,
-            "decision_options_digest": canonical_digest(persisted_options),
+            "decision_options_digest": canonical_digest(transition_options),
             "clarification_digest": canonical_digest(outcome),
             "parent_transition_id": transition.transition_id,
         }
@@ -6049,7 +6107,7 @@ class PostgresConversationStore:
             known_slots = {
                 str(slot["slot_id"]): slot for slot in active.ambiguity_slots
             }
-            for display_position, option in enumerate(normalized, start=1):
+            for option in normalized:
                 slot = known_slots.get(option["slot_id"])
                 if slot is None:
                     raise EvidenceIntegrityError("decision_option_slot_unknown")
@@ -6069,12 +6127,118 @@ class PostgresConversationStore:
                         "decision_option_typed_value_invalid"
                     ) from exc
                 if (
-                    value_ref not in tuple(slot.get("allowed_value_refs") or ())
+                    not _decision_option_value_ref_is_admitted(
+                        slot=slot,
+                        normalized_value_ref=value_ref,
+                        option_count=sum(
+                            1
+                            for candidate in normalized
+                            if candidate["slot_id"] == option["slot_id"]
+                        ),
+                    )
                     or canonical_value(option["typed_value"])
                     != canonical_value(normalized_value)
                     or option["option_id"] != expected_option_id
                 ):
                     raise EvidenceIntegrityError("decision_option_typed_value_invalid")
+
+            stored_options = self.load_decision_options(intent_revision_id)
+            if stored_options:
+                stored_by_key = {
+                    (str(option["slot_id"]), str(option["option_id"])): option
+                    for option in stored_options
+                }
+                candidate_by_key = {
+                    (str(option["slot_id"]), str(option["option_id"])): option
+                    for option in normalized
+                }
+                candidate_slot_ids = {
+                    str(option["slot_id"]) for option in normalized
+                }
+                for slot_id in candidate_slot_ids:
+                    stored_slot_keys = {
+                        key for key in stored_by_key if key[0] == slot_id
+                    }
+                    candidate_slot_keys = {
+                        key for key in candidate_by_key if key[0] == slot_id
+                    }
+                    if stored_slot_keys != candidate_slot_keys:
+                        raise EvidenceIntegrityError(
+                            "decision_option_immutable_conflict"
+                        )
+                for key, option in candidate_by_key.items():
+                    stored = stored_by_key.get(key)
+                    if (
+                        stored is None
+                        or canonical_value(stored["typed_value"])
+                        != canonical_value(option["typed_value"])
+                        or stored["recommended"] != option["recommended"]
+                    ):
+                        raise EvidenceIntegrityError(
+                            "decision_option_immutable_conflict"
+                        )
+                drifted_option_refs = [
+                    f"{key[0]}:{key[1]}"
+                    for key, option in candidate_by_key.items()
+                    if (
+                        stored_by_key[key]["display_label"]
+                        != option["display_label"]
+                        or stored_by_key[key]["display_description"]
+                        != option["display_description"]
+                    )
+                ]
+                reordered_slots = [
+                    slot_id
+                    for slot_id in sorted(candidate_slot_ids)
+                    if [
+                        str(option["option_id"])
+                        for option in stored_options
+                        if str(option["slot_id"]) == slot_id
+                    ]
+                    != [
+                        str(option["option_id"])
+                        for option in normalized
+                        if str(option["slot_id"]) == slot_id
+                    ]
+                ]
+                authoritative_option_set_digest = canonical_digest(
+                    list(stored_options)
+                )
+                if drifted_option_refs or reordered_slots:
+                    run_state = self.get_run_state(transition.run_attempt_id) or {}
+                    self._audit(
+                        "decision_option_display_drift_recorded",
+                        thread_id=str(run_state.get("thread_id") or "") or None,
+                        topic_id=str(run_state.get("topic_id") or "") or None,
+                        run_id=transition.run_attempt_id,
+                        ref=transition.transition_id,
+                        payload={
+                            "intent_revision_id": intent_revision_id,
+                            "authoritative_option_set_digest": (
+                                authoritative_option_set_digest
+                            ),
+                            "candidate_option_set_digest": option_set_digest,
+                            "drifted_option_refs": drifted_option_refs,
+                            "reordered_slots": reordered_slots,
+                        },
+                        commit=False,
+                    )
+                self._save_transition_attempt_locked(
+                    transition=transition,
+                    input_payload=input_payload,
+                    output_payload=output_payload,
+                )
+                self.attempt_journal.bind_stage(
+                    run_attempt_id=transition.run_attempt_id,
+                    transition_attempt_id=transition.attempt_id,
+                    stage_name="generate_clarification",
+                    attempt_refs=normalized_attempt_refs,
+                    commit=False,
+                )
+                self.connection.commit()
+                return authoritative_option_set_digest
+
+            for display_position, option in enumerate(normalized, start=1):
                 body = canonical_value(
                     {
                         "intent_revision_id": intent_revision_id,
@@ -6696,6 +6860,7 @@ class PostgresConversationStore:
         slot_id: str,
         value_ref: str,
         original_user_text: str,
+        clarification_slot_id: str | None = None,
         binding_kind: str,
         provider_ref: str,
         model_ref: str,
@@ -6787,6 +6952,7 @@ class PostgresConversationStore:
             "slot_id": slot_id,
             "value_ref": value_ref,
             "original_user_text": original_user_text,
+            "clarification_slot_id": clarification_slot_id or "",
         }
         output_payload = {
             "decision": decision.to_dict(),
@@ -7632,6 +7798,7 @@ class PostgresConversationStore:
         *,
         run_attempt_id: str,
         original_user_text: str,
+        clarification_slot_id: str | None = None,
     ) -> dict[str, Any] | None:
         from bi_agent.runtime.evidence_authority import EvidenceIntegrityError
 
@@ -7644,12 +7811,15 @@ class PostgresConversationStore:
               AND acceptance_state = 'accepted'
               AND input_payload ->> 'original_user_text'
                   = %(original_user_text)s
+              AND COALESCE(input_payload ->> 'clarification_slot_id', '')
+                  = %(clarification_slot_id)s
             ORDER BY created_at DESC, attempt_id DESC
             LIMIT 2
             """,
             {
                 "run_attempt_id": run_attempt_id,
                 "original_user_text": original_user_text,
+                "clarification_slot_id": clarification_slot_id or "",
             },
         )
         if len(rows) > 1:

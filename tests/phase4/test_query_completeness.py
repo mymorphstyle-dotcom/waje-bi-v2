@@ -42,6 +42,7 @@ from bi_agent.runtime.query_audit import query_rows_ref
 from bi_agent.runtime.query_completeness import (
     ASSERTIONS,
     CURRENT_DATA_ASSERTIONS,
+    _required_window_days,
     _event_recurrence_occurs_in_window,
     _metric_values,
     validate_query_result as _validate_query_result,
@@ -498,6 +499,49 @@ def complete_rows(*, metric_id="paid_amount", target=120.0, baseline=100.0):
 
 
 class QueryCompletenessTest(unittest.TestCase):
+    def test_prior_period_partition_requires_only_pairable_boundary_periods(self):
+        evaluation_window = ResolvedWindow(
+            "evaluation_range",
+            "target",
+            "2024-01-01..2024-03-31",
+            "2024-01-01",
+            "2024-04-01",
+            "Africa/Lagos",
+            "sum_of_complete_days",
+            91,
+            "2024-03-31",
+        )
+        frame = {
+            "schema_version": "calendar-partition-role-frame.v2",
+            "baseline_class": "prior_period",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ("start",),
+            "baseline_members": ("end",),
+            "aggregation": "sum_of_complete_days",
+            "member_definitions": (
+                {"member": "start", "day_start": 1, "day_end": 5},
+                {"member": "mid", "day_start": 6, "day_end": 24},
+                {"member": "end", "day_start": 25, "day_end": 31},
+            ),
+        }
+        contract = replace(
+            baseline_contract(
+                required_windows=("target_day",),
+                query_parameters={"calendar_partition_role_frame": frame},
+            ),
+            resolved_windows=(evaluation_window,),
+            window_refs=("evaluation_range",),
+            result_shape=replace(
+                baseline_contract(
+                    required_windows=("target_day",)
+                ).result_shape,
+                required_window_ids=("evaluation_range",),
+            ),
+        )
+
+        self.assertEqual(_required_window_days(contract, evaluation_window), 22)
+
     def test_metric_reconciliation_keeps_calendar_partition_roles_separate(self):
         values = _metric_values(
             (

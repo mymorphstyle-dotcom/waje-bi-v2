@@ -268,6 +268,9 @@ class _ClarificationReader(PostgresConversationStore):
     def load_decision_options(self, _intent_revision_id):
         return tuple(self.options)
 
+    def load_decision_ledger(self, _intent_revision_id):
+        return SimpleNamespace(active_for_slot=lambda _slot_id: None)
+
     def latest_accepted_transition_id(self, _run_id):
         return self.waiting_transition.transition_id
 

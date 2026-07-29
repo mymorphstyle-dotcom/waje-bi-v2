@@ -104,9 +104,19 @@ export function PlannerStatusCard({
   const answeredCount = reasoningIssues?.filter(
     (issue) => issue.status === "answered",
   ).length ?? 0;
+  const partialCount = reasoningIssues?.filter(
+    (issue) => issue.status === "partial",
+  ).length ?? 0;
+  const unboundCount = reasoningIssues?.filter(
+    (issue) => issue.status === "unbound",
+  ).length ?? 0;
   const status = reasoningIssues?.length
     ? {
-        label: `${answeredCount}/${reasoningIssues.length} 已完整回答`,
+        label: [
+          `${answeredCount}/${reasoningIssues.length} 已逐题回答`,
+          partialCount ? `${partialCount} 项部分回答` : null,
+          unboundCount ? `${unboundCount} 项仅综合覆盖` : null,
+        ].filter(Boolean).join(" · "),
         tone: answeredCount === reasoningIssues.length
           ? "completed"
           : "limited",
@@ -174,8 +184,9 @@ export function PlannerStatusCard({
 
 function reasoningIssueStatusLabel(status: TraceReasoningIssue["status"]) {
   return ({
-    answered: "已完整回答",
+    answered: "已逐题回答",
     partial: "部分回答",
+    unbound: "仅综合覆盖",
     omitted: "有证据，未进入回答",
     unresolved: "本次未解决",
   } as const)[status];
@@ -608,6 +619,12 @@ export function QuestionCard({
                 (question) =>
                   selections[question.questionKey] === CUSTOM_QUESTION_OPTION,
               );
+              const selectedOptionKeys = questions.flatMap((question) => {
+                const optionKey = selections[question.questionKey];
+                return optionKey && optionKey !== CUSTOM_QUESTION_OPTION
+                  ? [optionKey]
+                  : [];
+              });
               if (answers.every(Boolean)) {
                 onContinue(
                   hasCustomAnswer
@@ -615,11 +632,7 @@ export function QuestionCard({
                       (question, index) => `${question.question}：${answers[index]}`,
                     ).join("；")
                     : answers.join("；"),
-                  hasCustomAnswer
-                    ? undefined
-                    : questions.map(
-                      (question) => selections[question.questionKey],
-                    ),
+                  selectedOptionKeys,
                 );
               }
             }}

@@ -17,7 +17,7 @@ const baseTransport = {
 };
 
 const waitingSnapshot = {
-  schemaVersion: "customer-conversation.v5",
+  schemaVersion: "customer-conversation.v6",
   stateVersion: "2000",
   confirmedAt: "2026-07-20T00:00:02.000Z",
   thread: {
@@ -33,6 +33,7 @@ const waitingSnapshot = {
   businessUnderstanding: "你想先确定用于解释业务变化的比较基线，再按同一口径继续分析。",
   plannerIssues: [],
   plannerIssueStates: [],
+  repairNotices: [],
   state: {
     status: "needs_input",
     phase: "understanding",
@@ -89,6 +90,25 @@ const waitingSnapshot = {
   },
   transport: baseTransport,
 };
+
+function singleAdmittedOptionWaitingSnapshot() {
+  const onlyOption = waitingSnapshot.state.input.options[0];
+  return {
+    ...waitingSnapshot,
+    state: {
+      ...waitingSnapshot.state,
+      input: {
+        ...waitingSnapshot.state.input,
+        options: [onlyOption],
+        questions: [{
+          ...waitingSnapshot.state.input.questions[0],
+          options: [onlyOption],
+        }],
+        allowFreeform: true,
+      },
+    },
+  };
+}
 
 function completedSnapshot(operationId = "operation-accepted") {
   return {
@@ -296,7 +316,7 @@ function readableCompletedSnapshot() {
 
 function idleSnapshot(threadHandle = "thread-created") {
   return {
-    schemaVersion: "customer-conversation.v5",
+    schemaVersion: "customer-conversation.v6",
     stateVersion: "1000",
     confirmedAt: "2026-07-20T00:00:01.000Z",
     thread: { title: "新分析", createdAt: "2026-07-20T00:00:01.000Z" },
@@ -304,6 +324,7 @@ function idleSnapshot(threadHandle = "thread-created") {
     businessUnderstanding: null,
     plannerIssues: [],
     plannerIssueStates: [],
+    repairNotices: [],
     state: {
       status: "idle",
       title: "准备开始分析",
@@ -496,6 +517,25 @@ test("Planner 待解决问题显示在右上角独立状态卡", async ({ page }
   await expect(card.getByText("确认指标变化是否成立并量化幅度")).toHaveCount(0);
 });
 
+test("运行中修复以业务语言出现在主对话且不暴露内部错误", async ({ page }) => {
+  const initial = {
+    ...workingSnapshot("operation-repair", "检查本周转化变化"),
+    repairNotices: [
+      "检测到日期比较关系没有完整覆盖原问题，已重新分析并核验修正后的口径。",
+    ],
+  };
+  await installConversationRoutes(page, initial);
+  await page.goto("/");
+
+  const repair = page.getByLabel("分析过程修正");
+  await expect(repair).toBeVisible();
+  await expect(repair).toContainText(
+    "检测到日期比较关系没有完整覆盖原问题，已重新分析并核验修正后的口径。",
+  );
+  await expect(page.getByText("temporal_calendar_partition_baseline_class_invalid"))
+    .toHaveCount(0);
+});
+
 test("主对话只保留 Planner，任务和查询集中在 composer 上方卡片", async ({ page }) => {
   const initial = workingSnapshot("operation-reasoning", "检查本周转化变化");
   await installConversationRoutes(page, initial);
@@ -657,6 +697,49 @@ test("多个 SQL 口径逐题确认并一次提交", async ({ page }) => {
     "month-phase.week-shaped",
     "phase-aggregation.total",
   ]);
+});
+
+test("合同投影只保留一个有效解释时仍可接受推荐或填写其他口径", async ({ page }) => {
+  const observed = await installConversationRoutes(
+    page,
+    singleAdmittedOptionWaitingSnapshot(),
+  );
+  await page.goto("/");
+
+  await expect(page.getByRole("radio", { name: /前一天/ })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "补充其他口径" })).toBeVisible();
+  await page.getByRole("radio", { name: /前一天/ }).check();
+  await page.getByRole("button", { name: "继续" }).click();
+
+  expect(observed.clarificationPosts).toBe(1);
+  expect(observed.clarificationBodies[0].selectedOptionIds).toEqual([
+    "previous",
+  ]);
+});
+
+test("多题卡混合自定义与固定选项时一次提交各自槽位", async ({ page }) => {
+  const observed = await installConversationRoutes(
+    page,
+    multiQuestionWaitingSnapshot(),
+  );
+  await page.goto("/");
+
+  await page.getByRole("radio", { name: "补充其他口径" }).check();
+  await page.getByRole("textbox", { name: "补充其他口径" }).fill(
+    "月初1-5日，月中6-24日，月末25-31日",
+  );
+  await page.getByRole("button", { name: "下一项" }).click();
+  await page.getByRole("radio", { name: /比较阶段总额/ }).check();
+  await page.getByRole("button", { name: "继续" }).click();
+
+  expect(observed.clarificationPosts).toBe(1);
+  expect(observed.clarificationBodies[0].selectedOptionIds).toEqual([
+    "phase-aggregation.total",
+  ]);
+  expect(observed.clarificationBodies[0].answer).toContain(
+    "月初1-5日，月中6-24日，月末25-31日",
+  );
+  expect(observed.clarificationBodies[0].answer).toContain("比较阶段总额");
 });
 
 test("其他口径在澄清卡内填写且 composer 不接管确认", async ({ page }) => {
@@ -1060,6 +1143,120 @@ test("移动端恢复已完成任务时直接从业务回答阅读", async ({ pa
   await expect(page.locator(".answer-facts")).toHaveCount(0);
 });
 
+test("逐题回答主位只展示业务文本且已核验事实折叠为依据明细", async ({ page }) => {
+  await installConversationRoutes(page, completedSnapshot());
+  await page.route("**/api/agent-runs/run-handle/reasoning", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        reasoning: {
+          runId: "run-handle",
+          businessUnderstanding: "核验金额变化并解释主要驱动。",
+          planRevisionId: "plan-revision",
+          issues: [
+            {
+              issueId: "issue-direction",
+              parentIssueId: null,
+              question: "金额变化方向是什么？",
+              targetClaimKind: "direction",
+              status: "answered",
+              answerText: "月初金额低于月末，29 个可比月份中有 22 个月方向一致。",
+              taskIds: [],
+              claimRefs: ["claim-direction"],
+              usedClaimRefs: ["claim-direction"],
+              limitationRefs: [],
+            },
+            {
+              issueId: "issue-driver",
+              parentIssueId: "issue-direction",
+              question: "主要驱动因素是什么？",
+              targetClaimKind: "driver",
+              status: "unbound",
+              taskIds: [],
+              claimRefs: ["claim-driver"],
+              usedClaimRefs: ["claim-driver"],
+              limitationRefs: [],
+            },
+          ],
+          tasks: [],
+          claims: [
+            {
+              proposedClaimRef: "proposed-direction",
+              claimRef: "claim-direction",
+              claimKind: "direction",
+              claimClass: "observed_fact",
+              source: "runtime_derived",
+              verificationStatus: "accepted",
+              summary: "29 个可比月份中有 22 个月月初金额较低。",
+              taskIds: [],
+              evidenceRefs: ["evidence-direction"],
+              issueIds: ["issue-direction"],
+              facts: [{ name: "方向一致月份", value: "22/29" }],
+              usedInAnswer: true,
+              answerBlockIds: ["answer-0"],
+              limitationRefs: [],
+            },
+            {
+              proposedClaimRef: "proposed-driver",
+              claimRef: "claim-driver",
+              claimKind: "driver",
+              claimClass: "observed_fact",
+              source: "runtime_derived",
+              verificationStatus: "accepted",
+              summary: "付费人数下降是主要拖累因素。",
+              taskIds: [],
+              evidenceRefs: ["evidence-driver"],
+              issueIds: ["issue-driver"],
+              facts: [{ name: "付费人数贡献", value: "64.5%" }],
+              usedInAnswer: true,
+              answerBlockIds: ["answer-0"],
+              limitationRefs: [],
+            },
+          ],
+          answerBlocks: [],
+          counts: {
+            taskTotal: 0,
+            taskCompleted: 0,
+            queryTotal: 0,
+            evidenceTotal: 2,
+            claimTotal: 2,
+            claimUsedInAnswer: 2,
+          },
+        },
+      }),
+    });
+  });
+  await page.goto("/");
+
+  const review = page.getByRole("heading", { name: "逐题回答" })
+    .locator("..");
+  const direction = review.locator("li").nth(0);
+  await expect(
+    direction.locator(".planner-question-answer"),
+  ).toHaveText("月初金额低于月末，29 个可比月份中有 22 个月方向一致。");
+  await expect(
+    direction.getByText("29 个可比月份中有 22 个月月初金额较低。"),
+  ).toBeHidden();
+  await direction.getByText("查看依据 · 1 条已核验事实").click();
+  await expect(
+    direction.getByText("29 个可比月份中有 22 个月月初金额较低。"),
+  ).toBeVisible();
+
+  const driver = review.locator("li").nth(1);
+  await expect(driver.locator(".planner-question-answer")).toHaveCount(0);
+  await expect(driver.getByText("仅综合覆盖", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("1/2 已逐题回答 · 1 项仅综合覆盖", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(
+    "本次形成了相关事实，但它没有进入最终回答；当前不把这条事实当作这个问题的直接答案。",
+  )).toHaveCount(0);
+  await expect(driver.getByText(/没有为这个问题单独写出答案/)).toBeHidden();
+  await driver.getByText("查看依据 · 1 条已核验事实").click();
+  await expect(driver.getByText(/没有为这个问题单独写出答案/)).toBeVisible();
+  await expect(driver.getByText("付费人数下降是主要拖累因素。")).toBeVisible();
+});
+
 test("完成态只显示一份答案并优先于折叠的分析过程", async ({ page }) => {
   await installConversationRoutes(page, readableCompletedSnapshot());
   await page.goto("/");
@@ -1081,6 +1278,54 @@ test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区�
     if (message.type() === "error") browserErrors.push(message.text());
   });
   await installConversationRoutes(page, readableCompletedSnapshot());
+  await page.route("**/api/agent-runs/run-handle/reasoning", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        reasoning: {
+          runId: "run-handle",
+          businessUnderstanding: "核验付费金额变化并解释主要驱动。",
+          planRevisionId: "plan-revision",
+          repairNotices: [
+            "生成的日期比较口径没有完整覆盖业务问题，已重新理解时间关系并核验修正后的分析口径。",
+          ],
+          issues: [],
+          tasks: [],
+          claims: [{
+            proposedClaimRef: "proposed-context",
+            claimRef: "claim-context",
+            claimKind: "context",
+            claimClass: "observed_fact",
+            source: "runtime_derived",
+            verificationStatus: "accepted",
+            summary: "统一数据快照覆盖当前分析窗口。",
+            taskIds: [],
+            evidenceRefs: ["evidence-context"],
+            issueIds: [],
+            facts: [{ name: "窗口聚合组", value: "181" }],
+            usedInAnswer: true,
+            answerBlockIds: ["answer-3"],
+            limitationRefs: [],
+          }],
+          answerBlocks: [{
+            blockId: "answer-3",
+            role: "context",
+            text: "当前结果来自统一数据快照。",
+            claimRefs: ["claim-context"],
+            limitationRefs: [],
+          }],
+          counts: {
+            taskTotal: 0,
+            taskCompleted: 0,
+            queryTotal: 0,
+            evidenceTotal: 1,
+            claimTotal: 1,
+            claimUsedInAnswer: 1,
+          },
+        },
+      }),
+    });
+  });
   for (const viewport of [
     { width: 1440, height: 1000 },
     { width: 390, height: 844 },
@@ -1091,7 +1336,9 @@ test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区�
     const summary = page.locator(".answer-section.summary");
     const summaryCopy = summary.locator(".answer-section-copy");
     const finding = page.locator(".answer-section.finding").first();
+    const repair = page.getByRole("region", { name: "分析过程修正" });
     await expect(summary).toBeVisible();
+    await expect(repair).toContainText("已重新理解时间关系并核验修正后的分析口径");
     await expect(summary.getByRole("heading", { name: "核心结论" })).toBeVisible();
     await expect(finding.getByRole("heading", { name: "驱动机制" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "重点定位" })).toBeVisible();
@@ -1111,6 +1358,17 @@ test("结构化回答具有清晰的段落层级且输入区不遮挡滚动区�
     );
     expect(paragraphSpacing).toBeGreaterThanOrEqual(16);
     expect((await page.locator(".business-reference").innerText()).length).toBeGreaterThan(800);
+    const inlineEvidence = page.locator(
+      ".answer-section.context .answer-inline-evidence",
+    );
+    const nextActions = page.locator(".answer-next-actions");
+    await expect(inlineEvidence).toBeVisible();
+    await expect(nextActions).toBeVisible();
+    const evidenceBox = await inlineEvidence.boundingBox();
+    const nextActionsBox = await nextActions.boundingBox();
+    expect(
+      (evidenceBox?.y ?? 0) + (evidenceBox?.height ?? 0),
+    ).toBeLessThanOrEqual(nextActionsBox?.y ?? Number.POSITIVE_INFINITY);
 
     const listItems = finding.locator("li");
     await expect(listItems).toHaveCount(3);

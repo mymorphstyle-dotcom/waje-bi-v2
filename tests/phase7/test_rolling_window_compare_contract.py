@@ -304,6 +304,84 @@ def test_authoritative_rolling_payload_builds_adjacent_series_from_context() -> 
     assert result.comparable_periods == 2
 
 
+def test_authoritative_calendar_pattern_payload_carries_accepted_aggregation() -> None:
+    contract = SimpleNamespace(
+        query_intent="time_bucket_scan",
+        query_contract_id="query:month-phase",
+        result_shape=SimpleNamespace(
+            required_fields=(
+                "window_role",
+                "month_phase",
+                "observation_key",
+                "paid_amount",
+            )
+        ),
+        metric_bindings=(SimpleNamespace(metric_id="paid_amount"),),
+        dimension_bindings=(),
+    )
+    binding = {
+        "pattern_mode": "intra_period",
+        "query_families": {"primary": "time_bucket_scan"},
+        "fields": {
+            "window_role_key": "window_role",
+            "phase_key": "month_phase",
+            "observation_key": "observation_key",
+            "period_key": "calendar_month",
+            "value_key": "amount",
+        },
+        "parameters": {"materiality_floor": 0.0, "min_periods": 2},
+    }
+    authority = resolve_effective_comparison(
+        time_spec={
+            "kind": "date_range",
+            "start": "2024-01-01",
+            "end": "2024-02-29",
+        },
+        comparison_spec={
+            "kind": "calendar_partition",
+            "baseline_class": "prior_period",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ["start"],
+            "baseline_members": ["end"],
+            "aggregation": "sum_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 5},
+                {"member": "mid", "day_start": 6, "day_end": 24},
+                {"member": "end", "day_start": 25, "day_end": 31},
+            ],
+        },
+        decision_ledger=DecisionLedger(),
+        require_physical_baseline=False,
+    )
+
+    payload = _pattern_payload(
+        capability_id="compare_period_phases",
+        rows=(
+            {
+                "window_role": "target",
+                "month_phase": "start",
+                "observation_key": "2024-01-01",
+                "paid_amount": 100,
+            },
+            {
+                "window_role": "target",
+                "month_phase": "end",
+                "observation_key": "2024-01-31",
+                "paid_amount": 120,
+            },
+        ),
+        contracts=(contract,),
+        metric_id="paid_amount",
+        binding=binding,
+        temporal_authority=authority,
+    )
+
+    assert payload["aggregation"] == "sum_of_complete_days"
+    assert payload["baseline_class"] == "prior_period"
+    assert payload["period_grain"] == "month"
+
+
 def test_authoritative_rolling_payload_rejects_primary_baseline_rows() -> None:
     contract = SimpleNamespace(
         query_intent="daily_metric_baselines",

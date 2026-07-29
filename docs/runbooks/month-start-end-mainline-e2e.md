@@ -7,7 +7,7 @@
 ## 当前基线
 
 - 当前 PostgreSQL schema authority：`single-authority-workflow.v23`
-- 当前 release manifest：`single-authority.final.release.2026-07-29-v59`
+- 当前 release manifest：`single-authority.final.release.2026-07-29-v88`
 - 最近一次已完成的同类运行：
   - thread：`thread-4fe3a8afb742eb1691df29917c8e70d8`
   - run：`run-e7119703407293e445671d37`

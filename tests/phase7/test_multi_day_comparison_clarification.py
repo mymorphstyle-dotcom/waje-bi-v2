@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from bi_agent.conversation.agent_core import (
     _validated_single_authority_decision_binding,
+)
+from bi_agent.conversation.postgres_store import (
+    _decision_option_value_ref_is_admitted,
 )
 from bi_agent.runtime import langgraph_workflow
 from bi_agent.runtime.evidence_authority import canonical_digest
@@ -28,6 +32,7 @@ from bi_agent.runtime.temporal_comparison import (
     COMPARISON_WINDOW_VALUE_REFS,
     EffectiveTemporalComparison,
     TemporalComparisonContractError,
+    normalize_temporal_decision_value,
     resolve_effective_comparison,
     temporal_decision_option_id,
     validate_comparison_spec,
@@ -111,6 +116,34 @@ def test_provider_adapter_preserves_conflicting_fixed_window_target_for_rejectio
         )
 
 
+def test_calendar_partition_reports_invalid_baseline_class_for_output_repair() -> None:
+    with pytest.raises(
+        TemporalComparisonContractError,
+        match="temporal_calendar_partition_baseline_class_invalid",
+    ):
+        validate_comparison_spec(
+            {
+                "kind": "calendar_partition",
+                "baseline_class": "custom_control_window",
+                "period_grain": "month",
+                "partition_field": "month_phase",
+                "target_members": ["start"],
+                "baseline_members": ["end"],
+                "aggregation": "sum_of_complete_days",
+                "member_definitions": [
+                    {"member": "start", "day_start": 1, "day_end": 5},
+                    {"member": "mid", "day_start": 6, "day_end": 25},
+                    {"member": "end", "day_start": 26, "day_end": 31},
+                ],
+            },
+            time_spec={
+                "kind": "date_range",
+                "start": "2024-01-01",
+                "end": "2026-05-31",
+            },
+        )
+
+
 def test_provider_adapter_removes_target_metric_from_requested_factor_refs() -> None:
     binding = {
         "target_metric_refs": ["paid_amount"],
@@ -189,6 +222,32 @@ def _intent(
     )
 
 
+def _comparison_grounding(
+    comparison_spec: dict[str, object],
+) -> dict[str, object]:
+    kind = comparison_spec["kind"]
+    if kind == "none":
+        presence = "absent"
+        relation = "none"
+    elif kind == "decision_slot":
+        presence = "implicit"
+        relation = "unresolved"
+    elif kind == "event_relative_window":
+        presence = "implicit"
+        relation = "event_relative"
+    else:
+        presence = "implicit"
+        relation = comparison_spec["baseline_class"]
+    return {
+        "comparison_presence": presence,
+        "baseline_relation": relation,
+        "target_member_refs": list(comparison_spec.get("target_members", [])),
+        "baseline_member_refs": list(comparison_spec.get("baseline_members", [])),
+        "target_text": None,
+        "baseline_text": None,
+    }
+
+
 def test_provider_intent_accepts_sql_interpretation_clarification_slot() -> None:
     intent = _intent(
         time_spec=TARGET_RANGE,
@@ -214,8 +273,10 @@ def test_provider_intent_accepts_sql_interpretation_clarification_slot() -> None
                 key: payload[key]
                 for key in binding_fields
             },
+            "comparison_grounding": _comparison_grounding(
+                payload["comparison_spec"]
+            ),
             "business_summary": payload["business_summary"],
-            "status_message": "需要先确认月内阶段口径。",
         },
         run_attempt_id="run-provider-comparison-interpretation",
         question=payload["original_user_text"],
@@ -236,6 +297,377 @@ def test_provider_intent_accepts_sql_interpretation_clarification_slot() -> None
         "interpretation_2",
         "interpretation_3",
     )
+
+
+def test_provider_intent_rejects_goal_without_its_required_temporal_authority() -> None:
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = intent.to_dict()
+    binding_fields = {
+        "goal_bindings",
+        "target_metric_refs",
+        "scope",
+        "time_spec",
+        "comparison_spec",
+        "direction_premise",
+        "requested_analysis_axes",
+        "requested_factor_refs",
+        "desired_decisions",
+        "ambiguity_slots",
+        "source_spans",
+    }
+    provider_binding = {key: payload[key] for key in binding_fields}
+    provider_binding["comparison_spec"] = {"kind": "none"}
+    provider_binding["ambiguity_slots"] = []
+
+    with pytest.raises(
+        LLMOutputError,
+        match="single_authority_intent_physical_baseline_binding_invalid",
+    ):
+        langgraph_workflow._validated_single_authority_intent_output(
+            {
+                "intent_binding": provider_binding,
+                "comparison_grounding": _comparison_grounding(
+                    provider_binding["comparison_spec"]
+                ),
+                "business_summary": payload["business_summary"],
+            },
+            run_attempt_id="run-provider-missing-baseline",
+            question=payload["original_user_text"],
+            registry=RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            ),
+            prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+            model_version="provider-test",
+            supersedes_intent_revision_id=None,
+        )
+
+
+def test_provider_intent_rejects_requested_comparison_axis_without_comparison() -> None:
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = intent.to_dict()
+    binding_fields = {
+        "goal_bindings",
+        "target_metric_refs",
+        "scope",
+        "time_spec",
+        "comparison_spec",
+        "direction_premise",
+        "requested_analysis_axes",
+        "requested_factor_refs",
+        "desired_decisions",
+        "ambiguity_slots",
+        "source_spans",
+    }
+    provider_binding = {key: payload[key] for key in binding_fields}
+    provider_binding["goal_bindings"] = [
+        {"goal_id": "pattern_explanation", "role": "primary"}
+    ]
+    provider_binding["comparison_spec"] = {"kind": "none"}
+    provider_binding["requested_analysis_axes"] = ["change_validation"]
+    provider_binding["ambiguity_slots"] = []
+
+    with pytest.raises(
+        LLMOutputError,
+        match="single_authority_intent_requested_comparison_binding_invalid",
+    ):
+        langgraph_workflow._validated_single_authority_intent_output(
+            {
+                "intent_binding": provider_binding,
+                "comparison_grounding": _comparison_grounding(
+                    provider_binding["comparison_spec"]
+                ),
+                "business_summary": payload["business_summary"],
+            },
+            run_attempt_id="run-provider-requested-comparison-missing",
+            question=payload["original_user_text"],
+            registry=RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            ),
+            prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+            model_version="provider-test",
+            supersedes_intent_revision_id=None,
+        )
+
+
+def test_provider_intent_rejects_directional_premise_without_comparison() -> None:
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = intent.to_dict()
+    binding_fields = {
+        "goal_bindings",
+        "target_metric_refs",
+        "scope",
+        "time_spec",
+        "comparison_spec",
+        "direction_premise",
+        "requested_analysis_axes",
+        "requested_factor_refs",
+        "desired_decisions",
+        "ambiguity_slots",
+        "source_spans",
+    }
+    provider_binding = {key: payload[key] for key in binding_fields}
+    provider_binding["goal_bindings"] = [
+        {"goal_id": "pattern_explanation", "role": "primary"}
+    ]
+    provider_binding["comparison_spec"] = {"kind": "none"}
+    provider_binding["direction_premise"] = "user_hypothesis_positive"
+    provider_binding["requested_analysis_axes"] = ["time_context"]
+    provider_binding["ambiguity_slots"] = []
+
+    with pytest.raises(
+        LLMOutputError,
+        match="single_authority_intent_directional_comparison_binding_invalid",
+    ):
+        langgraph_workflow._validated_single_authority_intent_output(
+            {
+                "intent_binding": provider_binding,
+                "comparison_grounding": _comparison_grounding(
+                    provider_binding["comparison_spec"]
+                ),
+                "business_summary": payload["business_summary"],
+            },
+            run_attempt_id="run-provider-directional-comparison-missing",
+            question=payload["original_user_text"],
+            registry=RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            ),
+            prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+            model_version="provider-test",
+            supersedes_intent_revision_id=None,
+        )
+
+
+def _prior_month_phase_intent_output(
+    *,
+    comparison_baseline_class: str,
+    grounding_baseline_relation: str,
+) -> tuple[str, dict[str, object]]:
+    question = (
+        "分析2024年1月至2026年5月全量样本中，每月月初是否绝大部分"
+        "比上个月月末金额高啊？有哪些驱动因子？有哪些例外情况？"
+    )
+    comparison_spec = {
+        "kind": "calendar_partition",
+        "baseline_class": comparison_baseline_class,
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ["start"],
+        "baseline_members": ["end"],
+        "aggregation": "sum_of_complete_days",
+        "member_definitions": [
+            {"member": "start", "day_start": 1, "day_end": 5},
+            {"member": "mid", "day_start": 6, "day_end": 24},
+            {"member": "end", "day_start": 25, "day_end": 31},
+        ],
+    }
+    return question, {
+        "intent_binding": {
+            "goal_bindings": [
+                {"goal_id": "pattern_explanation", "role": "primary"}
+            ],
+            "target_metric_refs": ["paid_amount"],
+            "scope": {"scope_type": "full_sample", "filters": []},
+            "time_spec": {
+                "kind": "date_range",
+                "start": "2024-01-01",
+                "end": "2026-05-31",
+            },
+            "comparison_spec": comparison_spec,
+            "direction_premise": "user_hypothesis_positive",
+            "requested_analysis_axes": [],
+            "requested_factor_refs": [],
+            "desired_decisions": [],
+            "ambiguity_slots": [],
+            "source_spans": [
+                {
+                    "field": "original_user_text",
+                    "start": 0,
+                    "end": len(question),
+                    "text": question,
+                }
+            ],
+        },
+        "comparison_grounding": {
+            "comparison_presence": "explicit",
+            "baseline_relation": grounding_baseline_relation,
+            "target_member_refs": ["start"],
+            "baseline_member_refs": ["end"],
+            "target_text": "每月月初",
+            "baseline_text": "上个月月末",
+        },
+        "business_summary": (
+            "分析全量样本中每月月初相对上个月月末的金额表现、"
+            "驱动因素和例外情况。"
+        ),
+    }
+
+
+def test_provider_intent_rejects_period_relation_that_conflicts_with_grounding() -> (
+    None
+):
+    question, output = _prior_month_phase_intent_output(
+        comparison_baseline_class="same_month_phase",
+        grounding_baseline_relation="prior_period",
+    )
+
+    with pytest.raises(
+        LLMOutputError,
+        match="single_authority_intent_comparison_grounding_invalid",
+    ) as error:
+        langgraph_workflow._validated_single_authority_intent_output(
+            output,
+            run_attempt_id="run-provider-period-relation-mismatch",
+            question=question,
+            registry=RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            ),
+            prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+            model_version="provider-test",
+            supersedes_intent_revision_id=None,
+        )
+
+    assert error.value.retryable is True
+    assert error.value.repair_contract["authority"] == "original_user_text"
+
+
+def test_provider_intent_accepts_grounded_prior_period_month_phase() -> None:
+    question, output = _prior_month_phase_intent_output(
+        comparison_baseline_class="prior_period",
+        grounding_baseline_relation="prior_period",
+    )
+
+    revision = langgraph_workflow._validated_single_authority_intent_output(
+        output,
+        run_attempt_id="run-provider-period-relation-aligned",
+        question=question,
+        registry=RuntimeContractRegistry.from_path(
+            CANONICAL_RUNTIME_BINDINGS_PATH
+        ),
+        prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+        model_version="provider-test",
+        supersedes_intent_revision_id=None,
+    )
+
+    assert revision.comparison_spec["baseline_class"] == "prior_period"
+
+
+def test_provider_repair_notice_uses_business_language() -> None:
+    notices = langgraph_workflow._provider_repair_notices(
+        task="single_authority_intent",
+        audit={
+            "attempt_count": 2,
+            "attempt_failures": [
+                {
+                    "failure_code": (
+                        "single_authority_intent_"
+                        "comparison_grounding_invalid"
+                    )
+                }
+            ],
+        },
+    )
+
+    assert notices == (
+        "检测到生成的日期比较口径没有完整覆盖业务问题，"
+        "已重新理解时间关系并核验修正后的分析口径。",
+    )
+
+
+def test_narrative_material_repair_notice_uses_business_language() -> None:
+    result = SimpleNamespace(
+        narrative_workflow=SimpleNamespace(
+            provider_audits=(
+                SimpleNamespace(
+                    attempt_count=1,
+                    audit_payload={
+                        "provider_transport": {
+                            "material_transport_repair_mode": (
+                                "required-fact-claim-complete.v1"
+                            )
+                        }
+                    }
+                ),
+            )
+        )
+    )
+
+    assert langgraph_workflow._narrative_repair_notices(result) == (
+        "生成最终回答时检测到分析材料超出单次处理范围，"
+        "已保留全部结论与必需事实，重新组织证据并完成核验。",
+    )
+
+
+def test_provider_intent_reports_noncontiguous_month_phase_ranges() -> None:
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+    )
+    payload = intent.to_dict()
+    binding_fields = {
+        "goal_bindings",
+        "target_metric_refs",
+        "scope",
+        "time_spec",
+        "comparison_spec",
+        "direction_premise",
+        "requested_analysis_axes",
+        "requested_factor_refs",
+        "desired_decisions",
+        "ambiguity_slots",
+        "source_spans",
+    }
+    provider_binding = {key: payload[key] for key in binding_fields}
+    provider_binding["goal_bindings"] = [
+        {"goal_id": "pattern_explanation", "role": "primary"}
+    ]
+    provider_binding["comparison_spec"] = {
+        "kind": "calendar_partition",
+        "baseline_class": "prior_period",
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ["start"],
+        "baseline_members": ["end"],
+        "aggregation": "sum_of_complete_days",
+        "member_definitions": [
+            {"member": "start", "day_start": 1, "day_end": 5},
+            {"member": "mid", "day_start": 11, "day_end": 20},
+            {"member": "end", "day_start": 26, "day_end": 31},
+        ],
+    }
+
+    with pytest.raises(
+        LLMOutputError,
+        match=(
+            "intent_revision_comparison_spec_invalid:"
+            "temporal_month_phase_member_ranges_not_contiguous"
+        ),
+    ):
+        langgraph_workflow._validated_single_authority_intent_output(
+            {
+                "intent_binding": provider_binding,
+                "comparison_grounding": _comparison_grounding(
+                    provider_binding["comparison_spec"]
+                ),
+                "business_summary": payload["business_summary"],
+            },
+            run_attempt_id="run-provider-noncontiguous-month-phase",
+            question=payload["original_user_text"],
+            registry=RuntimeContractRegistry.from_path(
+                CANONICAL_RUNTIME_BINDINGS_PATH
+            ),
+            prompt_version=SINGLE_AUTHORITY_PROMPT_VERSION,
+            model_version="provider-test",
+            supersedes_intent_revision_id=None,
+        )
 
 
 @pytest.mark.parametrize(
@@ -466,6 +898,22 @@ def test_sql_affecting_comparison_interpretations_are_distinct_typed_options() -
         )
         for record in records
     )
+    _, content_value_ref = normalize_temporal_decision_value(
+        slot_id="comparison_interpretation",
+        value=records[0]["typed_value"],
+        time_spec=time_spec,
+    )
+    assert content_value_ref not in slot["allowed_value_refs"]
+    assert _decision_option_value_ref_is_admitted(
+        slot=slot,
+        normalized_value_ref=content_value_ref,
+        option_count=len(records),
+    )
+    assert not _decision_option_value_ref_is_admitted(
+        slot=slot,
+        normalized_value_ref=content_value_ref,
+        option_count=len(slot["allowed_value_refs"]) + 1,
+    )
     intent = _intent(
         time_spec=time_spec,
         slot_id="comparison_interpretation",
@@ -658,6 +1106,7 @@ def test_month_phase_clarification_keeps_boundaries_and_aggregation_atomic() -> 
         langgraph_workflow._project_single_authority_clarification_output(
             output,
             slot_contracts=slot_contracts,
+            time_spec=time_spec,
         )
     )
     output = dict(projection.output)
@@ -726,6 +1175,62 @@ def test_month_phase_clarification_keeps_boundaries_and_aggregation_atomic() -> 
     assert authority.calendar_partition["member_definitions"][0]["day_end"] == 10
 
 
+def test_month_phase_options_reject_distinct_refs_with_identical_boundaries() -> None:
+    slot = next(
+        dict(item)
+        for item in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+        if item["slot_id"] == "month_phase_definition"
+    )
+    member_definitions = [
+        {"member": "start", "day_start": 1, "day_end": 10},
+        {"member": "mid", "day_start": 11, "day_end": 20},
+        {"member": "end", "day_start": 21, "day_end": 31},
+    ]
+    output = {
+        "question": "月初、月中和月末分别包含哪些日期？",
+        "options": [
+            {
+                "value_ref": "definition_1",
+                "typed_value": {
+                    "value_ref": "definition_1",
+                    "member_definitions": member_definitions,
+                },
+                "label": "1—10日、11—20日、21日至月末（推荐）",
+                "description": "采用十天分段。",
+                "recommended": True,
+            },
+            {
+                "value_ref": "definition_2",
+                "typed_value": {
+                    "value_ref": "definition_2",
+                    "member_definitions": deepcopy(member_definitions),
+                },
+                "label": "另一种分段",
+                "description": "展示文案不同。",
+                "recommended": False,
+            },
+        ],
+        "recommendation_reason": "采用常用的十天分段。",
+        "status_message": "等待确认。",
+    }
+
+    with pytest.raises(
+        LLMOutputError,
+        match="single_authority_clarification_typed_value_duplicate",
+    ):
+        langgraph_workflow._validate_single_authority_clarification_output(
+            output,
+            slot=slot,
+            time_spec={
+                "kind": "date_range",
+                "start": "2024-01-01",
+                "end": "2026-05-31",
+            },
+            required_recommended_value_ref="",
+            required_recommended_label="",
+        )
+
+
 def test_month_phase_projection_rejects_conflicting_duplicate_identity() -> None:
     comparison_spec = {
         "kind": "calendar_partition",
@@ -792,7 +1297,300 @@ def test_month_phase_projection_rejects_conflicting_duplicate_identity() -> None
         langgraph_workflow._project_single_authority_clarification_output(
             output,
             slot_contracts=(contract,),
+            time_spec=TARGET_RANGE,
         )
+
+
+def test_clarification_projection_discards_one_invalid_nonrecommended_typed_option() -> (
+    None
+):
+    slot = _comparison_interpretation_slot()
+    contract = langgraph_workflow._single_authority_clarification_slot_contract(
+        slot=slot,
+        comparison_spec={
+            "kind": "decision_slot",
+            "slot_id": "comparison_interpretation",
+        },
+    )
+    definitions = [
+        {"member": "start", "day_start": 1, "day_end": 3},
+        {"member": "mid", "day_start": 4, "day_end": 27},
+        {"member": "end", "day_start": 28, "day_end": 31},
+    ]
+    output = {
+        "questions": [
+            {
+                "slot_id": "comparison_interpretation",
+                "question": "请选择逐月比较方式。",
+                "options": [
+                    {
+                        "value_ref": "interpretation_1",
+                        "typed_value": {
+                            "kind": "calendar_partition",
+                            "baseline_class": "prior_period",
+                            "period_grain": "month",
+                            "partition_field": "month_phase",
+                            "target_members": ["start"],
+                            "baseline_members": ["end"],
+                            "aggregation": "sum_of_complete_days",
+                            "member_definitions": definitions,
+                        },
+                        "label": "月初与上月末逐月比较（推荐）",
+                        "description": "按每个月进行动态配对。",
+                        "recommended": True,
+                    },
+                    {
+                        "value_ref": "interpretation_2",
+                        "typed_value": {
+                            "kind": "fixed_window",
+                            "baseline_class": "value_ref",
+                            "baseline_start": "2026-04-28",
+                            "baseline_end": "2026-04-30",
+                            "aggregation": "sum_of_complete_days",
+                        },
+                        "label": "固定窗口比较",
+                        "description": "只使用一个固定基线窗口。",
+                        "recommended": False,
+                    },
+                    {
+                        "value_ref": "interpretation_3",
+                        "typed_value": {
+                            "kind": "calendar_partition",
+                            "baseline_class": "same_month_phase",
+                            "period_grain": "month",
+                            "partition_field": "month_phase",
+                            "target_members": ["start"],
+                            "baseline_members": ["end"],
+                            "aggregation": "sum_of_complete_days",
+                            "member_definitions": definitions,
+                        },
+                        "label": "月初与当月末比较",
+                        "description": "在同一个月内比较两个阶段。",
+                        "recommended": False,
+                    },
+                ],
+                "recommendation_reason": "逐月配对符合本次分析范围。",
+            }
+        ],
+        "status_message": "等待确认。",
+    }
+
+    projection = langgraph_workflow._project_single_authority_clarification_output(
+        output,
+        slot_contracts=(contract,),
+        time_spec=TARGET_RANGE,
+    )
+    projected = dict(projection.output)
+
+    assert projection.disposition == "accepted_normalized"
+    assert [option["value_ref"] for option in projected["questions"][0]["options"]] == [
+        "interpretation_1",
+        "interpretation_3",
+    ]
+    assert dict(projection.mutations[-1]) == {
+        "path": "questions[0].options[1]",
+        "action": "discard_invalid_option",
+        "reason": "typed_value_outside_consumer_contract",
+    }
+    questions = (
+        langgraph_workflow._validate_single_authority_clarification_batch_output(
+            projected,
+            slot_contracts=(contract,),
+            time_spec=TARGET_RANGE,
+        )
+    )
+    assert len(questions[0]["options"]) == 2
+
+
+def test_clarification_projection_can_retain_only_the_valid_recommended_option() -> (
+    None
+):
+    slot = _comparison_interpretation_slot()
+    contract = langgraph_workflow._single_authority_clarification_slot_contract(
+        slot=slot,
+        comparison_spec={
+            "kind": "decision_slot",
+            "slot_id": "comparison_interpretation",
+        },
+    )
+    definitions = [
+        {"member": "start", "day_start": 1, "day_end": 10},
+        {"member": "mid", "day_start": 11, "day_end": 20},
+        {"member": "end", "day_start": 21, "day_end": 31},
+    ]
+    options = [
+        {
+            "value_ref": "interpretation_1",
+            "typed_value": {
+                "kind": "calendar_partition",
+                "baseline_class": "prior_period",
+                "period_grain": "month",
+                "partition_field": "month_phase",
+                "target_members": ["start"],
+                "baseline_members": ["end"],
+                "aggregation": "sum_of_complete_days",
+                "member_definitions": definitions,
+            },
+            "label": "月初与上月末比较（推荐）",
+            "description": "逐月比较月初和上月末。",
+            "recommended": True,
+        },
+    ]
+    for index, partition_field in enumerate(
+        ("month_of_year", "quarter_of_year"),
+        start=2,
+    ):
+        member = 3 if partition_field == "month_of_year" else "Q2"
+        options.append(
+            {
+                "value_ref": f"interpretation_{index}",
+                "typed_value": {
+                    "kind": "calendar_partition",
+                    "baseline_class": "prior_period",
+                    "period_grain": "year",
+                    "partition_field": partition_field,
+                    "target_members": [member],
+                    "baseline_members": [member],
+                    "aggregation": "sum_of_complete_days",
+                },
+                "label": f"无效备选{index}",
+                "description": "目标与基线成员发生重叠。",
+                "recommended": False,
+            }
+        )
+    output = {
+        "questions": [
+            {
+                "slot_id": "comparison_interpretation",
+                "question": "请选择比较方式。",
+                "options": options,
+                "recommendation_reason": "推荐项匹配业务问题。",
+            }
+        ],
+        "status_message": "等待确认。",
+    }
+
+    projection = langgraph_workflow._project_single_authority_clarification_output(
+        output,
+        slot_contracts=(contract,),
+        time_spec=TARGET_RANGE,
+    )
+    projected = dict(projection.output)
+
+    assert [option["value_ref"] for option in projected["questions"][0]["options"]] == [
+        "interpretation_1"
+    ]
+    assert (
+        len(
+            langgraph_workflow._validate_single_authority_clarification_batch_output(
+                projected,
+                slot_contracts=(contract,),
+                time_spec=TARGET_RANGE,
+            )[0]["options"]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "compact_definitions",
+    [
+        {
+            "start": [1, 1],
+            "mid": [2, 30],
+            "end": [31, 31],
+        },
+        [[1, 1], [2, 30], [31, 31]],
+    ],
+)
+def test_clarification_projection_normalizes_compact_month_phase_ranges(
+    compact_definitions: object,
+) -> None:
+    slot = _comparison_interpretation_slot()
+    contract = langgraph_workflow._single_authority_clarification_slot_contract(
+        slot=slot,
+        comparison_spec={
+            "kind": "decision_slot",
+            "slot_id": "comparison_interpretation",
+        },
+    )
+    options = []
+    ranges = (
+        (1, 1, 2, 30, 31, 31),
+        (1, 3, 4, 28, 29, 31),
+    )
+    for index, raw_range in enumerate(ranges, start=1):
+        definitions = (
+            compact_definitions
+            if index == 1
+            else [
+                [raw_range[0], raw_range[1]],
+                [raw_range[2], raw_range[3]],
+                [raw_range[4], raw_range[5]],
+            ]
+        )
+        options.append(
+            {
+                "value_ref": f"interpretation_{index}",
+                "typed_value": {
+                    "kind": "calendar_partition",
+                    "baseline_class": "prior_period",
+                    "period_grain": "month",
+                    "partition_field": "month_phase",
+                    "target_members": ["start"],
+                    "baseline_members": ["end"],
+                    "aggregation": (
+                        "sum_of_complete_days"
+                        if index == 1
+                        else "mean_of_complete_days"
+                    ),
+                    "member_definitions": definitions,
+                },
+                "label": (
+                    "单日比较（推荐）" if index == 1 else "前3日后3日均值"
+                ),
+                "description": "使用明确的月初、月中和月末范围。",
+                "recommended": index == 1,
+            }
+        )
+    output = {
+        "questions": [
+            {
+                "slot_id": "comparison_interpretation",
+                "question": "请选择月初和月末范围。",
+                "options": options,
+                "recommendation_reason": "单日口径边界清晰。",
+            }
+        ],
+        "status_message": "等待确认。",
+    }
+
+    projection = langgraph_workflow._project_single_authority_clarification_output(
+        output,
+        slot_contracts=(contract,),
+        time_spec=TARGET_RANGE,
+    )
+    projected = dict(projection.output)
+
+    assert projected["questions"][0]["options"][0]["typed_value"][
+        "member_definitions"
+    ] == [
+        {"member": "start", "day_start": 1, "day_end": 1},
+        {"member": "mid", "day_start": 2, "day_end": 30},
+        {"member": "end", "day_start": 31, "day_end": 31},
+    ]
+    assert any(
+        mutation.get("action") == "normalize_typed_structure"
+        for mutation in projection.mutations
+    )
+    questions = (
+        langgraph_workflow._validate_single_authority_clarification_batch_output(
+            projected,
+            slot_contracts=(contract,),
+            time_spec=TARGET_RANGE,
+        )
+    )
+    assert len(questions[0]["options"]) == 2
 
 
 def test_month_phase_clarification_records_machine_identifiers_without_blocking() -> None:
@@ -1014,16 +1812,23 @@ def test_calendar_partition_rejects_a_deterministically_empty_side(
         TemporalComparisonContractError,
         match="temporal_comparison_spec_invalid",
     ):
+        comparison_spec = {
+            "kind": "calendar_partition",
+            "baseline_class": baseline_class,
+            "period_grain": period_grain,
+            "partition_field": partition_field,
+            "target_members": target_members,
+            "baseline_members": baseline_members,
+            "aggregation": "mean_of_complete_days",
+        }
+        if partition_field == "month_phase":
+            comparison_spec["member_definitions"] = [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ]
         validate_comparison_spec(
-            {
-                "kind": "calendar_partition",
-                "baseline_class": baseline_class,
-                "period_grain": period_grain,
-                "partition_field": partition_field,
-                "target_members": target_members,
-                "baseline_members": baseline_members,
-                "aggregation": "mean_of_complete_days",
-            },
+            comparison_spec,
             time_spec=time_spec,
         )
 
@@ -1154,7 +1959,7 @@ def test_clarification_repair_reports_the_exact_typed_structure_error() -> None:
             "slot=comparison_interpretation,"
             "detail=member_definitions_list_required"
         ),
-    ):
+    ) as captured:
         langgraph_workflow._validate_single_authority_clarification_output(
             output,
             slot=_comparison_interpretation_slot(),
@@ -1162,6 +1967,52 @@ def test_clarification_repair_reports_the_exact_typed_structure_error() -> None:
             required_recommended_value_ref="",
             required_recommended_label="",
         )
+    assert captured.value.repair_contract == {
+        "typed_value": {
+            "type": "object",
+            "exact_fields": [
+                "kind",
+                "baseline_class",
+                "period_grain",
+                "partition_field",
+                "target_members",
+                "baseline_members",
+                "aggregation",
+                "member_definitions",
+            ],
+            "field_contracts": {
+                "kind": "calendar_partition",
+                "target_members": "array",
+                "baseline_members": "array",
+                "member_definitions": {
+                    "type": "array",
+                    "length": 3,
+                    "items_in_order": [
+                        {
+                            "member": "start",
+                            "day_start": "integer",
+                            "day_end": "integer",
+                        },
+                        {
+                            "member": "mid",
+                            "day_start": "integer",
+                            "day_end": "integer",
+                        },
+                        {
+                            "member": "end",
+                            "day_start": "integer",
+                            "day_end": "integer",
+                        },
+                    ],
+                    "item_exact_fields": ["member", "day_start", "day_end"],
+                    "constraints": [
+                        "ranges_are_contiguous",
+                        "ranges_cover_days_1_through_31",
+                    ],
+                },
+            },
+        }
+    }
 
 
 def test_time_structure_owns_the_missing_comparison_slot_without_duplicates() -> None:
@@ -1192,7 +2043,10 @@ def test_time_structure_owns_the_missing_comparison_slot_without_duplicates() ->
     )
     with pytest.raises(
         SingleAuthorityContractError,
-        match="intent_revision_comparison_authority_invalid",
+        match=(
+            "intent_revision_comparison_authority_invalid:"
+            "temporal_comparison_authority_conflict"
+        ),
     ):
         _intent(
             time_spec=TARGET_RANGE,
@@ -1208,6 +2062,155 @@ def test_time_structure_owns_the_missing_comparison_slot_without_duplicates() ->
                 },
             ),
         )
+
+
+def test_main_comparison_slot_can_keep_atomic_month_phase_parameter_slots() -> None:
+    catalog = {
+        str(slot["slot_id"]): slot
+        for slot in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+    }
+    override_slots = tuple(
+        {
+            "slot_id": slot_id,
+            "slot_kind": catalog[slot_id]["slot_kind"],
+            "materiality": "material",
+            "status": "unresolved",
+            "question": "请确认这个独立的比较口径。",
+            "allowed_value_refs": catalog[slot_id]["allowed_value_refs"],
+        }
+        for slot_id in ("month_phase_definition", "phase_aggregation")
+    )
+    intent = _intent(
+        time_spec=TARGET_RANGE,
+        slot_id="comparison_interpretation",
+        extra_slots=override_slots,
+    )
+
+    main_decision = DecisionRecord.create(
+        intent_revision_id=intent.intent_revision_id,
+        slot_id="comparison_interpretation",
+        value={
+            "kind": "calendar_partition",
+            "baseline_class": "prior_period",
+            "period_grain": "month",
+            "partition_field": "month_phase",
+            "target_members": ["start"],
+            "baseline_members": ["end"],
+            "aggregation": "mean_of_complete_days",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 10},
+                {"member": "mid", "day_start": 11, "day_end": 20},
+                {"member": "end", "day_start": 21, "day_end": 31},
+            ],
+        },
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=("baseline_refs", "resolved_window_refs"),
+        option_id="comparison_interpretation.interpretation_test",
+    )
+    boundary_decision = DecisionRecord.create(
+        intent_revision_id=intent.intent_revision_id,
+        slot_id="month_phase_definition",
+        value={
+            "value_ref": "definition_1",
+            "member_definitions": [
+                {"member": "start", "day_start": 1, "day_end": 5},
+                {"member": "mid", "day_start": 6, "day_end": 24},
+                {"member": "end", "day_start": 25, "day_end": 31},
+            ],
+        },
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=("comparison_spec.member_definitions",),
+        option_id="month_phase_definition.definition_1",
+    )
+    aggregation_decision = DecisionRecord.create(
+        intent_revision_id=intent.intent_revision_id,
+        slot_id="phase_aggregation",
+        value={"aggregation": "sum_of_complete_days"},
+        source="user",
+        status="user_confirmed",
+        materiality="material",
+        affected_plan_fields=("comparison_spec.aggregation",),
+        option_id="phase_aggregation.sum_of_complete_days",
+    )
+    ledger = (
+        DecisionLedger()
+        .append(main_decision)
+        .append(boundary_decision)
+        .append(aggregation_decision)
+    )
+
+    authority = resolve_effective_comparison(
+        time_spec=intent.time_spec,
+        comparison_spec=intent.comparison_spec,
+        decision_ledger=ledger,
+        require_physical_baseline=False,
+    )
+
+    assert authority.mode == "calendar_partition"
+    assert authority.calendar_partition["member_definitions"] == (
+        {"member": "start", "day_start": 1, "day_end": 5},
+        {"member": "mid", "day_start": 6, "day_end": 24},
+        {"member": "end", "day_start": 25, "day_end": 31},
+    )
+    assert authority.calendar_partition["aggregation"] == "sum_of_complete_days"
+    assert set(authority.decision_refs) == {
+        main_decision.decision_id,
+        boundary_decision.decision_id,
+        aggregation_decision.decision_id,
+    }
+    planner_temporal = (
+        langgraph_workflow._planner_effective_temporal_comparison(
+            intent_revision=intent,
+            decision_ledger=ledger,
+        )
+    )
+    assert planner_temporal["intent_comparison_spec"] == {
+        "kind": "decision_slot",
+        "slot_id": "comparison_interpretation",
+    }
+    assert planner_temporal["effective_comparison_spec"]["aggregation"] == (
+        "sum_of_complete_days"
+    )
+    assert planner_temporal["effective_comparison_spec"]["member_definitions"] == [
+        {"member": "start", "day_start": 1, "day_end": 5},
+        {"member": "mid", "day_start": 6, "day_end": 24},
+        {"member": "end", "day_start": 25, "day_end": 31},
+    ]
+
+
+def test_unresolved_main_comparison_does_not_invent_field_recommendation_contracts() -> (
+    None
+):
+    catalog = {
+        str(slot["slot_id"]): slot
+        for slot in langgraph_workflow._single_authority_ambiguity_slot_catalog()
+    }
+    comparison_spec = {
+        "kind": "decision_slot",
+        "slot_id": "comparison_interpretation",
+    }
+
+    boundary_contract = (
+        langgraph_workflow._single_authority_clarification_slot_contract(
+            slot=catalog["month_phase_definition"],
+            comparison_spec=comparison_spec,
+        )
+    )
+    aggregation_contract = (
+        langgraph_workflow._single_authority_clarification_slot_contract(
+            slot=catalog["phase_aggregation"],
+            comparison_spec=comparison_spec,
+        )
+    )
+
+    assert boundary_contract["recommended_value_ref"] == ""
+    assert boundary_contract["required_recommended_typed_value"] is None
+    assert aggregation_contract["recommended_value_ref"] == ""
+    assert aggregation_contract["required_recommended_typed_value"] is None
 
 
 def test_free_text_binding_can_select_a_typed_comparison_window_option() -> None:
@@ -1261,7 +2264,12 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
         message["content"] for message in clarification.messages
     )
 
-    assert prompt.prompt_version.endswith(".v20")
+    assert prompt.prompt_version.endswith(".v29")
+    assert prompt.required_keys == (
+        "intent_binding",
+        "comparison_grounding",
+        "business_summary",
+    )
     assert "return exactly one scalar value" in prompt_text
     assert "requested_factor_refs" in prompt_text
     assert "quarter-to-quarter" in prompt_text
@@ -1279,10 +2287,14 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
     assert "calendar_partition_contracts" in prompt_text
     assert "Explicit anomaly or outlier inspection" in prompt_text
     assert "member_definitions" in prompt_text
+    assert "never name a decision slot that is absent" in prompt_text
     assert "business_summary is the accepted user-facing projection" in prompt_text
+    assert "comparison_grounding as an independent extraction" in prompt_text
+    assert "never return kind none for that directional premise" in prompt_text
     assert "Keep that question fully customer-facing" in prompt_text
     assert "typed_value must be one complete fixed_window or" in clarification_text
     assert "runtime supplies a separate free-text outlet" in clarification_text
+    assert "must use a distinct set of day boundaries" in clarification_text
     assert "not approved display copy" in clarification_text
     assert "absent from the supplied comparison_spec" in clarification_text
     assert _comparison_window_slot()["time_spec_kinds"] == ["date_range"]
@@ -1297,9 +2309,17 @@ def test_prompt_contract_exposes_structural_slot_and_complete_typed_options() ->
     ]["month_phase"]
     assert month_phase == {
         "period_grain": "month",
-        "baseline_classes": ["same_month_phase"],
+        "baseline_classes": ["prior_period", "same_month_phase"],
         "members": ["start", "mid", "end"],
     }
+    assert payload["comparison_spec_contract"]["variants"]["decision_slot"][
+        "slot_id"
+    ] == [
+        "comparison_baseline",
+        "comparison_interpretation",
+        "comparison_window",
+        "event_relative_window",
+    ]
 
 
 def test_successor_intent_receives_the_source_intent_as_revision_context() -> None:

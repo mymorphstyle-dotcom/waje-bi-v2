@@ -35,7 +35,7 @@ from bi_agent.runtime.evidence_authority import (
 from bi_agent.runtime.query_audit import query_audit_refs
 from bi_agent.runtime.temporal_comparison import (
     TemporalComparisonContractError,
-    calendar_partition_role_for_date,
+    calendar_partition_evaluation_role_for_date,
     validate_calendar_partition_role_frame,
 )
 
@@ -1370,9 +1370,13 @@ def _window_membership(
         observed_role = str(row.get("window_role") or "")
         if partition_frame is not None:
             try:
-                expected_role = calendar_partition_role_for_date(
+                expected_role = calendar_partition_evaluation_role_for_date(
                     date.fromisoformat(observation_key),
                     partition_frame,
+                    evaluation_start=date.fromisoformat(window.start_inclusive),
+                    evaluation_end_exclusive=date.fromisoformat(
+                        window.end_exclusive
+                    ),
                 )
             except (TemporalComparisonContractError, ValueError):
                 expected_role = None
@@ -1499,9 +1503,11 @@ def _required_window_days(contract: QueryContract, window: Any) -> int:
     return sum(
         1
         for offset in range((end - start).days)
-        if calendar_partition_role_for_date(
+        if calendar_partition_evaluation_role_for_date(
             start + timedelta(days=offset),
             frame,
+            evaluation_start=start,
+            evaluation_end_exclusive=end,
         )
         is not None
     )

@@ -104,7 +104,9 @@ def test_calendar_partition_role_frame_compares_derived_daily_groups():
         source_watermark_requirement="2026-06-30",
     )
     frame = {
-        "schema_version": "calendar-partition-role-frame.v1",
+        "schema_version": "calendar-partition-role-frame.v2",
+        "baseline_class": "same_month_phase",
+        "period_grain": "month",
         "partition_field": "month_phase",
         "target_members": ("start",),
         "baseline_members": ("mid", "end"),
@@ -178,6 +180,101 @@ def test_calendar_partition_role_frame_compares_derived_daily_groups():
     assert comparison.target.value == 5.5
     assert comparison.primary_baseline.required_complete_days == 20
     assert comparison.primary_baseline.value == 20.5
+
+
+def test_prior_period_partition_uses_only_pairable_boundary_periods():
+    window = ResolvedWindow(
+        window_id="evaluation_range",
+        role="target",
+        label="2024-01-01..2024-03-31",
+        start_inclusive="2024-01-01",
+        end_exclusive="2024-04-01",
+        timezone="Africa/Lagos",
+        aggregation="sum_of_complete_days",
+        required_complete_days=91,
+        source_watermark_requirement="2024-03-31",
+    )
+    frame = {
+        "schema_version": "calendar-partition-role-frame.v2",
+        "baseline_class": "prior_period",
+        "period_grain": "month",
+        "partition_field": "month_phase",
+        "target_members": ("start",),
+        "baseline_members": ("end",),
+        "aggregation": "sum_of_complete_days",
+        "member_definitions": (
+            {"member": "start", "day_start": 1, "day_end": 5},
+            {"member": "mid", "day_start": 6, "day_end": 24},
+            {"member": "end", "day_start": 25, "day_end": 31},
+        ),
+    }
+    contract = QueryContract(
+        query_contract_id="query:prior-period-partition",
+        analysis_contract_ref="analysis:prior-period-partition",
+        query_intent="daily_metric_baselines",
+        dataset_snapshot_refs=("snapshot:paid-orders:1",),
+        metric_bindings=(
+            MetricBinding(
+                metric_id="paid_amount",
+                contract_ref="metric:paid-amount@1",
+                dataset_id="paid_order_success",
+                expression="sum(paid_amount)",
+                aggregation="sum",
+                required_fields=("paid_amount",),
+                grain=("business_date",),
+            ),
+        ),
+        dimension_bindings=(),
+        window_refs=("evaluation_range",),
+        resolved_windows=(window,),
+        filters=(),
+        result_shape=ResultShape(
+            required_fields=(
+                "window_id",
+                "window_role",
+                "observation_key",
+                "paid_amount",
+            ),
+            unique_key=("window_id", "observation_key"),
+            grain=("window_id", "observation_key"),
+            required_window_ids=("evaluation_range",),
+        ),
+        completeness_assertions=(),
+        workload_class="interactive_aggregate",
+        contract_signature="",
+        query_parameters={"calendar_partition_role_frame": frame},
+    )
+    contract = replace(
+        contract,
+        contract_signature=query_contract_signature(contract),
+    )
+    rows = tuple(
+        {
+            "window_id": "evaluation_range",
+            "window_role": role,
+            "observation_key": observed.isoformat(),
+            "paid_amount": 1,
+        }
+        for role, start, count in (
+            ("baseline", date(2024, 1, 25), 7),
+            ("target", date(2024, 2, 1), 5),
+            ("baseline", date(2024, 2, 25), 5),
+            ("target", date(2024, 3, 1), 5),
+        )
+        for observed in (start + timedelta(days=offset) for offset in range(count))
+    )
+
+    comparison = aggregate_window_metric_comparison(
+        contract,
+        rows,
+        metric_id="paid_amount",
+        primary_baseline_window_id="evaluation_range:partition:baseline",
+    )
+
+    assert comparison.target.required_complete_days == 10
+    assert comparison.primary_baseline.required_complete_days == 12
+    assert comparison.target.value == 10
+    assert comparison.primary_baseline.value == 12
 
 
 def _window(

@@ -2071,6 +2071,7 @@ def run_post_execution_workflow(
     factor_coverage_plan: FactorCoveragePlan | None = None,
     factor_coverage_result: FactorCoverageResult | None = None,
     controlled_investigation_enabled: bool = False,
+    prepublication_verification: bool = False,
 ) -> PostExecutionWorkflowResult:
     execution = _validated_execution(execution_result)
     coverage_checkpoint = _validated_claim_coverage_checkpoint(
@@ -2078,6 +2079,10 @@ def run_post_execution_workflow(
         execution=execution,
     )
     intent = _validated_intent(intent_revision, execution=execution)
+    if type(prepublication_verification) is not bool:
+        raise PostExecutionWorkflowError(
+            "post_execution_prepublication_verification_invalid"
+        )
     coverage_plan: FactorCoveragePlan | None = None
     coverage_result: FactorCoverageResult | None = None
     if factor_coverage_plan is not None or factor_coverage_result is not None:
@@ -2529,6 +2534,7 @@ def run_post_execution_workflow(
                 answer_context=answer_context,
                 llm_client=narrative_llm,
                 sensitive_output_inspector=sensitive_output_inspector,
+                prepublication_verification=prepublication_verification,
             )
         except NarrativeProviderCallError as exc:
             return _post_seal_failure_result(

@@ -1495,24 +1495,23 @@ def test_non_boundary_block_requires_claim_or_recommendation(
         )
 
 
-def test_boundary_requires_limitation_even_when_it_binds_a_claim() -> None:
+def test_boundary_may_be_governed_by_a_verified_boundary_claim() -> None:
     palette = _palette()
 
-    with pytest.raises(
-        NarrativeAuthorityContractError,
-        match="narrative_block_authority_handles_invalid",
-    ):
-        NarrativeBlock.create(
-            writer_attempt_id="writer-attempt:unbounded-boundary",
-            role="boundary",
-            text="A boundary declaration must carry an explicit limitation.",
-            claim_handles=(palette.claims[0].claim_handle,),
-            recommendation_handles=(),
-            limitation_handles=(),
-            material_fact_bindings=(),
-            statement_role="boundary",
-            required=False,
-        )
+    block = NarrativeBlock.create(
+        writer_attempt_id="writer-attempt:claim-backed-boundary",
+        role="boundary",
+        text="A verified data-quality finding governs this boundary.",
+        claim_handles=(palette.claims[0].claim_handle,),
+        recommendation_handles=(),
+        limitation_handles=(),
+        material_fact_bindings=(),
+        statement_role="boundary",
+        required=False,
+    )
+
+    assert block.role == "boundary"
+    assert block.claim_handles == (palette.claims[0].claim_handle,)
 
 
 def test_next_action_requires_verified_recommendation_handle() -> None:

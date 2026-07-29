@@ -4313,6 +4313,8 @@ def _pattern_payload(
             temporal_authority,
             expected_field="month_phase",
         )
+        aggregation = _calendar_partition_aggregation(temporal_authority)
+        alignment = _calendar_partition_alignment(temporal_authority)
         if any(item.get(window_role_key) != "target" for item in rows):
             raise AuthoritativeTaskInputContractError(
                 "authoritative_calendar_partition_window_role_invalid"
@@ -4331,6 +4333,8 @@ def _pattern_payload(
             "target_phases": target_phases,
             "baseline_phases": baseline_phases,
             **dict(parameters),
+            "aggregation": aggregation,
+            **alignment,
         }
     if mode == "weekly":
         window_role_key = _binding_string(fields, "window_role_key", capability_id)
@@ -4346,6 +4350,8 @@ def _pattern_payload(
             temporal_authority,
             expected_field="iso_weekday",
         )
+        aggregation = _calendar_partition_aggregation(temporal_authority)
+        alignment = _calendar_partition_alignment(temporal_authority)
         if any(item.get(window_role_key) != "target" for item in rows):
             raise AuthoritativeTaskInputContractError(
                 "authoritative_calendar_partition_window_role_invalid"
@@ -4359,6 +4365,8 @@ def _pattern_payload(
             "target_weekdays": target_weekdays,
             "baseline_weekdays": baseline_weekdays,
             **dict(parameters),
+            "aggregation": aggregation,
+            **alignment,
         }
     raise AuthoritativeTaskInputContractError(
         f"authoritative_pattern_payload_contract_missing:{capability_id}"
@@ -4559,6 +4567,48 @@ def _calendar_partition_members(
             "authoritative_calendar_partition_members_invalid"
         )
     return targets, baselines
+
+
+def _calendar_partition_aggregation(
+    temporal_authority: EffectiveTemporalComparison,
+) -> str:
+    partition = temporal_authority.calendar_partition
+    aggregation = (
+        partition.get("aggregation") if isinstance(partition, Mapping) else None
+    )
+    if aggregation not in {"sum_of_complete_days", "mean_of_complete_days"}:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_calendar_partition_aggregation_invalid"
+        )
+    return str(aggregation)
+
+
+def _calendar_partition_alignment(
+    temporal_authority: EffectiveTemporalComparison,
+) -> Mapping[str, str]:
+    partition = temporal_authority.calendar_partition
+    baseline_class = (
+        partition.get("baseline_class")
+        if isinstance(partition, Mapping)
+        else None
+    )
+    period_grain = (
+        partition.get("period_grain")
+        if isinstance(partition, Mapping)
+        else None
+    )
+    if baseline_class not in {
+        "custom_control_window",
+        "prior_period",
+        "same_month_phase",
+    } or period_grain not in {"month", "week", "year"}:
+        raise AuthoritativeTaskInputContractError(
+            "authoritative_calendar_partition_alignment_invalid"
+        )
+    return {
+        "baseline_class": str(baseline_class),
+        "period_grain": str(period_grain),
+    }
 
 
 def _dedupe(values: Sequence[str]) -> tuple[str, ...]:

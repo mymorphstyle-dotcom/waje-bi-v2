@@ -286,6 +286,13 @@ def test_core_resumes_plan_from_persisted_intent_and_decision_head() -> None:
             "stop_after_phase": "phase02",
             "analysis_context": {},
             "context_manifest": manifest,
+            "supersedes_intent_revision_id": "intent-revision-source",
+            "superseded_plan_fields": [
+                "baseline_refs",
+                "resolved_window_refs",
+            ],
+            "parent_transition_id": "transition-material-revision",
+            "intent_revision_reason_ref": "directive-material-revision",
         },
     }
     store = _ResumeStore(
@@ -347,6 +354,13 @@ def test_core_resumes_plan_from_persisted_intent_and_decision_head() -> None:
     assert captured["runtime_registry"] is registry
     assert captured["release_resolver"] is store
     assert captured["run_attempt_id"] == intent.run_attempt_id
+    assert captured["supersedes_intent_revision_id"] == "intent-revision-source"
+    assert captured["superseded_plan_fields"] == [
+        "baseline_refs",
+        "resolved_window_refs",
+    ]
+    assert captured["parent_transition_id"] == "transition-material-revision"
+    assert captured["intent_revision_reason_ref"] == "directive-material-revision"
     assert store.run_updates[-1]["status"] == "running_workflow"
     assert finalize.call_count == 1
     assert finalize.call_args.kwargs["expected_parent_transition_id"] == (

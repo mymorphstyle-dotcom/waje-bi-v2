@@ -380,10 +380,14 @@ class IntentRevision:
                 )
             )
         except TemporalComparisonContractError as exc:
+            temporal_error = str(exc).strip()
             error = (
                 "intent_revision_time_spec_invalid"
-                if str(exc) == "temporal_time_spec_invalid"
-                else "intent_revision_comparison_spec_invalid"
+                if temporal_error == "temporal_time_spec_invalid"
+                else (
+                    "intent_revision_comparison_spec_invalid:"
+                    + (temporal_error or "temporal_comparison_spec_invalid")
+                )
             )
             raise SingleAuthorityContractError(error) from exc
         if direction_premise not in DIRECTION_PREMISES:
@@ -507,8 +511,10 @@ class IntentRevision:
                 ambiguity_slots=normalized_slots,
             )
         except TemporalComparisonContractError as exc:
+            temporal_error = str(exc).strip()
             raise SingleAuthorityContractError(
-                "intent_revision_comparison_authority_invalid"
+                "intent_revision_comparison_authority_invalid:"
+                + (temporal_error or "temporal_comparison_authority_invalid")
             ) from exc
 
         normalized_spans = _mapping_sequence(

@@ -17,6 +17,7 @@ from bi_agent.runtime.event_window_derivation import (
 from bi_agent.runtime.temporal_comparison import EffectiveTemporalComparison
 from bi_agent.runtime.temporal_comparison import (
     TemporalComparisonContractError,
+    calendar_partition_evaluation_role_for_date,
     calendar_partition_role_for_date,
     validate_calendar_partition_role_frame,
 )
@@ -53,6 +54,16 @@ EVENT_WINDOW_SET_INTERPRETATION_CONTRACT = {
     "zero_baseline_policy": "relative_change_unavailable",
     "completeness_authority": "full_daily_evaluation_frame_and_complete_derived_windows",
     "causal_interpretation": "forbidden",
+    "writer_fact_selection": {
+        "mode": "named_fact_subset",
+        "fact_names": [
+            "event_occurrence_count",
+            "post_event_higher_count",
+            "post_event_lower_count",
+            "post_event_unchanged_count",
+            "displayed_comparison_count",
+        ],
+    },
 }
 
 
@@ -607,9 +618,11 @@ def _aggregate_partition_role_comparison(
             role: tuple(
                 (start + timedelta(days=offset)).isoformat()
                 for offset in range((end - start).days)
-                if calendar_partition_role_for_date(
+                if calendar_partition_evaluation_role_for_date(
                     start + timedelta(days=offset),
                     frame,
+                    evaluation_start=start,
+                    evaluation_end_exclusive=end,
                 )
                 == role
             )

@@ -511,7 +511,7 @@ def test_failed_auxiliary_branch_skips_only_its_successors() -> None:
     assert store.stop_records[snapshot.stop_ref].reason == "plan_exhausted"
 
 
-def test_exact_replay_and_resume_do_not_call_the_adapter_twice() -> None:
+def test_adapter_failure_is_retried_once_and_then_settled() -> None:
     plan = _plan(
         (
             {
@@ -528,24 +528,17 @@ def test_exact_replay_and_resume_do_not_call_the_adapter_twice() -> None:
         )
     )
     store = _Store()
-    first_attempt_calls: list[str] = []
+    calls: list[tuple[str, int]] = []
 
-    def crashing_adapter(task, _attempt):
-        first_attempt_calls.append(task.task_key)
-        if task.task_key == "second":
+    def transient_adapter(task, attempt):
+        calls.append((task.task_key, attempt.execution_attempt))
+        if task.task_key == "second" and attempt.execution_attempt == 1:
             raise RuntimeError("worker_died_after_first_task")
         return _success(task)
 
-    with pytest.raises(RuntimeError, match="worker_died_after_first_task"):
-        _execute_plan(plan, adapter=crashing_adapter, store=store)
-
-    assert first_attempt_calls == ["first", "second"]
-    resumed_calls: list[str] = []
     snapshot = _execute_plan(
         plan,
-        adapter=lambda task, attempt: (
-            resumed_calls.append(task.task_key) or _success(task)
-        ),
+        adapter=transient_adapter,
         store=store,
     )
     replayed = _execute_plan(
@@ -554,7 +547,7 @@ def test_exact_replay_and_resume_do_not_call_the_adapter_twice() -> None:
         store=store,
     )
 
-    assert resumed_calls == ["second"]
+    assert calls == [("first", 1), ("second", 1), ("second", 2)]
     assert replayed == snapshot
     assert len(store.outcomes) == 2
     second_attempt = store.outcomes[
@@ -564,6 +557,46 @@ def test_exact_replay_and_resume_do_not_call_the_adapter_twice() -> None:
     assert set(store.accepted_attempt_refs) == {
         bundle[0].attempt_id for bundle in store.outcomes.values()
     }
+
+
+def test_adapter_retry_exhaustion_is_scoped_to_its_task() -> None:
+    plan = _plan(
+        (
+            {
+                "task_key": "failing",
+                "capability_id": "failing",
+                "edges": ({"obligation_key": "main", "required": True},),
+            },
+            {
+                "task_key": "healthy",
+                "capability_id": "healthy",
+                "edges": ({"obligation_key": "support", "required": True},),
+            },
+        ),
+        user_obligation_keys=("main", "support"),
+    )
+    store = _Store()
+    calls: list[tuple[str, int]] = []
+
+    def adapter(task, attempt):
+        calls.append((task.task_key, attempt.execution_attempt))
+        if task.task_key == "failing":
+            raise ValueError("result_contract_invalid")
+        return _success(task)
+
+    snapshot = _execute_plan(plan, adapter=adapter, store=store, max_workers=1)
+    outcomes = {
+        bundle[1].task_id: bundle for bundle in store.outcomes.values()
+    }
+    failing = outcomes[_task_by_key(plan, "failing").task_id]
+    healthy = outcomes[_task_by_key(plan, "healthy").task_id]
+
+    assert calls == [("failing", 1), ("failing", 2), ("healthy", 1)]
+    assert failing[0].execution_attempt == 2
+    assert failing[1].status == "integrity_failed"
+    assert failing[3][0].kind == "capability_contract_check_failed_after_retry"
+    assert healthy[1].status == "succeeded"
+    assert snapshot.failure_refs == (failing[3][0].failure_ref,)
 
 
 def test_completion_order_cannot_change_snapshot_or_ledger_digest() -> None:

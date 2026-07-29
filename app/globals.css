@@ -776,6 +776,38 @@ summary:focus-visible,
   min-width: 0;
 }
 
+.reasoning-repairs {
+  border-left: 2px solid #38bdf8;
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, #0c4a6e 20%, var(--surface-soft));
+  padding: 12px 14px;
+}
+
+.reasoning-repair-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #7dd3fc;
+}
+
+.reasoning-repair-heading strong {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.reasoning-repairs ol {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.reasoning-repairs li {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .reasoning-facts > ol {
   display: grid;
   gap: 0;
@@ -1029,6 +1061,13 @@ summary:focus-visible,
   margin-top: 8px;
   border-left: 1px solid var(--waje-border);
   padding-left: 10px;
+}
+
+.answer-evidence-note {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .answer-inline-evidence article > strong {
@@ -1606,6 +1645,7 @@ summary:focus-visible,
 }
 
 .planner-question-review li > header > small.partial,
+.planner-question-review li > header > small.unbound,
 .planner-question-review li > header > small.omitted {
   color: var(--amber);
 }
@@ -1642,6 +1682,11 @@ summary:focus-visible,
   color: var(--text);
   font-size: 14px;
   line-height: 1.75;
+}
+
+.answer-section-copy {
+  height: auto;
+  min-height: 0;
 }
 
 .answer-section-copy > :where(p, ul, ol, pre, table, blockquote),

@@ -540,7 +540,9 @@ class AnalysisContractCompilerTest(unittest.TestCase):
         self.assertEqual(
             contract.query_parameters["calendar_partition_role_frame"],
             {
-                "schema_version": "calendar-partition-role-frame.v1",
+                "schema_version": "calendar-partition-role-frame.v2",
+                "baseline_class": "same_month_phase",
+                "period_grain": "month",
                 "partition_field": "month_phase",
                 "target_members": ("start",),
                 "baseline_members": ("mid", "end"),

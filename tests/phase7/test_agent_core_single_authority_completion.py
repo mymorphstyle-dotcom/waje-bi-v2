@@ -135,6 +135,7 @@ class _WithheldNarrativeLLM:
         compact = {
             "role": block["role"],
             "text": block["text"],
+            "p": list(block.get("requirement_handles", ())),
             "c": list(block["claim_handles"]),
             "r": list(block["recommendation_handles"]),
             "l": list(block["limitation_handles"]),

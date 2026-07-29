@@ -16,6 +16,7 @@ export type TraceCapabilityFailure = {
 export type TraceReasoningIssueStatus =
   | "answered"
   | "partial"
+  | "unbound"
   | "unresolved"
   | "omitted";
 
@@ -96,6 +97,7 @@ export type TraceReasoning = {
   runId: string;
   businessUnderstanding: string;
   planRevisionId: string;
+  repairNotices?: string[];
   issues: TraceReasoningIssue[];
   tasks: TraceReasoningTask[];
   claims: TraceReasoningClaim[];

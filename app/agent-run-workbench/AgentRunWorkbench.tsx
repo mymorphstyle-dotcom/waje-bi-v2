@@ -802,13 +802,20 @@ function ReasoningClaimRow({
 }
 
 function PlannerStatusCard({ issues }: { issues: TraceReasoningIssue[] }) {
-  const settled = issues.filter((issue) => issue.status === "answered").length;
+  const answered = issues.filter((issue) => issue.status === "answered").length;
+  const partial = issues.filter((issue) => issue.status === "partial").length;
+  const unbound = issues.filter((issue) => issue.status === "unbound").length;
+  const coverageSummary = [
+    `${answered}/${issues.length} 已逐题回答`,
+    partial ? `${partial} 项部分回答` : null,
+    unbound ? `${unbound} 项仅综合覆盖` : null,
+  ].filter(Boolean).join(" · ");
   return (
     <aside className={styles.plannerStatus}>
       <div className={styles.plannerStatusHeader}>
         <div>
           <strong>待解决问题</strong>
-          <small>{settled}/{issues.length} 已完整进入回答</small>
+          <small>{coverageSummary}</small>
         </div>
         <span>{issues.length}</span>
       </div>
@@ -1328,14 +1335,18 @@ function capabilityLabel(value: string) {
 
 function reasoningIssueStatusLabel(status: TraceReasoningIssue["status"]) {
   return ({
-    answered: "已完整回答",
+    answered: "已逐题回答",
     partial: "回答不完整",
+    unbound: "仅综合覆盖，缺少逐题回答",
     unresolved: "本次尚未解决",
     omitted: "有结论但未写入",
   } satisfies Record<TraceReasoningIssue["status"], string>)[status];
 }
 
 function reasoningIssueGapLabel(issue: TraceReasoningIssue) {
+  if (issue.status === "unbound") {
+    return "最终综合回答使用了相关 Claim，但缺少这一问题的独立回答绑定。";
+  }
   if (issue.status === "omitted") {
     return "已经形成并校验结论，但最终回答没有引用这些 Claim。";
   }

@@ -462,7 +462,13 @@ class PublicationProjection:
                 }
             )
         )
-        published = tuple(sorted(set(block_by_id) - set(safety_excluded)))
+        published = tuple(
+            sorted(
+                block_id
+                for block_id, block in block_by_id.items()
+                if block_id not in safety_excluded
+            )
+        )
         if not published:
             raise PublicationAuthorityContractError(
                 "publication_projection_no_safe_blocks"
@@ -633,8 +639,16 @@ class PublicationProjection:
             fact_by_pair,
         ) = _projection_authority_indexes(material_projection)
         published_blocks: list[dict[str, Any]] = []
+        published_claim_refs: set[str] = set()
+        published_recommendation_refs: set[str] = set()
         limitation_refs: set[str] = set()
-        for block_id in self.display_order:
+        synthesis_block_ids = tuple(
+            block_id
+            for block_id in self.display_order
+            if not block_by_id[block_id].requirement_handles
+        )
+        customer_block_ids = synthesis_block_ids or self.display_order
+        for block_id in customer_block_ids:
             block = block_by_id[block_id]
             block_claim_refs = tuple(
                 sorted(
@@ -657,6 +671,8 @@ class PublicationProjection:
                     if handle in limitation_by_handle
                 )
             )
+            published_claim_refs.update(block_claim_refs)
+            published_recommendation_refs.update(block_recommendation_refs)
             limitation_refs.update(block_limitation_refs)
             bindings = []
             for binding in block.material_fact_bindings:
@@ -692,10 +708,10 @@ class PublicationProjection:
             )
         payload = {
             "blocks": published_blocks,
-            "claim_refs": self.claim_refs,
+            "claim_refs": tuple(sorted(published_claim_refs)),
             "field_visibility_policy_ref": self.field_visibility_policy_ref,
             "limitation_refs": tuple(sorted(limitation_refs)),
-            "recommendation_refs": self.recommendation_refs,
+            "recommendation_refs": tuple(sorted(published_recommendation_refs)),
             "visualization_refs": self.visualization_refs,
             "warnings": self.warnings,
         }

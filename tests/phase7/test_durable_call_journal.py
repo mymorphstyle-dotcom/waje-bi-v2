@@ -422,6 +422,19 @@ def _reject_poison_output(output) -> None:
         raise LLMOutputError("planner_contract_rejected")
 
 
+def _reject_poison_output_with_repair_contract(output) -> None:
+    if output.get("decision") == "poison":
+        raise LLMOutputError(
+            "planner_contract_rejected",
+            repair_contract={
+                "decision": {
+                    "type": "string",
+                    "allowed_values": ["accepted"],
+                }
+            },
+        )
+
+
 def _reject_poison_output_without_retry(output) -> None:
     if output.get("decision") == "poison":
         raise LLMOutputError(
@@ -700,6 +713,54 @@ def test_wrapper_stops_after_one_failed_contract_repair() -> None:
     assert '"attempt_limit":"final_repair_attempt"' in (
         provider.invocations[1]["messages"][-1]["content"]
     )
+
+
+def test_wrapper_sends_validator_repair_contract_to_final_attempt() -> None:
+    journal = InMemoryDurableCallJournal()
+    provider = _ProviderWithoutValidatorCapability()
+    client = DurableProviderClient(
+        provider,
+        journal=journal,
+        run_attempt_id="run-provider-repair-contract",
+        intent_revision_id="intent-provider",
+        plan_revision_id="plan-provider",
+        call_kind="semantic_provider",
+        task_id=None,
+        stage_name="settle_claim_authority",
+    )
+
+    result = client.invoke_json(
+        task="single_authority_candidate_claim_proposal",
+        prompt_version="test.v1",
+        messages=(
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "payload"},
+        ),
+        required_keys=("decision",),
+        output_validator=_reject_poison_output_with_repair_contract,
+        model_tier="critical",
+    )
+    attempts = journal.attempts_for_idempotency(
+        client.accepted_call_specs[0].idempotency_key
+    )
+    failed_payload = journal.events_for_attempt(attempts[0])[-1].failure_payload
+    repair_message = json.loads(
+        provider.invocations[1]["messages"][-1]["content"]
+    )
+
+    assert result.output == {"decision": "accepted-2"}
+    assert failed_payload["repair_contract"] == {
+        "decision": {
+            "type": "string",
+            "allowed_values": ["accepted"],
+        }
+    }
+    assert repair_message["repair_request"]["expected_contract"] == {
+        "decision": {
+            "type": "string",
+            "allowed_values": ["accepted"],
+        }
+    }
 
 
 def test_wrapper_does_not_retry_non_retryable_output_contract_failure() -> None:

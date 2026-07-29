@@ -270,6 +270,7 @@ def bind_capability_inputs(
                 continue
             match, slot_failure = _match_exact_slot_with_validation_dependencies(
                 slot,
+                degradation_policy=plan.degradation_policy,
                 results=results,
                 reports=reports,
             )
@@ -654,6 +655,7 @@ def _consumable_binding_query_refs(
     for slot in (*plan.required_input_slots, *plan.optional_input_slots):
         match, _ = _match_exact_slot_with_validation_dependencies(
             slot,
+            degradation_policy=plan.degradation_policy,
             results=results,
             reports=reports,
         )
@@ -720,6 +722,7 @@ def _completeness_record_values(
 def _match_exact_slot_with_validation_dependencies(
     slot: CapabilityInputSlot,
     *,
+    degradation_policy: Mapping[str, Any],
     results: Mapping[str, QueryResultEnvelope],
     reports: Mapping[str, CompletenessReport],
 ) -> tuple[_SlotMatch | None, _SlotFailure | None]:
@@ -785,7 +788,13 @@ def _match_exact_slot_with_validation_dependencies(
             input_state="invalid",
             diagnostic=f"primary_provenance_mismatch:{slot.slot_id}",
         )
-    if report.completeness_status not in slot.accepted_completeness:
+    if (
+        report.completeness_status not in slot.accepted_completeness
+        and not _soft_incomplete_report_accepted(
+            report,
+            degradation_policy=degradation_policy,
+        )
+    ):
         return None, _report_slot_failure(
             report,
             code="completeness_not_accepted",
@@ -1110,6 +1119,24 @@ def _primary_report_accepted(report: CompletenessReport) -> bool:
         and execution_assertions[0].get("passed") is True
         and failure_classes
         and failure_classes <= boundary_classes
+    )
+
+
+def _soft_incomplete_report_accepted(
+    report: CompletenessReport,
+    *,
+    degradation_policy: Mapping[str, Any],
+) -> bool:
+    return bool(
+        degradation_policy.get("incomplete_input")
+        in {
+            "context_only",
+            "degrade_claim",
+            "report_limitation",
+            "sensitivity_only",
+        }
+        and report.completeness_status != "complete"
+        and _primary_report_accepted(report)
     )
 
 
