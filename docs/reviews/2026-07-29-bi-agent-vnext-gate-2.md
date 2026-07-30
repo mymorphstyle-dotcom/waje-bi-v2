@@ -138,3 +138,15 @@ Blocking findings：0。
 - [x] timeout/retry 只在 provider 或 tool supervision 层发生。
 
 Gate 2 accepted。Gate 3 进入前仍按 `$grill-me` 纪律执行入口判断。
+
+## 2026-07-30 realignment note
+
+本 Gate 的单主 Agent、WAJE-owned controller、checkpoint/retry/resume 与 provider
+supervision 继续有效。新 Gate 3 需要先完成 G3.2：跨阶段 message-impact correction、
+source-grounded strict binding、durable Frame candidate review saga、
+ModelInvocationRecord/RunTraceManifest 与 wait-state 骨架；G3.4 接入 resolution adoption
+CAS；G3.5 再接入
+capability-result/Evidence atomic admission 和 execution/obligation/publication/delivery
+四轴状态。它们继续使用同一 controller，不新增平行 agent loop。G3.2 完成前不进入新业务
+Evidence/Answer/Workflow 分支。详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。

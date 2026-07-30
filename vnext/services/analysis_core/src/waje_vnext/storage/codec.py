@@ -9,27 +9,15 @@ from waje_vnext.domain.action_codec import decode_agent_action_proposal
 from waje_vnext.domain.actions import ActionEnvelope, ActionKind
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
-    AlternativeHypothesis,
     AnswerClaim,
     AnswerStatus,
     AnswerVersion,
     ClaimVerifierStatus,
-    ComparisonDesign,
-    ComparisonGroup,
-    ComparisonGroupRole,
-    ComparisonMode,
     DecisionOption,
     DecisionRecord,
     EvidenceRecord,
     EvidenceStrength,
     EvidenceType,
-    EstimatorAggregation,
-    EstimatorSpec,
-    ExposureAdjustmentMode,
-    ExposureBalance,
-    ExposureDesign,
-    FrameRequirement,
-    FrameRequirementKind,
     InterpretationRecord,
     ResultHandle,
     ReviewerObjection,
@@ -78,75 +66,13 @@ def decode_frame(payload: Mapping[str, Any]) -> AnalysisFrameRevision:
         created_at=_datetime(payload["created_at"]),
         revision_reason=payload["revision_reason"],
         estimand=payload["estimand"],
-        population=payload["population"],
-        time_scope=payload["time_scope"],
         observation_unit=payload["observation_unit"],
-        primary_estimator=EstimatorSpec(
-            quantity=payload["primary_estimator"]["quantity"],
-            aggregation=EstimatorAggregation(
-                payload["primary_estimator"]["aggregation"]
-            ),
-            numerator=payload["primary_estimator"]["numerator"],
-            denominator=payload["primary_estimator"]["denominator"],
-            exposure_adjustment=ExposureAdjustmentMode(
-                payload["primary_estimator"]["exposure_adjustment"]
-            ),
-        ),
-        comparison=ComparisonDesign(
-            mode=ComparisonMode(payload["comparison"]["mode"]),
-            groups=tuple(
-                ComparisonGroup(
-                    group_id=group["group_id"],
-                    label=group["label"],
-                    role=ComparisonGroupRole(group["role"]),
-                    membership_rule=group["membership_rule"],
-                )
-                for group in payload["comparison"]["groups"]
-            ),
-            contrast=payload["comparison"]["contrast"],
-        ),
-        exposure=ExposureDesign(
-            variable=payload["exposure"]["variable"],
-            unit=payload["exposure"]["unit"],
-            balance_assumption=ExposureBalance(
-                payload["exposure"]["balance_assumption"]
-            ),
-            sensitivity_adjustments=tuple(
-                ExposureAdjustmentMode(value)
-                for value in payload["exposure"][
-                    "sensitivity_adjustments"
-                ]
-            ),
-            normalization_strategy=payload["exposure"][
-                "normalization_strategy"
-            ],
-            diagnostic_requirement_id=payload["exposure"][
-                "diagnostic_requirement_id"
-            ],
-            sensitivity_requirement_id=payload["exposure"][
-                "sensitivity_requirement_id"
-            ],
-        ),
-        measurement_rationale=payload["measurement_rationale"],
+        numerator=payload["numerator"],
+        denominator=payload["denominator"],
+        exposure=payload["exposure"],
+        comparison=payload["comparison"],
         assumptions=tuple(payload["assumptions"]),
-        alternatives=tuple(
-            AlternativeHypothesis(
-                alternative_id=alternative["alternative_id"],
-                statement=alternative["statement"],
-                requirement_id=alternative["requirement_id"],
-            )
-            for alternative in payload["alternatives"]
-        ),
-        requirements=tuple(
-            FrameRequirement(
-                requirement_id=requirement["requirement_id"],
-                kind=FrameRequirementKind(requirement["kind"]),
-                question=requirement["question"],
-                success_condition=requirement["success_condition"],
-                failure_consequence=requirement["failure_consequence"],
-            )
-            for requirement in payload["requirements"]
-        ),
+        alternatives=tuple(payload["alternatives"]),
         falsification_conditions=tuple(payload["falsification_conditions"]),
         reversal_conditions=tuple(payload["reversal_conditions"]),
         success_conditions=tuple(payload["success_conditions"]),
@@ -172,7 +98,6 @@ def decode_plan(payload: Mapping[str, Any]) -> WorkPlanRevision:
                 business_purpose=task["business_purpose"],
                 capability_intent=task["capability_intent"],
                 target_claim_ids=tuple(task["target_claim_ids"]),
-                requirement_ids=tuple(task["requirement_ids"]),
                 depends_on_task_ids=tuple(task["depends_on_task_ids"]),
                 success_conditions=tuple(task["success_conditions"]),
                 stop_conditions=tuple(task["stop_conditions"]),
@@ -353,7 +278,6 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
                 event_type=event["event_type"],
                 authority_ref=event["authority_ref"],
                 business_projection=event["business_projection"],
-                agent_result=event["agent_result"],
             )
             for event in payload["recent_events"]
         ),
@@ -368,10 +292,6 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
                 plan_revision_id=item["plan_revision_id"],
                 task_id=item["task_id"],
                 snapshot_release_ref=item["snapshot_release_ref"],
-                grain=item["grain"],
-                capability_name=item["capability_name"],
-                inline_payload=item["inline_payload"],
-                result_handle_id=item["result_handle_id"],
             )
             for item in payload["evidence_index"]
         ),

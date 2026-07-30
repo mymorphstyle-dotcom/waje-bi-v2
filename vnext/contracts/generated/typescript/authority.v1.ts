@@ -7,10 +7,6 @@ export type WAJEVNextAuthorityObjectsV1 =
   InvestigationCase | AnalysisFrameRevision | WorkPlanRevision | EvidenceRecord | AnswerVersion;
 export type Id = string;
 export type Timestamp = string;
-/**
- * @minItems 1
- */
-export type NonEmptyStringArray = [string, ...string[]];
 export type StringArray = string[];
 export type EvidenceRecord = {
   evidence_record_id: Id;
@@ -79,79 +75,19 @@ export interface AnalysisFrameRevision {
   created_at: Timestamp;
   revision_reason: Id;
   estimand: Id;
-  population: Id;
-  time_scope: Id;
   observation_unit: Id;
-  primary_estimator: EstimatorSpec;
-  exposure: ExposureDesign;
-  comparison: ComparisonDesign;
-  measurement_rationale: Id;
-  assumptions: NonEmptyStringArray;
-  /**
-   * @minItems 1
-   */
-  alternatives: [AlternativeHypothesis, ...AlternativeHypothesis[]];
-  /**
-   * @minItems 1
-   */
-  requirements: [FrameRequirement, ...FrameRequirement[]];
-  falsification_conditions: NonEmptyStringArray;
-  reversal_conditions: NonEmptyStringArray;
-  success_conditions: NonEmptyStringArray;
-  stop_conditions: NonEmptyStringArray;
-  decision_record_ids: StringArray;
-  semantic_contract_refs: NonEmptyStringArray;
-}
-export interface EstimatorSpec {
-  quantity: Id;
-  aggregation: "sum" | "mean" | "ratio" | "rate" | "difference" | "model_based" | "other";
   numerator: Id;
   denominator: Id;
-  exposure_adjustment:
-    "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other";
-}
-export interface ExposureDesign {
-  variable: Id;
-  unit: Id;
-  balance_assumption: "unknown" | "expected_equal" | "expected_unequal";
-  /**
-   * @minItems 1
-   */
-  sensitivity_adjustments: [
-    "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other",
-    ...(
-      "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other"
-    )[],
-  ];
-  normalization_strategy: Id;
-  diagnostic_requirement_id: Id;
-  sensitivity_requirement_id: Id;
-}
-export interface ComparisonDesign {
-  mode: "absolute" | "between_groups" | "within_unit" | "counterfactual";
-  /**
-   * @minItems 1
-   */
-  groups: [ComparisonGroup, ...ComparisonGroup[]];
-  contrast: Id;
-}
-export interface ComparisonGroup {
-  group_id: Id;
-  label: Id;
-  role: "focal" | "reference";
-  membership_rule: Id;
-}
-export interface AlternativeHypothesis {
-  alternative_id: Id;
-  statement: Id;
-  requirement_id: Id;
-}
-export interface FrameRequirement {
-  requirement_id: Id;
-  kind: "semantic" | "coverage" | "exposure" | "sensitivity" | "alternative" | "falsification";
-  question: Id;
-  success_condition: Id;
-  failure_consequence: Id;
+  exposure: Id;
+  comparison: Id;
+  assumptions: StringArray;
+  alternatives: StringArray;
+  falsification_conditions: StringArray;
+  reversal_conditions: StringArray;
+  success_conditions: StringArray;
+  stop_conditions: StringArray;
+  decision_record_ids: StringArray;
+  semantic_contract_refs: StringArray;
 }
 export interface WorkPlanRevision {
   plan_revision_id: Id;
@@ -172,7 +108,6 @@ export interface WorkTask {
   business_purpose: Id;
   capability_intent: Id;
   target_claim_ids: StringArray;
-  requirement_ids: StringArray;
   depends_on_task_ids: StringArray;
   success_conditions: StringArray;
   stop_conditions: StringArray;

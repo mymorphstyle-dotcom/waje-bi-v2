@@ -1,7 +1,7 @@
 # WAJE BI Agent vNext
 
 `vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。Gate 0 隔离边界、Gate 1
-权威/存储合同、Gate 2 单主 Agent runtime 和 Gate 3 证据闭环已经建立。
+权威/存储合同和 Gate 2 单主 Agent runtime 已建立。
 
 ## Day 0 边界
 
@@ -23,8 +23,6 @@ npm ci
 npm run check
 npm run test:postgres
 npm run test:postgres:gate2
-npm run test:data:gate3
-npm run test:slice:gate3
 ```
 
 verifier 会：
@@ -56,14 +54,10 @@ Python baseline 为 3.12.13 toolchain、`requires-python >=3.12` 和项目内 `.
 Gate 1 提供五类权威对象、typed actions、ContextPacket、event journal、runtime
 persistence envelopes、PostgreSQL adapter 与 migration。Gate 2 提供 WAJE-owned
 controller、typed Primary Agent provider、checkpoint/resume、lease、outbox、effect retry
-和 `ask_user` 中断。Gate 3 提供由 Primary Agent 自主形成的 `EstimatorSpec`、comparison、
-exposure/sensitivity 设计，generic period comparison capability、不可变 EvidenceRecord、
-provisional/settled AnswerVersion 和只读 Workflow projection。Workbench 从 Gate 6 完成
-产品验收。
+和 `ask_user` 中断。Workbench 从 Gate 6 完成产品验收。
 
-真实 provider acceptance 只读取 `WAJE_VNEXT_LLM_` 前缀配置：
+真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：
 
 ```bash
 npm run test:provider:gate2
-npm run test:provider:gate3
 ```

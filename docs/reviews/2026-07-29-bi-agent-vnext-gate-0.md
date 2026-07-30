@@ -139,3 +139,9 @@ metadata 保留在 verifier 输出与本报告中。
 
 Gate 0 只证明 Day 0 隔离、toolchain 与最小 build/test/run。五类权威对象、存储 schema、
 typed actions、ContextPacket 和 event journal 在 Gate 1 实现。Gate 1 入口需先完成访谈判断。
+
+## 7. 2026-07-30 realignment note
+
+新 Gate 3 设计前已复核本 Gate。隔离、Python 3.12+、独立 namespace 与 clean-copy
+deletion-independence 均保持有效，无补强项。详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。

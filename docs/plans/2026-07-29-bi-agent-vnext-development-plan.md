@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 3 complete；Gate 4 尚未执行入口判断 |
+| 当前 Gate | Gate 2 complete；旧 Gate 3 已撤销；新 Gate 3 处于 Planned |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -113,26 +113,52 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
 
 | 权威对象 | 职责 | 核心不变量 |
 |---|---|---|
-| `InvestigationCase` | 稳定承载一个经营问题及其连续调查，只保存 identity、生命周期与 CAS accepted head pointers | 业务内容只存在于 immutable revision/version；每个 head 指向已持久化且被接受的对象；身份、业务结论与用户角色解耦 |
-| `AnalysisFrameRevision` | 测量设计唯一权威 | estimand、`EstimatorSpec`、观察单位、exposure、comparison、assumptions、alternatives、requirements、falsification、reversal、success/stop conditions 全部在此定义 |
+| `InvestigationCase` | 稳定承载一个经营问题及其连续调查，只保存 identity、生命周期与 CAS accepted head pointers | accepted Question/Frame/Plan/Answer 都指向 immutable revision/version；身份、业务结论与用户角色解耦 |
+| `AnalysisFrameRevision` | 测量设计唯一权威 | source-grounded measurement algebra 以显式 `EstimandSpec` 定义 population、variable/event、观察单位、时间、window、estimator、分子分母、unit/exposure aggregation、contrast、eligibility、identification、alternatives、falsification、reversal 与 epistemic completion |
 | `WorkPlanRevision` | 当前 accepted 业务调查任务图 | 任务可动态修订；业务口径变化必须引用新 FrameRevision；工具重试保持同一 plan revision |
-| `EvidenceRecord` | capability 原生返回的不可变证据 | 绑定 QuerySpec、contract、snapshot/release、grain、provenance、结果摘要或稳定 result handle；记录证据强度与限制 |
-| `AnswerVersion` | 用户可见答案及逐结论绑定 | `provisional \| settled`；每个 claim 绑定证据、frame、适用范围、限制、反例状态和 Reviewer disposition |
+| `EvidenceRecord` | capability 原生返回的不可变证据 | 绑定 semantic/authority/resolution-outcome identity、封闭 execution provenance（conformance 或 production QuerySpec）、contract、snapshot/release、typed scope、grain、exposure、结果摘要或稳定 result handle |
+| `AnswerVersion` | 用户可见答案及逐结论绑定 | `provisional \| settled`；每个 claim 绑定 EstimandSpec、obligation、EvidenceUseBinding、typed applicability、限制、反例状态和 Reviewer disposition |
 
 ### 3.2 派生与从属记录
 
 - `ContextPacket`：从 accepted heads、最近相关事件、可见证据索引、未决异议和用户消息构造的
-  有界、可哈希、可重放输入；aggregate inline evidence 和内部 effect result 可供 Primary
-  Agent 修订测量设计，customer projection 继续保持安全摘要；它是投影，不独立改写权威。
+  有界、可哈希、可重放输入；它是投影，不独立改写权威。
 - `EventJournalEntry`：追加式运行事实，覆盖 action 请求、admission、执行、结果、失败、
   checkpoint、resume、revision acceptance、answer publication 和 delivery。
 - `InterpretationRecord`：Primary Agent 对证据的结构化解释，绑定 FrameRevision 与
   EvidenceRecord；它不能提升证据强度。
-- `ReviewerObjection`：独立 Reviewer 的结构化异议，绑定风险、claim、证据缺口、建议动作
-  和 disposition；它不生成平行答案。
+- `MeasurementObjection` / `ReviewerObjection`：独立 Reviewer 的结构化异议，分别约束
+  Frame acceptance 与 Answer publication；绑定风险、对象、证据缺口、建议动作和
+  disposition，不生成平行 Frame 或答案。
 - `DecisionRecord`：用户决定或低风险推荐推断，绑定相关 FrameRevision/WorkPlanRevision。
-- `QuerySpec`、`CapabilityInvocation`、`ToolAttempt`、`ResultHandle`：执行与恢复记录；它们
-  不定义业务口径。
+- `QuestionRevision`：属于 `InvestigationCase` authority family 的 immutable input lineage；
+  保存原始用户问题、纠正和 accepted clarification source refs，不定义 estimand。
+- `SemanticBinding`：Primary Agent 对 accepted QuestionRevision 的 source-grounded typed
+  解释；每个 material assertion 都接受独立 semantic consistency pass。
+- `MessageIngressRecord` / `MessageImpactBinding`：跨阶段 follow-up 的 durable typed saga；
+  Primary Agent 判断开放 message impact，controller 只执行持久化、CAS 与 fencing。
+- `FrameCandidateBundle`：未接受 proposal 的 durable review saga，绑定 candidate hash、
+  question head、review request/result 与 disposition。
+- `ResolvedMeasurementInstance`：从 accepted Frame、calendar、contract 与 snapshot/release
+  确定性派生、内容寻址、无独立 accepted head 的执行实例；accepted Plan 是唯一 adoption
+  point。
+- `MeasurementResolutionOutcome`：system-derived `resolved_instance |
+  typed_resolution_boundary`；boundary 也保持 requirement/obligation/claim 权威链。
+- `EvidenceRequirementSpec`：Frame 拥有的 claim/evidence closure requirement。
+- `ResolvedEvidenceObligation`：deterministic compiler 从 requirement 与 resolution outcome 单向
+  派生的执行闭环对象。
+- `QueryBindingEnvelope`：Gate 3 的 logical query authority contract；Gate 4 的 physical
+  QuerySpec 只能消费它。
+- `EvidenceUseBinding`：新 claim/Frame 使用已有 Evidence 时的 scope、identity、strength
+  compatibility proof。
+- `EvidenceValidityRecord` / `ObligationSatisfactionRecord`：system-owned append-only
+  disposition/projection，禁止修改 EvidenceRecord 或 obligation definition。
+- `SettlementPreconditionReport`：系统派生的 settlement 前置报告；Agent、capability 和
+  test harness 无权写入。
+- `ConformanceExecutionProvenance | PhysicalQueryExecutionProvenance`：按可信 realm 封闭
+  execution proof；Gate 3 test Evidence 不使用 future QuerySpec 占位。
+- `QuerySpec`、`CapabilityInvocation`、`ToolAttempt`、`ResultHandle`：Gate 4 生产执行与
+  恢复记录；它们不定义业务口径。
 
 `InvestigationCase` 的 head 更新只移动指针。旧 revision/version 保持可寻址，head 移动
 不能原地改写其内容。event journal 记录 head acceptance 事实，但 journal 本身不能决定或
@@ -142,18 +168,21 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
 
 | 变化 | 必须创建的对象 | 例子 |
 |---|---|---|
+| 用户改变问题目标、scope、约束或明确纠正语义 | `QuestionRevision`，并失效当前 Frame/Plan/Answer heads | 从“解释本月下降”改为“判断上季度活动是否有效” |
 | estimand、时间含义、baseline、观察单位、分子分母、exposure 或 comparison 变化 | `AnalysisFrameRevision`，随后创建引用它的 `WorkPlanRevision` | 从“月初金额占比”改为“月初用户人均金额” |
-| assumptions、alternatives、falsification、reversal 或 stop condition 变化 | `AnalysisFrameRevision` | 加入“发薪日暴露”替代解释 |
-| 调查任务、依赖、优先级、能力路线变化，业务口径不变 | `WorkPlanRevision` | 补充 channel bridge 与 sensitivity |
+| assumptions、alternatives、falsification、reversal、evidence requirement 或 epistemic completion 变化 | `AnalysisFrameRevision` | 加入“发薪日暴露”替代解释 |
+| 调查任务、依赖、优先级、能力路线或 execution budget/stop 变化，业务口径不变 | `WorkPlanRevision` | 补充 channel bridge 与 sensitivity |
 | provider timeout、网络重试、幂等重放、同参数重试 | 保持当前 revision；新增 `ToolAttempt` / event | ClickHouse 短暂不可达 |
 | capability 参数修正导致目标 population、grain 或 comparison 变化 | 先创建 `AnalysisFrameRevision` | 查询发现用户定义粒度无法支撑原观察单位 |
 | capability 参数修正只恢复同一已接受业务任务 | 保持 revision；新增 attempt | 临时连接失败后重试 |
 | claim 内容、证据绑定或适用边界变化 | `AnswerVersion` | 局部 claim 降级为 provisional |
 
-settled `AnswerVersion` 必须绑定 exact accepted FrameRevision、WorkPlanRevision、claim set、
-EvidenceRecord set、Reviewer disposition set 和 verifier policy version。任一绑定对象出现新
-accepted head 时，旧 settled version 保持历史有效；它不再代表当前 case head。当前答案需要
-新建 AnswerVersion 并重新完成受影响 claim 的 settlement。
+settled `AnswerVersion` 必须绑定 exact accepted QuestionRevision、FrameRevision、
+WorkPlanRevision、EstimandSpec set、semantic/authority/resolution-outcome/execution identities、
+EvidenceRequirementSpec/ResolvedEvidenceObligation set、EvidenceUseBinding set、
+Reviewer disposition set、SettlementPreconditionReport 和 verifier policy version。
+任一 accepted head 变化时，旧 settled version 保持历史可寻址；它不再代表当前 case head。
+当前答案需要新建 AnswerVersion 并重新完成受影响 claim 的 settlement。
 
 ## 4. Agent 与系统边界
 
@@ -184,6 +213,8 @@ stop
 - SQL 安全、允许的数据源和只读限制。
 - 身份、线程归属、权限、隐私、固定敏感输出与稀疏样本规则。
 - metric/dimension/data contract、snapshot/release、grain 与 exposure 可执行性。
+- question/frame/measurement/binding/instance identity、source span 与 downstream
+  compatibility。
 - typed state、revision CAS、幂等、lease、checkpoint、retry、resume 与 outbox。
 - QuerySpec 编译、参数校验、result handle 完整性与 provenance。
 - EvidenceRecord 不可变性、claim/evidence/frame 兼容性。
@@ -194,12 +225,13 @@ stop
 
 ### 4.3 模型职责
 
-- 开放业务语义和测量设计候选。
-- 自主选择 estimand、comparison groups、exposure adjustment、主 estimator 和
-  sensitivity；合理候选差异进入 provisional Frame 和调查，不交给本地规则预选。
+- 开放业务语义、source-grounded binding 和可组合测量设计候选。
+- 自主提出主 estimand、合理 alternatives 与 sensitivity；缺少不可检验的 material 业务决定
+  时执行 ask_user。
 - 动态调查路线、替代解释、证伪与反转条件。
 - 基于已接受证据的解释、洞察和叙事。
-- 发现需要用户决定的高影响歧义并提出业务化选项。
+- 发现无法从 source、contract、data availability 或低成本 investigation 查明的高影响歧义
+  时提出业务化选项。
 - 基于硬边界反馈局部修订 frame、plan、interpretation 或 answer。
 
 模型不能直接写权威 heads、绕过 capability、升级证据强度、改写 snapshot/release 或覆盖
@@ -211,12 +243,12 @@ Reviewer objection。
 ### 4.4 决策与澄清协议
 
 - Gate 访谈遵循本文 0.1：一次一个重大决定，等待用户确认。
-- runtime 中可由语义合同、低成本 probe 或 sensitivity 检验的合理测量设计分歧，由 Primary
-  Agent 建 provisional Frame 自主调查；此类分歧不打开 ask_user。
-- runtime 高影响歧义会改变业务结论、baseline、时间语义、敏感输出、数据访问、claim 强度
-  或显著执行成本，且缺失的业务政策、目标或定义无法从合同和数据检验时，Primary Agent
-  生成 2–3 个业务选项、推荐解释、接受推荐继续的选项和 `tell the agent to do differently`
-  出口。
+- runtime 选择会实质改变业务结论、baseline、时间语义、敏感输出、数据访问、claim 强度
+  或显著执行成本，且无法从 source、contract、data availability 或低成本 investigation
+  查明时，Primary Agent 生成 2–3 个业务选项、推荐解释、接受推荐继续的选项和
+  `tell the agent to do differently` 出口。
+- 可检验的设计分歧由 Primary Agent 选择主设计，记录 DecisionRecord，并把合理替代纳入
+  alternatives/sensitivity。
 - 低风险缺口采用推荐推断继续，写入 `DecisionRecord`，并由 accepted Frame/Plan 引用。
 - 用户角色和数据能力等级不得成为业务澄清项。
 
@@ -242,7 +274,7 @@ vnext/
 │           ├── semantics/         # metric/dimension/factor/data contract 解析
 │           ├── query/             # QuerySpec、SQL compiler 与 governed escape hatch
 │           ├── trust/             # claim binding、数字/文字 verifier、Reviewer
-│           ├── projections/       # customer-safe Answer/Analysis/Workflow projection
+│           ├── projection/        # customer-safe Answer/Analysis/Workflow projection
 │           ├── storage/           # repository ports 与 PostgreSQL adapters
 │           └── providers/         # LLM、ClickHouse、PostgreSQL adapter
 ├── contracts/
@@ -404,42 +436,63 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 Exit evidence：
 `docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md`。
 
-### Gate 3：月初/月末全样本架构证明切片
+### Gate 3：Universal Measurement Authority
 
-**入口**
+**入口访谈判断**
 
-- 从业务 SSOT、真实字段和数据 profile 查明时间语义、金额口径、全样本定义。
-- 只有多种合理定义会改变结论时询问用户，一次确认一个决策。
-- 入口结论：用户明确要求测量设计由 Primary Agent 自主判断；确定性系统只验证 typed
-  measurement contract、exposure/sensitivity closure、可执行性和证据边界。本 Gate
-  无其他用户决策。
-
-**证明问题**
-
-> 全量样本看，为什么从 2024 年 1 月开始到 2026 年 5 月结束，每个月月初的付费金额都比
-> 月中月末高一些？
+- 状态：已执行。
+- 结论：本 Gate 无需用户决策。
+- 理由：用户已明确 Primary Agent 自主提出开放测量设计，确定性系统验证结构、权威连续性、
+  日历、data contract、证据和发布边界。
+- Gate 0–2 realignment audit：
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。
+- focused implementation plan：
+  `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md`。
+- plan adversarial review：
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md`。
+- 组合审查第一轮 20 个 Blocking、8 个 Major；closure verification 再打开 6 个 Blocking、
+  6 个 Major。两轮 finding 均已写入设计；实现证据尚未开始。
+- Gate 1/2 历史验收保持；G3.1/G3.2 是任何新 Gate 3 业务 Evidence、Answer 和 Workflow
+  实现的硬前置。
 
 **交付物**
 
-- 显式 estimand、exposure、comparison、观察单位、分子分母和假设。
-- pattern probe、sample coverage、composition/denominator 检查、sensitivity、alternative、
-  falsification 与 reversal path。
-- provisional/settled AnswerVersion、逐 claim evidence binding。
-- Workflow 业务投影和 replay fixture。
-- 架构 slice acceptance package。
+- QuestionRevision、跨阶段 correction、source-grounded SemanticBinding 与 accepted question
+  head。
+- durable FrameCandidateBundle review saga 与独立 MeasurementObjection。
+- 显式 EstimandSpec、条件完备的 AnalysisFrame measurement algebra、
+  EvidenceRequirementSpec 与 ResolvedEvidenceObligation。
+- semantic/authority/resolution-outcome/logical identity、tagged conformance/production
+  execution provenance、typed scope 和 cross-language canonical codec。
+- TemporalSemanticSpec、WindowRuleSpec、ResolutionContext、DataVersionSpec 与
+  unit/exposure aggregation algebra。
+- ResolvedMeasurementInstance 的无 head 确定性派生，以及 accepted Plan 的唯一 adoption。
+- Gate 3 QueryBindingEnvelope 与 Gate 4 physical QuerySpec compiler 的所有权边界。
+- capability-result/Evidence atomic admission、EvidenceUseBinding 与 crash/resume。
+- ModelInvocationRecord、RunTraceManifest、SettlementPreconditionReport。
+- provisional Answer 与 execution/obligation/publication/delivery 四轴 Workflow。
+- machine-frozen eval manifest、real-provider semantic/frame lane、full-authority conformance
+  lane 与 independent Reviewer lane。
 
 **Exit criteria**
 
-- [x] 月内边界由 Agent 的 typed Frame/QuerySpec 定义，禁止从问题字符串或本地规则硬编码。
-- [x] 全样本、完整月份、timezone、金额有效性和观察单位可审计。
-- [x] Frame 中所有 material alternatives 均被实际检验、证伪、降级，或绑定明确的数据/
-  合同 boundary。
-- [x] sensitivity 和 reversal condition 可改变或限制结论。
-- [x] Answer 与 Workflow 从同一持久化权威和 journal 投影。
-- [x] 测试只验证通用能力合同；launch 范围保持全问题家族。
-
-Exit evidence：
-`docs/reviews/2026-07-30-bi-agent-vnext-gate-3.md`。
+- [ ] contract-supported 问题形成 executable design；clarification/boundary 符合 case
+  `required_disposition` 与 `allowed_dispositions`。
+- [ ] material assertions 全部有 grounding 和独立 semantic consistency pass。
+- [ ] Frame 条件完备地表达 definition、data quality、scalar/rate/distribution/time series、
+  contrast、cohort、funnel、decomposition、association、causal challenge 与 diagnostic set。
+- [ ] calendar、actual range、data version、expected/observed/valid exposure、eligibility 与
+  aggregation algebra可审计。
+- [ ] requirement → obligation、Frame → resolution outcome → Plan adoption 保持单向可证明。
+- [ ] typed scope 与 identity 贯穿 Gate 3 conformance execution、Evidence、claim 和
+  Workflow；Gate 4 的 physical execution 必须消费同一封闭合同。
+- [ ] correction、review、effect、Evidence admission 并发与 crash/resume 全部 fail safe。
+- [ ] QueryBindingEnvelope/capability 无平行业务口径入口，Gate 3 不生成生产物理 QuerySpec。
+- [ ] technical retry 与 Frame/Plan revision 的 identity 边界通过。
+- [ ] provisional Answer 不触发 settled、completed 或 delivered Workflow。
+- [ ] real-provider 两条 lane、独立 Reviewer 与 complete WAJE trace 通过。
+- [ ] 旧 Gate 3 实现、artifact、fixture 不进入当前依赖或 acceptance。
+- [ ] 对抗式审计 blocking findings 为 0。
 
 ### Gate 4：完整 capability fabric
 
@@ -453,9 +506,11 @@ Exit evidence：
 - semantic inspection、coverage/profile probe、pattern/comparison、formula decomposition、
   segment bridge、distribution/outlier、cohort/funnel/retention、event/context evidence、
   sensitivity/falsification 等能力族。
-- QuerySpec、compiler、cost/row/grain/privacy guard、governed SQL escape hatch。
+- 消费 Gate 3 QueryBindingEnvelope 的 physical QuerySpec compiler、cost/row/grain/privacy
+  guard、governed SQL escape hatch。
 - capability registry 与 support records。
-- 每个 capability 原生返回 EvidenceRecord；大结果返回稳定 handle。
+- 每个 capability 通过 typed CapabilityResultEnvelope 原生返回 immutable EvidenceRecord；
+  system-owned EvidenceAdmissionRecord 决定它能否关闭 obligation；大结果返回稳定 handle。
 - ClickHouse/PostgreSQL integration 与 contract/data gap classification。
 
 **Exit criteria**
@@ -475,9 +530,10 @@ Exit evidence：
 
 **交付物**
 
-- claim graph、evidence compatibility、scope/limitation binding。
+- claim graph、typed scope/evidence compatibility、scope/limitation binding。
 - 数字、单位、分母、比较方向和文字方向 verifier。
-- provisional/settled transition、局部 claim 降级与 answer versioning。
+- 消费 Gate 3 SettlementPreconditionReport 的 provisional/settled transition、局部 claim
+  降级与 answer versioning。
 - 风险触发 Reviewer 与结构化 objection/disposition。
 - answer projection、technical audit projection 与 publication outbox。
 
@@ -543,6 +599,7 @@ Exit evidence：
 | 层 | 核心对象 | 主要测试 | 失败分类 |
 |---|---|---|---|
 | Domain contract | 五类权威对象、typed actions | schema、property、immutability、revision rules | invalid authority / illegal transition |
+| Question/measurement | QuestionRevision、SemanticBinding、measurement graph/identity | source grounding、graph completeness、metamorphic、mutation | authority drift / wrong estimand |
 | Storage | repositories、journal、checkpoint、outbox | PostgreSQL integration、concurrency、crash recovery | persistence / ordering / idempotency |
 | Context | ContextPacket | reconstruction、boundedness、redaction、hash stability | missing context / leakage / stale head |
 | Controller | action loop | fake provider scenarios、stale action、retry/resume | orchestration / recovery |
@@ -575,8 +632,12 @@ Gate 1–4 可以扩充，Gate 7 前不得缩减为证明切片：
 
 每个 case 至少包含：
 
+- exact case ID、catalog/policy version；
 - natural-language question；
 - question family；
+- `contract_supported`；
+- `required_disposition`、`allowed_dispositions`；
+- allowed boundary codes 与验证依据；
 - required frame fields 与允许的 assumption；
 - required / forbidden capabilities；
 - expected contract/evidence states；
@@ -585,7 +646,13 @@ Gate 1–4 可以扩充，Gate 7 前不得缩减为证明切片：
 - expected answer blocks 与 workflow business nodes；
 - Reviewer trigger/disposition；
 - verifier pass/fail rules；
-- failure responsibility point。
+- failure responsibility point；
+- TraceProfile ID 与 required artifact refs；
+- minimum lane、paraphrase、repeat 和 seed policy。
+
+Gate 3 的 checked-in `Gate3EvalPolicy`、expectation catalog 与 manifest validator 同样适用于
+Gate 7。run manifest 只能扩展 policy，不能改写 contract-supported 状态、required
+disposition、boundary codes 或最低覆盖 floor。
 
 eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、产品与数据/平台双 owner、
 可复用模式和相关 eval slice 回归。
@@ -597,7 +664,7 @@ eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、
 | Gate 0 | 目录与 transport/projection 边界 |
 | Gate 1 | authority/event schema 的 TypeScript bindings |
 | Gate 2 | headless streaming 与 pending user decision contract |
-| Gate 3 | slice 级 Chat、Answer、Evidence、Workflow projection fixture |
+| Gate 3 | question/frame/measurement/evidence/claim identity 与 Workflow 状态 projection fixture |
 | Gate 4 | capability evidence/result handle 展开合同 |
 | Gate 5 | claim scope、limitation、provisional/settled、Reviewer disposition |
 | Gate 6 | 完整双栏工作台与真实浏览器验收 |
@@ -607,6 +674,7 @@ eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、
 
 | 风险 | 早期信号 | 默认处理 | 必须访谈的条件 |
 |---|---|---|---|
+| source-to-measurement authority drift | Frame 无法逐字段回指 QuestionRevision，或 downstream identity 改变 | 阻止 Frame/Evidence/publication acceptance，触发 MeasurementObjection 或 FrameRevision | 缺少的业务目标/政策无法从 source、contract、data 查明 |
 | 测量设计含义不唯一 | 两个合理 estimand 会得出不同结论 | ask_user 前先跑低成本 semantic inspection | 选择会改变业务结论或 baseline |
 | Frame/Plan revision 混淆 | 参数修正改变 population/grain | admission 强制新 Frame | revision 规则需要放宽 |
 | 单题过拟合 | capability 名称或代码出现题目常量 | 抽象为问题家族能力并补跨 case 测试 | 通用化会显著扩大范围或成本 |
@@ -684,7 +752,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete | 已确认 WAJE-owned controller；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md` |
-| Gate 3 | Complete | 已确认 Primary Agent 自主决定测量设计；无其他用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3.md` |
+| Gate 3 | Planned | 本 Gate 无需用户决策 | `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -704,4 +772,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-29 | Python 最低版本为 3.12，Gate 0 使用 3.12.13 virtualenv | 用户补充 | 宿主 Python 不影响 vNext baseline；clean-copy 验收重建 venv |
 | 2026-07-29 | 确认 `InvestigationCase` 为第五类权威对象 | 用户确认 | Gate 1 以稳定 case root + 四类 immutable content authority 建模 |
 | 2026-07-29 | WAJE-owned controller 为唯一 runtime 权威 | 用户确认 | LangGraph 不进入 authoritative action loop；typed state、CAS、journal 与 checkpoint 保持单一来源 |
-| 2026-07-30 | 合理的 estimand、日期分段、exposure adjustment 与 sensitivity 由 Primary Agent 自主设计 | 用户确认 | 本地系统只校验 typed estimator/exposure contract、requirement closure、查询安全和证据边界；可检验的测量分歧不触发 ask_user |
+| 2026-07-30 | 撤销旧 Gate 3 | 用户要求 + authority-drift 复核 | 删除错误 capability、Evidence、Answer、Workflow、fixture 与 artifact，不保留兼容 |
+| 2026-07-30 | Gate 3 重定义为 Universal Measurement Authority | 用户要求 + Gate 0–2 audit | 先建立问题到测量的通用权威连续性，再进入完整 capability fabric |
+| 2026-07-30 | QuestionRevision 归 `InvestigationCase` authority family | Gate 0–2 audit | 保存 immutable 用户输入 lineage；测量设计仍只属于 AnalysisFrameRevision |
+| 2026-07-30 | Gate 3 只产出 provisional Answer | Gate 分层审计 | identity preconditions 在 Gate 3 fail closed；完整 settled publication 由 Gate 5 实现 |

@@ -20,22 +20,7 @@ from waje_vnext.domain.actions import (
     RunSensitivityPayload,
     StopPayload,
 )
-from waje_vnext.domain.authority import (
-    AlternativeHypothesis,
-    ComparisonDesign,
-    ComparisonGroup,
-    ComparisonGroupRole,
-    ComparisonMode,
-    DecisionOption,
-    ExposureAdjustmentMode,
-    ExposureBalance,
-    ExposureDesign,
-    EstimatorAggregation,
-    EstimatorSpec,
-    FrameRequirement,
-    FrameRequirementKind,
-    WorkTask,
-)
+from waje_vnext.domain.authority import DecisionOption, WorkTask
 
 
 class ActionProposalDecodeError(ValueError):
@@ -61,16 +46,13 @@ def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
     fields = {
         "revision_reason",
         "estimand",
-        "population",
-        "time_scope",
         "observation_unit",
-        "primary_estimator",
+        "numerator",
+        "denominator",
         "exposure",
         "comparison",
-        "measurement_rationale",
         "assumptions",
         "alternatives",
-        "requirements",
         "falsification_conditions",
         "reversal_conditions",
         "success_conditions",
@@ -82,26 +64,13 @@ def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
     return ReviseFramePayload(
         revision_reason=_string(value, "revision_reason"),
         estimand=_string(value, "estimand"),
-        population=_string(value, "population"),
-        time_scope=_string(value, "time_scope"),
         observation_unit=_string(value, "observation_unit"),
-        primary_estimator=_decode_estimator_spec(
-            _object(value, "primary_estimator")
-        ),
-        comparison=_decode_comparison_design(
-            _object(value, "comparison")
-        ),
-        exposure=_decode_exposure_design(_object(value, "exposure")),
-        measurement_rationale=_string(value, "measurement_rationale"),
+        numerator=_string(value, "numerator"),
+        denominator=_string(value, "denominator"),
+        exposure=_string(value, "exposure"),
+        comparison=_string(value, "comparison"),
         assumptions=_string_tuple(value, "assumptions"),
-        alternatives=tuple(
-            _decode_alternative(_mapping(item, "alternative"))
-            for item in _array(value, "alternatives")
-        ),
-        requirements=tuple(
-            _decode_frame_requirement(_mapping(item, "frame requirement"))
-            for item in _array(value, "requirements")
-        ),
+        alternatives=_string_tuple(value, "alternatives"),
         falsification_conditions=_string_tuple(
             value,
             "falsification_conditions",
@@ -114,141 +83,6 @@ def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
             value,
             "semantic_contract_refs",
         ),
-    )
-
-
-def _decode_comparison_design(
-    value: Mapping[str, Any],
-) -> ComparisonDesign:
-    _require_exact_keys(
-        value,
-        {"mode", "groups", "contrast"},
-        "comparison design",
-    )
-    return ComparisonDesign(
-        mode=ComparisonMode(_string(value, "mode")),
-        groups=tuple(
-            _decode_comparison_group(_mapping(item, "comparison group"))
-            for item in _array(value, "groups")
-        ),
-        contrast=_string(value, "contrast"),
-    )
-
-
-def _decode_estimator_spec(
-    value: Mapping[str, Any],
-) -> EstimatorSpec:
-    _require_exact_keys(
-        value,
-        {
-            "quantity",
-            "aggregation",
-            "numerator",
-            "denominator",
-            "exposure_adjustment",
-        },
-        "estimator spec",
-    )
-    return EstimatorSpec(
-        quantity=_string(value, "quantity"),
-        aggregation=EstimatorAggregation(_string(value, "aggregation")),
-        numerator=_string(value, "numerator"),
-        denominator=_string(value, "denominator"),
-        exposure_adjustment=ExposureAdjustmentMode(
-            _string(value, "exposure_adjustment")
-        ),
-    )
-
-
-def _decode_comparison_group(
-    value: Mapping[str, Any],
-) -> ComparisonGroup:
-    _require_exact_keys(
-        value,
-        {"group_id", "label", "role", "membership_rule"},
-        "comparison group",
-    )
-    return ComparisonGroup(
-        group_id=_string(value, "group_id"),
-        label=_string(value, "label"),
-        role=ComparisonGroupRole(_string(value, "role")),
-        membership_rule=_string(value, "membership_rule"),
-    )
-
-
-def _decode_exposure_design(
-    value: Mapping[str, Any],
-) -> ExposureDesign:
-    _require_exact_keys(
-        value,
-        {
-            "variable",
-            "unit",
-            "balance_assumption",
-            "sensitivity_adjustments",
-            "normalization_strategy",
-            "diagnostic_requirement_id",
-            "sensitivity_requirement_id",
-        },
-        "exposure design",
-    )
-    return ExposureDesign(
-        variable=_string(value, "variable"),
-        unit=_string(value, "unit"),
-        balance_assumption=ExposureBalance(
-            _string(value, "balance_assumption")
-        ),
-        sensitivity_adjustments=tuple(
-            ExposureAdjustmentMode(item)
-            for item in _string_tuple(value, "sensitivity_adjustments")
-        ),
-        normalization_strategy=_string(value, "normalization_strategy"),
-        diagnostic_requirement_id=_string(
-            value,
-            "diagnostic_requirement_id",
-        ),
-        sensitivity_requirement_id=_string(
-            value,
-            "sensitivity_requirement_id",
-        ),
-    )
-
-
-def _decode_frame_requirement(
-    value: Mapping[str, Any],
-) -> FrameRequirement:
-    _require_exact_keys(
-        value,
-        {
-            "requirement_id",
-            "kind",
-            "question",
-            "success_condition",
-            "failure_consequence",
-        },
-        "frame requirement",
-    )
-    return FrameRequirement(
-        requirement_id=_string(value, "requirement_id"),
-        kind=FrameRequirementKind(_string(value, "kind")),
-        question=_string(value, "question"),
-        success_condition=_string(value, "success_condition"),
-        failure_consequence=_string(value, "failure_consequence"),
-    )
-
-
-def _decode_alternative(
-    value: Mapping[str, Any],
-) -> AlternativeHypothesis:
-    _require_exact_keys(
-        value,
-        {"alternative_id", "statement", "requirement_id"},
-        "alternative",
-    )
-    return AlternativeHypothesis(
-        alternative_id=_string(value, "alternative_id"),
-        statement=_string(value, "statement"),
-        requirement_id=_string(value, "requirement_id"),
     )
 
 
@@ -273,7 +107,6 @@ def _decode_task(value: Mapping[str, Any]) -> WorkTask:
             "business_purpose",
             "capability_intent",
             "target_claim_ids",
-            "requirement_ids",
             "depends_on_task_ids",
             "success_conditions",
             "stop_conditions",
@@ -285,7 +118,6 @@ def _decode_task(value: Mapping[str, Any]) -> WorkTask:
         business_purpose=_string(value, "business_purpose"),
         capability_intent=_string(value, "capability_intent"),
         target_claim_ids=_string_tuple(value, "target_claim_ids"),
-        requirement_ids=_string_tuple(value, "requirement_ids"),
         depends_on_task_ids=_string_tuple(value, "depends_on_task_ids"),
         success_conditions=_string_tuple(value, "success_conditions"),
         stop_conditions=_string_tuple(value, "stop_conditions"),
@@ -309,11 +141,10 @@ def _decode_inspect_semantics(
 def _decode_run_probe(value: Mapping[str, Any]) -> RunProbePayload:
     _require_exact_keys(
         value,
-        {"task_id", "probe_kind", "parameters"},
+        {"probe_kind", "parameters"},
         "run_probe payload",
     )
     return RunProbePayload(
-        task_id=_string(value, "task_id"),
         probe_kind=_string(value, "probe_kind"),
         parameters=_object(value, "parameters"),
     )

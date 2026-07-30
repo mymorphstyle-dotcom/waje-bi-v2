@@ -22,11 +22,9 @@ class RecordingTransport:
         *,
         fail_once: bool = False,
         malformed: bool = False,
-        malformed_once: bool = False,
     ) -> None:
         self.fail_once = fail_once
         self.malformed = malformed
-        self.malformed_once = malformed_once
         self.calls: list[dict[str, object]] = []
 
     def post_json(
@@ -48,8 +46,7 @@ class RecordingTransport:
         if self.fail_once:
             self.fail_once = False
             raise ProviderTransientError("retryable transport failure")
-        if self.malformed or self.malformed_once:
-            self.malformed_once = False
+        if self.malformed:
             return {
                 "choices": [
                     {
@@ -148,46 +145,6 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
 
         self.assertEqual(len(transport.calls), 2)
         sleep.assert_called_once()
-
-    def test_typed_output_repair_is_centralized_in_provider(self) -> None:
-        transport = RecordingTransport(malformed_once=True)
-        provider = ChatCompletionsProvider(
-            ChatCompletionsProviderSettings(
-                provider_name="contract-provider",
-                base_url="https://provider.example/v1",
-                api_key="secret-value",
-                model="business-analysis-model",
-                max_attempts=2,
-            ),
-            transport=transport,
-        )
-        store = InMemoryAuthorityStore()
-        controller = WAJEController(
-            store=store,
-            provider=provider,
-            effect_executor=ScriptedEffectExecutor(()),
-            owner_id="provider-worker",
-            clock=lambda: NOW,
-        )
-        controller.start(
-            case_id="case-provider-repair",
-            thread_id="thread-provider-repair",
-            run_id="run-provider-repair",
-            user_message="定义测量",
-        )
-
-        with patch(
-            "waje_vnext.providers.chat_completions.time.sleep"
-        ) as sleep:
-            controller.advance("case-provider-repair")
-
-        self.assertEqual(len(transport.calls), 2)
-        sleep.assert_called_once()
-        repair_messages = transport.calls[1]["payload"]["messages"]
-        self.assertIn(
-            "exactly two top-level fields",
-            repair_messages[-1]["content"],
-        )
 
     def test_adapter_reads_only_vnext_provider_environment(self) -> None:
         with self.assertRaises(ProviderConfigurationError):

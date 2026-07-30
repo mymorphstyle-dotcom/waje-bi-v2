@@ -175,3 +175,14 @@ Gate 2 实现 WAJE-owned controller、lease、action loop、checkpoint/resume �
 delivery。`ActionReceipt`、`CheckpointRecord`、`OutboxMessage` 将在同一个 PostgreSQL
 unit of work 中与对应 journal event 原子提交。Reviewer 的风险触发矩阵、逐 claim
 disposition 与 settled 发布判定在 Gate 5 完成。
+
+## 2026-07-30 realignment note
+
+本 Gate 的 CAS、immutability、五类 authority family 与存储合同继续有效。新 Gate 3
+进入 capability 前需要完成 G3.1：QuestionRevision、显式 EstimandSpec、typed
+measurement algebra、EvidenceRequirementSpec/ResolvedEvidenceObligation、分层
+identity、typed scope、MeasurementResolutionOutcome、无 accepted head 的
+ResolvedMeasurementInstance、EvidenceValidity/ObligationSatisfaction records、
+SettlementPreconditionReport 与 schema epoch 3。G3.1 是新业务 Evidence/Answer/Workflow
+实现的硬前置；它不改写本 Gate 原验收证据，也不保留错误 Gate 3 兼容。详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。

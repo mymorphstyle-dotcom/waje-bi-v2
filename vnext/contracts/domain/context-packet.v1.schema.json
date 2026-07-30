@@ -131,8 +131,7 @@
         "cursor",
         "event_type",
         "authority_ref",
-        "business_projection",
-        "agent_result"
+        "business_projection"
       ],
       "properties": {
         "cursor": {
@@ -147,9 +146,6 @@
         },
         "business_projection": {
           "type": "object"
-        },
-        "agent_result": {
-          "$ref": "#/$defs/nullableObject"
         }
       }
     },
@@ -165,11 +161,7 @@
         "frame_revision_id",
         "plan_revision_id",
         "task_id",
-        "snapshot_release_ref",
-        "grain",
-        "capability_name",
-        "inline_payload",
-        "result_handle_id"
+        "snapshot_release_ref"
       ],
       "properties": {
         "evidence_record_id": {
@@ -199,18 +191,6 @@
         },
         "snapshot_release_ref": {
           "$ref": "#/$defs/id"
-        },
-        "grain": {
-          "$ref": "#/$defs/id"
-        },
-        "capability_name": {
-          "$ref": "#/$defs/id"
-        },
-        "inline_payload": {
-          "$ref": "#/$defs/nullableObject"
-        },
-        "result_handle_id": {
-          "$ref": "#/$defs/nullableId"
         }
       }
     },

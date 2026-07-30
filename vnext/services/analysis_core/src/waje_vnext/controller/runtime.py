@@ -31,7 +31,6 @@ from waje_vnext.domain.authority import (
     CaseLifecycle,
     ClaimVerifierStatus,
     DecisionRecord,
-    EvidenceRecord,
     InterpretationRecord,
     WorkPlanRevision,
 )
@@ -67,7 +66,6 @@ from waje_vnext.storage.codec import decode_controller_state, encode_record
 from waje_vnext.storage.ports import AuthorityStore
 
 from .effects import (
-    EvidenceDraft,
     EffectExecutionResult,
     EffectExecutor,
     EffectPermanentError,
@@ -349,13 +347,6 @@ class WAJEController:
                 )
                 self._store.record_action(persisted)
                 case = self._store.get_case(snapshot.case_id)
-                frame = (
-                    None
-                    if case.accepted_frame_revision_id is None
-                    else self._store.get_frame(
-                        case.accepted_frame_revision_id
-                    )
-                )
                 plan = (
                     None
                     if case.accepted_plan_revision_id is None
@@ -364,7 +355,6 @@ class WAJEController:
                 admission = admit_action(
                     case=case,
                     action=action,
-                    current_frame=frame,
                     current_plan=plan,
                 )
                 admission_event = self._append_action_event(
@@ -448,16 +438,13 @@ class WAJEController:
                 created_at=now,
                 revision_reason=payload.revision_reason,
                 estimand=payload.estimand,
-                population=payload.population,
-                time_scope=payload.time_scope,
                 observation_unit=payload.observation_unit,
-                primary_estimator=payload.primary_estimator,
-                comparison=payload.comparison,
+                numerator=payload.numerator,
+                denominator=payload.denominator,
                 exposure=payload.exposure,
-                measurement_rationale=payload.measurement_rationale,
+                comparison=payload.comparison,
                 assumptions=payload.assumptions,
                 alternatives=payload.alternatives,
-                requirements=payload.requirements,
                 falsification_conditions=payload.falsification_conditions,
                 reversal_conditions=payload.reversal_conditions,
                 success_conditions=payload.success_conditions,
@@ -570,12 +557,6 @@ class WAJEController:
             pending_decision_id = request.decision_request_id
         elif action.kind is ActionKind.PROPOSE_ANSWER:
             assert isinstance(payload, ProposeAnswerPayload)
-            self._validate_answer_evidence_bindings(
-                case_id=case.case_id,
-                frame_revision_id=case.accepted_frame_revision_id or "",
-                plan_revision_id=case.accepted_plan_revision_id or "",
-                payload=payload,
-            )
             prior = self._latest_answer(case.case_id)
             answer = AnswerVersion(
                 answer_version_id=_stable_id("answer", action.action_id),
@@ -640,13 +621,6 @@ class WAJEController:
             )
         elif action.kind in _EFFECT_ACTIONS:
             outbox = self._make_outbox(action, now=now)
-            task_id = _effect_task_id(action)
-            customer_projection = {
-                "state": "investigating",
-                "action_kind": action.kind.value,
-            }
-            if task_id is not None:
-                customer_projection["task_id"] = task_id
             event = self._append_event(
                 case_id=case.case_id,
                 event_id=_stable_id(
@@ -661,7 +635,10 @@ class WAJEController:
                     "destination": outbox.destination,
                     "payload_sha256": outbox.payload_sha256,
                 },
-                customer_projection=customer_projection,
+                customer_projection={
+                    "state": "investigating",
+                    "action_kind": action.kind.value,
+                },
                 now=now,
             )
             outbox = replace(outbox, source_event_cursor=event.cursor)
@@ -735,10 +712,6 @@ class WAJEController:
                         else {
                             "payload": result.payload,
                             "business_summary": result.business_summary,
-                            "evidence": tuple(
-                                to_jsonable(draft)
-                                for draft in result.evidence
-                            ),
                         }
                     ),
                     result_sha256=(
@@ -750,25 +723,14 @@ class WAJEController:
                     completed_at=completed_at,
                 )
                 self._store.record_effect_attempt(attempt)
-                evidence_ids: tuple[str, ...] = ()
                 if status is EffectAttemptStatus.SUCCEEDED:
                     assert result is not None
-                    action = self._store.get_action(message.action_id).action
-                    task_id = _effect_task_id(action)
-                    evidence_ids = self._record_effect_evidence(
-                        current=current,
-                        message=message,
-                        result=result,
-                        recorded_at=completed_at,
-                    )
                     event_type = JournalEventType.EFFECT_COMPLETED
                     projection = {
                         "state": "completed",
                         "business_summary": result.business_summary,
-                        "evidence_record_ids": evidence_ids,
+                        "result": result.payload,
                     }
-                    if task_id is not None:
-                        projection["task_id"] = task_id
                     phase = ControllerPhase.READY_FOR_AGENT
                     pending_outbox_id = None
                     pending_action_id = None
@@ -779,15 +741,11 @@ class WAJEController:
                     pending_outbox_id = message.outbox_message_id
                     pending_action_id = current.pending_action_id
                 else:
-                    action = self._store.get_action(message.action_id).action
-                    task_id = _effect_task_id(action)
                     event_type = JournalEventType.EFFECT_ATTEMPT_FAILED
                     projection = {
                         "state": "blocked",
                         "reason_code": error_code or "effect_failure",
                     }
-                    if task_id is not None:
-                        projection["task_id"] = task_id
                     phase = ControllerPhase.READY_FOR_AGENT
                     pending_outbox_id = None
                     pending_action_id = None
@@ -810,7 +768,6 @@ class WAJEController:
                             if result is None
                             else result.content_sha256
                         ),
-                        "evidence_record_ids": evidence_ids,
                     },
                     customer_projection=projection,
                     now=completed_at,
@@ -829,95 +786,6 @@ class WAJEController:
                 )
         finally:
             self._store.release_lease(lease)
-
-    def _record_effect_evidence(
-        self,
-        *,
-        current: ControllerState,
-        message: OutboxMessage,
-        result: EffectExecutionResult,
-        recorded_at: datetime,
-    ) -> tuple[str, ...]:
-        if not result.evidence:
-            return ()
-        case = self._store.get_case(current.case_id)
-        if (
-            case.accepted_frame_revision_id is None
-            or case.accepted_plan_revision_id is None
-        ):
-            raise ControllerConflict(
-                "effect evidence requires accepted frame and plan"
-            )
-        frame = self._store.get_frame(case.accepted_frame_revision_id)
-        action = self._store.get_action(message.action_id).action
-        expected_task_id = _effect_task_id(action)
-        if expected_task_id is None:
-            raise ControllerConflict(
-                "semantic inspection cannot materialize analysis evidence"
-            )
-        evidence_ids: list[str] = []
-        for index, draft in enumerate(result.evidence):
-            _validate_evidence_draft(
-                draft=draft,
-                action=action,
-                expected_task_id=expected_task_id,
-                frame_contract_refs=frame.semantic_contract_refs,
-            )
-            evidence_id = _stable_id(
-                "evidence",
-                message.outbox_message_id,
-                str(index),
-                draft.content_sha256,
-            )
-            evidence = EvidenceRecord(
-                evidence_record_id=evidence_id,
-                case_id=case.case_id,
-                frame_revision_id=case.accepted_frame_revision_id,
-                plan_revision_id=case.accepted_plan_revision_id,
-                task_id=draft.task_id,
-                capability_name=draft.capability_name,
-                query_spec_ref=draft.query_spec_ref,
-                semantic_contract_refs=draft.semantic_contract_refs,
-                snapshot_release_ref=draft.snapshot_release_ref,
-                grain=draft.grain,
-                evidence_type=draft.evidence_type,
-                strength=draft.strength,
-                business_summary=draft.business_summary,
-                limitations=draft.limitations,
-                provenance=draft.provenance,
-                payload_sha256=draft.payload_sha256,
-                inline_payload=draft.inline_payload,
-                result_handle=draft.result_handle,
-                created_at=recorded_at,
-            )
-            self._store.record_evidence(
-                evidence,
-                expected_head_version=case.head_version,
-                event_id=_stable_id("event", evidence_id, "recorded"),
-                recorded_at=recorded_at,
-            )
-            evidence_ids.append(evidence_id)
-        return tuple(evidence_ids)
-
-    def _validate_answer_evidence_bindings(
-        self,
-        *,
-        case_id: str,
-        frame_revision_id: str,
-        plan_revision_id: str,
-        payload: ProposeAnswerPayload,
-    ) -> None:
-        for claim in payload.claims:
-            for evidence_id in claim.evidence_record_ids:
-                evidence = self._store.get_evidence(evidence_id)
-                if (
-                    evidence.case_id != case_id
-                    or evidence.frame_revision_id != frame_revision_id
-                    or evidence.plan_revision_id != plan_revision_id
-                ):
-                    raise ControllerConflict(
-                        "answer evidence does not bind the accepted authority"
-                    )
 
     def _checkpoint(
         self,
@@ -1027,20 +895,12 @@ class WAJEController:
         events = self._store.list_events(case_id)
         event_end = events[-1].cursor
         event_start = max(1, event_end - MAX_CONTEXT_EVENTS + 1)
-        business_event_items = []
-        for event in events:
-            if event.cursor < event_start:
-                continue
-            agent_result = self._agent_result_for_event(event)
-            if event.customer_projection is None and agent_result is None:
-                continue
-            business_event_items.append(
-                ContextEventItem.from_event(
-                    event,
-                    agent_result=agent_result,
-                )
-            )
-        business_events = tuple(business_event_items)
+        business_events = tuple(
+            ContextEventItem.from_event(event)
+            for event in events
+            if event.cursor >= event_start
+            and event.customer_projection is not None
+        )
         evidence = self._store.list_evidence(case_id)[-MAX_CONTEXT_EVIDENCE:]
         decisions = self._store.list_decisions(case_id)[-MAX_CONTEXT_DECISIONS:]
         objections = self._store.list_reviewer_objections(case_id)[
@@ -1078,24 +938,6 @@ class WAJEController:
             ),
             built_at=now,
         )
-
-    def _agent_result_for_event(self, event):
-        if event.event_type is JournalEventType.ACTION_REJECTED:
-            return {"admission": event.payload}
-        if event.event_type is not JournalEventType.EFFECT_COMPLETED:
-            return None
-        outbox_message_id = event.payload.get("outbox_message_id")
-        if not isinstance(outbox_message_id, str):
-            return None
-        attempts = self._store.list_effect_attempts(outbox_message_id)
-        succeeded = tuple(
-            attempt
-            for attempt in attempts
-            if attempt.status is EffectAttemptStatus.SUCCEEDED
-        )
-        if not succeeded:
-            return None
-        return succeeded[-1].result_payload
 
     def _append_action_event(
         self,
@@ -1158,13 +1000,10 @@ class WAJEController:
         *,
         now: datetime,
     ) -> OutboxMessage:
-        case = self._store.get_case(action.case_id)
         payload = {
             "action_kind": action.kind.value,
             "request": to_jsonable(action.payload),
             "expected_head_version": action.expected_head_version,
-            "frame_revision_id": case.accepted_frame_revision_id,
-            "plan_revision_id": case.accepted_plan_revision_id,
         }
         return OutboxMessage(
             outbox_message_id=_stable_id("outbox", action.action_id),
@@ -1256,6 +1095,7 @@ def _allowed_actions(case) -> tuple[ActionKind, ...]:
             ActionKind.REVISE_FRAME,
             ActionKind.REVISE_PLAN,
             ActionKind.INSPECT_SEMANTICS,
+            ActionKind.RUN_PROBE,
             ActionKind.ASK_USER,
             ActionKind.STOP,
         )
@@ -1273,51 +1113,6 @@ def _effect_destination(action: ActionEnvelope) -> str:
     if isinstance(payload, RunSensitivityPayload):
         return "sensitivity:{}".format(payload.variant_label)
     raise TypeError("action is not an effect action")
-
-
-def _effect_task_id(action: ActionEnvelope) -> str | None:
-    payload = action.payload
-    if isinstance(
-        payload,
-        RunProbePayload | CallCapabilityPayload | RunSensitivityPayload,
-    ):
-        return payload.task_id
-    return None
-
-
-def _validate_evidence_draft(
-    *,
-    draft: EvidenceDraft,
-    action: ActionEnvelope,
-    expected_task_id: str,
-    frame_contract_refs: tuple[str, ...],
-) -> None:
-    if draft.task_id != expected_task_id:
-        raise ControllerConflict(
-            "effect evidence task does not match the admitted action"
-        )
-    payload = action.payload
-    if (
-        isinstance(payload, CallCapabilityPayload)
-        and draft.capability_name != payload.capability_name
-    ):
-        raise ControllerConflict(
-            "effect evidence capability does not match the admitted action"
-        )
-    if (
-        isinstance(payload, RunProbePayload)
-        and draft.capability_name != payload.probe_kind
-    ):
-        raise ControllerConflict(
-            "probe evidence kind does not match the admitted action"
-        )
-    missing_contracts = set(frame_contract_refs) - set(
-        draft.semantic_contract_refs
-    )
-    if missing_contracts:
-        raise ControllerConflict(
-            "effect evidence omits accepted semantic contract bindings"
-        )
 
 
 def _require_same_checkpoint(

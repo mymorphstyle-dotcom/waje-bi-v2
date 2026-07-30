@@ -50,16 +50,13 @@ def make_frame_action_payload(reason: str) -> ReviseFramePayload:
     return ReviseFramePayload(
         revision_reason=reason,
         estimand=frame.estimand,
-        population=frame.population,
-        time_scope=frame.time_scope,
         observation_unit=frame.observation_unit,
-        primary_estimator=frame.primary_estimator,
-        comparison=frame.comparison,
+        numerator=frame.numerator,
+        denominator=frame.denominator,
         exposure=frame.exposure,
-        measurement_rationale=frame.measurement_rationale,
+        comparison=frame.comparison,
         assumptions=frame.assumptions,
         alternatives=frame.alternatives,
-        requirements=frame.requirements,
         falsification_conditions=frame.falsification_conditions,
         reversal_conditions=frame.reversal_conditions,
         success_conditions=frame.success_conditions,
@@ -91,7 +88,6 @@ class AuthorityModelTest(unittest.TestCase):
                         business_purpose="Test dependency validation",
                         capability_intent="generic comparison",
                         target_claim_ids=("claim-1",),
-                        requirement_ids=("req-exposure",),
                         depends_on_task_ids=("task-missing",),
                         success_conditions=("Complete",),
                         stop_conditions=("Blocked",),
@@ -116,7 +112,6 @@ class AuthorityModelTest(unittest.TestCase):
                         business_purpose="Measure A",
                         capability_intent="measure a",
                         target_claim_ids=("claim-a",),
-                        requirement_ids=("req-exposure",),
                         depends_on_task_ids=("task-b",),
                         success_conditions=("A measured",),
                         stop_conditions=("A blocked",),
@@ -126,7 +121,6 @@ class AuthorityModelTest(unittest.TestCase):
                         business_purpose="Measure B",
                         capability_intent="measure b",
                         target_claim_ids=("claim-b",),
-                        requirement_ids=("req-sensitivity",),
                         depends_on_task_ids=("task-a",),
                         success_conditions=("B measured",),
                         stop_conditions=("B blocked",),
@@ -238,12 +232,7 @@ class TypedActionTest(unittest.TestCase):
             ),
         )
 
-        admission = admit_action(
-            case=case,
-            action=action,
-            current_frame=frame,
-            current_plan=plan,
-        )
+        admission = admit_action(case=case, action=action, current_plan=plan)
 
         self.assertTrue(admission.accepted)
         self.assertFalse(admission.creates_frame_revision)
@@ -264,7 +253,6 @@ class TypedActionTest(unittest.TestCase):
         admission = admit_action(
             case=self.case,
             action=action,
-            current_frame=None,
             current_plan=None,
         )
 
@@ -303,7 +291,6 @@ class TypedActionTest(unittest.TestCase):
         admission = admit_action(
             case=case,
             action=action,
-            current_frame=frame,
             current_plan=plan,
         )
 
@@ -325,7 +312,6 @@ class TypedActionTest(unittest.TestCase):
         admission = admit_action(
             case=terminal,
             action=action,
-            current_frame=None,
             current_plan=None,
         )
 
@@ -353,10 +339,6 @@ class ContextPacketTest(unittest.TestCase):
                 plan_revision_id="plan-1",
                 task_id="task-pattern",
                 snapshot_release_ref="release-1",
-                grain="calendar_month",
-                capability_name="period_comparison",
-                inline_payload={"measured_periods": 24},
-                result_handle_id=None,
             ),
         )
 

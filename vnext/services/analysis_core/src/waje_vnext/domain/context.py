@@ -44,10 +44,6 @@ class ContextEvidenceItem:
     plan_revision_id: str
     task_id: str
     snapshot_release_ref: str
-    grain: str
-    capability_name: str
-    inline_payload: Mapping[str, FrozenJson] | None
-    result_handle_id: str | None
 
     def __post_init__(self) -> None:
         for name in (
@@ -59,21 +55,10 @@ class ContextEvidenceItem:
             "plan_revision_id",
             "task_id",
             "snapshot_release_ref",
-            "grain",
-            "capability_name",
         ):
             require_nonempty(getattr(self, name), name)
         if self.limitation_count < 0:
             raise ValueError("limitation_count must be non-negative")
-        if (self.inline_payload is None) == (self.result_handle_id is None):
-            raise ValueError(
-                "context evidence requires payload or result handle"
-            )
-        if self.inline_payload is not None:
-            frozen = _freeze_object(self.inline_payload, "inline_payload")
-            object.__setattr__(self, "inline_payload", frozen)
-        if self.result_handle_id is not None:
-            require_nonempty(self.result_handle_id, "result_handle_id")
 
     @classmethod
     def from_record(cls, evidence: EvidenceRecord) -> "ContextEvidenceItem":
@@ -87,14 +72,6 @@ class ContextEvidenceItem:
             plan_revision_id=evidence.plan_revision_id,
             task_id=evidence.task_id,
             snapshot_release_ref=evidence.snapshot_release_ref,
-            grain=evidence.grain,
-            capability_name=evidence.capability_name,
-            inline_payload=evidence.inline_payload,
-            result_handle_id=(
-                None
-                if evidence.result_handle is None
-                else evidence.result_handle.handle_id
-            ),
         )
 
 
@@ -104,7 +81,6 @@ class ContextEventItem:
     event_type: str
     authority_ref: str | None
     business_projection: Mapping[str, FrozenJson]
-    agent_result: Mapping[str, FrozenJson] | None = None
 
     def __post_init__(self) -> None:
         if self.cursor < 1:
@@ -117,26 +93,14 @@ class ContextEventItem:
             "business_projection",
         )
         object.__setattr__(self, "business_projection", frozen)
-        if self.agent_result is not None:
-            agent_result = _freeze_object(
-                self.agent_result,
-                "agent_result",
-            )
-            object.__setattr__(self, "agent_result", agent_result)
 
     @classmethod
-    def from_event(
-        cls,
-        event: EventJournalEntry,
-        *,
-        agent_result: Mapping[str, FrozenJson] | None = None,
-    ) -> "ContextEventItem":
+    def from_event(cls, event: EventJournalEntry) -> "ContextEventItem":
         return cls(
             cursor=event.cursor,
             event_type=event.event_type.value,
             authority_ref=event.authority_ref,
             business_projection=event.customer_projection or {},
-            agent_result=agent_result,
         )
 
 
