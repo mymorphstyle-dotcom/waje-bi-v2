@@ -39,6 +39,20 @@ from waje_vnext.domain.authority import (
     ReviewerObjection,
     WorkPlanRevision,
 )
+from waje_vnext.domain.identity import (
+    validate_frame_identities,
+    validate_resolution_against_frame,
+    validate_resolution_identities,
+)
+from waje_vnext.domain.measurement import (
+    EvidenceValidityRecord,
+    MeasurementResolutionOutcome,
+    ObligationSatisfactionRecord,
+    QuestionRevision,
+    ResolvedEvidenceObligation,
+    ResolutionOutcomeKind,
+    SettlementPreconditionReport,
+)
 from waje_vnext.domain.context import ContextPacket
 from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.controller import (
@@ -63,13 +77,19 @@ from .codec import (
     decode_decision_request,
     decode_decision,
     decode_evidence,
+    decode_evidence_obligation,
+    decode_evidence_validity,
     decode_effect_attempt,
     decode_frame,
     decode_interpretation,
     decode_objection,
+    decode_obligation_satisfaction,
     decode_outbox_message,
     decode_persisted_action,
     decode_plan,
+    decode_question,
+    decode_measurement_resolution,
+    decode_settlement_precondition,
     encode_record,
 )
 from .ports import (
@@ -125,6 +145,21 @@ def apply_gate2_migration(
         migration_path=migration_path,
         version=2,
         name="gate2_controller",
+    )
+
+
+def apply_gate3_1_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply the clean epoch-3 measurement authority amendment."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=3,
+        name="gate3_1_measurement_authority",
     )
 
 
@@ -241,11 +276,18 @@ class PostgresAuthorityStore:
                             thread_id,
                             lifecycle,
                             head_version,
+                            analysis_cycle_id,
                             opened_at,
                             updated_at
-                        ) VALUES (%s, %s, 'open', 0, %s, %s)
+                        ) VALUES (%s, %s, 'open', 0, %s, %s, %s)
                         """,
-                        (case_id, thread_id, opened_at, opened_at),
+                        (
+                            case_id,
+                            thread_id,
+                            f"{case_id}:cycle:0",
+                            opened_at,
+                            opened_at,
+                        ),
                     )
                     cursor.execute(
                         """
@@ -461,6 +503,42 @@ class PostgresAuthorityStore:
             decoder=decode_frame,
         )
 
+    def get_question(
+        self,
+        question_revision_id: str,
+    ) -> QuestionRevision:
+        return self._get_authority(
+            table="question_revisions",
+            id_column="question_revision_id",
+            record_id=question_revision_id,
+            label="question",
+            decoder=decode_question,
+        )
+
+    def get_measurement_resolution(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionOutcome:
+        return self._get_authority(
+            table="measurement_resolution_outcomes",
+            id_column="resolution_outcome_id",
+            record_id=resolution_outcome_id,
+            label="measurement resolution",
+            decoder=decode_measurement_resolution,
+        )
+
+    def get_evidence_obligation(
+        self,
+        obligation_id: str,
+    ) -> ResolvedEvidenceObligation:
+        return self._get_authority(
+            table="resolved_evidence_obligations",
+            id_column="obligation_id",
+            record_id=obligation_id,
+            label="evidence obligation",
+            decoder=decode_evidence_obligation,
+        )
+
     def get_plan(self, plan_revision_id: str) -> WorkPlanRevision:
         return self._get_authority(
             table="work_plan_revisions",
@@ -515,6 +593,159 @@ class PostgresAuthorityStore:
             decoder=decode_objection,
         )
 
+    def accept_question(
+        self,
+        question: QuestionRevision,
+        *,
+        expected_head_version: int,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                idempotent = self._idempotent_head_event(
+                    cursor,
+                    event_id=event_id,
+                    event_type=JournalEventType.QUESTION_ACCEPTED,
+                    authority_ref=question.question_revision_id,
+                    case_id=question.case_id,
+                )
+                if idempotent is not None:
+                    return idempotent
+                case = self._lock_case(
+                    cursor,
+                    question.case_id,
+                    expected_head_version,
+                )
+                current = (
+                    None
+                    if case.accepted_question_revision_id is None
+                    else self._get_question(
+                        cursor,
+                        case.accepted_question_revision_id,
+                    )
+                )
+                expected_revision = (
+                    1 if current is None else current.revision_number + 1
+                )
+                expected_prior = (
+                    None
+                    if current is None
+                    else current.question_revision_id
+                )
+                if (
+                    question.revision_number != expected_revision
+                    or question.prior_question_revision_id != expected_prior
+                ):
+                    raise InvalidAuthorityTransition(
+                        "question revision does not extend the accepted question"
+                    )
+                if question.acceptance_event_id != event_id:
+                    raise InvalidAuthorityTransition(
+                        "question must bind its acceptance event"
+                    )
+                if question.accepted_head_version != case.head_version + 1:
+                    raise InvalidAuthorityTransition(
+                        "question accepted_head_version is stale"
+                    )
+                for source in question.source_messages:
+                    cursor.execute(
+                        """
+                        SELECT case_id, sequence, payload
+                        FROM waje_vnext.case_mailbox_messages
+                        WHERE message_id = %s
+                        """,
+                        (source.message_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None or row["case_id"] != question.case_id:
+                        raise InvalidAuthorityTransition(
+                            "question source message is unavailable"
+                        )
+                    source_content = str(
+                        row["payload"].get("message", "")
+                    )
+                    if (
+                        row["sequence"] != source.sequence
+                        or content_sha256(source_content)
+                        != source.content_sha256
+                    ):
+                        raise InvalidAuthorityTransition(
+                            "question source message does not match mailbox"
+                        )
+                payload = encode_record(question)
+                self._insert_immutable(
+                    cursor,
+                    table="question_revisions",
+                    id_column="question_revision_id",
+                    record_id=question.question_revision_id,
+                    columns=(
+                        "case_id",
+                        "revision_number",
+                        "prior_question_revision_id",
+                        "analysis_cycle_id",
+                        "accepted_head_version",
+                        "content_sha256",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        question.case_id,
+                        question.revision_number,
+                        question.prior_question_revision_id,
+                        question.analysis_cycle_id,
+                        question.accepted_head_version,
+                        question.content_sha256,
+                        Jsonb(payload),
+                        question.created_at,
+                    ),
+                    payload=payload,
+                    label="question",
+                )
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.investigation_cases
+                    SET head_version = head_version + 1,
+                        accepted_question_revision_id = %s,
+                        accepted_frame_revision_id = NULL,
+                        accepted_plan_revision_id = NULL,
+                        accepted_answer_version_id = NULL,
+                        analysis_cycle_id = %s,
+                        updated_at = %s
+                    WHERE case_id = %s AND head_version = %s
+                    RETURNING *
+                    """,
+                    (
+                        question.question_revision_id,
+                        question.analysis_cycle_id,
+                        recorded_at,
+                        question.case_id,
+                        case.head_version,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise StaleHead(
+                        "case head changed during question acceptance"
+                    )
+                updated = _case_from_row(row)
+                self._append_authority_event(
+                    cursor,
+                    case_id=question.case_id,
+                    event_id=event_id,
+                    event_type=JournalEventType.QUESTION_ACCEPTED,
+                    recorded_at=recorded_at,
+                    action_id=None,
+                    authority_ref=question.question_revision_id,
+                    payload={
+                        "revision_number": question.revision_number,
+                        "content_sha256": question.content_sha256,
+                        "analysis_cycle_id": question.analysis_cycle_id,
+                        "head_version": updated.head_version,
+                    },
+                )
+                return updated
+
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
@@ -535,6 +766,27 @@ class PostgresAuthorityStore:
                 if idempotent is not None:
                     return idempotent
                 case = self._lock_case(cursor, frame.case_id, expected_head_version)
+                if (
+                    frame.question_revision_id
+                    != case.accepted_question_revision_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame must bind the accepted question"
+                    )
+                question = self._get_question(
+                    cursor,
+                    frame.question_revision_id,
+                )
+                try:
+                    question.validate_spans(
+                        frame.measurement_design.question_grounding
+                        .source_spans
+                    )
+                    validate_frame_identities(question, frame)
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(
+                        str(error)
+                    ) from error
                 current = (
                     None
                     if case.accepted_frame_revision_id is None
@@ -553,7 +805,10 @@ class PostgresAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "frame revision does not extend the accepted frame"
                     )
-                for decision_id in frame.decision_record_ids:
+                for decision_id in (
+                    frame.measurement_design.question_grounding
+                    .decision_record_ids
+                ):
                     decision = self._get_payload(
                         cursor,
                         table="decision_records",
@@ -574,16 +829,26 @@ class PostgresAuthorityStore:
                     record_id=frame.frame_revision_id,
                     columns=(
                         "case_id",
+                        "question_revision_id",
                         "revision_number",
                         "prior_frame_revision_id",
+                        "schema_epoch",
+                        "identity_algorithm_version",
+                        "semantic_measurement_ids",
+                        "authority_binding_ids",
                         "content_sha256",
                         "payload",
                         "created_at",
                     ),
                     values=(
                         frame.case_id,
+                        frame.question_revision_id,
                         frame.revision_number,
                         frame.prior_frame_revision_id,
+                        frame.schema_epoch,
+                        frame.identity_algorithm_version,
+                        list(frame.semantic_measurement_ids),
+                        list(frame.authority_binding_ids),
                         frame.content_sha256,
                         Jsonb(payload),
                         frame.created_at,
@@ -794,6 +1059,10 @@ class PostgresAuthorityStore:
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
+                if answer.status is AnswerStatus.SETTLED:
+                    raise InvalidAuthorityTransition(
+                        "Gate 3 cannot publish settled answers"
+                    )
                 idempotent = self._idempotent_head_event(
                     cursor,
                     event_id=event_id,
@@ -890,6 +1159,430 @@ class PostgresAuthorityStore:
                     },
                 )
                 return updated
+
+    def record_measurement_resolution(
+        self,
+        outcome: MeasurementResolutionOutcome,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> MeasurementResolutionOutcome:
+        def validate(
+            cursor: Cursor[Mapping[str, Any]],
+            record: MeasurementResolutionOutcome,
+        ) -> None:
+            case = self._lock_case(
+                cursor,
+                record.case_id,
+                expected_head_version,
+            )
+            if (
+                record.question_revision_id
+                != case.accepted_question_revision_id
+                or record.frame_revision_id
+                != case.accepted_frame_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "resolution must bind accepted question and frame"
+                )
+            frame = self._get_frame(cursor, record.frame_revision_id)
+            estimand_ids = tuple(
+                item.estimand_id
+                for item in frame.measurement_design.estimands
+            )
+            try:
+                index = estimand_ids.index(record.estimand_id)
+            except ValueError as error:
+                raise InvalidAuthorityTransition(
+                    "resolution targets an unknown estimand"
+                ) from error
+            if (
+                record.semantic_measurement_id
+                != frame.semantic_measurement_ids[index]
+                or record.authority_binding_id
+                != frame.authority_binding_ids[index]
+            ):
+                raise InvalidAuthorityTransition(
+                    "resolution identity does not match the accepted frame"
+                )
+            if record.kind is ResolutionOutcomeKind.RESOLVED_INSTANCE:
+                instance = record.resolved_instance
+                assert instance is not None
+                if (
+                    instance.frame_revision_id != record.frame_revision_id
+                    or instance.estimand_id != record.estimand_id
+                    or instance.semantic_measurement_id
+                    != record.semantic_measurement_id
+                    or instance.authority_binding_id
+                    != record.authority_binding_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "resolved instance identity is inconsistent"
+                    )
+            try:
+                validate_resolution_identities(record)
+                validate_resolution_against_frame(frame, record)
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
+
+        return self._record_subordinate(
+            record=outcome,
+            record_id=outcome.resolution_outcome_id,
+            case_id=outcome.case_id,
+            table="measurement_resolution_outcomes",
+            id_column="resolution_outcome_id",
+            columns=(
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "estimand_id",
+                "semantic_measurement_id",
+                "authority_binding_id",
+                "outcome_kind",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                outcome.case_id,
+                outcome.question_revision_id,
+                outcome.frame_revision_id,
+                outcome.estimand_id,
+                outcome.semantic_measurement_id,
+                outcome.authority_binding_id,
+                outcome.kind.value,
+                outcome.content_sha256,
+                Jsonb(encode_record(outcome)),
+                outcome.created_at,
+                outcome.schema_epoch,
+            ),
+            event_id=event_id,
+            event_type=JournalEventType.MEASUREMENT_RESOLUTION_RECORDED,
+            action_id=None,
+            recorded_at=outcome.created_at,
+            validator=validate,
+            label="measurement resolution",
+        )
+
+    def record_evidence_obligation(
+        self,
+        obligation: ResolvedEvidenceObligation,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> ResolvedEvidenceObligation:
+        def validate(
+            cursor: Cursor[Mapping[str, Any]],
+            record: ResolvedEvidenceObligation,
+        ) -> None:
+            case = self._lock_case(
+                cursor,
+                record.case_id,
+                expected_head_version,
+            )
+            if record.frame_revision_id != case.accepted_frame_revision_id:
+                raise InvalidAuthorityTransition(
+                    "obligation must bind the accepted frame"
+                )
+            outcome = self._get_payload(
+                cursor,
+                table="measurement_resolution_outcomes",
+                id_column="resolution_outcome_id",
+                record_id=record.resolution_outcome_id,
+                label="measurement resolution",
+                decoder=decode_measurement_resolution,
+            )
+            if (
+                outcome.case_id != record.case_id
+                or outcome.frame_revision_id != record.frame_revision_id
+                or outcome.estimand_id != record.estimand_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation resolution binding is inconsistent"
+                )
+            frame = self._get_frame(cursor, record.frame_revision_id)
+            requirement = next(
+                (
+                    item
+                    for item in frame.measurement_design.evidence_requirements
+                    if item.evidence_requirement_id
+                    == record.evidence_requirement_id
+                ),
+                None,
+            )
+            if (
+                requirement is None
+                or record.estimand_id not in requirement.target_estimand_ids
+                or record.evidence_requirement_sha256
+                != content_sha256(requirement)
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation changes its evidence requirement"
+                )
+
+        return self._record_subordinate(
+            record=obligation,
+            record_id=obligation.obligation_id,
+            case_id=obligation.case_id,
+            table="resolved_evidence_obligations",
+            id_column="obligation_id",
+            columns=(
+                "case_id",
+                "frame_revision_id",
+                "estimand_id",
+                "evidence_requirement_id",
+                "resolution_outcome_id",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                obligation.case_id,
+                obligation.frame_revision_id,
+                obligation.estimand_id,
+                obligation.evidence_requirement_id,
+                obligation.resolution_outcome_id,
+                obligation.content_sha256,
+                Jsonb(encode_record(obligation)),
+                obligation.created_at,
+                obligation.schema_epoch,
+            ),
+            event_id=event_id,
+            event_type=JournalEventType.EVIDENCE_OBLIGATION_RECORDED,
+            action_id=None,
+            recorded_at=obligation.created_at,
+            validator=validate,
+            label="evidence obligation",
+        )
+
+    def record_evidence_validity(
+        self,
+        validity: EvidenceValidityRecord,
+        *,
+        event_id: str,
+    ) -> EvidenceValidityRecord:
+        def validate(
+            cursor: Cursor[Mapping[str, Any]],
+            record: EvidenceValidityRecord,
+        ) -> None:
+            self._get_evidence(cursor, record.evidence_record_id)
+            cursor.execute(
+                """
+                SELECT current.payload
+                FROM waje_vnext.evidence_validity_records AS current
+                WHERE current.evidence_record_id = %s
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM waje_vnext.evidence_validity_records AS successor
+                    WHERE successor.prior_validity_record_id
+                        = current.evidence_validity_record_id
+                  )
+                FOR UPDATE
+                """,
+                (record.evidence_record_id,),
+            )
+            rows = cursor.fetchall()
+            if len(rows) > 1:
+                raise AuthorityConflict(
+                    "evidence validity chain has multiple heads"
+                )
+            current = (
+                None
+                if not rows
+                else decode_evidence_validity(rows[0]["payload"])
+            )
+            if current is None:
+                if record.prior_validity_record_id is not None:
+                    raise InvalidAuthorityTransition(
+                        "first validity record cannot have a prior"
+                    )
+            elif (
+                record.prior_validity_record_id
+                != current.evidence_validity_record_id
+                or record.expected_prior_content_sha256
+                != current.content_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "validity record does not extend current disposition"
+                )
+
+        evidence = self.get_evidence(validity.evidence_record_id)
+        return self._record_subordinate(
+            record=validity,
+            record_id=validity.evidence_validity_record_id,
+            case_id=evidence.case_id,
+            table="evidence_validity_records",
+            id_column="evidence_validity_record_id",
+            columns=(
+                "evidence_record_id",
+                "prior_validity_record_id",
+                "disposition_status",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                validity.evidence_record_id,
+                validity.prior_validity_record_id,
+                validity.status.value,
+                validity.content_sha256,
+                Jsonb(encode_record(validity)),
+                validity.created_at,
+                validity.schema_epoch,
+            ),
+            event_id=event_id,
+            event_type=JournalEventType.EVIDENCE_VALIDITY_RECORDED,
+            action_id=None,
+            recorded_at=validity.created_at,
+            validator=validate,
+            label="evidence validity",
+        )
+
+    def record_obligation_satisfaction(
+        self,
+        satisfaction: ObligationSatisfactionRecord,
+        *,
+        event_id: str,
+    ) -> ObligationSatisfactionRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                obligation = self._get_payload(
+                    cursor,
+                    table="resolved_evidence_obligations",
+                    id_column="obligation_id",
+                    record_id=satisfaction.obligation_id,
+                    label="evidence obligation",
+                    decoder=decode_evidence_obligation,
+                )
+        return self._record_subordinate(
+            record=satisfaction,
+            record_id=satisfaction.satisfaction_record_id,
+            case_id=obligation.case_id,
+            table="obligation_satisfaction_records",
+            id_column="satisfaction_record_id",
+            columns=(
+                "obligation_id",
+                "satisfaction_status",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                satisfaction.obligation_id,
+                satisfaction.status.value,
+                satisfaction.content_sha256,
+                Jsonb(encode_record(satisfaction)),
+                satisfaction.created_at,
+                satisfaction.schema_epoch,
+            ),
+            event_id=event_id,
+            event_type=(
+                JournalEventType.OBLIGATION_SATISFACTION_RECORDED
+            ),
+            action_id=None,
+            recorded_at=satisfaction.created_at,
+            validator=lambda cursor, record: self._get_payload(
+                cursor,
+                table="resolved_evidence_obligations",
+                id_column="obligation_id",
+                record_id=record.obligation_id,
+                label="evidence obligation",
+                decoder=decode_evidence_obligation,
+            ),
+            label="obligation satisfaction",
+        )
+
+    def record_settlement_precondition(
+        self,
+        report: SettlementPreconditionReport,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> SettlementPreconditionReport:
+        def validate(
+            cursor: Cursor[Mapping[str, Any]],
+            record: SettlementPreconditionReport,
+        ) -> None:
+            case = self._lock_case(
+                cursor,
+                record.case_id,
+                expected_head_version,
+            )
+            if (
+                record.accepted_head_version != case.head_version
+                or record.question_revision_id
+                != case.accepted_question_revision_id
+                or record.frame_revision_id
+                != case.accepted_frame_revision_id
+                or record.plan_revision_id
+                != case.accepted_plan_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "settlement precondition is stale"
+                )
+            frame = self._get_frame(cursor, record.frame_revision_id)
+            if (
+                record.semantic_measurement_ids
+                != frame.semantic_measurement_ids
+                or record.authority_binding_ids
+                != frame.authority_binding_ids
+            ):
+                raise InvalidAuthorityTransition(
+                    "settlement precondition changes frame identity"
+                )
+            for outcome_id in record.resolution_outcome_ids:
+                outcome = self._get_payload(
+                    cursor,
+                    table="measurement_resolution_outcomes",
+                    id_column="resolution_outcome_id",
+                    record_id=outcome_id,
+                    label="measurement resolution",
+                    decoder=decode_measurement_resolution,
+                )
+                if outcome.frame_revision_id != record.frame_revision_id:
+                    raise InvalidAuthorityTransition(
+                        "settlement resolution belongs to another frame"
+                    )
+
+        return self._record_subordinate(
+            record=report,
+            record_id=report.settlement_precondition_report_id,
+            case_id=report.case_id,
+            table="settlement_precondition_reports",
+            id_column="settlement_precondition_report_id",
+            columns=(
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "precondition_status",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                report.case_id,
+                report.question_revision_id,
+                report.frame_revision_id,
+                report.plan_revision_id,
+                report.status.value,
+                report.content_sha256,
+                Jsonb(encode_record(report)),
+                report.created_at,
+                report.schema_epoch,
+            ),
+            event_id=event_id,
+            event_type=JournalEventType.SETTLEMENT_PRECONDITION_RECORDED,
+            action_id=None,
+            recorded_at=report.created_at,
+            validator=validate,
+            label="settlement precondition",
+        )
 
     def record_interpretation(
         self,
@@ -2165,6 +2858,20 @@ class PostgresAuthorityStore:
             decoder=decode_frame,
         )
 
+    def _get_question(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        record_id: str,
+    ) -> QuestionRevision:
+        return self._get_payload(
+            cursor,
+            table="question_revisions",
+            id_column="question_revision_id",
+            record_id=record_id,
+            label="question",
+            decoder=decode_question,
+        )
+
     def _get_plan(
         self,
         cursor: Cursor[Mapping[str, Any]],
@@ -2757,9 +3464,13 @@ def _case_from_row(row: Mapping[str, Any]) -> InvestigationCase:
         thread_id=row["thread_id"],
         lifecycle=CaseLifecycle(row["lifecycle"]),
         head_version=row["head_version"],
+        accepted_question_revision_id=(
+            row["accepted_question_revision_id"]
+        ),
         accepted_frame_revision_id=row["accepted_frame_revision_id"],
         accepted_plan_revision_id=row["accepted_plan_revision_id"],
         accepted_answer_version_id=row["accepted_answer_version_id"],
+        analysis_cycle_id=row["analysis_cycle_id"],
         opened_at=row["opened_at"],
         updated_at=row["updated_at"],
     )

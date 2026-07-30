@@ -1,0 +1,130 @@
+{
+  "identity_algorithm_version": "measurement-identity.v1",
+  "golden_vectors": [
+    {
+      "name": "nfc-and-key-order",
+      "value": {
+        "z": "é",
+        "a": {
+          "b": true,
+          "a": null
+        }
+      },
+      "expected_canonical_json": "{\"a\":{\"a\":null,\"b\":true},\"z\":\"é\"}",
+      "expected_sha256": "d10edb991ee049b4c7b97e508696c2d04ca2166fae721b870e3dd70457ff9841"
+    },
+    {
+      "name": "canonical-decimal",
+      "value": {
+        "value": {
+          "$decimal": "1000.000"
+        }
+      },
+      "expected_canonical_json": "{\"value\":\"1000\"}",
+      "expected_sha256": "c90915b73669703e5bbbceb3a250ed08a46afc6b9060a346959d96d6b4463d99"
+    },
+    {
+      "name": "utc-microsecond-timestamp",
+      "value": {
+        "at": {
+          "$timestamp": "2026-07-30T20:15:16.123+08:00"
+        }
+      },
+      "expected_canonical_json": "{\"at\":\"2026-07-30T12:15:16.123000Z\"}",
+      "expected_sha256": "edc67c6ac604da8e3680d9ec39994754757e1e88c89fb8e1796c451006a21bd0"
+    },
+    {
+      "name": "utc-submillisecond-timestamp",
+      "value": {
+        "at": {
+          "$timestamp": "2026-07-30T20:15:16.123456+08:00"
+        }
+      },
+      "expected_canonical_json": "{\"at\":\"2026-07-30T12:15:16.123456Z\"}",
+      "expected_sha256": "0ed8247da54d4f389d2fa55e5675ba191c14b79a76987c947728a58fa0cf52f0"
+    },
+    {
+      "name": "unicode-code-point-key-order",
+      "value": {
+        "😀": 1,
+        "": 2
+      },
+      "expected_canonical_json": "{\"\":2,\"😀\":1}",
+      "expected_sha256": "cddbdeacace14eb6923e88dfafb2a3e7df21ec908682f50a886b7b9567692d02"
+    },
+    {
+      "name": "ordered-array-and-null",
+      "value": {
+        "items": [
+          "left",
+          null,
+          3
+        ]
+      },
+      "expected_canonical_json": "{\"items\":[\"left\",null,3]}",
+      "expected_sha256": "e6e6b3385078d50af18898caa52fec9147302bde064fbbe19d6667c872ed7c66"
+    }
+  ],
+  "mutation_vectors": [
+    {
+      "name": "unicode-composition-is-identity-neutral",
+      "left": "é",
+      "right": "é",
+      "expected_identity_relation": "same"
+    },
+    {
+      "name": "object-key-order-is-identity-neutral",
+      "left": {
+        "a": 1,
+        "b": 2
+      },
+      "right": {
+        "b": 2,
+        "a": 1
+      },
+      "expected_identity_relation": "same"
+    },
+    {
+      "name": "decimal-trailing-zero-is-identity-neutral",
+      "left": {
+        "$decimal": "1.00"
+      },
+      "right": {
+        "$decimal": "1"
+      },
+      "expected_identity_relation": "same"
+    },
+    {
+      "name": "timestamp-offset-is-identity-neutral",
+      "left": {
+        "$timestamp": "2026-07-30T20:15:16.123+08:00"
+      },
+      "right": {
+        "$timestamp": "2026-07-30T12:15:16.123Z"
+      },
+      "expected_identity_relation": "same"
+    },
+    {
+      "name": "timestamp-offset-preserves-microseconds",
+      "left": {
+        "$timestamp": "2026-07-30T20:15:16.123456+08:00"
+      },
+      "right": {
+        "$timestamp": "2026-07-30T12:15:16.123456Z"
+      },
+      "expected_identity_relation": "same"
+    },
+    {
+      "name": "sequence-order-is-identity-material",
+      "left": [
+        "left",
+        "right"
+      ],
+      "right": [
+        "right",
+        "left"
+      ],
+      "expected_identity_relation": "different"
+    }
+  ]
+}

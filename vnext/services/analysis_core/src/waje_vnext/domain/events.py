@@ -23,9 +23,19 @@ class JournalEventType(StrEnum):
     ACTION_ADMITTED = "action_admitted"
     ACTION_REJECTED = "action_rejected"
     USER_DECISION_REQUESTED = "user_decision_requested"
+    QUESTION_ACCEPTED = "question_accepted"
     FRAME_ACCEPTED = "frame_accepted"
     PLAN_ACCEPTED = "plan_accepted"
     EVIDENCE_RECORDED = "evidence_recorded"
+    MEASUREMENT_RESOLUTION_RECORDED = "measurement_resolution_recorded"
+    EVIDENCE_OBLIGATION_RECORDED = "evidence_obligation_recorded"
+    EVIDENCE_VALIDITY_RECORDED = "evidence_validity_recorded"
+    OBLIGATION_SATISFACTION_RECORDED = (
+        "obligation_satisfaction_recorded"
+    )
+    SETTLEMENT_PRECONDITION_RECORDED = (
+        "settlement_precondition_recorded"
+    )
     INTERPRETATION_RECORDED = "interpretation_recorded"
     USER_DECISION_RECORDED = "user_decision_recorded"
     REVIEWER_OBJECTION_RECORDED = "reviewer_objection_recorded"

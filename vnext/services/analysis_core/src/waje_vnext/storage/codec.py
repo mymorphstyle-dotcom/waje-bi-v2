@@ -49,6 +49,15 @@ from waje_vnext.domain.runtime_state import (
     CheckpointRecord,
     OutboxMessage,
 )
+from waje_vnext.domain.measurement import (
+    EvidenceValidityRecord,
+    MeasurementResolutionOutcome,
+    ObligationSatisfactionRecord,
+    QuestionRevision,
+    ResolvedEvidenceObligation,
+    SettlementPreconditionReport,
+)
+from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
 
 def encode_record(record: object) -> dict[str, Any]:
@@ -58,30 +67,42 @@ def encode_record(record: object) -> dict[str, Any]:
     return encoded
 
 
+def decode_question(payload: Mapping[str, Any]) -> QuestionRevision:
+    return decode_typed_dataclass(QuestionRevision, payload)
+
+
+def decode_measurement_resolution(
+    payload: Mapping[str, Any],
+) -> MeasurementResolutionOutcome:
+    return decode_typed_dataclass(MeasurementResolutionOutcome, payload)
+
+
+def decode_evidence_obligation(
+    payload: Mapping[str, Any],
+) -> ResolvedEvidenceObligation:
+    return decode_typed_dataclass(ResolvedEvidenceObligation, payload)
+
+
+def decode_evidence_validity(
+    payload: Mapping[str, Any],
+) -> EvidenceValidityRecord:
+    return decode_typed_dataclass(EvidenceValidityRecord, payload)
+
+
+def decode_obligation_satisfaction(
+    payload: Mapping[str, Any],
+) -> ObligationSatisfactionRecord:
+    return decode_typed_dataclass(ObligationSatisfactionRecord, payload)
+
+
+def decode_settlement_precondition(
+    payload: Mapping[str, Any],
+) -> SettlementPreconditionReport:
+    return decode_typed_dataclass(SettlementPreconditionReport, payload)
+
+
 def decode_frame(payload: Mapping[str, Any]) -> AnalysisFrameRevision:
-    return AnalysisFrameRevision(
-        frame_revision_id=payload["frame_revision_id"],
-        case_id=payload["case_id"],
-        revision_number=payload["revision_number"],
-        prior_frame_revision_id=payload["prior_frame_revision_id"],
-        created_by_action_id=payload["created_by_action_id"],
-        created_at=_datetime(payload["created_at"]),
-        revision_reason=payload["revision_reason"],
-        estimand=payload["estimand"],
-        observation_unit=payload["observation_unit"],
-        numerator=payload["numerator"],
-        denominator=payload["denominator"],
-        exposure=payload["exposure"],
-        comparison=payload["comparison"],
-        assumptions=tuple(payload["assumptions"]),
-        alternatives=tuple(payload["alternatives"]),
-        falsification_conditions=tuple(payload["falsification_conditions"]),
-        reversal_conditions=tuple(payload["reversal_conditions"]),
-        success_conditions=tuple(payload["success_conditions"]),
-        stop_conditions=tuple(payload["stop_conditions"]),
-        decision_record_ids=tuple(payload["decision_record_ids"]),
-        semantic_contract_refs=tuple(payload["semantic_contract_refs"]),
-    )
+    return decode_typed_dataclass(AnalysisFrameRevision, payload)
 
 
 def decode_plan(payload: Mapping[str, Any]) -> WorkPlanRevision:
@@ -266,9 +287,13 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
         packet_id=payload["packet_id"],
         case_id=payload["case_id"],
         head_version=payload["head_version"],
+        accepted_question_revision_id=(
+            payload["accepted_question_revision_id"]
+        ),
         accepted_frame_revision_id=payload["accepted_frame_revision_id"],
         accepted_plan_revision_id=payload["accepted_plan_revision_id"],
         accepted_answer_version_id=payload["accepted_answer_version_id"],
+        accepted_question_payload=payload["accepted_question_payload"],
         accepted_frame_payload=payload["accepted_frame_payload"],
         accepted_plan_payload=payload["accepted_plan_payload"],
         accepted_answer_payload=payload["accepted_answer_payload"],

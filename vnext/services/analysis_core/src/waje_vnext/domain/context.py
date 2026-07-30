@@ -13,6 +13,7 @@ from .authority import (
     DecisionRecord,
     EvidenceRecord,
     InvestigationCase,
+    QuestionRevision,
     ReviewerObjection,
     WorkPlanRevision,
 )
@@ -223,9 +224,11 @@ class ContextPacket:
     packet_id: str
     case_id: str
     head_version: int
+    accepted_question_revision_id: str | None
     accepted_frame_revision_id: str | None
     accepted_plan_revision_id: str | None
     accepted_answer_version_id: str | None
+    accepted_question_payload: Mapping[str, FrozenJson] | None
     accepted_frame_payload: Mapping[str, FrozenJson] | None
     accepted_plan_payload: Mapping[str, FrozenJson] | None
     accepted_answer_payload: Mapping[str, FrozenJson] | None
@@ -300,6 +303,7 @@ def build_context_packet(
     user_messages: tuple[ContextUserMessageItem, ...],
     relevant_event_cursor_start: int,
     relevant_event_cursor_end: int,
+    accepted_question: QuestionRevision | None,
     accepted_frame: AnalysisFrameRevision | None,
     accepted_plan: WorkPlanRevision | None,
     accepted_answer: AnswerVersion | None,
@@ -309,15 +313,20 @@ def build_context_packet(
     reviewer_objection_index: tuple[ContextReviewerObjectionItem, ...],
     built_at: datetime,
 ) -> ContextPacket:
+    question_payload = _record_payload(accepted_question)
     frame_payload = _record_payload(accepted_frame)
     plan_payload = _record_payload(accepted_plan)
     answer_payload = _record_payload(accepted_answer)
     content = {
         "case_id": case.case_id,
         "head_version": case.head_version,
+        "accepted_question_revision_id": (
+            case.accepted_question_revision_id
+        ),
         "accepted_frame_revision_id": case.accepted_frame_revision_id,
         "accepted_plan_revision_id": case.accepted_plan_revision_id,
         "accepted_answer_version_id": case.accepted_answer_version_id,
+        "accepted_question_payload": question_payload,
         "accepted_frame_payload": frame_payload,
         "accepted_plan_payload": plan_payload,
         "accepted_answer_payload": answer_payload,
@@ -333,9 +342,13 @@ def build_context_packet(
         packet_id=packet_id,
         case_id=case.case_id,
         head_version=case.head_version,
+        accepted_question_revision_id=(
+            case.accepted_question_revision_id
+        ),
         accepted_frame_revision_id=case.accepted_frame_revision_id,
         accepted_plan_revision_id=case.accepted_plan_revision_id,
         accepted_answer_version_id=case.accepted_answer_version_id,
+        accepted_question_payload=question_payload,
         accepted_frame_payload=frame_payload,
         accepted_plan_payload=plan_payload,
         accepted_answer_payload=answer_payload,
@@ -355,9 +368,13 @@ def _context_content(packet: ContextPacket) -> dict[str, object]:
     return {
         "case_id": packet.case_id,
         "head_version": packet.head_version,
+        "accepted_question_revision_id": (
+            packet.accepted_question_revision_id
+        ),
         "accepted_frame_revision_id": packet.accepted_frame_revision_id,
         "accepted_plan_revision_id": packet.accepted_plan_revision_id,
         "accepted_answer_version_id": packet.accepted_answer_version_id,
+        "accepted_question_payload": packet.accepted_question_payload,
         "accepted_frame_payload": packet.accepted_frame_payload,
         "accepted_plan_payload": packet.accepted_plan_payload,
         "accepted_answer_payload": packet.accepted_answer_payload,
@@ -389,6 +406,11 @@ def _freeze_object(
 
 def _freeze_authority_payloads(packet: ContextPacket) -> None:
     bindings = (
+        (
+            "accepted_question_revision_id",
+            "accepted_question_payload",
+            "question_revision_id",
+        ),
         (
             "accepted_frame_revision_id",
             "accepted_frame_payload",

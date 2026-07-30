@@ -10,9 +10,9 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const outputRoot = join(root, "contracts", "generated", "typescript");
 const checkOnly = process.argv.includes("--check");
 const contracts = [
-  ["contracts/domain/authority.v1.schema.json", "authority.v1.ts"],
-  ["contracts/domain/actions.v1.schema.json", "actions.v1.ts"],
-  ["contracts/domain/context-packet.v1.schema.json", "context-packet.v1.ts"],
+  ["contracts/domain/authority.v3.schema.json", "authority.v3.ts"],
+  ["contracts/domain/actions.v3.schema.json", "actions.v3.ts"],
+  ["contracts/domain/context-packet.v3.schema.json", "context-packet.v3.ts"],
   ["contracts/domain/runtime-state.v1.schema.json", "runtime-state.v1.ts"],
   ["contracts/domain/controller-state.v1.schema.json", "controller-state.v1.ts"],
   ["contracts/domain/async-runtime.v1.schema.json", "async-runtime.v1.ts"],

@@ -67,6 +67,17 @@ from .controller import (
     UserDecisionRequest,
 )
 from .events import EventJournalEntry, JournalEventType
+from .measurement import (
+    EvidenceRequirementSpec,
+    EvidenceValidityRecord,
+    EstimandSpec,
+    MeasurementDesign,
+    MeasurementResolutionOutcome,
+    ObligationSatisfactionRecord,
+    QuestionRevision,
+    ResolvedEvidenceObligation,
+    SettlementPreconditionReport,
+)
 from .runtime_state import ActionReceipt, CheckpointRecord, OutboxMessage
 
 __all__ = [
@@ -99,8 +110,11 @@ __all__ = [
     "EffectAttemptRecord",
     "EffectAttemptStatus",
     "EvidenceRecord",
+    "EvidenceRequirementSpec",
     "EvidenceStrength",
     "EvidenceType",
+    "EvidenceValidityRecord",
+    "EstimandSpec",
     "InspectSemanticsPayload",
     "InvestigationCase",
     "InterpretationRecord",
@@ -110,14 +124,19 @@ __all__ = [
     "MailboxMessage",
     "MailboxMessageKind",
     "MessageIngressReceipt",
+    "MeasurementDesign",
+    "MeasurementResolutionOutcome",
+    "ObligationSatisfactionRecord",
     "OperationIdentity",
     "OutboxMessage",
     "PersistedAction",
     "PrimaryAgentRequest",
+    "QuestionRevision",
     "ProposeAnswerPayload",
     "ProposedClaim",
     "RecordInterpretationPayload",
     "ResultHandle",
+    "ResolvedEvidenceObligation",
     "ReviseFramePayload",
     "RevisePlanPayload",
     "ReviewerObjection",
@@ -126,6 +145,7 @@ __all__ = [
     "RunProbePayload",
     "RunSensitivityPayload",
     "StopPayload",
+    "SettlementPreconditionReport",
     "UserDecisionRequest",
     "WorkPlanRevision",
     "WorkTask",

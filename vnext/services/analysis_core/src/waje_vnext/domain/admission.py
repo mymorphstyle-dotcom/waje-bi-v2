@@ -39,6 +39,13 @@ def admit_action(
 
     if action.kind is ActionKind.REVISE_FRAME:
         assert isinstance(action.payload, ReviseFramePayload)
+        if case.accepted_question_revision_id is None:
+            return _rejected(case, "frame_requires_question")
+        if (
+            action.payload.question_revision_id
+            != case.accepted_question_revision_id
+        ):
+            return _rejected(case, "frame_question_mismatch")
         return _accepted(case, frame=True)
 
     if action.kind is ActionKind.REVISE_PLAN:

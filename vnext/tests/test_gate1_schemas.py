@@ -4,7 +4,14 @@ import json
 import unittest
 from pathlib import Path
 
-from gate1_fixtures import NOW, make_answer, make_evidence, make_frame, make_plan
+from gate1_fixtures import (
+    NOW,
+    make_answer,
+    make_evidence,
+    make_frame,
+    make_plan,
+    make_question,
+)
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from waje_vnext.domain.actions import (
     ActionEnvelope,
@@ -43,9 +50,9 @@ class JsonSchemaContractTest(unittest.TestCase):
 
     def test_all_gate1_schemas_are_valid_draft_2020_12(self) -> None:
         paths = (
-            "contracts/domain/authority.v1.schema.json",
-            "contracts/domain/actions.v1.schema.json",
-            "contracts/domain/context-packet.v1.schema.json",
+            "contracts/domain/authority.v3.schema.json",
+            "contracts/domain/actions.v3.schema.json",
+            "contracts/domain/context-packet.v3.schema.json",
             "contracts/domain/runtime-state.v1.schema.json",
             "contracts/domain/controller-state.v1.schema.json",
             "contracts/domain/async-runtime.v1.schema.json",
@@ -56,7 +63,7 @@ class JsonSchemaContractTest(unittest.TestCase):
                 Draft202012Validator.check_schema(load_schema(path))
 
     def test_five_authority_objects_match_language_neutral_schema(self) -> None:
-        schema = load_schema("contracts/domain/authority.v1.schema.json")
+        schema = load_schema("contracts/domain/authority.v3.schema.json")
         validator = Draft202012Validator(
             schema,
             format_checker=self.format_checker,
@@ -70,6 +77,7 @@ class JsonSchemaContractTest(unittest.TestCase):
         )
         authorities = (
             case,
+            make_question(),
             make_frame(),
             make_plan(),
             make_evidence(),
@@ -79,6 +87,28 @@ class JsonSchemaContractTest(unittest.TestCase):
         for authority in authorities:
             with self.subTest(authority=type(authority).__name__):
                 validator.validate(to_jsonable(authority))
+
+    def test_epoch3_schema_rejects_settlement_and_epoch_drift(self) -> None:
+        schema = load_schema("contracts/domain/authority.v3.schema.json")
+        validator = Draft202012Validator(
+            schema,
+            format_checker=self.format_checker,
+        )
+        settled = to_jsonable(make_answer())
+        settled["status"] = "settled"
+        frame_epoch_drift = to_jsonable(make_frame())
+        frame_epoch_drift["schema_epoch"] = 2
+        invalid_question_head = to_jsonable(make_question())
+        invalid_question_head["accepted_head_version"] = 0
+
+        for payload in (
+            settled,
+            frame_epoch_drift,
+            invalid_question_head,
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValidationError):
+                    validator.validate(payload)
 
     def test_action_context_and_event_match_schemas(self) -> None:
         store = InMemoryAuthorityStore()
@@ -115,6 +145,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_question=None,
             accepted_frame=None,
             accepted_plan=None,
             accepted_answer=None,
@@ -161,11 +192,14 @@ class JsonSchemaContractTest(unittest.TestCase):
         )
         cases = (
             (
-                "contracts/domain/actions.v1.schema.json",
-                action,
+                "contracts/domain/actions.v3.schema.json",
+                AgentActionProposal(
+                    kind=action.kind,
+                    payload=action.payload,
+                ),
             ),
             (
-                "contracts/domain/context-packet.v1.schema.json",
+                "contracts/domain/context-packet.v3.schema.json",
                 packet,
             ),
             (
@@ -185,7 +219,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             payload=action.payload,
         )
         action_validator = Draft202012Validator(
-            load_schema("contracts/domain/actions.v1.schema.json"),
+            load_schema("contracts/domain/actions.v3.schema.json"),
             format_checker=self.format_checker,
         )
         action_validator.validate(to_jsonable(proposal))
@@ -286,7 +320,7 @@ class JsonSchemaContractTest(unittest.TestCase):
                 validator.validate(to_jsonable(envelope))
 
     def test_action_schema_rejects_kind_payload_mismatch(self) -> None:
-        schema = load_schema("contracts/domain/actions.v1.schema.json")
+        schema = load_schema("contracts/domain/actions.v3.schema.json")
         action = ActionEnvelope(
             action_id="action-1",
             case_id="case-1",
@@ -300,7 +334,9 @@ class JsonSchemaContractTest(unittest.TestCase):
                 parameters={"limit": 10},
             ),
         )
-        invalid = to_jsonable(action)
+        invalid = to_jsonable(
+            AgentActionProposal(kind=action.kind, payload=action.payload)
+        )
         invalid["kind"] = "revise_frame"
 
         with self.assertRaises(ValidationError):
@@ -340,6 +376,20 @@ class MigrationContractTest(unittest.TestCase):
         self.assertIn("controller_leases", migration)
         self.assertIn("outbox_delivery_leases", migration)
         self.assertIn("heartbeat_at", migration)
+
+    def test_gate3_1_migration_is_epoch3_and_fail_closed(self) -> None:
+        migration = (
+            ROOT
+            / "storage/migrations/003_gate3_1_measurement_authority.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("requires a clean waje_vnext authority schema", migration)
+        self.assertIn("question_revisions", migration)
+        self.assertIn("measurement_resolution_outcomes", migration)
+        self.assertIn("resolved_evidence_obligations", migration)
+        self.assertIn("evidence_validity_records", migration)
+        self.assertIn("settlement_precondition_reports", migration)
+        self.assertIn("status = 'provisional'", migration)
 
 
 if __name__ == "__main__":

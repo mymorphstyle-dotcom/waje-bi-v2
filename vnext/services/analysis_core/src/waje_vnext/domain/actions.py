@@ -16,6 +16,7 @@ from .canonical import (
     require_aware_datetime,
     require_nonempty,
 )
+from .measurement import MeasurementDesign
 
 
 class ActionKind(StrEnum):
@@ -33,35 +34,30 @@ class ActionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ReviseFramePayload:
-    revision_reason: str
-    estimand: str
-    observation_unit: str
-    numerator: str
-    denominator: str
-    exposure: str
-    comparison: str
-    assumptions: tuple[str, ...]
-    alternatives: tuple[str, ...]
-    falsification_conditions: tuple[str, ...]
-    reversal_conditions: tuple[str, ...]
-    success_conditions: tuple[str, ...]
-    stop_conditions: tuple[str, ...]
-    decision_record_ids: tuple[str, ...] = ()
-    semantic_contract_refs: tuple[str, ...] = ()
+    question_revision_id: str
+    revision_reason_ref: str
+    measurement_design: MeasurementDesign
 
     def __post_init__(self) -> None:
-        _validate_dataclass_strings(self)
-        for name in (
-            "assumptions",
-            "alternatives",
-            "falsification_conditions",
-            "reversal_conditions",
-            "success_conditions",
-            "stop_conditions",
-            "decision_record_ids",
-            "semantic_contract_refs",
+        require_nonempty(
+            self.question_revision_id,
+            "question_revision_id",
+        )
+        require_nonempty(
+            self.revision_reason_ref,
+            "revision_reason_ref",
+        )
+        if not isinstance(self.measurement_design, MeasurementDesign):
+            raise TypeError(
+                "measurement_design must be MeasurementDesign"
+            )
+        if (
+            self.measurement_design.question_grounding.question_revision_id
+            != self.question_revision_id
         ):
-            _validate_string_tuple(getattr(self, name), name)
+            raise ValueError(
+                "frame action grounding must bind its question revision"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +221,7 @@ type ActionPayload = (
 )
 
 
-_PAYLOAD_TYPES: dict[ActionKind, type[ActionPayload]] = {
+ACTION_PAYLOAD_TYPES: dict[ActionKind, type[ActionPayload]] = {
     ActionKind.REVISE_FRAME: ReviseFramePayload,
     ActionKind.REVISE_PLAN: RevisePlanPayload,
     ActionKind.INSPECT_SEMANTICS: InspectSemanticsPayload,
@@ -307,7 +303,7 @@ def _validate_kind_payload(
 ) -> None:
     if not isinstance(kind, ActionKind):
         raise TypeError("kind must be ActionKind")
-    expected_type = _PAYLOAD_TYPES[kind]
+    expected_type = ACTION_PAYLOAD_TYPES[kind]
     if not isinstance(payload, expected_type):
         raise TypeError(
             "action {!r} requires payload {!r}".format(

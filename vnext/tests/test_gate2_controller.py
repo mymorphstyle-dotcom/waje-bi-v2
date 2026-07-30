@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
+from gate1_fixtures import make_measurement_design
 from waje_vnext.controller import (
     ControllerConflict,
     EffectExecutionResult,
@@ -53,28 +54,19 @@ from waje_vnext.storage import (
 NOW = datetime(2026, 7, 29, 9, 0, tzinfo=UTC)
 
 
-def frame_proposal() -> AgentActionProposal:
+def frame_proposal(
+    case_id: str = "case-gate2",
+) -> AgentActionProposal:
+    question_id = f"{case_id}:question:1"
     return AgentActionProposal(
         kind=ActionKind.REVISE_FRAME,
         payload=ReviseFramePayload(
-            revision_reason="Define the measurement before querying",
-            estimand="Average paid amount difference between exposure windows",
-            observation_unit="calendar month",
-            numerator="valid paid amount",
-            denominator="complete observed months",
-            exposure="contract-defined month-start window",
-            comparison="mid-month and month-end windows",
-            assumptions=("Paid amount contract is valid",),
-            alternatives=("Composition shift may explain the pattern",),
-            falsification_conditions=(
-                "Pattern disappears in complete-month sensitivity",
+            question_revision_id=question_id,
+            revision_reason_ref="reason:define-measurement-before-query",
+            measurement_design=make_measurement_design(
+                question_id=question_id,
+                include_source_span=False,
             ),
-            reversal_conditions=(
-                "Comparison window exceeds the exposure window",
-            ),
-            success_conditions=("Comparable windows are measured",),
-            stop_conditions=("Required metric contract is unavailable",),
-            semantic_contract_refs=("metric:paid_amount:v1",),
         ),
     )
 
@@ -163,7 +155,7 @@ def complete_agent_turn(
 
 class Gate2ControllerTest(unittest.TestCase):
     def test_persisted_action_binds_the_exact_business_proposal(self) -> None:
-        proposal = frame_proposal()
+        proposal = frame_proposal("case-binding")
         action = ActionEnvelope(
             action_id="action-binding",
             case_id="case-binding",
@@ -402,7 +394,7 @@ class Gate2ControllerTest(unittest.TestCase):
                 return recorded
 
         store = FailingCheckpointStore()
-        proposal = frame_proposal()
+        proposal = frame_proposal("case-crash")
         provider = ScriptedPrimaryAgentProvider((proposal, proposal))
         controller = WAJEController(
             store=store,
@@ -455,7 +447,7 @@ class Gate2ControllerTest(unittest.TestCase):
     def test_plan_before_frame_is_audited_and_rejected(self) -> None:
         store = InMemoryAuthorityStore()
         provider = ScriptedPrimaryAgentProvider(
-            (plan_proposal(), frame_proposal())
+            (plan_proposal(), frame_proposal("case-rejection"))
         )
         controller = WAJEController(
             store=store,
@@ -472,7 +464,7 @@ class Gate2ControllerTest(unittest.TestCase):
         )
         rejected = complete_agent_turn(controller, "case-rejection")
         self.assertEqual(rejected.consecutive_rejections, 1)
-        self.assertEqual(store.get_case("case-rejection").head_version, 0)
+        self.assertEqual(store.get_case("case-rejection").head_version, 1)
         self.assertIn(
             JournalEventType.ACTION_REJECTED,
             tuple(
@@ -488,11 +480,15 @@ class Gate2ControllerTest(unittest.TestCase):
 
     def test_frame_change_invalidates_heads_and_plan_lineage_continues(self) -> None:
         revised_frame = replace(
-            frame_proposal(),
+            frame_proposal("case-revision"),
             payload=replace(
-                frame_proposal().payload,
-                revision_reason="Change the business exposure definition",
-                exposure="first three complete business days",
+                frame_proposal("case-revision").payload,
+                revision_reason_ref="reason:change-exposure-definition",
+                measurement_design=make_measurement_design(
+                    question_id="case-revision:question:1",
+                    window_days=3,
+                    include_source_span=False,
+                ),
             ),
         )
         revised_plan = replace(
@@ -507,7 +503,7 @@ class Gate2ControllerTest(unittest.TestCase):
             store=store,
             provider=ScriptedPrimaryAgentProvider(
                 (
-                    frame_proposal(),
+                    frame_proposal("case-revision"),
                     plan_proposal(),
                     revised_frame,
                     revised_plan,
@@ -557,12 +553,12 @@ class Gate2ControllerTest(unittest.TestCase):
             run_id="run-concurrent-runtime",
             user_message="并发恢复测试",
         )
-        proposal_a = frame_proposal()
+        proposal_a = frame_proposal("case-concurrent-runtime")
         proposal_b = replace(
             proposal_a,
             payload=replace(
                 proposal_a.payload,
-                revision_reason="Concurrent alternative measurement",
+                revision_reason_ref="reason:concurrent-alternative",
             ),
         )
         controllers = (
@@ -607,7 +603,9 @@ class Gate2ControllerTest(unittest.TestCase):
         self,
     ) -> None:
         store = InMemoryAuthorityStore()
-        provider = ScriptedPrimaryAgentProvider((frame_proposal(),))
+        provider = ScriptedPrimaryAgentProvider(
+            (frame_proposal("case-correction-llm"),)
+        )
         controller = WAJEController(
             store=store,
             provider=provider,
@@ -685,7 +683,11 @@ class Gate2ControllerTest(unittest.TestCase):
         controller = WAJEController(
             store=store,
             provider=ScriptedPrimaryAgentProvider(
-                (frame_proposal(), plan_proposal(), capability_proposal())
+                (
+                    frame_proposal("case-correction-effect"),
+                    plan_proposal(),
+                    capability_proposal(),
+                )
             ),
             effect_executor=executor,
             owner_id="worker-correction-effect",
@@ -824,7 +826,9 @@ class Gate2ControllerTest(unittest.TestCase):
         store = InMemoryAuthorityStore()
         controller = WAJEController(
             store=store,
-            provider=ScriptedPrimaryAgentProvider((frame_proposal(),)),
+            provider=ScriptedPrimaryAgentProvider(
+                (frame_proposal("case-dispatch"),)
+            ),
             effect_executor=ScriptedEffectExecutor(()),
             owner_id="worker-dispatch",
             clock=lambda: NOW,

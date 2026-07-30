@@ -21,6 +21,8 @@ from waje_vnext.domain.actions import (
     StopPayload,
 )
 from waje_vnext.domain.authority import DecisionOption, WorkTask
+from waje_vnext.domain.measurement import MeasurementDesign
+from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
 
 class ActionProposalDecodeError(ValueError):
@@ -44,44 +46,17 @@ def decode_agent_action_proposal(
 
 def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
     fields = {
-        "revision_reason",
-        "estimand",
-        "observation_unit",
-        "numerator",
-        "denominator",
-        "exposure",
-        "comparison",
-        "assumptions",
-        "alternatives",
-        "falsification_conditions",
-        "reversal_conditions",
-        "success_conditions",
-        "stop_conditions",
-        "decision_record_ids",
-        "semantic_contract_refs",
+        "question_revision_id",
+        "revision_reason_ref",
+        "measurement_design",
     }
     _require_exact_keys(value, fields, "revise_frame payload")
     return ReviseFramePayload(
-        revision_reason=_string(value, "revision_reason"),
-        estimand=_string(value, "estimand"),
-        observation_unit=_string(value, "observation_unit"),
-        numerator=_string(value, "numerator"),
-        denominator=_string(value, "denominator"),
-        exposure=_string(value, "exposure"),
-        comparison=_string(value, "comparison"),
-        assumptions=_string_tuple(value, "assumptions"),
-        alternatives=_string_tuple(value, "alternatives"),
-        falsification_conditions=_string_tuple(
-            value,
-            "falsification_conditions",
-        ),
-        reversal_conditions=_string_tuple(value, "reversal_conditions"),
-        success_conditions=_string_tuple(value, "success_conditions"),
-        stop_conditions=_string_tuple(value, "stop_conditions"),
-        decision_record_ids=_string_tuple(value, "decision_record_ids"),
-        semantic_contract_refs=_string_tuple(
-            value,
-            "semantic_contract_refs",
+        question_revision_id=_string(value, "question_revision_id"),
+        revision_reason_ref=_string(value, "revision_reason_ref"),
+        measurement_design=decode_typed_dataclass(
+            MeasurementDesign,
+            _object(value, "measurement_design"),
         ),
     )
 

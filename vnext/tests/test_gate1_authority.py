@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError, replace
 
 from gate1_fixtures import (
     NOW,
+    accept_initial_question,
     make_answer,
     make_evidence,
     make_frame,
@@ -49,21 +50,9 @@ from waje_vnext.storage import (
 def make_frame_action_payload(reason: str) -> ReviseFramePayload:
     frame = make_frame()
     return ReviseFramePayload(
-        revision_reason=reason,
-        estimand=frame.estimand,
-        observation_unit=frame.observation_unit,
-        numerator=frame.numerator,
-        denominator=frame.denominator,
-        exposure=frame.exposure,
-        comparison=frame.comparison,
-        assumptions=frame.assumptions,
-        alternatives=frame.alternatives,
-        falsification_conditions=frame.falsification_conditions,
-        reversal_conditions=frame.reversal_conditions,
-        success_conditions=frame.success_conditions,
-        stop_conditions=frame.stop_conditions,
-        decision_record_ids=frame.decision_record_ids,
-        semantic_contract_refs=frame.semantic_contract_refs,
+        question_revision_id=frame.question_revision_id,
+        revision_reason_ref=reason,
+        measurement_design=frame.measurement_design,
     )
 
 
@@ -148,16 +137,12 @@ class AuthorityModelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             EvidenceRecord(**values)
 
-    def test_settled_answer_rejects_blocking_objection(self) -> None:
-        with self.assertRaisesRegex(ValueError, "blocking objections"):
-            make_answer(unresolved=("objection-1",))
+    def test_gate3_rejects_every_settled_answer(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Gate 3"):
+            make_answer(status=AnswerStatus.SETTLED)
 
-    def test_settled_answer_rejects_unverified_claim(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unverified claims"):
-            make_answer(verifier_status=ClaimVerifierStatus.REJECTED)
-
-    def test_settled_answer_rejects_forged_binding_fingerprint(self) -> None:
-        with self.assertRaisesRegex(ValueError, "exact answer bindings"):
+    def test_provisional_answer_rejects_settlement_fingerprint(self) -> None:
+        with self.assertRaisesRegex(ValueError, "provisional"):
             replace(make_answer(), settlement_fingerprint="0" * 64)
 
     def test_authority_enums_reject_untyped_strings(self) -> None:
@@ -173,6 +158,10 @@ class TypedActionTest(unittest.TestCase):
             thread_id="thread-1",
             event_id="event-open",
             opened_at=NOW,
+        )
+        self.case, self.question = accept_initial_question(
+            self.store,
+            self.case,
         )
 
     def test_action_kind_requires_matching_payload(self) -> None:
@@ -208,7 +197,7 @@ class TypedActionTest(unittest.TestCase):
         frame = make_frame()
         case = self.store.accept_frame(
             frame,
-            expected_head_version=0,
+            expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
@@ -238,7 +227,7 @@ class TypedActionTest(unittest.TestCase):
         self.assertTrue(admission.accepted)
         self.assertFalse(admission.creates_frame_revision)
         self.assertFalse(admission.creates_plan_revision)
-        self.assertEqual(self.store.get_case("case-1").head_version, 2)
+        self.assertEqual(self.store.get_case("case-1").head_version, 3)
 
     def test_stale_action_is_rejected_before_semantic_payload(self) -> None:
         action = ActionEnvelope(
@@ -264,7 +253,7 @@ class TypedActionTest(unittest.TestCase):
         frame = make_frame()
         case = self.store.accept_frame(
             frame,
-            expected_head_version=0,
+            expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
@@ -357,6 +346,7 @@ class ContextPacketTest(unittest.TestCase):
             ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_question=None,
             accepted_frame=None,
             accepted_plan=None,
             accepted_answer=None,
@@ -382,6 +372,7 @@ class ContextPacketTest(unittest.TestCase):
             ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
+            accepted_question=None,
             accepted_frame=None,
             accepted_plan=None,
             accepted_answer=None,
@@ -414,6 +405,10 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             event_id="event-open",
             opened_at=NOW,
         )
+        self.case, self.question = accept_initial_question(
+            self.store,
+            self.case,
+        )
 
     def _accept_frame_and_plan(self) -> None:
         frame = make_frame()
@@ -440,26 +435,26 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(retried, self.case)
-        self.assertEqual(len(self.store.list_events("case-1")), 1)
+        self.assertEqual(len(self.store.list_events("case-1")), 2)
 
     def test_head_mutation_uses_cas_and_event_retry_is_idempotent(self) -> None:
         frame = make_frame()
         accepted = self.store.accept_frame(
             frame,
-            expected_head_version=0,
+            expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
         retried = self.store.accept_frame(
             frame,
-            expected_head_version=0,
+            expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
 
         self.assertEqual(accepted, retried)
-        self.assertEqual(accepted.head_version, 1)
-        self.assertEqual(len(self.store.list_events("case-1")), 2)
+        self.assertEqual(accepted.head_version, 2)
+        self.assertEqual(len(self.store.list_events("case-1")), 3)
 
         with self.assertRaises(StaleHead):
             self.store.accept_frame(
@@ -528,7 +523,7 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(self.case.accepted_answer_version_id, "answer-1")
-        self.assertEqual(self.case.head_version, 3)
+        self.assertEqual(self.case.head_version, 4)
 
     def test_new_frame_invalidates_plan_and_answer_heads(self) -> None:
         self._accept_frame_and_plan()
@@ -620,7 +615,7 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
 
         event = self.store.append_event(
             case_id="case-1",
-            expected_next_cursor=2,
+            expected_next_cursor=3,
             event_id="event-checkpoint",
             event_type=JournalEventType.CHECKPOINT_RECORDED,
             recorded_at=NOW,
@@ -631,7 +626,7 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         )
         retried = self.store.append_event(
             case_id="case-1",
-            expected_next_cursor=2,
+            expected_next_cursor=3,
             event_id="event-checkpoint",
             event_type=JournalEventType.CHECKPOINT_RECORDED,
             recorded_at=NOW,
@@ -642,13 +637,13 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(event, retried)
-        self.assertEqual(event.cursor, 2)
+        self.assertEqual(event.cursor, 3)
 
     def test_plan_for_non_current_frame_is_rejected(self) -> None:
         frame = make_frame()
         self.case = self.store.accept_frame(
             frame,
-            expected_head_version=0,
+            expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )

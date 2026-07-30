@@ -1,0 +1,425 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:context-packet:v3",
+  "title": "WAJE vNext ContextPacket v3",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ContextPacket"
+    }
+  ],
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "ContextPacket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id",
+        "case_id",
+        "head_version",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id",
+        "accepted_plan_revision_id",
+        "accepted_answer_version_id",
+        "accepted_question_payload",
+        "accepted_frame_payload",
+        "accepted_plan_payload",
+        "accepted_answer_payload",
+        "user_messages",
+        "relevant_event_cursor_start",
+        "relevant_event_cursor_end",
+        "recent_events",
+        "evidence_index",
+        "decision_index",
+        "reviewer_objection_index",
+        "built_at",
+        "content_sha256"
+      ],
+      "properties": {
+        "packet_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "head_version": {
+          "type": "integer"
+        },
+        "accepted_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_answer_version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_question_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_answer_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextUserMessageItem"
+          }
+        },
+        "relevant_event_cursor_start": {
+          "type": "integer"
+        },
+        "relevant_event_cursor_end": {
+          "type": "integer"
+        },
+        "recent_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextEventItem"
+          }
+        },
+        "evidence_index": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextEvidenceItem"
+          }
+        },
+        "decision_index": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextDecisionItem"
+          }
+        },
+        "reviewer_objection_index": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextReviewerObjectionItem"
+          }
+        },
+        "built_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ContextUserMessageItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message_id",
+        "sequence",
+        "authority_epoch",
+        "kind",
+        "content"
+      ],
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authority_epoch": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "ContextEventItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "event_type",
+        "authority_ref",
+        "business_projection"
+      ],
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "authority_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "business_projection": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      }
+    },
+    "ContextEvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_record_id",
+        "evidence_type",
+        "strength",
+        "business_summary",
+        "limitation_count",
+        "frame_revision_id",
+        "plan_revision_id",
+        "task_id",
+        "snapshot_release_ref"
+      ],
+      "properties": {
+        "evidence_record_id": {
+          "type": "string"
+        },
+        "evidence_type": {
+          "type": "string"
+        },
+        "strength": {
+          "type": "string"
+        },
+        "business_summary": {
+          "type": "string"
+        },
+        "limitation_count": {
+          "type": "integer"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "snapshot_release_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "ContextDecisionItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_record_id",
+        "question",
+        "selected_option_id",
+        "freeform_response",
+        "source"
+      ],
+      "properties": {
+        "decision_record_id": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "selected_option_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "freeform_response": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "ContextReviewerObjectionItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objection_id",
+        "objection_key",
+        "revision_number",
+        "answer_version_id",
+        "claim_id",
+        "severity",
+        "status",
+        "risk_type",
+        "evidence_gap",
+        "requested_action",
+        "disposition_note"
+      ],
+      "properties": {
+        "objection_id": {
+          "type": "string"
+        },
+        "objection_key": {
+          "type": "string"
+        },
+        "revision_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "answer_version_id": {
+          "type": "string"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "risk_type": {
+          "type": "string"
+        },
+        "evidence_gap": {
+          "type": "string"
+        },
+        "requested_action": {
+          "type": "string"
+        },
+        "disposition_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -50,6 +50,62 @@ def _wait_for_postgres(dsn: str, timeout_seconds: float = 30.0) -> None:
     raise RuntimeError("ephemeral PostgreSQL did not become ready") from last_error
 
 
+def _verify_epoch3_rejects_legacy_authority(dsn: str) -> None:
+    sys.path.insert(
+        0,
+        str(ROOT / "services" / "analysis_core" / "src"),
+    )
+    from waje_vnext.storage import (  # noqa: PLC0415
+        apply_gate1_migration,
+        apply_gate3_1_migration,
+    )
+
+    migration_1 = ROOT / "storage/migrations/001_gate1_authority.sql"
+    migration_3 = (
+        ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
+    )
+    apply_gate1_migration(dsn, migration_path=migration_1)
+    with psycopg.connect(dsn) as connection:
+        connection.execute(
+            """
+            INSERT INTO waje_vnext.investigation_cases (
+                case_id,
+                thread_id,
+                lifecycle,
+                head_version,
+                accepted_frame_revision_id,
+                accepted_plan_revision_id,
+                accepted_answer_version_id,
+                opened_at,
+                updated_at
+            ) VALUES (
+                'legacy-epoch-case',
+                'legacy-thread',
+                'open',
+                0,
+                NULL,
+                NULL,
+                NULL,
+                now(),
+                now()
+            )
+            """
+        )
+    try:
+        apply_gate3_1_migration(dsn, migration_path=migration_3)
+    except psycopg.errors.ObjectNotInPrerequisiteState as error:
+        if "requires a clean waje_vnext authority schema" not in str(error):
+            raise AssertionError(
+                "epoch-3 migration rejected legacy data for the wrong reason"
+            ) from error
+    else:
+        raise AssertionError(
+            "epoch-3 migration accepted legacy authority data"
+        )
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute("DROP SCHEMA waje_vnext CASCADE")
+
+
 def main() -> int:
     docker = shutil.which("docker")
     if docker is None:
@@ -95,6 +151,7 @@ def main() -> int:
             DATABASE_NAME,
         )
         _wait_for_postgres(dsn)
+        _verify_epoch3_rejects_legacy_authority(dsn)
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": str(ROOT / "services" / "analysis_core" / "src"),

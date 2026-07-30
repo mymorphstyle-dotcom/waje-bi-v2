@@ -20,9 +20,11 @@ class RecordingTransport:
     def __init__(
         self,
         *,
+        case_id: str = "case-provider",
         fail_once: bool = False,
         malformed: bool = False,
     ) -> None:
+        self.case_id = case_id
         self.fail_once = fail_once
         self.malformed = malformed
         self.calls: list[dict[str, object]] = []
@@ -61,7 +63,7 @@ class RecordingTransport:
                 {
                     "message": {
                         "content": __import__("json").dumps(
-                            to_jsonable(frame_proposal()),
+                            to_jsonable(frame_proposal(self.case_id)),
                             ensure_ascii=False,
                         )
                     }
@@ -113,7 +115,10 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
         self.assertNotIn("secret-value", repr(settings))
 
     def test_transient_retry_is_centralized_in_provider(self) -> None:
-        transport = RecordingTransport(fail_once=True)
+        transport = RecordingTransport(
+            case_id="case-provider-retry",
+            fail_once=True,
+        )
         provider = ChatCompletionsProvider(
             ChatCompletionsProviderSettings(
                 provider_name="contract-provider",

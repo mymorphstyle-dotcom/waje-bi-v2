@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | G3.E0 authority foundation 已实现；gold promotion Blocked；G3.1 尚未开始 |
+| 状态 | G3.E0 authority foundation 已实现；formal admission 仍为 `deny_g3_1`；G3.1 local implementation 已按用户 development override 完成 |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 已确认 public GitHub Actions + Artifact Attestations/Sigstore |
@@ -18,6 +18,11 @@
 Gate 1 与 Gate 2 的历史验收事实继续成立。G3.1、G3.2 是进入 Gate 3 业务闭环实现前的
 强制修订包；在这两个包完成前，不创建新的生产 EvidenceRecord、AnswerVersion 或 Workflow
 业务投影。
+
+2026-07-30 用户明确授权在离开期间先实施 G3.1，遇到真实 blocker 再回访。该 development
+override 只授权本地合同、迁移、存储与测试实现；它不改变 G3.E0 readiness、gold
+promotion、protected admission 或 production Evidence 权限。当前 checked-in readiness
+继续由 verifier 派生为 `deny_g3_1`。
 
 ## 1. Gate 目标
 
@@ -1159,6 +1164,16 @@ Authoring checkpoint：
   `derived_status=ready` 与 `entry_decision=allow_g3_1`。
 - [ ] `npm run gate3:enter:g3.1` 返回 0；全部 G3.1 入口把它作为强制前置。
 
+Development override 记录：
+
+- 用户已明确允许先完成 G3.1 local implementation；
+- formal entry verdict 继续 fail closed，任何代码结果无权把自身提升为 gold 或 trusted
+  admission evidence；
+- 本 override 不允许生成 production Evidence、settled Answer、completed Workflow 或
+  protected held-out 结果；
+- G3.1 实现证据见
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-1-implementation.md`。
+
 ### G3.1 Gate 1 authority and storage amendment
 
 交付：
@@ -1171,12 +1186,15 @@ Authoring checkpoint：
 
 Exit：
 
-- [ ] 五类核心 authority family 仍只有一条 accepted path；
-- [ ] QuestionRevision 不成为 measurement authority；
-- [ ] Frame material slots 全部 typed；
-- [ ] identity preimage/golden/mutation vectors 通过；
-- [ ] 旧 epoch 有数据时受控拒绝/reset；
-- [ ] settlement 的 repository/DB bypass 测试 fail closed。
+- [x] 五类核心 authority family 仍只有一条 accepted path；
+- [x] QuestionRevision 不成为 measurement authority；
+- [x] Frame material slots 全部 typed；
+- [x] identity preimage/golden/mutation vectors 通过；
+- [x] 旧 epoch 有数据时受控拒绝/reset；
+- [x] settlement 的 schema/repository/DB bypass 测试 fail closed。
+
+G3.1 的 local implementation exit 已完成。G3.E0 formal admission 仍为
+`deny_g3_1`；两种状态分别表达代码包完成度与外部 trust promotion，禁止互相替代。
 
 ### G3.2 Gate 2 runtime amendment
 

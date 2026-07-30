@@ -4,6 +4,10 @@ Gate 1 起，本目录承载版本化 domain、API、event 与 semantic schemas�
 领域对象位于 `services/analysis_core/src/waje_vnext/domain`；TypeScript
 绑定由同一批 JSON Schema 生成到 `contracts/generated/typescript`。
 
+authority、typed action 与 ContextPacket 已切换到 schema epoch 3：
+`authority.v3`、`actions.v3`、`context-packet.v3`。epoch 1 对应文件已删除；当前开发期
+不提供旧 Frame 自由文本合同的兼容入口。
+
 生成与漂移检查：
 
 ```bash

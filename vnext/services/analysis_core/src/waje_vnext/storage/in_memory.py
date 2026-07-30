@@ -42,6 +42,20 @@ from waje_vnext.domain.controller import (
     UserDecisionRequest,
 )
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.identity import (
+    validate_frame_identities,
+    validate_resolution_against_frame,
+    validate_resolution_identities,
+)
+from waje_vnext.domain.measurement import (
+    EvidenceValidityRecord,
+    MeasurementResolutionOutcome,
+    ObligationSatisfactionRecord,
+    QuestionRevision,
+    ResolvedEvidenceObligation,
+    ResolutionOutcomeKind,
+    SettlementPreconditionReport,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
@@ -79,10 +93,28 @@ class InMemoryAuthorityStore:
     def __init__(self) -> None:
         self._lock = RLock()
         self._cases: dict[str, InvestigationCase] = {}
+        self._questions: dict[str, QuestionRevision] = {}
         self._frames: dict[str, AnalysisFrameRevision] = {}
         self._plans: dict[str, WorkPlanRevision] = {}
         self._evidence: dict[str, EvidenceRecord] = {}
         self._answers: dict[str, AnswerVersion] = {}
+        self._resolution_outcomes: dict[
+            str,
+            MeasurementResolutionOutcome,
+        ] = {}
+        self._evidence_obligations: dict[
+            str,
+            ResolvedEvidenceObligation,
+        ] = {}
+        self._evidence_validity: dict[str, EvidenceValidityRecord] = {}
+        self._obligation_satisfaction: dict[
+            str,
+            ObligationSatisfactionRecord,
+        ] = {}
+        self._settlement_preconditions: dict[
+            str,
+            SettlementPreconditionReport,
+        ] = {}
         self._interpretations: dict[str, InterpretationRecord] = {}
         self._decisions: dict[str, DecisionRecord] = {}
         self._objections: dict[str, ReviewerObjection] = {}
@@ -141,9 +173,11 @@ class InMemoryAuthorityStore:
                 thread_id=thread_id,
                 lifecycle=CaseLifecycle.OPEN,
                 head_version=0,
+                accepted_question_revision_id=None,
                 accepted_frame_revision_id=None,
                 accepted_plan_revision_id=None,
                 accepted_answer_version_id=None,
+                analysis_cycle_id="{}:cycle:0".format(case_id),
                 opened_at=opened_at,
                 updated_at=opened_at,
             )
@@ -266,6 +300,17 @@ class InMemoryAuthorityStore:
         with self._lock:
             return _get(self._frames, frame_revision_id, "frame")
 
+    def get_question(
+        self,
+        question_revision_id: str,
+    ) -> QuestionRevision:
+        with self._lock:
+            return _get(
+                self._questions,
+                question_revision_id,
+                "question",
+            )
+
     def get_plan(self, plan_revision_id: str) -> WorkPlanRevision:
         with self._lock:
             return _get(self._plans, plan_revision_id, "plan")
@@ -332,6 +377,108 @@ class InMemoryAuthorityStore:
                 )
             )
 
+    def accept_question(
+        self,
+        question: QuestionRevision,
+        *,
+        expected_head_version: int,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase:
+        with self._lock:
+            idempotent = self._idempotent_head_result(
+                event_id,
+                JournalEventType.QUESTION_ACCEPTED,
+                question.question_revision_id,
+                question.case_id,
+            )
+            if idempotent is not None:
+                return idempotent
+            case = self._cas_case(
+                question.case_id,
+                expected_head_version,
+            )
+            if question.acceptance_event_id != event_id:
+                raise InvalidAuthorityTransition(
+                    "question must bind its acceptance event"
+                )
+            current = (
+                self._questions.get(
+                    case.accepted_question_revision_id
+                )
+                if case.accepted_question_revision_id
+                else None
+            )
+            expected_revision = (
+                1 if current is None else current.revision_number + 1
+            )
+            expected_prior = (
+                None
+                if current is None
+                else current.question_revision_id
+            )
+            if (
+                question.revision_number != expected_revision
+                or question.prior_question_revision_id != expected_prior
+            ):
+                raise InvalidAuthorityTransition(
+                    "question revision does not extend the accepted question"
+                )
+            if question.accepted_head_version != case.head_version + 1:
+                raise InvalidAuthorityTransition(
+                    "question accepted_head_version is stale"
+                )
+            for source in question.source_messages:
+                message = self._mailbox_messages.get(source.message_id)
+                if message is None or message.case_id != question.case_id:
+                    raise InvalidAuthorityTransition(
+                        "question source message is unavailable"
+                    )
+                if (
+                    message.sequence != source.sequence
+                    or content_sha256(
+                        str(message.payload.get("message", ""))
+                    )
+                    != source.content_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "question source message does not match mailbox"
+                    )
+            _put_immutable(
+                self._questions,
+                question.question_revision_id,
+                question,
+                "question",
+            )
+            updated = replace(
+                case,
+                head_version=case.head_version + 1,
+                accepted_question_revision_id=(
+                    question.question_revision_id
+                ),
+                accepted_frame_revision_id=None,
+                accepted_plan_revision_id=None,
+                accepted_answer_version_id=None,
+                analysis_cycle_id=question.analysis_cycle_id,
+                updated_at=recorded_at,
+            )
+            self._cases[case.case_id] = updated
+            self._append_authority_event_locked(
+                case_id=case.case_id,
+                event_id=event_id,
+                event_type=JournalEventType.QUESTION_ACCEPTED,
+                authority_ref=question.question_revision_id,
+                action_id=None,
+                recorded_at=recorded_at,
+                payload={
+                    "revision_number": question.revision_number,
+                    "content_sha256": question.content_sha256,
+                    "analysis_cycle_id": question.analysis_cycle_id,
+                    "head_version": updated.head_version,
+                },
+            )
+            return updated
+
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
@@ -350,6 +497,21 @@ class InMemoryAuthorityStore:
             if idempotent is not None:
                 return idempotent
             case = self._cas_case(frame.case_id, expected_head_version)
+            if (
+                frame.question_revision_id
+                != case.accepted_question_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame must bind the accepted question"
+                )
+            question = self.get_question(frame.question_revision_id)
+            try:
+                question.validate_spans(
+                    frame.measurement_design.question_grounding.source_spans
+                )
+                validate_frame_identities(question, frame)
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
             current = (
                 self._frames.get(case.accepted_frame_revision_id)
                 if case.accepted_frame_revision_id
@@ -364,7 +526,9 @@ class InMemoryAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "frame revision does not extend the accepted frame"
                 )
-            for decision_id in frame.decision_record_ids:
+            for decision_id in (
+                frame.measurement_design.question_grounding.decision_record_ids
+            ):
                 decision = _get(
                     self._decisions,
                     decision_id,
@@ -521,6 +685,10 @@ class InMemoryAuthorityStore:
         recorded_at: datetime,
     ) -> InvestigationCase:
         with self._lock:
+            if answer.status is AnswerStatus.SETTLED:
+                raise InvalidAuthorityTransition(
+                    "Gate 3 cannot publish settled answers"
+                )
             idempotent = self._idempotent_head_result(
                 event_id,
                 JournalEventType.ANSWER_ACCEPTED,
@@ -593,6 +761,305 @@ class InMemoryAuthorityStore:
                 },
             )
             return updated
+
+    def record_measurement_resolution(
+        self,
+        outcome: MeasurementResolutionOutcome,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> MeasurementResolutionOutcome:
+        with self._lock:
+            case = self._cas_case(
+                outcome.case_id,
+                expected_head_version,
+            )
+            if (
+                outcome.question_revision_id
+                != case.accepted_question_revision_id
+                or outcome.frame_revision_id
+                != case.accepted_frame_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "resolution must bind accepted question and frame"
+                )
+            frame = self.get_frame(outcome.frame_revision_id)
+            estimand_ids = tuple(
+                item.estimand_id
+                for item in frame.measurement_design.estimands
+            )
+            try:
+                index = estimand_ids.index(outcome.estimand_id)
+            except ValueError as error:
+                raise InvalidAuthorityTransition(
+                    "resolution targets an unknown estimand"
+                ) from error
+            if (
+                outcome.semantic_measurement_id
+                != frame.semantic_measurement_ids[index]
+                or outcome.authority_binding_id
+                != frame.authority_binding_ids[index]
+            ):
+                raise InvalidAuthorityTransition(
+                    "resolution identity does not match the accepted frame"
+                )
+            if outcome.kind is ResolutionOutcomeKind.RESOLVED_INSTANCE:
+                instance = outcome.resolved_instance
+                assert instance is not None
+                if (
+                    instance.frame_revision_id
+                    != outcome.frame_revision_id
+                    or instance.estimand_id != outcome.estimand_id
+                    or instance.semantic_measurement_id
+                    != outcome.semantic_measurement_id
+                    or instance.authority_binding_id
+                    != outcome.authority_binding_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "resolved instance identity is inconsistent"
+                    )
+            try:
+                validate_resolution_identities(outcome)
+                validate_resolution_against_frame(frame, outcome)
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
+            return self._record_derived_locked(
+                records=self._resolution_outcomes,
+                record_id=outcome.resolution_outcome_id,
+                record=outcome,
+                case_id=outcome.case_id,
+                event_id=event_id,
+                event_type=(
+                    JournalEventType.MEASUREMENT_RESOLUTION_RECORDED
+                ),
+                created_at=outcome.created_at,
+                label="measurement resolution",
+            )
+
+    def get_measurement_resolution(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionOutcome:
+        with self._lock:
+            return _get(
+                self._resolution_outcomes,
+                resolution_outcome_id,
+                "measurement resolution",
+            )
+
+    def record_evidence_obligation(
+        self,
+        obligation: ResolvedEvidenceObligation,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> ResolvedEvidenceObligation:
+        with self._lock:
+            case = self._cas_case(
+                obligation.case_id,
+                expected_head_version,
+            )
+            if obligation.frame_revision_id != case.accepted_frame_revision_id:
+                raise InvalidAuthorityTransition(
+                    "obligation must bind the accepted frame"
+                )
+            outcome = self.get_measurement_resolution(
+                obligation.resolution_outcome_id
+            )
+            if (
+                outcome.case_id != obligation.case_id
+                or outcome.frame_revision_id != obligation.frame_revision_id
+                or outcome.estimand_id != obligation.estimand_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation resolution binding is inconsistent"
+                )
+            frame = self.get_frame(obligation.frame_revision_id)
+            requirement = next(
+                (
+                    item
+                    for item in frame.measurement_design.evidence_requirements
+                    if item.evidence_requirement_id
+                    == obligation.evidence_requirement_id
+                ),
+                None,
+            )
+            if requirement is None:
+                raise InvalidAuthorityTransition(
+                    "obligation targets an unknown evidence requirement"
+                )
+            if (
+                obligation.estimand_id
+                not in requirement.target_estimand_ids
+                or obligation.evidence_requirement_sha256
+                != content_sha256(requirement)
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation changes its evidence requirement"
+                )
+            return self._record_derived_locked(
+                records=self._evidence_obligations,
+                record_id=obligation.obligation_id,
+                record=obligation,
+                case_id=obligation.case_id,
+                event_id=event_id,
+                event_type=JournalEventType.EVIDENCE_OBLIGATION_RECORDED,
+                created_at=obligation.created_at,
+                label="evidence obligation",
+            )
+
+    def get_evidence_obligation(
+        self,
+        obligation_id: str,
+    ) -> ResolvedEvidenceObligation:
+        with self._lock:
+            return _get(
+                self._evidence_obligations,
+                obligation_id,
+                "evidence obligation",
+            )
+
+    def record_evidence_validity(
+        self,
+        validity: EvidenceValidityRecord,
+        *,
+        event_id: str,
+    ) -> EvidenceValidityRecord:
+        with self._lock:
+            evidence = self.get_evidence(validity.evidence_record_id)
+            chain = tuple(
+                item
+                for item in self._evidence_validity.values()
+                if item.evidence_record_id == validity.evidence_record_id
+            )
+            referenced = {
+                item.prior_validity_record_id
+                for item in chain
+                if item.prior_validity_record_id is not None
+            }
+            heads = tuple(
+                item
+                for item in chain
+                if item.evidence_validity_record_id not in referenced
+            )
+            if len(heads) > 1:
+                raise AuthorityConflict(
+                    "evidence validity chain has multiple heads"
+                )
+            current = heads[0] if heads else None
+            if current is None:
+                if validity.prior_validity_record_id is not None:
+                    raise InvalidAuthorityTransition(
+                        "first validity record cannot have a prior"
+                    )
+            elif (
+                validity.prior_validity_record_id
+                != current.evidence_validity_record_id
+                or validity.expected_prior_content_sha256
+                != current.content_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "validity record does not extend the current disposition"
+                )
+            return self._record_derived_locked(
+                records=self._evidence_validity,
+                record_id=validity.evidence_validity_record_id,
+                record=validity,
+                case_id=evidence.case_id,
+                event_id=event_id,
+                event_type=JournalEventType.EVIDENCE_VALIDITY_RECORDED,
+                created_at=validity.created_at,
+                label="evidence validity",
+            )
+
+    def record_obligation_satisfaction(
+        self,
+        satisfaction: ObligationSatisfactionRecord,
+        *,
+        event_id: str,
+    ) -> ObligationSatisfactionRecord:
+        with self._lock:
+            obligation = self.get_evidence_obligation(
+                satisfaction.obligation_id
+            )
+            return self._record_derived_locked(
+                records=self._obligation_satisfaction,
+                record_id=satisfaction.satisfaction_record_id,
+                record=satisfaction,
+                case_id=obligation.case_id,
+                event_id=event_id,
+                event_type=(
+                    JournalEventType.OBLIGATION_SATISFACTION_RECORDED
+                ),
+                created_at=satisfaction.created_at,
+                label="obligation satisfaction",
+            )
+
+    def record_settlement_precondition(
+        self,
+        report: SettlementPreconditionReport,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> SettlementPreconditionReport:
+        with self._lock:
+            case = self._cas_case(
+                report.case_id,
+                expected_head_version,
+            )
+            if (
+                report.accepted_head_version != case.head_version
+                or report.question_revision_id
+                != case.accepted_question_revision_id
+                or report.frame_revision_id
+                != case.accepted_frame_revision_id
+                or report.plan_revision_id
+                != case.accepted_plan_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "settlement precondition is stale"
+                )
+            frame = self.get_frame(report.frame_revision_id)
+            if (
+                report.semantic_measurement_ids
+                != frame.semantic_measurement_ids
+                or report.authority_binding_ids
+                != frame.authority_binding_ids
+            ):
+                raise InvalidAuthorityTransition(
+                    "settlement precondition changes frame identity"
+                )
+            for outcome_id in report.resolution_outcome_ids:
+                outcome = self.get_measurement_resolution(outcome_id)
+                if outcome.frame_revision_id != report.frame_revision_id:
+                    raise InvalidAuthorityTransition(
+                        "settlement resolution belongs to another frame"
+                    )
+            for record_id in report.obligation_satisfaction_record_ids:
+                record = _get(
+                    self._obligation_satisfaction,
+                    record_id,
+                    "obligation satisfaction",
+                )
+                obligation = self.get_evidence_obligation(
+                    record.obligation_id
+                )
+                if obligation.frame_revision_id != report.frame_revision_id:
+                    raise InvalidAuthorityTransition(
+                        "settlement obligation belongs to another frame"
+                    )
+            return self._record_derived_locked(
+                records=self._settlement_preconditions,
+                record_id=report.settlement_precondition_report_id,
+                record=report,
+                case_id=report.case_id,
+                event_id=event_id,
+                event_type=(
+                    JournalEventType.SETTLEMENT_PRECONDITION_RECORDED
+                ),
+                created_at=report.created_at,
+                label="settlement precondition",
+            )
 
     def transition_case_lifecycle(
         self,
@@ -1522,13 +1989,60 @@ class InMemoryAuthorityStore:
             )
         )
 
+    def _record_derived_locked(
+        self,
+        *,
+        records: dict[str, RecordT],
+        record_id: str,
+        record: RecordT,
+        case_id: str,
+        event_id: str,
+        event_type: JournalEventType,
+        created_at: datetime,
+        label: str,
+    ) -> RecordT:
+        existing_event = self._events_by_id.get(event_id)
+        if existing_event is not None:
+            if (
+                existing_event.event_type is event_type
+                and existing_event.authority_ref == record_id
+                and existing_event.case_id == case_id
+            ):
+                return _get(records, record_id, label)
+            raise AuthorityConflict(
+                "event ID already has different derived content"
+            )
+        _put_immutable(records, record_id, record, label)
+        self._append_authority_event_locked(
+            case_id=case_id,
+            event_id=event_id,
+            event_type=event_type,
+            authority_ref=record_id,
+            action_id=None,
+            recorded_at=created_at,
+            payload={
+                "content_sha256": content_sha256(record),
+            },
+        )
+        return record
+
     def _snapshot(self) -> dict[str, object]:
         return {
             "_cases": self._cases.copy(),
+            "_questions": self._questions.copy(),
             "_frames": self._frames.copy(),
             "_plans": self._plans.copy(),
             "_evidence": self._evidence.copy(),
             "_answers": self._answers.copy(),
+            "_resolution_outcomes": self._resolution_outcomes.copy(),
+            "_evidence_obligations": self._evidence_obligations.copy(),
+            "_evidence_validity": self._evidence_validity.copy(),
+            "_obligation_satisfaction": (
+                self._obligation_satisfaction.copy()
+            ),
+            "_settlement_preconditions": (
+                self._settlement_preconditions.copy()
+            ),
             "_interpretations": self._interpretations.copy(),
             "_decisions": self._decisions.copy(),
             "_objections": self._objections.copy(),

@@ -31,6 +31,14 @@ from waje_vnext.domain.controller import (
     UserDecisionRequest,
 )
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
+from waje_vnext.domain.measurement import (
+    EvidenceValidityRecord,
+    MeasurementResolutionOutcome,
+    ObligationSatisfactionRecord,
+    QuestionRevision,
+    ResolvedEvidenceObligation,
+    SettlementPreconditionReport,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
@@ -80,6 +88,11 @@ class AuthorityStore(Protocol):
 
     def get_case(self, case_id: str) -> InvestigationCase: ...
 
+    def get_question(
+        self,
+        question_revision_id: str,
+    ) -> QuestionRevision: ...
+
     def get_frame(self, frame_revision_id: str) -> AnalysisFrameRevision: ...
 
     def get_plan(self, plan_revision_id: str) -> WorkPlanRevision: ...
@@ -96,6 +109,15 @@ class AuthorityStore(Protocol):
         self,
         case_id: str,
     ) -> tuple[ReviewerObjection, ...]: ...
+
+    def accept_question(
+        self,
+        question: QuestionRevision,
+        *,
+        expected_head_version: int,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> InvestigationCase: ...
 
     def accept_frame(
         self,
@@ -132,6 +154,54 @@ class AuthorityStore(Protocol):
         event_id: str,
         recorded_at: datetime,
     ) -> InvestigationCase: ...
+
+    def record_measurement_resolution(
+        self,
+        outcome: MeasurementResolutionOutcome,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> MeasurementResolutionOutcome: ...
+
+    def get_measurement_resolution(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionOutcome: ...
+
+    def record_evidence_obligation(
+        self,
+        obligation: ResolvedEvidenceObligation,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> ResolvedEvidenceObligation: ...
+
+    def get_evidence_obligation(
+        self,
+        obligation_id: str,
+    ) -> ResolvedEvidenceObligation: ...
+
+    def record_evidence_validity(
+        self,
+        validity: EvidenceValidityRecord,
+        *,
+        event_id: str,
+    ) -> EvidenceValidityRecord: ...
+
+    def record_obligation_satisfaction(
+        self,
+        satisfaction: ObligationSatisfactionRecord,
+        *,
+        event_id: str,
+    ) -> ObligationSatisfactionRecord: ...
+
+    def record_settlement_precondition(
+        self,
+        report: SettlementPreconditionReport,
+        *,
+        expected_head_version: int,
+        event_id: str,
+    ) -> SettlementPreconditionReport: ...
 
     def transition_case_lifecycle(
         self,

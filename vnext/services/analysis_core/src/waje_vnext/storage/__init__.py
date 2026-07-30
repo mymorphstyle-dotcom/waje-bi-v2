@@ -5,6 +5,7 @@ from .postgres import (
     PostgresAuthorityStore,
     apply_gate1_migration,
     apply_gate2_migration,
+    apply_gate3_1_migration,
 )
 from .ports import (
     AuthorityConflict,
@@ -28,4 +29,5 @@ __all__ = [
     "StaleHead",
     "apply_gate1_migration",
     "apply_gate2_migration",
+    "apply_gate3_1_migration",
 ]

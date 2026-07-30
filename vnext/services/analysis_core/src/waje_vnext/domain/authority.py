@@ -15,6 +15,7 @@ from .canonical import (
     require_nonempty,
     require_sha256,
 )
+from .measurement import AnalysisFrameRevision, QuestionRevision
 
 
 class CaseLifecycle(StrEnum):
@@ -71,15 +72,18 @@ class InvestigationCase:
     thread_id: str
     lifecycle: CaseLifecycle
     head_version: int
+    accepted_question_revision_id: str | None
     accepted_frame_revision_id: str | None
     accepted_plan_revision_id: str | None
     accepted_answer_version_id: str | None
+    analysis_cycle_id: str
     opened_at: datetime
     updated_at: datetime
 
     def __post_init__(self) -> None:
         require_nonempty(self.case_id, "case_id")
         require_nonempty(self.thread_id, "thread_id")
+        require_nonempty(self.analysis_cycle_id, "analysis_cycle_id")
         _require_enum(self.lifecycle, CaseLifecycle, "lifecycle")
         if self.head_version < 0:
             raise ValueError("head_version must be non-negative")
@@ -87,74 +91,14 @@ class InvestigationCase:
         require_aware_datetime(self.updated_at, "updated_at")
         if self.updated_at < self.opened_at:
             raise ValueError("updated_at cannot precede opened_at")
+        if self.accepted_frame_revision_id and not (
+            self.accepted_question_revision_id
+        ):
+            raise ValueError("accepted frame requires an accepted question")
         if self.accepted_plan_revision_id and not self.accepted_frame_revision_id:
             raise ValueError("accepted plan requires an accepted frame")
         if self.accepted_answer_version_id and not self.accepted_plan_revision_id:
             raise ValueError("accepted answer requires an accepted plan")
-
-
-@dataclass(frozen=True, slots=True)
-class AnalysisFrameRevision:
-    frame_revision_id: str
-    case_id: str
-    revision_number: int
-    prior_frame_revision_id: str | None
-    created_by_action_id: str
-    created_at: datetime
-    revision_reason: str
-    estimand: str
-    observation_unit: str
-    numerator: str
-    denominator: str
-    exposure: str
-    comparison: str
-    assumptions: tuple[str, ...]
-    alternatives: tuple[str, ...]
-    falsification_conditions: tuple[str, ...]
-    reversal_conditions: tuple[str, ...]
-    success_conditions: tuple[str, ...]
-    stop_conditions: tuple[str, ...]
-    decision_record_ids: tuple[str, ...] = ()
-    semantic_contract_refs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        for name in (
-            "frame_revision_id",
-            "case_id",
-            "created_by_action_id",
-            "revision_reason",
-            "estimand",
-            "observation_unit",
-            "numerator",
-            "denominator",
-            "exposure",
-            "comparison",
-        ):
-            require_nonempty(getattr(self, name), name)
-        if self.revision_number < 1:
-            raise ValueError("revision_number must be positive")
-        if self.revision_number == 1 and self.prior_frame_revision_id is not None:
-            raise ValueError("first frame revision cannot have a prior revision")
-        if self.revision_number > 1 and not self.prior_frame_revision_id:
-            raise ValueError("later frame revisions require prior_frame_revision_id")
-        require_aware_datetime(self.created_at, "created_at")
-        _require_nonempty_members(self.assumptions, "assumptions")
-        _require_nonempty_members(self.alternatives, "alternatives")
-        _require_nonempty_members(
-            self.falsification_conditions, "falsification_conditions"
-        )
-        _require_nonempty_members(self.reversal_conditions, "reversal_conditions")
-        _require_nonempty_members(self.success_conditions, "success_conditions")
-        _require_nonempty_members(self.stop_conditions, "stop_conditions")
-        _require_nonempty_members(self.decision_record_ids, "decision_record_ids")
-        _require_nonempty_members(
-            self.semantic_contract_refs, "semantic_contract_refs"
-        )
-
-    @property
-    def content_sha256(self) -> str:
-        return content_sha256(self)
-
 
 @dataclass(frozen=True, slots=True)
 class WorkTask:
@@ -388,37 +332,10 @@ class AnswerVersion:
             raise ValueError("answer claim IDs must be unique")
         require_aware_datetime(self.created_at, "created_at")
         if self.status is AnswerStatus.SETTLED:
-            if self.unresolved_blocking_objection_ids:
-                raise ValueError("settled answer cannot have blocking objections")
-            if not self.settlement_fingerprint:
-                raise ValueError("settled answer requires settlement_fingerprint")
-            require_sha256(self.settlement_fingerprint, "settlement_fingerprint")
-            unverified = tuple(
-                claim.claim_id
-                for claim in self.claims
-                if claim.verifier_status
-                not in {
-                    ClaimVerifierStatus.ACCEPTED,
-                    ClaimVerifierStatus.BOUNDARY_ONLY,
-                }
+            raise ValueError(
+                "Gate 3 cannot create settled answers; Gate 5 owns publication"
             )
-            if unverified:
-                raise ValueError(
-                    "settled answer cannot contain unverified claims: {}".format(
-                        unverified
-                    )
-                )
-            expected_fingerprint = compute_answer_settlement_fingerprint(
-                frame_revision_id=self.frame_revision_id,
-                plan_revision_id=self.plan_revision_id,
-                claims=self.claims,
-                verifier_policy_version=self.verifier_policy_version,
-            )
-            if self.settlement_fingerprint != expected_fingerprint:
-                raise ValueError(
-                    "settlement_fingerprint does not match exact answer bindings"
-                )
-        elif self.settlement_fingerprint is not None:
+        if self.settlement_fingerprint is not None:
             raise ValueError("provisional answer cannot carry settlement_fingerprint")
 
     @property

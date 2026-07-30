@@ -30,7 +30,6 @@ from waje_vnext.domain.async_runtime import (
     OperationIdentity,
 )
 from waje_vnext.domain.authority import (
-    AnalysisFrameRevision,
     AnswerClaim,
     AnswerStatus,
     AnswerVersion,
@@ -41,6 +40,7 @@ from waje_vnext.domain.authority import (
     WorkPlanRevision,
 )
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
+from waje_vnext.domain.identity import build_analysis_frame_revision
 from waje_vnext.domain.context import (
     MAX_CONTEXT_DECISIONS,
     MAX_CONTEXT_EVIDENCE,
@@ -63,6 +63,11 @@ from waje_vnext.domain.controller import (
     UserDecisionRequest,
 )
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.measurement import (
+    MessageRole,
+    QuestionRevision,
+    SourceMessageRef,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
@@ -80,7 +85,7 @@ from .effects import (
 )
 
 
-ACTION_CONTRACT_REF = "waje-vnext://contracts/domain/actions.v1"
+ACTION_CONTRACT_REF = "waje-vnext://contracts/domain/actions.v3"
 CONTROLLER_STATE_SCHEMA_REF = (
     "waje-vnext://contracts/domain/controller-state.v1"
 )
@@ -274,6 +279,46 @@ class WAJEController:
                     payload=event_payload,
                 ),
             )
+            current_case = self._store.get_case(case_id)
+            if (
+                kind is MailboxMessageKind.USER_MESSAGE
+                and current_case.accepted_question_revision_id is None
+            ):
+                question_event_id = _stable_id(
+                    "event",
+                    message.message_id,
+                    "question-accepted",
+                )
+                question = QuestionRevision(
+                    question_revision_id=f"{case_id}:question:1",
+                    case_id=case_id,
+                    revision_number=1,
+                    prior_question_revision_id=None,
+                    source_messages=(
+                        SourceMessageRef(
+                            message_id=message.message_id,
+                            role=MessageRole.USER,
+                            sequence=message.sequence,
+                            content=user_message,
+                            content_sha256=content_sha256(user_message),
+                        ),
+                    ),
+                    explicit_scope_refs=(),
+                    explicit_constraint_refs=(),
+                    explicit_correction_refs=(),
+                    explicit_challenge_refs=(),
+                    accepted_clarification_refs=(),
+                    acceptance_event_id=question_event_id,
+                    accepted_head_version=current_case.head_version + 1,
+                    analysis_cycle_id=f"{case_id}:cycle:1",
+                    created_at=now,
+                )
+                self._store.accept_question(
+                    question,
+                    expected_head_version=current_case.head_version,
+                    event_id=question_event_id,
+                    recorded_at=now,
+                )
             wake_payload = {
                 "case_id": case_id,
                 "run_id": run_id,
@@ -784,16 +829,20 @@ class WAJEController:
 
         if action.kind is ActionKind.REVISE_FRAME:
             assert isinstance(payload, ReviseFramePayload)
+            question = self._store.get_question(
+                payload.question_revision_id
+            )
             prior = (
                 None
                 if case.accepted_frame_revision_id is None
                 else self._store.get_frame(case.accepted_frame_revision_id)
             )
-            frame = AnalysisFrameRevision(
+            frame = build_analysis_frame_revision(
+                question=question,
                 frame_revision_id=_stable_id(
                     "frame",
                     action.action_id,
-                    payload.revision_reason,
+                    payload.revision_reason_ref,
                 ),
                 case_id=case.case_id,
                 revision_number=1 if prior is None else prior.revision_number + 1,
@@ -802,21 +851,8 @@ class WAJEController:
                 ),
                 created_by_action_id=action.action_id,
                 created_at=now,
-                revision_reason=payload.revision_reason,
-                estimand=payload.estimand,
-                observation_unit=payload.observation_unit,
-                numerator=payload.numerator,
-                denominator=payload.denominator,
-                exposure=payload.exposure,
-                comparison=payload.comparison,
-                assumptions=payload.assumptions,
-                alternatives=payload.alternatives,
-                falsification_conditions=payload.falsification_conditions,
-                reversal_conditions=payload.reversal_conditions,
-                success_conditions=payload.success_conditions,
-                stop_conditions=payload.stop_conditions,
-                decision_record_ids=payload.decision_record_ids,
-                semantic_contract_refs=payload.semantic_contract_refs,
+                revision_reason_ref=payload.revision_reason_ref,
+                measurement_design=payload.measurement_design,
             )
             case = self._store.accept_frame(
                 frame,
@@ -1320,6 +1356,13 @@ class WAJEController:
         run_id: str,
     ):
         case = self._store.get_case(case_id)
+        question = (
+            None
+            if case.accepted_question_revision_id is None
+            else self._store.get_question(
+                case.accepted_question_revision_id
+            )
+        )
         frame = (
             None
             if case.accepted_frame_revision_id is None
@@ -1363,6 +1406,7 @@ class WAJEController:
             user_messages=user_messages,
             relevant_event_cursor_start=event_start,
             relevant_event_cursor_end=event_end,
+            accepted_question=question,
             accepted_frame=frame,
             accepted_plan=plan,
             accepted_answer=answer,

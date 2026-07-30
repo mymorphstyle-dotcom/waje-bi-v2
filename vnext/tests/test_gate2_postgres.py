@@ -31,6 +31,7 @@ from waje_vnext.storage import (
     PostgresAuthorityStore,
     apply_gate1_migration,
     apply_gate2_migration,
+    apply_gate3_1_migration,
 )
 
 
@@ -38,6 +39,9 @@ DSN = os.environ.get("WAJE_VNEXT_DATABASE_URL")
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_1 = ROOT / "storage/migrations/001_gate1_authority.sql"
 MIGRATION_2 = ROOT / "storage/migrations/002_gate2_controller.sql"
+MIGRATION_3 = (
+    ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
+)
 
 
 @unittest.skipUnless(DSN, "WAJE_VNEXT_DATABASE_URL is not configured")
@@ -50,6 +54,7 @@ class PostgresControllerStoreTest(unittest.TestCase):
         second = apply_gate2_migration(DSN, migration_path=MIGRATION_2)
         if first != second:
             raise AssertionError("Gate 2 migration is not idempotent")
+        apply_gate3_1_migration(DSN, migration_path=MIGRATION_3)
 
     def setUp(self) -> None:
         assert DSN is not None
@@ -60,7 +65,11 @@ class PostgresControllerStoreTest(unittest.TestCase):
 
     def test_controller_loop_recovers_from_postgres_checkpoint(self) -> None:
         provider = ScriptedPrimaryAgentProvider(
-            (frame_proposal(), plan_proposal(), capability_proposal())
+            (
+                frame_proposal("case-gate2-pg"),
+                plan_proposal(),
+                capability_proposal(),
+            )
         )
         effects = ScriptedEffectExecutor(
             (
@@ -487,7 +496,9 @@ class PostgresControllerStoreTest(unittest.TestCase):
         correction_store = PostgresAuthorityStore.connect(DSN)
         worker = PausingFenceController(
             store=worker_store,
-            provider=ScriptedPrimaryAgentProvider((frame_proposal(),)),
+            provider=ScriptedPrimaryAgentProvider(
+                (frame_proposal("case-gate2-fence-linearization"),)
+            ),
             effect_executor=ScriptedEffectExecutor(()),
             owner_id="pg-fence-worker",
             clock=lambda: NOW,

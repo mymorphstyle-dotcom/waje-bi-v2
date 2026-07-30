@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete + durable async amendment；新 Gate 3 的 G3.E0 fail-closed foundation 已实现，G3.1 仍 blocked |
+| 当前 Gate | Gate 2 complete + durable async amendment；G3.E0 formal admission 仍为 `deny_g3_1`；G3.1 local implementation 已按用户 development override 完成 |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -526,18 +526,20 @@ Exit evidence：
   closure；protected environment activation、trusted workflow pin、首个真实 bundle、
   trusted canonical connector、monotonic provider-state/admission CAS、digest-pinned builder、
   来源、双审、
-  truth/per-claim review、calibration、held-out、promotion/run freeze 仍阻止 G3.1。
+  truth/per-claim review、calibration、held-out、promotion/run freeze 仍阻止 formal
+  admission 与 gold promotion。
 - durable async adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`；
   periodic heartbeat、terminal JobDisposition、obligation scheduler、Reviewer worker 与
   operation lineage 是 G3.2 blocking work。
 - 组合审查第一轮 20 个 Blocking、8 个 Major；closure verification 再打开 6 个 Blocking、
-  6 个 Major。两轮 finding 均已写入设计；实现证据尚未开始。
+  6 个 Major。两轮 finding 均已写入设计；G3.1 实现对抗式收口见
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-1-implementation.md`。
 - Gate 1/2 历史验收保持；G3.1/G3.2 是任何新 Gate 3 业务 Evidence、Answer 和 Workflow
   实现的硬前置。
-- Gate 3 生产实现还需先通过 G3.E0 behavior-eval foundation：先冻结与实现无关的
-  EvaluationEpisode 合同、候选集、反事实关系、review/calibration 流程与 coverage ledger，
-  再开始 G3.1。
+- G3.E0 formal admission 仍要求冻结与实现无关的 EvaluationEpisode 合同、候选集、
+  反事实关系、review/calibration 流程与 coverage ledger。用户已明确授权 G3.1 local
+  implementation development override；代码完成不改变 `deny_g3_1`。
 
 **交付物**
 
@@ -855,7 +857,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.E0 fail-closed infrastructure complete; GitHub/Sigstore verification contract and candidate/attestation workflow implemented; canonical provider entry, remote activation and gold promotion blocked | 已确认 public GitHub Artifact Attestations/Sigstore；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
+| Gate 3 | G3.1 local implementation complete under development override; G3.E0 formal admission remains `deny_g3_1`; G3.2+ pending | 已确认 public GitHub Artifact Attestations/Sigstore；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-1-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -886,3 +888,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | 八类付费金额问题进入真实用户 candidate pool | 用户原始问题集 | 形成 8 个独立 Episode；真实措辞有 source trace，拟合 world/expectation 仍待双审 |
 | 2026-07-30 | Gate 3 外部 authority 采用 public GitHub Actions + Artifact Attestations/Sigstore | 用户确认 | 使用 immutable repository IDs、protected ref/environment、exact workflow/source SHA、run/attempt、release/trust epoch、predecessor、完整 evaluator/runtime 与授权 hash；runner 无长期 signing key |
 | 2026-07-30 | 根级 `.github/` 作为 vNext provider deployment projection | GitHub provider 约束 + Day 0 隔离复核 | 应用实现仍只在 `vnext/`；projection 由 vNext policy exact-hash 绑定，并随 clean-copy 删除独立性验证 |
+| 2026-07-30 | 在 formal readiness 仍为 `deny_g3_1` 时先完成 G3.1 local implementation | 用户明确 development override | 允许 epoch-3 合同、存储、迁移与测试落地；gold promotion、protected admission 和 production Evidence 权限保持 fail closed |
