@@ -1,0 +1,3044 @@
+{
+  "catalog_version": "gate3.behavior-eval.v1",
+  "episodes": [
+    {
+      "episode_id": "G3-EXP-001",
+      "title": "连锁门店利润突然下滑的多目标诊断",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于连锁零售常见经营诊断模式合成，采用拟真的用户措辞；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "华东这两周销售额还在涨，利润却掉得厉害，帮我查清楚到底哪里出了问题，顺便告诉我最该先管哪一块。",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "先别把新开的 8 家店算进去，我更关心老店经营有没有恶化。",
+            "communication_function": "scope_revision"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "during_investigation",
+            "text": "采购说只是猪肉涨价，但我怀疑外卖平台补贴也有影响。你要把这两个说法都验证一下。",
+            "communication_function": "challenge"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-CHAIN-PROFIT-001",
+        "narrative": "一家餐饮连锁按门店、渠道和菜品管理收入、成本与促销。管理层要决定是调整菜单价格、收紧平台补贴，还是优先处理部分门店的损耗。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://store/master/v1",
+            "state": "available",
+            "description": "门店主数据包含开业日、区域和同店资格。"
+          },
+          {
+            "contract_ref": "contract://order/net-sales/v3",
+            "state": "available",
+            "description": "订单包含实付、退款、平台补贴、商家补贴、渠道和营业日。"
+          },
+          {
+            "contract_ref": "contract://food/cost/v2",
+            "state": "partial",
+            "description": "菜品成本包含采购价、标准耗用和实际损耗，最近三天尚未关账。"
+          },
+          {
+            "contract_ref": "contract://finance/gross-profit/v4",
+            "state": "conflicting",
+            "description": "财务毛利按完成订单扣除退款、食材成本和商家补贴；一个平台的补贴定义月中变更。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-CHAIN-UNPOSTED-COST",
+            "description": "最近三天食材实际损耗尚未关账。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-CHAIN-SUBSIDY-BREAK",
+            "description": "一个外卖平台的补贴分摊字段在月中改变定义。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-CHAIN-NEW-STORE-MIX",
+            "description": "新开门店订单结构与成熟门店差异很大。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-CHAIN-BUSINESS-DAY",
+            "description": "部分夜间订单跨过自然日，业务日截止时间为凌晨 4 点。",
+            "discoverability": "provided_to_agent",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "同店利润下滑由猪肉采购价上涨、低毛利外卖渠道替代堂食以及三家门店异常损耗共同造成。",
+          "收入增长主要来自新店；排除新店后同店收入基本持平。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "在调价、退出平台活动和门店损耗治理之间确定本周优先级。",
+        "consequence_of_error": "把利润问题全部归给采购价会继续放大渠道补贴和门店损耗。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "目标门店集合为用户修订后的老店同店，排除新开 8 家店。",
+          "同时回答利润变化来源和行动优先级两个目标。",
+          "采购涨价与平台补贴均作为待检验解释。",
+          "利润口径、业务日边界和未关账状态必须显式。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "comparable-store-profit-bridge",
+            "rationale": "在稳定老店集合内对利润额和利润率进行可核对的桥接分解。",
+            "required_properties": [
+              "统一毛利口径",
+              "收入、成本、补贴与损耗贡献可 reconciliation",
+              "未解释 residual 显式"
+            ]
+          },
+          {
+            "design_family": "order-weighted-mix-diagnostic",
+            "rationale": "按门店、渠道和菜品结构定位 mix shift 与异常单元。",
+            "required_properties": [
+              "新店和老店分离",
+              "渠道口径跨期可比",
+              "未关账日期进入敏感性"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "收入、销量、客单价、退款、采购成本、补贴和损耗对利润变化的贡献。",
+          "渠道 mix 与新店 mix 是否制造总体错觉。",
+          "补贴字段定义变更是否破坏跨期可比性。",
+          "未关账三天对结论方向的敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "partial_cost_close",
+          "conflicting_subsidy_contract"
+        ],
+        "claim_ceiling": "accounting_attribution",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "同店范围已由用户修订，其余口径应先从合同和数据查明；只有无法发现且会改变经营决策的定义才提问。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "new_store_scope_leak",
+          "description": "把新店增长混入同店经营结论。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "single_factor_premature_attribution",
+          "description": "把采购部门的解释直接当成已证明原因。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "hidden_contract_break",
+          "description": "在补贴口径断裂或成本未关账时发布无边界归因。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-001-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“华东老店最近收入看着不错，利润为何明显变薄，优先排查什么”。",
+          "expected_invariants": [
+            "同店利润诊断与优先级决策保持。",
+            "收入、成本、渠道和损耗的调查义务保持。"
+          ],
+          "expected_changes": [
+            "仅 source wording lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-001-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "scope",
+          "mutation": "用户明确要求包含新店并评估华东区域整体盈利。",
+          "expected_invariants": [
+            "利润定义和因素分解边界保持。",
+            "补贴合同冲突仍需处理。"
+          ],
+          "expected_changes": [
+            "门店总体与同店测量身份改变。",
+            "新店构成成为主要解释对象。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-001-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "最近三天完成关账，并使原来的利润下降方向反转。",
+          "expected_invariants": [
+            "目标门店集合和经营决策保持。",
+            "正式毛利定义保持。"
+          ],
+          "expected_changes": [
+            "partial cost boundary 解除。",
+            "原 provisional 方向与因素排序必须重算。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "attribute",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "multi_estimand",
+          "observation_unit"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "conflicting_contract"
+        ],
+        "conversation_dynamics": [
+          "scope_revision",
+          "challenge"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "老店 scope revision 进入当前权威测量。",
+          "无关账证据不得支持完整利润归因。",
+          "分解贡献与 residual 可 reconciliation。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存 scope revision 的 authority lineage。",
+          "保存合同冲突、敏感性与 claim boundary。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-002",
+      "title": "目标月月初与前月月末的付费表现比较",
+      "source_pool": "historical_failure",
+      "provenance": {
+        "authoring_method": "historical_failure_reconstruction",
+        "review_status": "candidate",
+        "origin_note": "根据已知跨月时间锚点漂移失败重构，业务数值和措辞为合成候选；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "看看 2026 年 3 月月初的付费金额，相比 2 月月末是好还是差。",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "我说的月末是上个月最后那段，别拿 3 月中后段来比。具体取几天你按数据和日历自己设计，但要让我知道为什么这样取。",
+            "communication_function": "correction"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "during_investigation",
+            "text": "如果总额和每天平均的方向不一样，以每天可观察的表现为主，也把总额差异解释清楚。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-CROSS-MONTH-PAYMENT-002",
+        "narrative": "消费订阅业务观察节假日后月初恢复情况，运营团队希望比较目标月初和前一月月末的全量付费表现。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://payment/net/v3",
+            "state": "available",
+            "description": "支付事实按上海业务日记录成功支付和退款。"
+          },
+          {
+            "contract_ref": "contract://customer/status/v2",
+            "state": "available",
+            "description": "用户状态支持全量、活跃和新老用户观察单位。"
+          },
+          {
+            "contract_ref": "contract://release/daily-completeness/v1",
+            "state": "partial",
+            "description": "数据发布合同标记每天是否完整及 snapshot 截止时间。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PAYMENT-FEB-28",
+            "description": "目标月的前月为 2026 年 2 月，共 28 个日历日。",
+            "discoverability": "provided_to_agent",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-PAYMENT-PARTIAL-DAY",
+            "description": "3 月候选月初窗口有一天只发布 18 小时数据。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PAYMENT-WEEKDAY-MIX",
+            "description": "2 月末包含周末，3 月月初主要为工作日。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "3 月月初 raw total 较高，主要来自多一个有效观察日。",
+          "按有效观察日归一化后，日均净付费较 2 月末下降，下降集中在续费用户。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "判断月初付费经营表现是否真实改善，并决定是否排查续费。",
+        "consequence_of_error": "用不同长度窗口总额得出增长结论会掩盖续费日均下滑。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "左侧锚定 2026 年 3 月月初。",
+          "右侧锚定前月 2026 年 2 月月末。",
+          "窗口选择和理由成为显式测量内容。",
+          "主方向基于可比 exposure，raw total 仅作辅助。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "equal-calendar-boundary-windows",
+            "rationale": "采用两侧相同日历天数的边界窗口，并对不完整日进行资格处理。",
+            "required_properties": [
+              "relative month anchors 明确",
+              "实际日期和 calendar days 可审计",
+              "valid exposure 可比"
+            ]
+          },
+          {
+            "design_family": "equal-valid-business-day-windows",
+            "rationale": "采用相同数量完整业务日，并用替代窗口检验周末构成敏感性。",
+            "required_properties": [
+              "observed days 和 valid days 分离",
+              "日均净付费为主估计量",
+              "raw total 长度效应解释"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "两侧实际日期、calendar days、observed days 和 valid exposure。",
+          "不完整发布日的排除或降级影响。",
+          "工作日与周末构成差异。",
+          "raw total 与 normalized 指标是否方向冲突。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "clarification_required",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "partial_release",
+          "material_window_ambiguity"
+        ],
+        "claim_ceiling": "descriptive",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "Agent 可依据日历、完整性和业务日自主提出窗口；只有多个合理窗口导致实质方向冲突且上下文无法裁决时提问。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "cross_month_anchor_lost",
+          "description": "把右侧窗口改成 3 月 8 日至月底。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "raw_total_direction_claim",
+          "description": "以不同 exposure 的 raw total 单独支撑改善或恶化方向。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "stale_wrong_window_evidence",
+          "description": "复用绑定到错误同月窗口的 Evidence 或 Answer。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-002-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“3 月开头的付费表现和 2 月收尾相比如何”。",
+          "expected_invariants": [
+            "目标月月初和前月月末的跨月身份保持。",
+            "exposure-normalized 主比较保持。"
+          ],
+          "expected_changes": [
+            "仅自然语言 source span 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-002-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "time_semantics",
+          "mutation": "目标月改为 2026 年 1 月。",
+          "expected_invariants": [
+            "月初对前月月末的关系保持。",
+            "主比较仍需 exposure-normalized。"
+          ],
+          "expected_changes": [
+            "右侧跨年锚定 2025 年 12 月。",
+            "实际日期和 resolution identity 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-002-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "两侧 release 均完整，且有效观察日完全相等。",
+          "expected_invariants": [
+            "跨月测量身份和用户决策保持。",
+            "日均为主、总额为辅助的优先关系保持。"
+          ],
+          "expected_changes": [
+            "partial release boundary 解除。",
+            "若总额与日均仍冲突，应调查退款或样本构成。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "denominator"
+        ],
+        "temporal_shapes": [
+          "absolute",
+          "cross_month",
+          "cross_year",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "correction",
+          "challenge"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "misleading_comparison",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "右侧 month offset 必须为前月。",
+          "实际日期、calendar days 和 valid exposure 完整。",
+          "不同 exposure 的 raw total 不得支撑主方向。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "counterfactual_consistency"
+        ],
+        "trace_obligations": [
+          "保存窗口选择、替代方案和 source grounding。",
+          "保存 Frame 到 Evidence 和 Answer 的 comparison identity。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-003",
+      "title": "SaaS 新客留存恶化与产品改版",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于 B2B SaaS cohort 与非随机产品暴露模式合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "最近来的企业客户更留不住了吗？产品首页 5 月改过版，我想知道改版后有没有变差。",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "销售说最近小微客户占比高，所以你要区分客户质量变化和产品问题。",
+            "communication_function": "context"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "during_investigation",
+            "text": "还有一点，6 月那批客户目前只观察了四周，别把它和已经观察三个月的 cohort 直接比。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-SAAS-RETENTION-003",
+        "narrative": "B2B SaaS 按企业注册 cohort 观察激活、付费续订和产品使用。5 月 12 日发布新版首页，同时销售渠道结构发生变化。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://account/lifecycle/v2",
+            "state": "available",
+            "description": "企业账户定义注册、激活、首次付费和取消事件。"
+          },
+          {
+            "contract_ref": "contract://subscription/renewal/v3",
+            "state": "available",
+            "description": "订阅区分月付、年付、暂停和欠费。"
+          },
+          {
+            "contract_ref": "contract://product/release-exposure/v1",
+            "state": "partial",
+            "description": "产品发布记录企业用户首次暴露新版首页的时间，旧浏览器覆盖不完整。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-SAAS-UNEQUAL-HORIZON",
+            "description": "不同注册 cohort 的最大可观察时长不同。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-SAAS-YEARLY-RISK",
+            "description": "部分年付客户在短期 horizon 内没有续费风险。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-SAAS-GRAIN-MISMATCH",
+            "description": "首页暴露按用户发生，续订结果按企业账户发生。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-SAAS-LATE-CANCEL",
+            "description": "6 月底取消事件存在七天回补延迟。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "表面 8 周留存下降主要来自小微自助渠道占比上升。",
+          "可比企业规模和渠道内，新版暴露组核心功能采用率提高，续订没有显著变差。",
+          "未改版的低活跃旧浏览器客户流失较高。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否回滚首页、调整 onboarding，或把资源投入小微渠道筛选。",
+        "consequence_of_error": "混淆 cohort maturity 和渠道 mix 会造成不必要的产品回滚。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "客户留存的观察单位是企业账户。",
+          "cohort 必须在共同可观察 horizon 和明确 risk set 上比较。",
+          "用户级暴露到企业级续订的粒度关系需要明确。",
+          "区分描述性留存变化与改版因果效果。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "mature-cohort-fixed-horizon",
+            "rationale": "在相同 4 周或 8 周 horizon 比较成熟 cohort，并按渠道和企业规模分层。",
+            "required_properties": [
+              "time origin 明确",
+              "at-risk population 明确",
+              "未成熟 cohort 不当作流失"
+            ]
+          },
+          {
+            "design_family": "survival-with-censoring",
+            "rationale": "使用生存分析保留不同观察时长，并把年付续费风险集分开。",
+            "required_properties": [
+              "右删失显式",
+              "账户级 outcome",
+              "暴露聚合规则可审计"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "cohort eligibility、time origin、risk set 和 censoring。",
+          "渠道与客户规模构成变化。",
+          "改版暴露覆盖和旧浏览器兼容问题。",
+          "取消事件回补对最近 cohort 的影响。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "immature_cohort",
+          "missing_identification"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "共同 horizon、风险集和渠道构成可从合同与数据发现；先执行多个合理描述性设计并记录推断。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "immature_cohort_as_churn",
+          "description": "把未成熟 6 月 cohort 的未来周期当成流失。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "user_account_grain_leak",
+          "description": "以用户级浏览事件直接充当企业级续订分母。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "release_timing_causal_claim",
+          "description": "看到改版时间与留存下降重合就声称改版导致流失。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-003-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把问题改写为“5 月首页更新后，新签企业的留存表现有没有恶化”。",
+          "expected_invariants": [
+            "企业 cohort 留存和改版挑战保持。",
+            "risk set、censoring 与 mix 调查保持。"
+          ],
+          "expected_changes": [
+            "仅 source wording lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-003-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只询问新版首页使用率，不再询问留存。",
+          "expected_invariants": [
+            "新版暴露合同和企业范围保持。",
+            "旧浏览器覆盖问题仍需披露。"
+          ],
+          "expected_changes": [
+            "结果事件由续订改为采用率。",
+            "留存 risk set 退居辅助，measurement identity 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-003-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "新版在企业账户层随机灰度，并完整记录分配和依从。",
+          "expected_invariants": [
+            "留存业务决策和企业观察单位保持。",
+            "cohort maturity 要求保持。"
+          ],
+          "expected_changes": [
+            "missing identification boundary 解除。",
+            "claim ceiling 可在实验资格范围内提升。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "observation_unit",
+          "association_or_causal_ceiling"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "over_strong_claim",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "cohort horizon 与 risk set 必须明确。",
+          "未成熟 cohort 不得进入完整续订结论。",
+          "用户级暴露到企业 outcome 的聚合可重建。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality"
+        ],
+        "trace_obligations": [
+          "保存 cohort eligibility、删失和暴露聚合。",
+          "保存因果 claim ceiling 及其识别边界。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-004",
+      "title": "贷款申请漏斗转化下降",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于金融申请漏斗、动态资格分母和埋点故障模式合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "这周贷款申请的转化怎么突然掉了？帮我看是用户在哪一步流失，还是风控规则变严了。",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-LOAN-FUNNEL-004",
+        "narrative": "线上信贷申请包含开始申请、身份验证、资料提交、风控审批、签约和放款。老用户可跳过已完成的身份验证，审批结果会晚于申请。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://loan/application/v3",
+            "state": "available",
+            "description": "申请实例定义唯一 application_id 和用户关系。"
+          },
+          {
+            "contract_ref": "contract://loan/funnel-event/v2",
+            "state": "partial",
+            "description": "漏斗事件记录阶段、时间和流程版本；安卓旧版资料提交埋点不完整。"
+          },
+          {
+            "contract_ref": "contract://risk/decision/v4",
+            "state": "available",
+            "description": "风控决策记录规则版本、决策时间和拒绝原因。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-LOAN-SKIPPABLE-STAGE",
+            "description": "老用户可跳过身份验证阶段。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-LOAN-DELAYED-OUTCOME",
+            "description": "周五申请可能在下周完成审批和放款。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-LOAN-RULE-CHANGE",
+            "description": "本周三启用了新的反欺诈规则。",
+            "discoverability": "provided_to_agent",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-LOAN-ANDROID-MISSING",
+            "description": "安卓旧版客户端有资料提交埋点丢失。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          }
+        ],
+        "hidden_business_truth": [
+          "表面资料提交转化下降主要来自安卓埋点缺失。",
+          "新反欺诈规则降低审批通过率，但只影响一个高风险渠道。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定修复客户端、回滚风控规则或优化申请流程。",
+        "consequence_of_error": "把埋点缺失当成真实流失会误导产品改版；忽视风险渠道会错误放宽规则。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "漏斗实体为申请实例，阶段顺序和可跳过规则显式。",
+          "每一步分母由有资格进入该阶段的申请动态定义。",
+          "区分事件缺失、流程流失和风控拒绝。",
+          "未完成观察窗口的申请不能直接计为失败。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "eligibility-aware-process-funnel",
+            "rationale": "按流程版本和合法路径构建动态资格分母。",
+            "required_properties": [
+              "申请实例为观察单位",
+              "跳步规则显式",
+              "未成熟 outcome 排除或删失"
+            ]
+          },
+          {
+            "design_family": "mature-application-cohort-funnel",
+            "rationale": "在固定成熟 horizon 内按客户端和渠道诊断业务转化及事件覆盖。",
+            "required_properties": [
+              "数据质量和业务流失分离",
+              "规则版本覆盖明确",
+              "渠道 scope 不外推"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "安卓埋点完整性和事件顺序。",
+          "阶段 eligibility 与跳步路径。",
+          "审批和放款完成延迟。",
+          "风控规则版本在渠道中的覆盖和拒绝原因。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "event_coverage_failure",
+          "immature_application_outcome"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "流程资格和数据缺失均可从合同与 probe 查明，无需让用户提供系统已有事实。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "static_funnel_denominator",
+          "description": "用固定上一阶段总人数作为所有流程版本的分母。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "missing_event_as_dropout",
+          "description": "把埋点缺失解释为用户真实退出。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "immature_application_as_rejection",
+          "description": "把尚未完成审批的申请标记为拒绝。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-004-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“本周申请通过链路在哪一步掉得最明显，风控是否也有变化”。",
+          "expected_invariants": [
+            "申请漏斗诊断与风控挑战保持。",
+            "动态资格分母和 maturity 要求保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-004-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户改问审批通过到放款的完成时长。",
+          "expected_invariants": [
+            "申请实例与规则版本范围保持。",
+            "延迟 outcome 数据条件保持。"
+          ],
+          "expected_changes": [
+            "目标变为完成时间分布和删失。",
+            "阶段转化率退居辅助。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-004-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "安卓埋点完整且资料提交下降仍存在。",
+          "expected_invariants": [
+            "漏斗实体、资格路径和规则版本保持。",
+            "渠道范围保持。"
+          ],
+          "expected_changes": [
+            "event coverage boundary 解除。",
+            "调查重心转向流程体验与真实流失。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "funnel_or_sequence",
+          "denominator",
+          "cohort_or_risk_set"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap",
+          "over_strong_claim"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "漏斗阶段分母符合 eligibility。",
+          "未成熟申请不计为失败。",
+          "缺失事件不能作为流失 Evidence。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "evidence_and_claim_proportionality"
+        ],
+        "trace_obligations": [
+          "保存数据质量 probe、规则版本和阶段 eligibility。",
+          "保存被拒绝的错误漏斗解释。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-005",
+      "title": "平台 GMV 增长来自哪里",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于电商增长恒等式、口径断点和贡献 reconciliation 模式合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "Q2 GMV 比 Q1 涨了不少，究竟是买家更多、买得更勤，还是客单价上去了？也看看哪个品类贡献最大。",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "财务提醒 4 月开始把运费算进 GMV 了，你先把口径对齐再分析。",
+            "communication_function": "correction"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "during_investigation",
+            "text": "我不接受几项贡献加起来对不上总增长，剩余部分要单独交代。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-GMV-GROWTH-005",
+        "narrative": "电商平台按买家、订单、商品和品类经营 GMV。季度中发生 GMV 定义变化，大型促销同时改变买家与品类结构。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://commerce/gmv/v4",
+            "state": "conflicting",
+            "description": "GMV 提供含运费和不含运费版本；看板在 4 月改变默认定义。"
+          },
+          {
+            "contract_ref": "contract://commerce/order/v3",
+            "state": "available",
+            "description": "订单定义支付、取消、退款和跨品类分摊。"
+          },
+          {
+            "contract_ref": "contract://buyer/activity/v2",
+            "state": "available",
+            "description": "买家合同支持活跃买家、频次和新老客。"
+          },
+          {
+            "contract_ref": "contract://catalog/category-history/v2",
+            "state": "available",
+            "description": "品类映射按商品销售时点版本化。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-GMV-DEFINITION-BREAK",
+            "description": "4 月前后的运费纳入口径不同。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-GMV-MULTI-CATEGORY",
+            "description": "一个订单可包含多个品类。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-GMV-LATE-REFUND",
+            "description": "退款可在后续季度发生。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-GMV-PROMO-MIX",
+            "description": "头部直播活动带来大量新客和低价商品。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "统一为不含运费净 GMV 后，约一半增长来自活跃买家增加。",
+          "频次小幅上升，客单价下降；低价美妆贡献最多。",
+          "跨品类 interaction 和延迟退款形成不可忽略 residual。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "判断增长质量，并决定 Q3 预算投向获客、复购还是品类供给。",
+        "consequence_of_error": "口径变化或重复分摊会夸大增长，错误贡献分解会误配预算。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "Q2 对 Q1 的季度比较。",
+          "GMV 口径必须跨期一致。",
+          "买家数、频次、客单价和品类贡献属于相互关联的解释维度。",
+          "分解必须与总变化 reconciliation，residual 显式。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "multiplicative-growth-decomposition",
+            "rationale": "在 GMV 恒等式下分解买家、频次和客单价，并声明 interaction 分配规则。",
+            "required_properties": [
+              "统一净 GMV 定义",
+              "分解顺序或 Shapley 规则显式",
+              "贡献总和可 reconciliation"
+            ]
+          },
+          {
+            "design_family": "buyer-micro-decomposition-with-category-bridge",
+            "rationale": "从买家层变化连接到品类贡献，并保留跨品类 residual。",
+            "required_properties": [
+              "买家观察单位稳定",
+              "跨品类订单不重复",
+              "退款 maturity 敏感性"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "运费与退款口径衔接。",
+          "买家数、频次、客单价之间的恒等关系。",
+          "跨品类订单的分摊和重复风险。",
+          "interaction、rounding 和未解释 residual。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "conflicting_gmv_definition",
+          "unreconciled_residual"
+        ],
+        "claim_ceiling": "accounting_attribution",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "财务已指出定义断点，Agent 应从版本化合同统一可比口径，并记录选择和替代口径。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "mixed_gmv_definitions",
+          "description": "直接比较采用不同 GMV 定义的两个季度。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "overlapping_contribution_sum",
+          "description": "把互相重叠的贡献相加到超过总增长且不披露。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "hidden_decomposition_residual",
+          "description": "隐去不能 reconciliation 的 residual。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-005-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“拆一下 Q2 相对 Q1 的 GMV 增量，买家、频次、客单价和品类各贡献多少”。",
+          "expected_invariants": [
+            "季度增长分解与品类贡献目标保持。",
+            "统一口径和 reconciliation 要求保持。"
+          ],
+          "expected_changes": [
+            "仅 source wording lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-005-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只询问 Q2 的品类构成，不要求解释相对 Q1 的总增长。",
+          "expected_invariants": [
+            "净 GMV 定义和品类分摊规则保持。",
+            "跨品类重复风险保持。"
+          ],
+          "expected_changes": [
+            "目标从 decomposition 改为 composition。",
+            "季度增长 reconciliation 不再是主义务。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-005-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "GMV 定义全期一致，且退款已完整成熟。",
+          "expected_invariants": [
+            "增长分解目标和买家观察单位保持。",
+            "贡献 reconciliation 保持。"
+          ],
+          "expected_changes": [
+            "定义冲突和退款 maturity boundary 解除。",
+            "剩余不确定性集中在 interaction 分配。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "attribute",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "absolute"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "correction",
+          "challenge"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "wrong_business_decision",
+          "misleading_comparison"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "两个季度采用同一 GMV definition version。",
+          "分解贡献与 residual 合计等于总变化。",
+          "跨品类订单只能按声明规则分配一次。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存口径修订、分解规则和 residual policy。",
+          "保存 composition 与 causal claim 的边界。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-006",
+      "title": "配送准时率趋势与节假日业务日",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于即时零售业务日、节假日和事件回补模式合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "最近六周配送准时率一直在变差吗？上海和深圳分别看，别让端午假期把趋势带偏。",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-DELIVERY-TREND-006",
+        "narrative": "即时零售平台按承诺送达时间衡量准时率。订单跨城市与午夜，法定节假日会改变供需结构和承诺时长。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://delivery/order-time/v3",
+            "state": "available",
+            "description": "订单包含下单、承诺送达、实际送达和取消时间。"
+          },
+          {
+            "contract_ref": "contract://calendar/city-business-day/v2",
+            "state": "available",
+            "description": "城市业务日历包含法定节假日、调休和版本。"
+          },
+          {
+            "contract_ref": "contract://delivery/on-time-rate/v4",
+            "state": "available",
+            "description": "准时率定义 eligible delivered orders 和容忍分钟数。"
+          },
+          {
+            "contract_ref": "contract://delivery/event-release/v1",
+            "state": "partial",
+            "description": "深圳一周的实际送达事件仍在回补。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-DELIVERY-DAY-CUTOFF",
+            "description": "业务日截止时间为当地凌晨 3 点。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-DELIVERY-HOLIDAY",
+            "description": "端午前后存在调休工作日。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-DELIVERY-SZ-LAG",
+            "description": "深圳一周的实际送达事件回补延迟。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-DELIVERY-WEATHER",
+            "description": "极端天气同时改变订单 mix 和承诺时长。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "上海在控制节假日与天气后没有持续恶化，只在暴雨周下滑。",
+          "深圳从第五周开始稳定下降，集中在晚高峰和一个新站点。",
+          "回补数据会缩小但不会消除深圳下降。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否进行城市级运力扩充或只处理局部站点。",
+        "consequence_of_error": "把节假日或数据延迟当成长期趋势会造成高额运力误配。",
+        "risk_level": "medium"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "分析最近六周，并分别给出上海和深圳结果。",
+          "业务日与节假日版本进入时间语义。",
+          "准时率分母只包含有可比承诺和有效送达记录的订单。",
+          "区分一次冲击、水平突变和持续趋势。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "business-week-city-trend",
+            "rationale": "按版本化业务周计算城市准时率趋势，并排除未完整 release。",
+            "required_properties": [
+              "当地业务日边界",
+              "eligible denominator",
+              "趋势不被单周异常替代"
+            ]
+          },
+          {
+            "design_family": "calendar-adjusted-station-diagnostic",
+            "rationale": "在节假日、天气和承诺时长可比条件下按时段和站点定位异质变化。",
+            "required_properties": [
+              "节假日和调休显式",
+              "城市 scope 分离",
+              "partial week 敏感性"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "节假日、调休、天气和承诺时长 mix。",
+          "深圳事件回补完整性。",
+          "晚高峰与新站点异质性。",
+          "持续下降、突变和单周异常的替代解释。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "partial_delivery_release"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "城市日历、业务日、完整性和时段均可从现有合同和数据确定。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "natural_day_delivery_cutoff",
+          "description": "按自然日截断跨午夜订单。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "unreported_delivery_as_late",
+          "description": "把尚未回补的记录当成配送超时。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "single_week_as_persistent_trend",
+          "description": "把上海暴雨周概括为持续六周恶化。",
+          "severity": "major"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-006-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“分城市判断过去六个业务周的准时率是否持续下滑，并控制端午影响”。",
+          "expected_invariants": [
+            "六周城市趋势和节假日调整保持。",
+            "eligible denominator 与 release 边界保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-006-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "time_semantics",
+          "mutation": "用户明确要求按自然周汇总，不采用业务周。",
+          "expected_invariants": [
+            "上海与深圳分开分析。",
+            "订单事件仍使用当地时区。"
+          ],
+          "expected_changes": [
+            "时间分组与 temporal identity 改变。",
+            "跨周订单归属需按新规则重算。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-006-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "深圳回补完成后下降趋势完全消失。",
+          "expected_invariants": [
+            "城市 scope、业务日和准时率定义保持。",
+            "上海的趋势证据保持独立。"
+          ],
+          "expected_changes": [
+            "深圳 provisional 趋势撤回。",
+            "数据完整性成为深圳主解释。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "denominator",
+          "window_or_baseline"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "业务日按城市合同解析。",
+          "未回补记录不进入超时分子。",
+          "上海与深圳 claim scope 分开。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存业务日历版本、release 状态和趋势 alternatives。",
+          "保存城市、站点和时段 scope。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-007",
+      "title": "涨价后的收入提升与因果挑战",
+      "source_pool": "adversarial_conversation",
+      "provenance": {
+        "authoring_method": "adversarial_authoring",
+        "review_status": "candidate",
+        "origin_note": "为检验选择偏差、结果成熟度和时间压力下的因果边界而合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "我们给一批老用户涨了 10%，他们的收入反而更高，能不能证明这次涨价是成功的？",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "这批人是客户成功团队挑的，主要是使用量高、续费意愿强的客户。",
+            "communication_function": "context"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "after_provisional_answer",
+            "text": "老板下午就要结论。如果证明不了，也请明确告诉我还差什么，不要硬给因果结论。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-SAAS-PRICING-007",
+        "narrative": "订阅软件对部分存量客户实施差异化涨价。客户成功团队按用量、健康度和谈判判断选择对象，收入同时受席位增长与续费影响。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://pricing/change/v2",
+            "state": "available",
+            "description": "合同变更记录报价、生效时间和实际执行价格。"
+          },
+          {
+            "contract_ref": "contract://revenue/customer-month/v4",
+            "state": "available",
+            "description": "客户月收入区分价格、席位、增购、降级和流失。"
+          },
+          {
+            "contract_ref": "contract://customer/success-selection/v1",
+            "state": "partial",
+            "description": "触达日志记录挑选原因，没有随机分配或完整未观测判断。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PRICE-SELECTION",
+            "description": "处理对象存在明显 selection bias。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PRICE-IMMATURE-RENEWAL",
+            "description": "部分涨价客户尚未到续费节点。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PRICE-CONTROL-DISCOUNT",
+            "description": "未涨价客户也有个别议价和折扣变化。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-PRICE-SEAT-GROWTH",
+            "description": "收入增长可能来自席位扩张。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "被挑选客户原本就有更高席位增长和续费概率。",
+          "涨价提高已续费客户单位收入，但降低临界健康度客户续费。",
+          "短期总收入增长，长期净效果尚不确定。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否把涨价扩展到更多存量客户。",
+        "consequence_of_error": "把选择偏差当成涨价效果可能导致大范围流失。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "用户要求检验涨价成功，结论涉及因果强度。",
+          "客户成功团队的非随机选择是核心识别威胁。",
+          "价格、席位和续费对收入的作用需要拆开。",
+          "尚未到续费节点的客户属于未成熟结果。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "selection-diagnostic-and-bounds",
+            "rationale": "先检查共同支持、pre-treatment 差异和结果成熟度，再提供保守关联或 bounds。",
+            "required_properties": [
+              "assignment mechanism 显式",
+              "positivity 检查",
+              "价格与席位贡献分离"
+            ]
+          },
+          {
+            "design_family": "prospective-randomized-rollout",
+            "rationale": "为扩展决策设计分层随机或可信 rollout，并以续费和收入共同评价。",
+            "required_properties": [
+              "eligible population 明确",
+              "完整续费 horizon",
+              "流失和降级进入 outcome"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "treatment assignment、positivity、pre-trend 和共同支持。",
+          "续费风险集与观察 horizon。",
+          "收入中价格和席位的贡献。",
+          "流失、降级与折扣。",
+          "对未观测混杂的敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "selection_bias",
+          "immature_renewal",
+          "missing_identification"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "选择机制和 maturity 可从现有材料诊断；管理层时间压力不能改变 claim ceiling。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "selected_group_as_price_effect",
+          "description": "把处理组收入更高直接解释为涨价成功。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "survivor_only_pricing_result",
+          "description": "只看存续客户，隐藏流失和未成熟续费。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "deadline_raises_claim_strength",
+          "description": "因时间紧迫提高因果结论强度。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-007-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“被涨价的老客收入更高，这足以说明涨价有效吗”。",
+          "expected_invariants": [
+            "涨价因果挑战和扩展决策保持。",
+            "选择、续费 maturity 和席位变化调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-007-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只问涨价客户当前实现价格提高多少。",
+          "expected_invariants": [
+            "客户范围和价格合同保持。",
+            "实际执行价定义保持。"
+          ],
+          "expected_changes": [
+            "目标变为描述性价格实现。",
+            "续费因果 estimand 不再是主目标。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-007-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "涨价在合格老用户中随机分配，且所有客户跨过完整续费节点。",
+          "expected_invariants": [
+            "扩展涨价决策和收入 outcome 保持。",
+            "价格、席位和续费分解保持。"
+          ],
+          "expected_changes": [
+            "selection 和 immature outcome boundary 解除。",
+            "claim ceiling 可在实验资格范围内提升。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "cohort_or_risk_set",
+          "decomposition"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "未成熟续费不进入完整效果结论。",
+          "associational Evidence 不得支持 causal claim。",
+          "价格、席位和流失 outcome 不得混合。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality"
+        ],
+        "trace_obligations": [
+          "保存 selection diagnosis 与 claim ceiling。",
+          "保存因果 falsification 和下一步识别设计。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-008",
+      "title": "新增付费用户指标口径与突增验证",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于账户去重、支付事件重复和退款成熟度模式合成，措辞未取自生产日志；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "看板上昨天新增付费用户突然翻倍，这个数可信吗？我们到底怎么定义新增付费用户的？",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "退款后重新购买、换账号、先试用再付费这些情况都要说清楚。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-NEW-PAYER-008",
+        "narrative": "消费应用按账户和去重自然人观察首付。增长团队发现看板新增付费翻倍，需要先确认定义与数据可靠性。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://payment/event/v3",
+            "state": "partial",
+            "description": "支付记录成功、撤销、退款和币种；一个渠道出现重复投递。"
+          },
+          {
+            "contract_ref": "contract://identity/person-map/v2",
+            "state": "stale",
+            "description": "账户合并提供版本化 person_id 映射，昨天发生历史回填。"
+          },
+          {
+            "contract_ref": "contract://subscription/paid-status/v4",
+            "state": "available",
+            "description": "订阅区分试用、赠送和真实付费。"
+          },
+          {
+            "contract_ref": "contract://metric/new-payer/v1",
+            "state": "conflicting",
+            "description": "看板按 account_id 计数，业务讨论常按自然人理解。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PAYER-PERSON-BACKFILL",
+            "description": "昨天上线账户合并回填，历史支付映射到新的 person_id。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PAYER-DUPLICATE-EVENT",
+            "description": "一个支付渠道重复投递成功事件。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PAYER-LATE-REFUND",
+            "description": "部分退款在次日到达。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-PAYER-UNIT-CONFLICT",
+            "description": "看板 observation unit 与业务自然人语义冲突。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          }
+        ],
+        "hidden_business_truth": [
+          "翻倍主要由重复事件和账户合并回填造成。",
+          "按自然人首次净付费并排除全额退款后，真实新增仅增长约 8%。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否加大当日投放，并修正管理看板口径。",
+        "consequence_of_error": "把数据重复当成增长会错误增加预算，含糊定义会持续制造争议。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "先回答指标定义，再判断突增可信度。",
+          "账户与自然人的观察单位差异显式。",
+          "首次付费、净付费、退款、重购和试用转换均需定义。",
+          "定义有效期与昨天的数据变更相关联。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "definition-comparison-and-quality-audit",
+            "rationale": "并列现行 account-level 和业务 person-level 定义，再验证重复与回填影响。",
+            "required_properties": [
+              "observation unit 明确",
+              "首次事件和净付费规则明确",
+              "定义版本和数据版本绑定"
+            ]
+          },
+          {
+            "design_family": "refund-maturity-sensitivity",
+            "rationale": "在多个合理退款等待期下报告 provisional 净新增范围。",
+            "required_properties": [
+              "重复事件先去除",
+              "person map version 固定",
+              "成熟和未成熟日期分离"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "重复支付事件和账户回填。",
+          "person_id 映射版本。",
+          "退款成熟窗口。",
+          "试用、赠送、重购和账号合并的 inclusion policy。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "clarification_required",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "metric_definition_conflict",
+          "duplicate_payment_events",
+          "immature_refund_window"
+        ],
+        "claim_ceiling": "data_quality_only",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "异常来源可自行查明；若组织尚未决定 account 或 person 作为权威经营单位，且会改变预算判断，再提出一个决策问题。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "dashboard_count_defines_metric",
+          "description": "用当前看板数字反向定义业务指标。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "account_assumed_as_person",
+          "description": "默认 account_id 代表唯一新增自然人。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "duplicate_events_as_growth",
+          "description": "忽略重复事件和映射回填并宣布增长翻倍。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-008-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“昨天首付人数翻了一倍，先确认口径和数据是否可靠”。",
+          "expected_invariants": [
+            "指标定义和数据质量双目标保持。",
+            "观察单位、重复事件和退款调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-008-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "observation_unit",
+          "mutation": "业务明确新增付费按 account_id 管理。",
+          "expected_invariants": [
+            "首次真实付费、退款和重复事件规则保持。",
+            "昨天突增可信度问题保持。"
+          ],
+          "expected_changes": [
+            "观察单位从 person 改为 account。",
+            "person map 不再决定主计数。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-008-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "hidden_business_truth",
+          "mutation": "没有管道异常，翻倍全部来自真实首次净付费。",
+          "expected_invariants": [
+            "指标定义和 observation unit 保持。",
+            "退款成熟要求保持。"
+          ],
+          "expected_changes": [
+            "duplicate event boundary 解除。",
+            "结论从数据故障转为可信的描述性增长。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "observation_unit",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "stale_release",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "hidden_data_gap",
+          "wrong_business_decision"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "支付事件按稳定唯一键去重。",
+          "observation unit 和 person map version 显式。",
+          "未成熟退款不得支持 settled 净新增。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "ambiguity_and_clarification_discipline",
+          "evidence_and_claim_proportionality"
+        ],
+        "trace_obligations": [
+          "保存指标定义候选、用户决策和 data-quality finding。",
+          "保存低风险推断或 clarification disposition。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-009",
+      "title": "客服满意度上升是否可信",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "基于问卷选择性响应、分布尾部和工单成熟度模式合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "客服满意度这个月从 4.1 涨到 4.5，是真改善了吗？一线反馈反而说投诉更严重。",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "别只给平均分，我想知道低分用户有没有减少，以及谁根本没填问卷。",
+            "communication_function": "constraint"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-CSAT-MISSINGNESS-009",
+        "narrative": "客服系统在工单关闭后邀请用户评分 1 到 5。月中更换邀请渠道，响应率和投诉工单结构同时变化。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://support/ticket/v3",
+            "state": "available",
+            "description": "工单包含问题类型、严重度、渠道、处理时长和关闭状态。"
+          },
+          {
+            "contract_ref": "contract://survey/invitation-response/v2",
+            "state": "conflicting",
+            "description": "问卷记录邀请、送达、响应和评分；月中停止向部分电话投诉用户发送短信。"
+          },
+          {
+            "contract_ref": "contract://support/escalation/v1",
+            "state": "available",
+            "description": "投诉合同标记升级投诉与监管投诉。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-CSAT-INVITE-CHANGE",
+            "description": "月中停止向部分电话投诉用户发送短信问卷。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-CSAT-CHANNEL-RESPONSE",
+            "description": "机器人渠道响应率远高于人工电话。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-CSAT-OPEN-ESCALATION",
+            "description": "升级投诉关闭较慢，近期部分尚未进入邀请资格。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-CSAT-SKEWED-DISTRIBUTION",
+            "description": "评分分布高度偏斜，平均数受高分占比影响。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "观测平均分上升来自邀请渠道改变和机器人简单问题占比增加。",
+          "可比问题类型内评分基本持平，1 星升级投诉率上升。",
+          "非响应与问题严重度相关。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "判断客服质量是否改善，并决定是否调整团队绩效和投诉处理。",
+        "consequence_of_error": "把选择性响应当成质量提升会奖励错误行为并忽视高严重度投诉。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "同时分析评分水平、低分分布和响应选择。",
+          "邀请资格、送达和响应使用不同分母。",
+          "问题类型、渠道和严重度构成需要可比。",
+          "未关闭升级投诉造成的结果不成熟需要处理。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "response-funnel-and-score-distribution",
+            "rationale": "联合评估邀请覆盖、响应率、完整评分分布和低分尾部。",
+            "required_properties": [
+              "eligible、invited、delivered、responded 分母分离",
+              "均值、低分率与分位数并列",
+              "未关闭工单不作满意推断"
+            ]
+          },
+          {
+            "design_family": "stable-mechanism-comparison-with-bounds",
+            "rationale": "在稳定邀请机制和共同问题类型内比较，并对非响应给 bounds。",
+            "required_properties": [
+              "渠道和严重度 mix 可比",
+              "missingness 假设显式",
+              "升级投诉作为独立 outcome"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "邀请覆盖和响应率按渠道、严重度的变化。",
+          "平均分与低分尾部是否方向一致。",
+          "未关闭工单的资格和成熟度。",
+          "机器人与人工、问题类型的 mix shift。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "selection_by_invitation",
+          "immature_escalation_outcome"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "响应机制、工单成熟度和构成可从合同与数据查明；无需把系统事实抛给用户。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "mean_only_csat_claim",
+          "description": "只比较两个平均分并宣布总体满意度改善。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "noninvited_assumed_satisfied",
+          "description": "把未收到邀请的用户当作满意。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "simple_ticket_scope_expansion",
+          "description": "把机器人简单问题的高分外推到全部客服体验。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-009-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“本月 CSAT 均值更高，但投诉更重，这能说明体验改善吗”。",
+          "expected_invariants": [
+            "满意度可信度与严重投诉双目标保持。",
+            "响应选择、分布和 maturity 调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-009-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "scope",
+          "mutation": "用户明确只关心已响应用户的评分。",
+          "expected_invariants": [
+            "评分分布和低分尾部仍需分析。",
+            "邀请覆盖作为适用边界保留。"
+          ],
+          "expected_changes": [
+            "目标人群收窄为 responders。",
+            "总体客户满意度 claim 不再允许。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-009-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "邀请和响应机制全月稳定，且所有升级投诉完成观察。",
+          "expected_invariants": [
+            "评分分布和问题类型构成分析保持。",
+            "客服质量决策保持。"
+          ],
+          "expected_changes": [
+            "邀请选择与 outcome maturity boundary 解除。",
+            "总体描述性结论可更强。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "compare"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "denominator",
+          "observation_unit"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "hidden_data_gap",
+          "over_strong_claim"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "邀请、送达和响应分母不得混用。",
+          "未关闭升级投诉不得进入完整总体结论。",
+          "claim scope 不得超出 responder 或可比工单。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality"
+        ],
+        "trace_obligations": [
+          "保存 missingness 假设和分布比较。",
+          "保存总体与 responder scope 的 claim boundary。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-010",
+      "title": "流失挽回活动是否值得扩大",
+      "source_pool": "adversarial_conversation",
+      "provenance": {
+        "authoring_method": "adversarial_authoring",
+        "review_status": "candidate",
+        "origin_note": "为检验 treatment 定义、选择偏差、增量利润和实验建议而合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "客服给高流失风险用户打电话后，续费率比没打电话的高 12 个点。这个活动值不值得扩大？",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "运营补充一下：坐席会优先打给还愿意沟通、合同金额也比较高的人。",
+            "communication_function": "context"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "during_investigation",
+            "text": "成本也算进去，我们关心的是增量利润，不只是续费率。",
+            "communication_function": "scope_revision"
+          },
+          {
+            "turn": 4,
+            "speaker": "user",
+            "injection_point": "after_provisional_answer",
+            "text": "如果现有数据回答不了，就给我下一轮怎么试，样本别浪费。",
+            "communication_function": "request_for_explanation"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-RETENTION-OUTREACH-010",
+        "narrative": "订阅业务对模型判定高风险的客户执行人工挽回。坐席自主选择联系顺序，可提供折扣，活动成本随通话时长和折扣变化。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://churn/risk-score/v3",
+            "state": "available",
+            "description": "风险评分记录评分时间、模型版本和合格阈值。"
+          },
+          {
+            "contract_ref": "contract://outreach/contact/v2",
+            "state": "partial",
+            "description": "触达记录分配、尝试、接通、通话和坐席；分配没有随机化。"
+          },
+          {
+            "contract_ref": "contract://renewal/outcome/v4",
+            "state": "available",
+            "description": "续费记录合同金额、折扣和续费日期。"
+          },
+          {
+            "contract_ref": "contract://outreach/cost/v1",
+            "state": "available",
+            "description": "成本包含坐席时间和折扣让利。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-OUTREACH-NONRANDOM",
+            "description": "触达分配没有随机化。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-OUTREACH-CONTACTABILITY",
+            "description": "接通受客户沟通意愿影响。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-OUTREACH-SEAT-SELECTION",
+            "description": "坐席优先级依赖合同价值和主观可挽回性。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-OUTREACH-IMMATURE",
+            "description": "部分客户尚未到续费日期。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          }
+        ],
+        "hidden_business_truth": [
+          "简单 12 个点差异大部分来自选择偏差。",
+          "边缘风险客户有小幅正向增量续费，最高风险客户效果很弱。",
+          "高价值客户折扣过大，部分续费带来负增量利润。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否扩大挽回团队、调整目标人群和折扣政策。",
+        "consequence_of_error": "按观测 12 个点外推会高估价值，并可能扩大亏损折扣。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "最终决策目标为增量利润，续费率是中间结果。",
+          "eligible、assigned、attempted、reached 和 treated 必须区分。",
+          "选择机制与未成熟续费是核心边界。",
+          "下一轮实验设计属于用户明确要求。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "selection-diagnostic-with-profit-bounds",
+            "rationale": "诊断选择和结果成熟度，以净收入减触达与折扣成本给保守范围。",
+            "required_properties": [
+              "treatment variants 分离",
+              "风险分层共同支持",
+              "利润而非续费率为最终 outcome"
+            ]
+          },
+          {
+            "design_family": "stratified-randomized-outreach",
+            "rationale": "在 eligible 风险层内随机分配触达，并控制容量与样本效率。",
+            "required_properties": [
+              "assignment effect 与 reach effect 分离",
+              "完整续费 horizon",
+              "折扣策略预先定义"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "触达选择、接通选择和 treatment definition。",
+          "风险分层异质性与 positivity。",
+          "续费 maturity、折扣、坐席成本和合同价值。",
+          "扩大后容量约束和边际人群变化。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "nonrandom_treatment",
+          "immature_renewal",
+          "missing_incremental_profit_identification"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "用户已明确决策与利润目标，现有选择和成熟度事实可自主检查，并可输出有边界的下一轮设计。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "contacted_reached_treatment_merge",
+          "description": "把 contacted 与 reached 混为同一 treatment。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "renewal_rate_ignores_cost",
+          "description": "忽略折扣和坐席成本，只优化续费率。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "historical_average_as_marginal_effect",
+          "description": "按历史高价值客户结果直接预测扩大后的边际客户。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-010-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“高风险客户被电话挽回后续费多 12 个点，扩团队划算吗”。",
+          "expected_invariants": [
+            "增量利润扩展决策保持。",
+            "选择、treatment、maturity 和成本调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-010-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只询问活动历史成本。",
+          "expected_invariants": [
+            "触达与成本合同保持。",
+            "坐席和折扣成本定义保持。"
+          ],
+          "expected_changes": [
+            "目标变为描述性成本估计。",
+            "增量续费和利润效果不再是主 estimand。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-010-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "触达在 eligible 客户中随机分配，所有客户完成续费观察。",
+          "expected_invariants": [
+            "利润 outcome、风险分层和容量决策保持。",
+            "assigned 与 reached 的 treatment 区分保持。"
+          ],
+          "expected_changes": [
+            "分配选择和 maturity boundary 解除。",
+            "可估计 assignment 的增量利润效果。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "estimate",
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "multi_estimand",
+          "cohort_or_risk_set"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "scope_revision",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "treatment variants 和 assignment population 分离。",
+          "未成熟续费不进入效果。",
+          "最终 outcome 包含触达和折扣成本。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存 scope revision 到增量利润的 authority lineage。",
+          "保存选择诊断、boundary 和下一轮设计依据。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-011",
+      "title": "促销期间缺货与销量机会损失",
+      "source_pool": "generated_business_world",
+      "provenance": {
+        "authoring_method": "controlled_world_generation",
+        "review_status": "candidate",
+        "origin_note": "为测试截断需求、库存 exposure、替代和反事实区间而构造的受控业务世界；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "618 期间华南卖得没预期好，是需求不行还是缺货拖了后腿？估一下少卖了多少，也告诉我哪些 SKU 应该补库存。",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-STOCKOUT-011",
+        "narrative": "零售商在大促期间按 SKU、仓和区域经营库存。销量同时受需求、价格、曝光、库存可得性和替代购买影响。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://inventory/availability/v3",
+            "state": "partial",
+            "description": "库存快照每小时一次，小时内短暂缺货可能缺失。"
+          },
+          {
+            "contract_ref": "contract://order/stockout-substitution/v2",
+            "state": "available",
+            "description": "订单记录下单、缺货取消和替代 SKU。"
+          },
+          {
+            "contract_ref": "contract://promotion/exposure/v2",
+            "state": "partial",
+            "description": "促销记录价格、曝光和活动资格；缺货时曝光下降。"
+          },
+          {
+            "contract_ref": "contract://forecast/promo-demand/v1",
+            "state": "stale",
+            "description": "大促前需求预测对首次参加活动的新品不稳定。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-STOCK-HOURLY-SNAPSHOT",
+            "description": "小时快照无法捕捉全部短暂缺货。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-STOCK-CENSORED-DEMAND",
+            "description": "缺货时页面曝光降低，观测需求被截断。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-STOCK-SUBSTITUTION",
+            "description": "相似 SKU 之间存在购买替代。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-STOCK-NEW-SKU-FORECAST",
+            "description": "预测模型对首次参加大促新品不稳定。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "三款头部 SKU 的仓间调拨延迟造成显著缺货，部分需求转移到替代 SKU。",
+          "另一些长尾 SKU 需求低于预测。",
+          "用缺货前日均销量直接外推会高估机会损失。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "安排紧急补货、仓间调拨，并修正下一次大促备货。",
+        "consequence_of_error": "把低需求当成缺货会积压库存；忽视替代会重复计算损失。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "区分需求不足与库存约束。",
+          "机会损失属于反事实估计，需要明确假设和范围。",
+          "SKU 建议考虑仓、剩余活动时间和替代。",
+          "小时级 availability exposure 优先于日级 raw sales。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "availability-exposure-demand-bounds",
+            "rationale": "以有货小时、页面曝光和相似区域构建销量率与保守需求范围。",
+            "required_properties": [
+              "available hours 为 exposure",
+              "无货不等于零需求",
+              "区间而非伪精确点估计"
+            ]
+          },
+          {
+            "design_family": "category-substitution-counterfactual",
+            "rationale": "在品类层处理替代与蚕食，并按补货 lead time 给情景排序。",
+            "required_properties": [
+              "替代销量不重复计为损失",
+              "新品预测不确定性显式",
+              "剩余活动 horizon 进入建议"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "可售库存和曝光的小时级覆盖。",
+          "缺货前需求趋势、价格和促销强度。",
+          "替代 SKU 的销量转移。",
+          "预测误差与新品不确定性。",
+          "补货 lead time 和活动剩余 horizon。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "censored_demand",
+          "insufficient_availability_resolution"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "用户允许估算，Agent 可采用透明情景和 bounds；数据不足时局部降级。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "zero_sales_as_zero_demand",
+          "description": "把零销量小时自动视为零需求。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "substitution_double_count",
+          "description": "忽略替代购买并重复计算机会损失。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "uniform_precise_stockout_loss",
+          "description": "为所有 SKU 输出同等确定性的损失点估计。",
+          "severity": "major"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-011-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“华南 618 销量未达标有多少来自缺货，哪些 SKU 值得马上补”。",
+          "expected_invariants": [
+            "需求与库存诊断、损失估计和补货排序保持。",
+            "exposure、替代和不确定性调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-011-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只问哪些 SKU 实际缺货时间最长。",
+          "expected_invariants": [
+            "SKU、仓和区域范围保持。",
+            "库存 availability 合同保持。"
+          ],
+          "expected_changes": [
+            "目标变为 availability 描述。",
+            "销量反事实与补货价值不再是主结论。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-011-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "缺货时仍保留完整页面曝光，并记录到货提醒需求。",
+          "expected_invariants": [
+            "机会损失和补货决策保持。",
+            "SKU 替代分析保持。"
+          ],
+          "expected_changes": [
+            "潜在需求可观测性提高。",
+            "censored demand boundary 减弱，损失区间可收窄。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "estimate",
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "exposure",
+          "association_or_causal_ceiling",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "absolute",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "stale_release"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "库存 exposure 与销量 observation window 对齐。",
+          "替代销量不重复进入 lost sales。",
+          "局部数据不足不得扩展到全部 SKU。"
+        ],
+        "semantic_rubric_dimensions": [
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存需求反事实假设、bounds 和 reversal conditions。",
+          "保存 SKU 级 Evidence scope 与建议边界。"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-EXP-012",
+      "title": "广告渠道 ROAS 排名与归因口径冲突",
+      "source_pool": "adversarial_conversation",
+      "provenance": {
+        "authoring_method": "adversarial_authoring",
+        "review_status": "candidate",
+        "origin_note": "为检验归因与增量效果混淆、隐私缺失和预算决策压力而合成；尚未经过业务或测量专家审核。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "把最近一个月各广告渠道的 ROAS 排一下，预算应该从谁挪给谁？",
+            "communication_function": "question"
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "injection_point": "after_measurement_proposal",
+            "text": "市场用 7 天点击归因，财务看 30 天净收入，而且 iOS 有一部分转化看不到。你选一个合理主口径，也把另一种口径的影响讲清楚。",
+            "communication_function": "context"
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "injection_point": "after_provisional_answer",
+            "text": "品牌渠道可能会带来自然搜索，别把最后一次点击排名直接当成增量效果。",
+            "communication_function": "challenge"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-CHANNEL-ROAS-012",
+        "narrative": "消费业务跨搜索、社交、联盟和品牌视频投放。市场归因、财务收入成熟期和隐私缺失导致渠道结果不可直接横比。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://ads/cost/v3",
+            "state": "available",
+            "description": "广告成本按渠道、campaign、日期和币种记录。"
+          },
+          {
+            "contract_ref": "contract://attribution/touch/v4",
+            "state": "conflicting",
+            "description": "归因提供 7 天点击、1 天浏览和 last-touch 版本，各团队默认不同。"
+          },
+          {
+            "contract_ref": "contract://revenue/net-30d/v2",
+            "state": "partial",
+            "description": "订单净收入包含退款和 30 天成熟状态，最近七天未成熟。"
+          },
+          {
+            "contract_ref": "contract://privacy/ios-coverage/v1",
+            "state": "partial",
+            "description": "隐私合同记录 iOS 聚合转化和渠道可观测比例。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-ROAS-IMMATURE-REVENUE",
+            "description": "最近七天净收入尚未成熟。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ROAS-IOS-COVERAGE",
+            "description": "iOS 可观测率在渠道间不同。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ROAS-BRAND-ASSIST",
+            "description": "品牌视频主要产生 view-through 和自然搜索。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-ROAS-SEARCH-CAPTURE",
+            "description": "搜索渠道承接部分其他渠道创造的需求。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ROAS-SEASONAL-BUDGET",
+            "description": "渠道预算变化与需求季节性同时发生。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "last-click ROAS 把搜索排在第一，但搜索承接明显。",
+          "成熟净收入和隐私覆盖校正后，社交效率低于表面值。",
+          "品牌视频存在辅助效应，现有观测数据无法给出可信增量回报。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "调整下月渠道预算，并决定是否保留品牌视频。",
+        "consequence_of_error": "把归因收入当成增量效果会从创造需求的渠道错误转移预算。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "ROAS 收入窗口、归因规则、退款成熟和成本分母显式。",
+          "主口径选择符合预算决策，并记录替代口径敏感性。",
+          "iOS 缺失覆盖不能在渠道间默认为相同。",
+          "归因排名与增量效果分开。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "mature-attributed-roas-sensitivity",
+            "rationale": "以成熟净收入统一比较描述性效率，并并列 7 天点击口径敏感性。",
+            "required_properties": [
+              "成本和收入窗口对齐",
+              "未成熟日期排除或降级",
+              "隐私覆盖 bounds"
+            ]
+          },
+          {
+            "design_family": "incrementality-test-plan",
+            "rationale": "用 geo holdout、随机 holdout 或可信 lift study 支持边际预算决策。",
+            "required_properties": [
+              "归因与 incrementality 分离",
+              "跨渠道承接进入设计",
+              "目标为边际回报"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "成本、收入和归因窗口对齐。",
+          "退款 maturity 与最近七天覆盖。",
+          "iOS 缺失的渠道异质性。",
+          "搜索承接、品牌辅助和跨渠道重叠。",
+          "预算变化与季节性的共同变化。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "conflicting_attribution_definition",
+          "immature_net_revenue",
+          "missing_incrementality_design"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "用户允许 Agent 选择主口径并要求敏感性；记录口径选择，同时保持归因与增量边界。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "mixed_roas_windows",
+          "description": "把 7 天 last-click 收入与 30 天净收入混合排名。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "uniform_ios_uplift",
+          "description": "对渠道异质的 iOS 缺失做无依据统一放大。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "attribution_as_incrementality",
+          "description": "依据 last-click 排名直接给确定性预算迁移结论。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-012-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "把首问改写为“比较近一个月渠道 ROAS，并判断下月预算如何调整”。",
+          "expected_invariants": [
+            "渠道效率与预算决策保持。",
+            "归因口径、收入成熟、隐私和 incrementality 调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-012-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "预算问题改为边际再增加一万元的回报。",
+          "expected_invariants": [
+            "渠道范围和净收入 outcome 保持。",
+            "归因与增量效果的边界保持。"
+          ],
+          "expected_changes": [
+            "estimand 转向 marginal response。",
+            "历史平均 ROAS 不能直接回答。"
+          ]
+        },
+        {
+          "sibling_id": "G3-EXP-012-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "所有渠道都有同期随机 geo holdout，净收入已完整成熟。",
+          "expected_invariants": [
+            "预算决策、渠道范围和成本定义保持。",
+            "iOS 覆盖仍需纳入 outcome 观测。"
+          ],
+          "expected_changes": [
+            "missing incrementality 和 revenue maturity boundary 解除。",
+            "可优先用增量效果支持预算分配。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "misleading_comparison"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "ROAS numerator、denominator 和窗口版本一致。",
+          "未成熟收入不得充当零收入。",
+          "attributed Evidence 不得支持 incremental claim。"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "保存主归因口径、替代口径和 coverage boundary。",
+          "保存 attributed 与 incremental claim 的分离。"
+        ],
+        "human_review_required": true
+      }
+    }
+  ]
+}

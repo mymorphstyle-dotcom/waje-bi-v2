@@ -1,0 +1,249 @@
+{
+  "catalog_version": "gate3.behavior-eval.v1",
+  "episodes": [
+    {
+      "episode_id": "G3-ROOT-001",
+      "title": "在奖金与经营看板统一前定义活跃企业客户",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "review_status": "candidate",
+        "origin_note": "由主设计者从零构造的无时间锚点定义案例，用于检验 Agent 能否围绕决策用途处理同名指标合同冲突；未声称来自真实用户。",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "销售奖金和经营看板都要用“活跃企业客户”，但销售、产品、财务现在各算各的。请帮我给出一个能落地的统一定义，并说明哪些场景不能共用。",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-ACTIVE-ENTERPRISE-DEFINITION",
+        "narrative": "一家按席位订阅并叠加用量收费的 SaaS 公司准备统一经营指标。销售关注有有效合同的账户，产品关注发生关键行为的 workspace，财务关注存在当期可确认收入的客户法人。一个法人可能拥有多个合同、workspace 和付款主体。",
+        "available_contracts": [
+          {
+            "contract_ref": "metric.sales.active_account.v3",
+            "state": "available",
+            "description": "销售定义按 account 去重，要求有效合同或处于正式续约宽限期。"
+          },
+          {
+            "contract_ref": "metric.product.active_workspace.v5",
+            "state": "available",
+            "description": "产品定义按 workspace 去重，要求完成一项关键协作行为。"
+          },
+          {
+            "contract_ref": "metric.finance.revenue_customer.v2",
+            "state": "available",
+            "description": "财务定义按 customer legal entity 去重，要求存在可确认收入。"
+          },
+          {
+            "contract_ref": "entity.enterprise_customer_mapping",
+            "state": "partial",
+            "description": "account、workspace、合同、付款主体和法人之间的多对多映射只覆盖直接销售渠道。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+            "description": "三个正式定义使用不同观察单位，数值无法直接等同。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ACTIVE-CUSTOMER-MAPPING-GAP",
+            "description": "合作伙伴渠道缺少 workspace 到客户法人的可靠映射。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "奖金核算需要稳定、可审计且难被短期行为操纵的客户法人或合同主体口径。",
+          "产品采用需要 workspace 行为口径，无法与奖金口径共享同一个分子和观察单位。",
+          "统一语义层可以维护一个概念族和明确用途，强行生成单一万能数字会损害至少一个决策。",
+          "合作伙伴渠道在实体映射补齐前只能给出边界或分渠道口径。"
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        }
+      },
+      "decision_stakes": {
+        "business_decision": "确定销售奖金、经营看板和产品采用分析如何使用活跃企业客户概念。",
+        "consequence_of_error": "错误合并观察单位会改变奖金、夸大或压低客户规模，并让跨团队指标无法审计。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "用户要解决的是跨用途指标治理和可复用边界。",
+          "account、workspace、合同、付款主体和客户法人是不同观察单位。",
+          "统一可以表现为有明确用途的定义族，无需承诺一个数字适合所有决策。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "purpose_bound_metric_family",
+            "rationale": "为奖金、经营规模和产品采用分别定义成员资格、观察单位与去重规则，再给出允许汇总的共同概念层。",
+            "required_properties": [
+              "每个用途声明观察单位、成员资格、分子、分母或适用的无分母定义。",
+              "明确多对多实体映射及无法映射的渠道边界。",
+              "同名指标之间禁止直接数值替换。"
+            ]
+          },
+          {
+            "design_family": "governed_primary_definition_with_named_satellites",
+            "rationale": "选择一个公司级主定义用于经营规模，同时保留销售资格和产品采用两个有命名的卫星指标。",
+            "required_properties": [
+              "主定义的决策用途和 claim ceiling 明确。",
+              "卫星指标不能被标记成主定义的可互换实现。",
+              "奖金规则经过业务 owner 明确接受。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "三个合同各自的决策用途、观察单位、成员资格、去重和排除规则。",
+          "account、workspace、合同、付款主体与客户法人的映射覆盖率和多对多关系。",
+          "奖金是否允许续约宽限期、试用、零收入合同和合作伙伴渠道。",
+          "统一定义是否会改变已承诺的薪酬或财务治理边界。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "clarification_required",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "conflicting_contract",
+          "missing_contract",
+          "unsupported_grain"
+        ],
+        "claim_ceiling": "definition_only",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "先检查正式合同和实体映射；只有奖金用途的 owner 选择仍会实质改变成员资格且无法从治理资料确定时，才提出一个带推荐项的问题。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "universal_metric_without_use_boundary",
+          "description": "把任一团队现有数字直接宣布为所有用途的统一指标。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "observation_unit_collapse",
+          "description": "把 workspace、account、合同或客户法人当作可互换观察单位。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "ask_before_inspecting_contracts",
+          "description": "把合同和映射中可查明的事实交给用户重新定义。",
+          "severity": "major"
+        },
+        {
+          "failure_code": "compensation_scope_overreach",
+          "description": "在缺少奖金 owner 决策时给出会改变薪酬资格的强制定义。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-ROOT-001-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "将用户问题改写为“帮我们治理同名的活跃企业客户指标，先说哪些用途能共用、哪些必须分开”。",
+          "expected_invariants": [
+            "跨用途治理目标、观察单位冲突和 claim ceiling 保持。",
+            "仍需先检查三个正式合同和实体映射。"
+          ],
+          "expected_changes": [
+            "回答组织和术语可以随措辞调整。"
+          ]
+        },
+        {
+          "sibling_id": "G3-ROOT-001-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户明确只为产品采用漏斗定义活跃 workspace，并取消奖金和经营规模用途。",
+          "expected_invariants": [
+            "仍需声明成员资格、去重规则和实体粒度。"
+          ],
+          "expected_changes": [
+            "观察单位应收敛到 workspace。",
+            "销售合同主体和财务客户法人口径退出主测量设计。",
+            "metric family identity 和必须调查项相应修订。"
+          ]
+        },
+        {
+          "sibling_id": "G3-ROOT-001-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "实体映射合同升级为完整且已审计，奖金 owner 同时签署按客户法人去重的成员资格规则。",
+          "expected_invariants": [
+            "产品采用与经营/奖金仍有不同用途。",
+            "不同观察单位的指标仍不能直接替换。"
+          ],
+          "expected_changes": [
+            "合作伙伴渠道的 missing-contract boundary 可以关闭。",
+            "奖金和经营规模可形成更强的 executable definition。",
+            "旧边界证据不能直接代表新合同状态。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "observation_unit",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "no_time"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "missing_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn",
+          "clarification"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "claim ceiling does not exceed definition_only",
+          "every proposed metric declares an observation unit",
+          "boundary-changing sibling does not reuse the old contract state as current evidence"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "ambiguity_and_clarification_discipline",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness",
+          "counterfactual_consistency"
+        ],
+        "trace_obligations": [
+          "contract inspection precedes any material user clarification",
+          "accepted definition preserves purpose and observation-unit lineage",
+          "counterfactual contract change produces a new boundary or measurement relationship"
+        ],
+        "human_review_required": true
+      }
+    }
+  ]
+}

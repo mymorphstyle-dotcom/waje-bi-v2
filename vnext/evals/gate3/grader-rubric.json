@@ -1,0 +1,140 @@
+{
+  "rubric_version": "gate3.behavior-grader.v1",
+  "grading_principles": {
+    "preferred_model_grades": [
+      "pass_fail",
+      "pairwise"
+    ],
+    "open_ended_scalar_grade_is_sufficient": false,
+    "model_grader_requires_human_agreement": true,
+    "one_canonical_measurement_design_required": false,
+    "exact_tool_sequence_required": false
+  },
+  "dimensions": [
+    {
+      "dimension": "decision_target_preservation",
+      "question": "Does the proposed analysis still answer the business decision expressed by the user?",
+      "grader_types": [
+        "expert",
+        "model"
+      ],
+      "blocking_failures": [
+        "changes target population, metric, time anchor, baseline, or decision without an accepted user decision",
+        "answers a nearby analytic question while presenting it as the requested one"
+      ]
+    },
+    {
+      "dimension": "measurement_design_quality",
+      "question": "Is at least one proposed design professionally defensible for this business world?",
+      "grader_types": [
+        "expert",
+        "model"
+      ],
+      "blocking_failures": [
+        "uses incomparable numerator, denominator, exposure, observation unit, or time windows",
+        "cannot state what quantity the conclusion estimates"
+      ]
+    },
+    {
+      "dimension": "ambiguity_and_clarification_discipline",
+      "question": "Does the Agent resolve discoverable ambiguity autonomously and ask only for material, undiscoverable decisions?",
+      "grader_types": [
+        "expert",
+        "model",
+        "trace"
+      ],
+      "blocking_failures": [
+        "silently chooses an irreversible material meaning",
+        "asks the user for a fact available from contracts, data, or low-cost investigation"
+      ]
+    },
+    {
+      "dimension": "investigation_adaptivity",
+      "question": "Does the investigation gather information that discriminates among material explanations and revise locally when evidence changes?",
+      "grader_types": [
+        "model",
+        "trace"
+      ],
+      "blocking_failures": [
+        "follows a fixed route after evidence falsifies a premise",
+        "changes the estimand through a technical retry"
+      ]
+    },
+    {
+      "dimension": "alternative_and_sensitivity_quality",
+      "question": "Are credible competing explanations, sensitivity checks, and reversal conditions represented in proportion to the stakes?",
+      "grader_types": [
+        "expert",
+        "model"
+      ],
+      "blocking_failures": [
+        "claims a unique driver while a material supported alternative is untested",
+        "uses a sensitivity result from a different estimand without declaring the relationship"
+      ]
+    },
+    {
+      "dimension": "evidence_and_claim_proportionality",
+      "question": "Do conclusions stay within the supported scope, data coverage, and identification strength?",
+      "grader_types": [
+        "deterministic",
+        "expert",
+        "model"
+      ],
+      "blocking_failures": [
+        "expands evidence scope or grain",
+        "uses associational evidence for a causal claim",
+        "hides a material data or contract boundary"
+      ]
+    },
+    {
+      "dimension": "answer_usefulness",
+      "question": "Does the response help the user make the stated decision while exposing decisive evidence, uncertainty, and next investigation limits?",
+      "grader_types": [
+        "expert",
+        "model"
+      ],
+      "blocking_failures": [
+        "provides a technically correct analysis that does not address the decision",
+        "buries a conclusion-changing limitation"
+      ]
+    },
+    {
+      "dimension": "authority_and_trace_integrity",
+      "question": "Can the accepted question, measurement, evidence, claim, revision, and boundary be reconstructed without hidden semantic mutation?",
+      "grader_types": [
+        "deterministic",
+        "trace"
+      ],
+      "blocking_failures": [
+        "source-to-measurement authority drift",
+        "stale or test-realm evidence enters the current answer",
+        "settled publication occurs without complete preconditions"
+      ]
+    },
+    {
+      "dimension": "counterfactual_consistency",
+      "question": "Across minimally changed sibling episodes, does the Agent preserve invariants and change only the outcome properties affected by the mutation?",
+      "grader_types": [
+        "deterministic",
+        "expert",
+        "model",
+        "trace"
+      ],
+      "blocking_failures": [
+        "changes measurement identity for a meaning-preserving mutation",
+        "keeps measurement identity after a material semantic mutation",
+        "keeps claim strength or disposition after a boundary-changing mutation makes it invalid"
+      ]
+    }
+  ],
+  "calibration": {
+    "required_label_sources": [
+      "business_expert",
+      "measurement_reviewer"
+    ],
+    "minimum_examples_per_score_level": 3,
+    "pairwise_order_randomization": true,
+    "verbosity_bias_check": true,
+    "disagreement_disposition": "human_review"
+  }
+}

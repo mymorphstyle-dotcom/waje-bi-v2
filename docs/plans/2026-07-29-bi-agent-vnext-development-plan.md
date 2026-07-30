@@ -450,10 +450,17 @@ Exit evidence：
   `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md`。
 - plan adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md`。
+- behavior-eval adversarial review：
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`；
+  authoring draft 打开 10 个 Blocking、11 个 Major；即时关闭 1 个 Blocking、2 个 Major，
+  G3.E0/G3.1 保持 blocked。
 - 组合审查第一轮 20 个 Blocking、8 个 Major；closure verification 再打开 6 个 Blocking、
   6 个 Major。两轮 finding 均已写入设计；实现证据尚未开始。
 - Gate 1/2 历史验收保持；G3.1/G3.2 是任何新 Gate 3 业务 Evidence、Answer 和 Workflow
   实现的硬前置。
+- Gate 3 生产实现还需先通过 G3.E0 behavior-eval foundation：先冻结与实现无关的
+  EvaluationEpisode 合同、候选集、反事实关系、review/calibration 流程与 coverage ledger，
+  再开始 G3.1。
 
 **交付物**
 
@@ -473,6 +480,8 @@ Exit evidence：
 - provisional Answer 与 execution/obligation/publication/delivery 四轴 Workflow。
 - machine-frozen eval manifest、real-provider semantic/frame lane、full-authority conformance
   lane 与 independent Reviewer lane。
+- behavior-first EvaluationEpisode corpus：真实/专家措辞、业务世界、决策风险、可接受
+  结果空间、禁止结果、反事实 siblings 与分层 grader。
 
 **Exit criteria**
 
@@ -493,6 +502,8 @@ Exit evidence：
 - [ ] real-provider 两条 lane、独立 Reviewer 与 complete WAJE trace 通过。
 - [ ] 旧 Gate 3 实现、artifact、fixture 不进入当前依赖或 acceptance。
 - [ ] 对抗式审计 blocking findings 为 0。
+- [ ] G3.E0 corpus 达到 Gate3EvalPolicy，真实用户来源和 business/measurement review
+  均可验证；合成措辞不得冒充真实用户样本。
 
 ### Gate 4：完整 capability fabric
 
@@ -628,31 +639,29 @@ Gate 1–4 可以扩充，Gate 7 前不得缩减为证明切片：
 - sensitivity、alternative explanation、falsification 与 reversal；
 - follow-up、scope revision、challenge 与 evidence explanation。
 
-### 8.2 expectation package
+### 8.2 EvaluationEpisode 与 expectation envelope
 
-每个 case 至少包含：
+业务验收的基本单位是实现无关的 `EvaluationEpisode`，每个 Episode 至少包含：
 
-- exact case ID、catalog/policy version；
-- natural-language question；
-- question family；
-- `contract_supported`；
-- `required_disposition`、`allowed_dispositions`；
-- allowed boundary codes 与验证依据；
-- required frame fields 与允许的 assumption；
-- required / forbidden capabilities；
-- expected contract/evidence states；
-- allowed claim strength；
-- required sensitivity/falsification/reversal behavior；
-- expected answer blocks 与 workflow business nodes；
-- Reviewer trigger/disposition；
-- verifier pass/fail rules；
-- failure responsibility point；
-- TraceProfile ID 与 required artifact refs；
-- minimum lane、paraphrase、repeat 和 seed policy。
+- stable episode ID、catalog/policy version 与可核验 source provenance；
+- 自然用户对话，可包含 clarification、correction、challenge 与 scope revision；
+- 独立于 WAJE 实现的 business world、数据条件、隐藏 evaluator truth 与决策风险；
+- 必须保持的业务含义、必须调查的问题和多个可接受 measurement design family；
+- allowed dispositions、allowed boundary codes、claim ceiling 与 clarification policy；
+- 明确的 forbidden outcomes；
+- 至少三个最小反事实 sibling，分别检测 meaning preservation、measurement change 和
+  boundary/interaction change；
+- deterministic hard checks、calibrated semantic rubric、trace obligations 与 human-review
+  要求。
 
-Gate 3 的 checked-in `Gate3EvalPolicy`、expectation catalog 与 manifest validator 同样适用于
-Gate 7。run manifest 只能扩展 policy，不能改写 contract-supported 状态、required
-disposition、boundary codes 或最低覆盖 floor。
+Episode 禁止规定 action 顺序、工具序列、SQL 形状、唯一 Frame 或内部 Workflow 节点。
+authority、identity、calendar、persistence、Evidence admission 和 publication 另由
+conformance suites 逐项验证；codec、repository、provider 和 projection 由 implementation
+tests 验证。三层结果分别记账，业务 Episode 失败不能被局部测试分数抵消。
+
+Gate 3 的 checked-in `Gate3EvalPolicy`、episode catalog、grader rubric 与 manifest validator
+同样适用于 Gate 7。run manifest 只能扩展 policy，不能改写 acceptable outcome、forbidden
+outcome、claim ceiling、boundary code 或最低覆盖 floor。
 
 eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、产品与数据/平台双 owner、
 可复用模式和相关 eval slice 回归。
@@ -776,3 +785,5 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | Gate 3 重定义为 Universal Measurement Authority | 用户要求 + Gate 0–2 audit | 先建立问题到测量的通用权威连续性，再进入完整 capability fabric |
 | 2026-07-30 | QuestionRevision 归 `InvestigationCase` authority family | Gate 0–2 audit | 保存 immutable 用户输入 lineage；测量设计仍只属于 AnalysisFrameRevision |
 | 2026-07-30 | Gate 3 只产出 provisional Answer | Gate 分层审计 | identity preconditions 在 Gate 3 fail closed；完整 settled publication 由 Gate 5 实现 |
+| 2026-07-30 | G3.E0 采用 behavior-first EvaluationEpisode | 用户确认 + eval-first review | 测试先定义业务世界、可接受结果空间、禁止结果和反事实关系；G3.1 等待 readiness hard gate |
+| 2026-07-30 | 合成措辞不计入真实用户来源 | 组合对抗审查 | 真实用户池、双审、held-out 和 calibration 缺口保持显式，禁止用生成样本补数量 |

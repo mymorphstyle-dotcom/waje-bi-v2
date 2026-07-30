@@ -1,0 +1,644 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-episode.v1.schema.json",
+  "title": "WAJE Gate 3 Behavior Evaluation Catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalog_version",
+    "episodes"
+  ],
+  "properties": {
+    "catalog_version": {
+      "const": "gate3.behavior-eval.v1"
+    },
+    "episodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evaluationEpisode"
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "evaluationEpisode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "title",
+        "source_pool",
+        "provenance",
+        "dataset_partition",
+        "user_episode",
+        "business_world",
+        "decision_stakes",
+        "acceptable_outcome",
+        "forbidden_outcomes",
+        "counterfactual_siblings",
+        "coverage_tags",
+        "grading"
+      ],
+      "properties": {
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_pool": {
+          "enum": [
+            "real_user_language",
+            "expert_business_case",
+            "historical_failure",
+            "generated_business_world",
+            "adversarial_conversation"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "dataset_partition": {
+          "enum": [
+            "authoring",
+            "calibration",
+            "development",
+            "held_out",
+            "challenge",
+            "production_mined"
+          ]
+        },
+        "user_episode": {
+          "$ref": "#/$defs/userEpisode"
+        },
+        "business_world": {
+          "$ref": "#/$defs/businessWorld"
+        },
+        "decision_stakes": {
+          "$ref": "#/$defs/decisionStakes"
+        },
+        "acceptable_outcome": {
+          "$ref": "#/$defs/acceptableOutcome"
+        },
+        "forbidden_outcomes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/forbiddenOutcome"
+          }
+        },
+        "counterfactual_siblings": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/counterfactualSibling"
+          }
+        },
+        "coverage_tags": {
+          "$ref": "#/$defs/coverageTags"
+        },
+        "grading": {
+          "$ref": "#/$defs/gradingPlan"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoring_method",
+        "review_status",
+        "origin_note",
+        "review_attestations"
+      ],
+      "properties": {
+        "authoring_method": {
+          "enum": [
+            "domain_interview",
+            "expert_authored",
+            "historical_failure_reconstruction",
+            "controlled_world_generation",
+            "adversarial_authoring",
+            "redacted_production_trace"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "candidate",
+            "business_reviewed",
+            "measurement_reviewed",
+            "fully_reviewed"
+          ]
+        },
+        "origin_note": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_trace_ref": {
+          "type": "string"
+        },
+        "review_attestations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reviewAttestation"
+          }
+        }
+      }
+    },
+    "reviewAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewer_role",
+        "reviewer_ref",
+        "review_record_ref",
+        "reviewed_content_hash"
+      ],
+      "properties": {
+        "reviewer_role": {
+          "enum": [
+            "business_owner",
+            "measurement_reviewer"
+          ]
+        },
+        "reviewer_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "review_record_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reviewed_content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "userEpisode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locale",
+        "messages"
+      ],
+      "properties": {
+        "locale": {
+          "type": "string",
+          "minLength": 2
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/userMessage"
+          }
+        }
+      }
+    },
+    "userMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn",
+        "speaker",
+        "injection_point",
+        "text"
+      ],
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speaker": {
+          "const": "user"
+        },
+        "injection_point": {
+          "enum": [
+            "initial",
+            "after_agent_clarification",
+            "after_measurement_proposal",
+            "during_investigation",
+            "after_provisional_answer",
+            "concurrent_with_effect"
+          ]
+        },
+        "text": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "communication_function": {
+          "enum": [
+            "question",
+            "context",
+            "correction",
+            "constraint",
+            "challenge",
+            "scope_revision",
+            "request_for_explanation"
+          ]
+        }
+      }
+    },
+    "businessWorld": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "world_id",
+        "narrative",
+        "evaluation_clock",
+        "available_contracts",
+        "data_conditions",
+        "hidden_business_truth"
+      ],
+      "properties": {
+        "world_id": {
+          "type": "string",
+          "pattern": "^WORLD-[A-Z0-9-]+$"
+        },
+        "narrative": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evaluation_clock": {
+          "$ref": "#/$defs/evaluationClock"
+        },
+        "available_contracts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/worldContract"
+          }
+        },
+        "data_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dataCondition"
+          }
+        },
+        "hidden_business_truth": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "evaluationClock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of_instant",
+        "default_business_timezone",
+        "calendar_contract_ref",
+        "release_cutoff_instant"
+      ],
+      "properties": {
+        "as_of_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "default_business_timezone": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "calendar_contract_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "business_day_contract_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "release_cutoff_instant": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "worldContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_ref",
+        "state",
+        "description"
+      ],
+      "properties": {
+        "contract_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "partial",
+            "missing",
+            "conflicting",
+            "stale"
+          ]
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "dataCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "condition_id",
+        "description",
+        "discoverability",
+        "materiality"
+      ],
+      "properties": {
+        "condition_id": {
+          "type": "string",
+          "pattern": "^DC-[A-Z0-9-]+$"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "discoverability": {
+          "enum": [
+            "provided_to_agent",
+            "discoverable_by_semantic_inspection",
+            "discoverable_by_data_probe",
+            "evaluator_only"
+          ]
+        },
+        "materiality": {
+          "enum": [
+            "low",
+            "material",
+            "critical"
+          ]
+        }
+      }
+    },
+    "decisionStakes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_decision",
+        "consequence_of_error",
+        "risk_level"
+      ],
+      "properties": {
+        "business_decision": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "consequence_of_error": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "risk_level": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        }
+      }
+    },
+    "acceptableOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "must_preserve",
+        "valid_design_space",
+        "must_investigate",
+        "allowed_dispositions",
+        "claim_ceiling",
+        "clarification_policy"
+      ],
+      "properties": {
+        "must_preserve": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "valid_design_space": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/validDesign"
+          }
+        },
+        "must_investigate": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "allowed_dispositions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "executable_design",
+              "clarification_required",
+              "typed_boundary"
+            ]
+          }
+        },
+        "allowed_boundary_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "claim_ceiling": {
+          "enum": [
+            "definition_only",
+            "data_quality_only",
+            "descriptive",
+            "associational",
+            "accounting_attribution",
+            "causal"
+          ]
+        },
+        "clarification_policy": {
+          "$ref": "#/$defs/clarificationPolicy"
+        }
+      }
+    },
+    "validDesign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "design_family",
+        "rationale",
+        "required_properties"
+      ],
+      "properties": {
+        "design_family": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rationale": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "required_properties": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "clarificationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "rationale"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "proceed_with_recorded_inference",
+            "ask_only_if_material_and_undiscoverable",
+            "must_ask_before_design"
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "forbiddenOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failure_code",
+        "description",
+        "severity"
+      ],
+      "properties": {
+        "failure_code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "severity": {
+          "enum": [
+            "major",
+            "blocking"
+          ]
+        }
+      }
+    },
+    "counterfactualSibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sibling_id",
+        "expected_relation",
+        "mutation_dimension",
+        "mutation",
+        "expected_invariants",
+        "expected_changes"
+      ],
+      "properties": {
+        "sibling_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9-]+-CF[0-9]{2}$"
+        },
+        "expected_relation": {
+          "enum": [
+            "meaning_preserving",
+            "measurement_changing",
+            "boundary_changing",
+            "interaction_changing"
+          ]
+        },
+        "mutation_dimension": {
+          "enum": [
+            "wording",
+            "decision_goal",
+            "scope",
+            "metric_definition",
+            "time_semantics",
+            "window_or_baseline",
+            "observation_unit",
+            "denominator",
+            "exposure",
+            "data_coverage",
+            "data_contract",
+            "hidden_business_truth",
+            "conversation_history",
+            "claim_strength_request"
+          ]
+        },
+        "mutation": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "expected_invariants": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "expected_changes": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "coverageTags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_goals",
+        "measurement_challenges",
+        "temporal_shapes",
+        "data_conditions",
+        "conversation_dynamics",
+        "risk_types"
+      ],
+      "properties": {
+        "decision_goals": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "measurement_challenges": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "temporal_shapes": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "data_conditions": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "conversation_dynamics": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "risk_types": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "gradingPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deterministic_checks",
+        "semantic_rubric_dimensions",
+        "trace_obligations",
+        "human_review_required"
+      ],
+      "properties": {
+        "deterministic_checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "uniqueItems": true
+        },
+        "semantic_rubric_dimensions": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "trace_obligations": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "human_review_required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

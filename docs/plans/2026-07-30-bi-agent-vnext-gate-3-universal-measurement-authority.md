@@ -1013,6 +1013,44 @@ Exit：
 - [x] Gate 0–2 baseline tests；
 - [x] 旧 Gate 3 artifact 不在工作区。
 
+### G3.E0 Behavior evaluation foundation
+
+本工作包先于任何 G3.1 生产实现。它以业务决策和真实交互为起点，不能从 runtime 类、
+action、工具或 SQL 反推测试。
+
+当前状态：**Blocked**。37 个 authoring candidates 已形成，组合对抗审查打开 10 个
+Blocking、11 个 Major，本轮即时关闭 1 个 Blocking、2 个 Major；详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`。
+
+交付：
+
+- versioned `EvaluationEpisode` schema、Gate3EvalPolicy 与 grader rubric；
+- 五类来源池：真实用户原话、专家经营案例、历史失败重建、受控业务世界、对抗式会话；
+- 每例包含 business world、decision stakes、acceptable outcome envelope、forbidden
+  outcomes 和 evaluator-only truth；
+- 每例至少三个最小反事实关系：meaning-preserving、measurement-changing、
+  boundary-changing 或 interaction-changing；
+- checked-in development catalog、coverage ledger、protected held-out manifest 和
+  grader-calibration package；
+- product behavior、authority/trust conformance、implementation 三层独立计分。
+
+Authoring checkpoint：
+
+- [ ] 至少 36 个 schema-valid candidate Episode；
+- [ ] coverage dimensions 无空白，至少 12 个多轮 Episode、6 个 high/critical Episode；
+- [ ] 每个 Episode 的三类反事实关系齐备；
+- [ ] 未经访谈或真实 trace 获取的措辞不标记为 `real_user_language`；
+- [ ] catalog readiness gaps 由 validator 机器生成并 checked in。
+
+进入 G3.1 的 hard precondition：
+
+- [ ] 每个来源池达到 Gate3EvalPolicy 最低数量；
+- [ ] 进入 development/calibration/held-out 分区的全部 base Episode 完成 business owner 与
+  measurement reviewer 双审，reviewed base 总量达到 policy floor；
+- [ ] semantic/model grader 完成人工标注校准；
+- [ ] development、calibration、held-out 分区和 hash 已冻结；
+- [ ] run manifest 无权降低 Episode expectation 或 policy floor。
+
 ### G3.1 Gate 1 authority and storage amendment
 
 交付：
@@ -1151,30 +1189,38 @@ Exit：
 
 ## 21. 测试与 eval
 
-### 21.1 Machine-readable coverage manifest
+### 21.1 Behavior-first corpus authority
 
-checked-in manifest 必须枚举：
+业务验收权威由 checked-in `EvaluationEpisode` catalog、Gate3EvalPolicy 和 grader rubric
+组成。Episode 在生产实现前编写，描述：
 
-- dimensions 与每个维度的 values；
-- required single coverage；
-- pairwise coverage floor；
-- critical higher-order combinations；
-- exact case IDs；
-- required/allowed dispositions；
-- provider/model/prompt/schema versions；
+- 自然用户会话与可核验 source provenance；
+- 独立 business world、数据条件、隐藏 truth 和 decision stakes；
+- must-preserve 业务含义、must-investigate 问题和多个 valid design families；
+- allowed dispositions、claim ceiling、clarification policy 与 forbidden outcomes；
+- 最小反事实 siblings 及各自 expected invariants / expected changes；
+- deterministic checks、semantic rubric 和 trace obligations。
+
+Episode 禁止指定 action 序列、工具顺序、SQL 形状、唯一 AnalysisFrame 或内部 Workflow
+节点。对可接受行为的验收采用结果空间和关系约束。
+
+checked-in run manifest 枚举：
+
+- catalog、policy、rubric、schema 与内容 hash；
+- episode IDs、dataset partition 和 source provenance；
+- provider/model/prompt versions；
 - paraphrases、repeats、seeds；
-- allowed skip reasons；
-- denominator 与 pass policy；
-- artifact/trace requirements。
+- allowed skip reasons、denominator 与 pass policy；
+- TraceProfile 与 artifact requirements。
 
 manifest 必须满足独立、versioned、checked-in `Gate3EvalPolicy` 的最低 floor；manifest
 只能扩展，不能降低：
 
-- 第 21.3 节全部 critical case ID；
-- 每个枚举 dimension value 至少一个 deterministic case；
+- 第 21.4 节全部 critical risk pattern；
+- 每个枚举 dimension value 至少一个 base Episode 或 counterfactual sibling；
 - policy 声明的全部可行 pairwise combinations；
 - critical higher-order combinations 100%，不允许 skip；
-- 每个 ClaimTargetKind 至少 3 个不同 natural-language base cases；
+- 每个 ClaimTargetKind 至少 3 个独立 business worlds；
 - 每个 critical named/historical case 在 Lane A 至少 3 个 paraphrases × 3 次 repeats；
 - 每个 high-risk authority-continuity case 在 Lane B 至少 2 个 paraphrases × 2 次 repeats；
 - 每类 Reviewer trigger 至少 2 个 base cases × 3 次 repeats；
@@ -1186,7 +1232,23 @@ validator 在运行前冻结 policy、expectation catalog、TraceProfile 与 man
 减少 case、repeat、paraphrase、critical combination 或 denominator 会使验收失败。
 Gate3EvalPolicy 变更和 eval result 禁止在同一提交审查。
 
-### 21.2 Coverage 维度
+### 21.2 Episode 来源与真实性
+
+来源池至少包含：
+
+| 来源池 | 取得方式 | 可承担的证据角色 |
+|---|---|---|
+| `real_user_language` | 业务访谈、试用会话或脱敏真实 trace | 真实措辞、上下文缺口与交互分布 |
+| `expert_business_case` | 业务 owner / 分析专家独立出题 | 专业决策与测量设计空间 |
+| `historical_failure` | 对既有失败做当前合同下的重建 | 已知高风险回归 |
+| `generated_business_world` | 先定义隐藏 truth 与数据条件，再生成问题 | 可控反事实、边界和稀有组合 |
+| `adversarial_conversation` | 独立红队多轮会话 | correction、challenge、scope drift 与压力测试 |
+
+LLM 或子智能体生成的自然措辞只能进入 candidate authoring，不能标记为
+`real_user_language`。base Episode 进入 development/calibration/held-out 前必须经过 business
+owner 与 measurement reviewer 双审；grader 标注分歧保留并进入 calibration。
+
+### 21.3 Coverage 维度
 
 | 维度 | 必须覆盖 |
 |---|---|
@@ -1199,8 +1261,12 @@ Gate3EvalPolicy 变更和 eval result 禁止在同一提交审查。
 | conversation | initial、clarification、low-risk inference、correction、challenge、scope revision、retry |
 | lifecycle | review wait、effect wait、evidence admission wait、crash/resume、supersede、replay |
 | answer | evidence claim、boundary claim、mixed provisional、publication blocked |
+| source | real user、expert、historical failure、controlled world、adversarial conversation |
 
-### 21.3 Critical cases
+coverage 采用 base Episode、单因素 counterfactual 和 pairwise/higher-order matrix 联合完成。
+一个案例碰巧覆盖多个 tag 不能替代独立 business worlds。
+
+### 21.4 Critical risk patterns
 
 - 目标月月初 vs 前月月末；
 - 1 月 vs 上年 12 月；
@@ -1221,7 +1287,20 @@ Gate3EvalPolicy 变更和 eval result 禁止在同一提交审查。
 - 用户 correction 与 in-flight review/effect 并发；
 - sensitivity 采用替代窗口并形成明确 Evidence relation。
 
-### 21.4 Metamorphic 与 mutation
+这些条目只定义必须覆盖的失败模式，禁止固化为 canonical questions 或 canonical
+answers。每项可以由多个行业、指标和交互形态实例化。
+
+### 21.5 Counterfactual、metamorphic 与 mutation
+
+每个 base Episode 至少包含：
+
+- `meaning_preserving`：只改措辞、顺序或无关上下文，measurement meaning 应保持；
+- `measurement_changing`：改变 metric、population、time、unit、denominator、exposure 或
+  decision goal，受影响的 measurement identity 必须改变；
+- `boundary_changing` 或 `interaction_changing`：改变合同、coverage、evidence availability
+  或 material correction，disposition、claim ceiling 或 accepted authority 必须相应改变。
+
+以下 conformance mutations 与 Episode relations 一同运行：
 
 - 相对月份 offset 改变必须改变 semantic measurement identity；
 - 同义改写保持 semantic ID，authority binding ID 保留 source lineage；
@@ -1240,7 +1319,19 @@ Gate3EvalPolicy 变更和 eval result 禁止在同一提交审查。
 - stale question/review/effect/result 被 supersede；
 - forged trace ref、missing span、forged settlement 被拒绝。
 
-### 21.5 Real-provider 两条验收 lane
+### 21.6 三层测试与 real-provider lanes
+
+三层结果分别记账：
+
+1. **Product behavior**：EvaluationEpisode 判断 decision preservation、measurement quality、
+   clarification discipline、adaptive investigation、alternatives、evidence proportionality 和
+   answer usefulness。
+2. **Authority/trust conformance**：schema、identity、calendar、scope、Evidence admission、
+   correction/revision、replay 和 publication hard boundary。
+3. **Implementation**：codec、repository、provider、retry、resolver、projection 和数据库
+   约束。
+
+implementation 或 conformance 通过不能抵消 product behavior 失败。
 
 Lane A：semantic/frame eval
 
@@ -1264,7 +1355,18 @@ test realm 由可信配置注册表、invocation context 与 storage realm 共�
 `environment_class`。test realm 使用独立 DSN/schema/credential，不依赖 release wheel 或
 production registry；production EvidenceStore 做二次 realm 验证。
 
-### 21.6 Acceptance thresholds
+### 21.7 Grader 与 calibration
+
+- hard invariants 使用 deterministic grader；
+- 专业测量质量和业务有用性使用双人 review 校准后的 model grader，优先 pass/fail 或
+  pairwise；
+- full trace 使用 trace grader 定位 binding/frame/review/resolution/plan/effect/evidence/
+  claim 的责任点；
+- model grader 不拥有业务 truth，未达人工一致性门槛时结果进入 review；
+- 风格、长度和措辞差异不能影响 hard-boundary 判定；
+- base Episode 与 sibling 以 relation consistency 联合评分。
+
+### 21.8 Acceptance thresholds
 
 - deterministic schema/domain/property/mutation/replay：100%；
 - critical historical regressions：100%，silent authority drift 为 0；
@@ -1276,6 +1378,15 @@ production registry；production EvidenceStore 做二次 realm 验证。
 - automated semantic grader 经过人工抽样校准；
 - grader disagreement 进入 review；
 - eval failure 不自动升级为 runtime guardrail。
+- 五个 source pool 分别达到最低数量，candidate 不计入 reviewed denominator；
+- `real_user_language` 的来源可核验，生成措辞冒充真实样本的数量为 0；
+- 每个 Episode 的 meaning-preserving、measurement-changing 与 boundary/interaction-changing
+  sibling 齐备；
+- catalog/policy/rubric/manifest hash 与 coverage ledger 一致。
+
+同一套 Episode 从 Gate 3 延伸到 Gate 7：后续 Gate 只增加可观察证据和 grader，不改写业务
+世界、acceptable outcome 或 forbidden outcome。若现实业务定义确实变化，创建新 catalog
+revision，旧结果保留以供比较。
 
 ## 22. Gate 3 Exit criteria
 
