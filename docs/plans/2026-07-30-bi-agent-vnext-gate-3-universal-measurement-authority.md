@@ -1138,8 +1138,10 @@ Authoring checkpoint：
   OIDC/attestation 写权限，第三方 action 全部固定完整 commit SHA；release、candidate
   runtime measurement 与 authorization 由同一个 externally approved admission-authority
   hash 绑定；
-- [ ] protected main 合并并启用 branch protection、`gate3-admission` environment、approved
-  admission-authority hash、trusted workflow revision 与 exact-SHA required check；
+- [x] `main` branch protection 已绑定 strict `vNext validation` required check，并限定
+  GitHub Actions app identity；
+- [ ] protected main 合并并完成 `gate3-admission` independent review protection、approved
+  admission-authority hash 与 trusted workflow revision；
 - [ ] 首个真实 Sigstore bundle 由独立 verifier 验证；重复签发通过 provider-owned
   state version + provider-state/admission predecessor 的原子 CAS；trusted canonical
   connector 从 protected control plane 读取 provider state、验证 bundle，再向 readiness

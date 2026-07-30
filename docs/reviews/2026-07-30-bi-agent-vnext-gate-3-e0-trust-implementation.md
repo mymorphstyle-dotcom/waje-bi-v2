@@ -131,8 +131,8 @@ Current remote controls:
 - `gate3-admission` exists and allows only protected branches;
 - the environment currently has no required reviewer, reports `can_admins_bypass=true`, and has no
   approved admission-authority secrets;
-- required status checks will be configured after the first `vNext validation` check exists on
-  GitHub.
+- `vNext validation` passed on PR #1 and is now a strict required check on `main`, bound to the
+  GitHub Actions app (`app_id=15368`).
 
 This is sufficient to exercise ordinary public CI after merge. It does not satisfy independent
 change control or external admission authority. The machine-derived Gate keeps this state blocked.
@@ -247,5 +247,5 @@ The combined review first reproduced:
 
 The repository fixes the implementable contract findings, selects GitHub/Sigstore, and removes the
 superseded raw Ed25519 profile. Remote environment protection, first-bundle verification, a trusted
-canonical connector, exact-SHA required-check publication, atomic provider-state/admission CAS and
-a digest-pinned hermetic builder remain explicit activation blockers.
+canonical connector, atomic provider-state/admission CAS and a digest-pinned hermetic builder
+remain explicit activation blockers.

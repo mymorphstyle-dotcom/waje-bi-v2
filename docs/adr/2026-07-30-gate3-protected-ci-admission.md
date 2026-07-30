@@ -129,6 +129,7 @@ Implemented in the repository:
 - privilege-separated workflows;
 - workflow-policy and provider attack tests;
 - protected `main` baseline and a `gate3-admission` environment restricted to protected branches;
+- strict `vNext validation` required check bound to the GitHub Actions app;
 - canonical local Gate remains fail closed.
 
 Still required before `external_admission_verified` may pass:
@@ -142,7 +143,6 @@ Still required before `external_admission_verified` may pass:
 - add atomic monotonic receipt/state CAS for repeated issuance;
 - run admission in a digest-pinned hermetic builder and bind its complete runtime closure;
 - provision reviewed trusted-root and freshness policy for offline verification;
-- publish an exact-SHA required check from the trusted workflow;
 - complete Source/Review, measurement-gold, calibration, held-out and run-manifest gates.
 
 G3.1 remains `deny_g3_1` until every strict-AND condition passes.
