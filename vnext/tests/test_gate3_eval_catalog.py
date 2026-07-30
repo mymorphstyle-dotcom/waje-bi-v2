@@ -999,7 +999,7 @@ class Gate3TrustAndVerdictTests(unittest.TestCase):
             )
             self.assertEqual({}, roots["source_authority_roots"])
             self.assertTrue(
-                any("external admission verifier" in item for item in findings)
+                any("protected CI admission" in item for item in findings)
             )
 
     def test_manifest_and_predecessor_require_external_authorization(

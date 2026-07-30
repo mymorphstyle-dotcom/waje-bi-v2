@@ -5,11 +5,11 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | Planned；组合对抗式审查已合并，生产实现尚未开始 |
+| 状态 | G3.E0 authority foundation 已实现；gold promotion Blocked；G3.1 尚未开始 |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
-| Entry interview | 本 Gate 无需用户决策 |
-| Entry 理由 | 用户已确认开放业务日期与测量语义由 Primary Agent 自主设计；确定性系统验证结构、日历、合同、证据、状态与发布安全 |
+| Entry interview | 已确认 protected CI identity 签发 canonical admission envelope |
+| Entry 理由 | 用户已确认开放业务日期与测量语义由 Primary Agent 自主设计，并确认 Gate 3 外部 authority 采用受保护 CI identity；确定性系统验证结构、日历、合同、证据、状态、签名与发布安全 |
 | Gate 0–2 审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md` |
 | Durable async amendment | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
 | 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md` |
@@ -1128,8 +1128,15 @@ Authoring checkpoint：
   target 执行 ceiling lattice；
 - [ ] 147 个 counterfactual 形成可执行单一语义干预、before/after 与 materialized sibling
   hash；validator 必须实际重放 JSON Pointer mutation 并重算 digest；
-- [ ] 来源、reviewer 与 manifest authority root 绑定外部可验签 admission envelope；本地
-  verifier 在 issuer 方案确认前拒绝全部 root，仓库内 receipt 和普通环境变量无自授权能力；
+- [x] protected CI issuer 方案、canonical admission envelope schema、Ed25519 验签、
+  commit/ref/workflow revision/runner release/run attempt、trust-policy epoch/key validity、
+  policy/root bundle、Python dependency、verifier release 与 artifact set 合同已实现；
+  canonical Gate 不接收 caller-selected path/key/context/clock/verified object；
+- [ ] CI control plane 在仓库控制域外 provision trust policy、签名 key/KMS 与 protected
+  runner，证明 provider issuer、受保护 artifact/mount provenance、monotonic
+  trust-policy/key state、current clock、immutable runner image 与实际
+  Python/dependency/import provenance，并为真实 Source/Review/manifest hashes 签发首个
+  envelope；
 - [ ] 每个 manifest 状态转换绑定同一 authority root、前一 epoch、canonical predecessor
   hash 和递归授权历史；
 - [ ] semantic/model grader 完成人工标注校准；

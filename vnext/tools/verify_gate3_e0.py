@@ -14,6 +14,11 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from build_gate3_eval_corpus import _expected_artifacts, _render
 from compile_gate3_eval_views import validate_all_views
+from gate3_external_admission import (
+    AdmissionExpectation,
+    VerifiedExternalAdmission,
+    canonical_file_set_sha256,
+)
 from validate_gate3_eval_catalog import (
     AUTHORING_CATALOG_PATH,
     canonical_sha256,
@@ -32,6 +37,9 @@ TRUST_SCHEMA_PATH = EVAL_ROOT / "gate3-e0-trust.schema.json"
 REVIEW_PACKAGE_SCHEMA_PATH = EVAL_ROOT / "review-package.schema.json"
 EPISODE_SCHEMA_PATH = EVAL_ROOT / "evaluation-episode.schema.json"
 POLICY_SCHEMA_PATH = EVAL_ROOT / "gate3-eval-policy.schema.json"
+ADMISSION_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-admission-envelope.schema.json"
+)
 READINESS_PATH = EVAL_ROOT / "gate3-e0-readiness.json"
 COVERAGE_LEDGER_PATH = EVAL_ROOT / "coverage-ledger.json"
 POLICY_PATH = EVAL_ROOT / "gate3-eval-policy.json"
@@ -66,6 +74,7 @@ VERIFIER_CODE_PATHS = (
     ROOT / "tools" / "validate_gate3_eval_result.py",
     ROOT / "tools" / "verify_gate3_e0.py",
     ROOT / "tools" / "assert_gate3_1_entry.py",
+    ROOT / "tools" / "gate3_external_admission.py",
 )
 
 SOURCE_AUTHORITY_REQUIREMENTS = {
@@ -115,6 +124,40 @@ TRUST_ARTIFACT_PATHS = (
     CALIBRATION_PACKAGE_PATH,
     RUN_MANIFEST_PATH,
 )
+
+EVALUATED_PATHS = (
+    ROOT / ".python-version",
+    ROOT / "pyproject.toml",
+    ROOT / "uv.lock",
+    AUTHORING_CATALOG_PATH,
+    COVERAGE_LEDGER_PATH,
+    POLICY_PATH,
+    EPISODE_SCHEMA_PATH,
+    POLICY_SCHEMA_PATH,
+    ADMISSION_SCHEMA_PATH,
+    TRUST_SCHEMA_PATH,
+    REVIEW_PACKAGE_SCHEMA_PATH,
+    VIEW_SCHEMA_PATH,
+    RESULT_SCHEMA_PATH,
+    *TRUST_ARTIFACT_PATHS,
+    REVIEW_PACKAGES_PATH,
+    *VERIFIER_CODE_PATHS,
+)
+
+VERIFIER_RELEASE_PATHS = (
+    ROOT / ".python-version",
+    ROOT / "pyproject.toml",
+    ROOT / "uv.lock",
+    POLICY_SCHEMA_PATH,
+    ADMISSION_SCHEMA_PATH,
+    TRUST_SCHEMA_PATH,
+    REVIEW_PACKAGE_SCHEMA_PATH,
+    VIEW_SCHEMA_PATH,
+    RESULT_SCHEMA_PATH,
+    *VERIFIER_CODE_PATHS,
+)
+
+
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -148,6 +191,37 @@ def _evaluated_file_sha256(path: Path) -> str:
     if path.suffix == ".json":
         return canonical_sha256(_load_json(path))
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def evaluated_artifact_hashes() -> dict[str, str]:
+    return {
+        (
+            str(path.relative_to(EVAL_ROOT))
+            if path.is_relative_to(EVAL_ROOT)
+            else str(path.relative_to(ROOT))
+        ): _evaluated_file_sha256(path)
+        for path in EVALUATED_PATHS
+    }
+
+
+def verifier_release_sha256() -> str:
+    return canonical_file_set_sha256(
+        VERIFIER_RELEASE_PATHS,
+        relative_to=ROOT,
+    )
+
+
+def build_external_admission_expectation(
+    policy: Mapping[str, Any],
+) -> AdmissionExpectation:
+    return AdmissionExpectation(
+        policy_sha256=canonical_sha256(policy),
+        authority_root_bundle_sha256=canonical_sha256(
+            _authority_root_bundle(policy)
+        ),
+        verifier_release_sha256=verifier_release_sha256(),
+        evaluated_artifact_hashes=evaluated_artifact_hashes(),
+    )
 
 
 def _schema_findings(
@@ -494,6 +568,7 @@ def _authority_roots(
     policy: Mapping[str, Any],
     *,
     workspace_root: Path = WORKSPACE_ROOT,
+    external_admission: VerifiedExternalAdmission | None = None,
 ) -> tuple[dict[str, dict[str, Mapping[str, Any]]], list[str]]:
     root_bundle = _authority_root_bundle(policy)
     roots: dict[str, dict[str, Mapping[str, Any]]] = {
@@ -504,9 +579,18 @@ def _authority_roots(
         len(configured_roots)
         for configured_roots in root_bundle.values()
     )
-    if configured_root_count:
+    if configured_root_count and external_admission is None:
         findings.append(
-            "external admission verifier is not configured; local authority roots are denied"
+            "protected CI admission is absent; local authority roots are denied"
+        )
+        return roots, findings
+    if (
+        configured_root_count
+        and external_admission.authority_root_bundle_sha256
+        != canonical_sha256(root_bundle)
+    ):
+        findings.append(
+            "protected CI admission does not bind the authority root bundle"
         )
         return roots, findings
     for root_kind, configured_roots in root_bundle.items():
@@ -766,9 +850,13 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
     calibration = _load_json(CALIBRATION_PACKAGE_PATH)
     run_manifest = _load_json(RUN_MANIFEST_PATH)
     review_packages = _load_json(REVIEW_PACKAGES_PATH)
+    verified_external_admission = None
+    admission_findings = [
+        "protected CI provider adapter, monotonic trust state and runtime attestation are unprovisioned"
+    ]
+    external_admission_verified = False
     authorized_attestation_sha256s: set[str] = set()
     authorized_manifest_sha256s: set[str] = set()
-    external_admission_verified = False
     authority_roots, authority_root_findings = _authority_roots(policy)
     findings.extend(authority_root_findings)
 
@@ -786,7 +874,11 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
             label=REVIEW_PACKAGES_PATH.name,
         )
     )
-    for schema_path in (VIEW_SCHEMA_PATH, RESULT_SCHEMA_PATH):
+    for schema_path in (
+        ADMISSION_SCHEMA_PATH,
+        VIEW_SCHEMA_PATH,
+        RESULT_SCHEMA_PATH,
+    ):
         try:
             Draft202012Validator.check_schema(_load_json(schema_path))
         except Exception as error:
@@ -1261,7 +1353,15 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
         _condition(
             "external_admission_verified",
             external_admission_verified,
-            "local execution has no trusted issuer/runner identity; external admission design requires user confirmation",
+            (
+                "protected issuer: {} / key: {} / envelope: {}".format(
+                    verified_external_admission.issuer_id,
+                    verified_external_admission.key_id,
+                    verified_external_admission.envelope_sha256,
+                )
+                if external_admission_verified
+                else "; ".join(admission_findings)
+            ),
         ),
         _condition(
             "authoring_catalog_valid",
@@ -1382,32 +1482,11 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
         and all(condition["verdict"] == "pass" for condition in conditions)
         else "blocked"
     )
-    evaluated_paths = (
-        AUTHORING_CATALOG_PATH,
-        COVERAGE_LEDGER_PATH,
-        POLICY_PATH,
-        EPISODE_SCHEMA_PATH,
-        POLICY_SCHEMA_PATH,
-        TRUST_SCHEMA_PATH,
-        REVIEW_PACKAGE_SCHEMA_PATH,
-        VIEW_SCHEMA_PATH,
-        RESULT_SCHEMA_PATH,
-        *TRUST_ARTIFACT_PATHS,
-        REVIEW_PACKAGES_PATH,
-        *VERIFIER_CODE_PATHS,
-    )
     readiness = {
         "artifact_type": "readiness_manifest",
         "artifact_version": "gate3.e0-readiness.v2",
         "registry_epoch": 1,
-        "evaluated_artifact_hashes": {
-            (
-                str(path.relative_to(EVAL_ROOT))
-                if path.is_relative_to(EVAL_ROOT)
-                else str(path.relative_to(ROOT))
-            ): _evaluated_file_sha256(path)
-            for path in evaluated_paths
-        },
+        "evaluated_artifact_hashes": evaluated_artifact_hashes(),
         "condition_verdicts": conditions,
         "derived_status": derived_status,
         "entry_decision": (

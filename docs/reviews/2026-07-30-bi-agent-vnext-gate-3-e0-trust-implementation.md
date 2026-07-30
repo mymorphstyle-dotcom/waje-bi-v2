@@ -6,12 +6,13 @@
 |---|---|
 | Authoring contract | Complete for E0 infrastructure |
 | Source/Review authority | Implemented; real records incomplete |
+| Protected CI admission | Contract complete; control-plane provisioning incomplete |
 | Agent/Evaluator projection contract | Complete; runtime process isolation belongs to G3.2 |
 | Grader/Authority profile contract | Complete |
 | Three-layer result contract | Complete |
 | Independent review and calibration | Blocked |
 | G3.1 entry | `deny_g3_1` |
-| Entry interview | 本轮无需用户决策；真实 reviewer 身份和来源证明出现前不伪造签字 |
+| Entry interview | 用户确认 protected CI identity；真实 reviewer 身份和来源证明出现前不伪造签字 |
 
 ## 2. Closed infrastructure findings
 
@@ -115,11 +116,42 @@ These are business/evaluation authority gaps. Policy-pinned authority roots are 
 principals to a registry cannot create trust. Lowering floors, self-registering fictional experts or
 using subagent output as human attestation is forbidden.
 
-External admission remains one architectural decision. The recommended default is a protected CI
-identity that signs a canonical admission envelope binding verifier release, authority-root bundle,
-Source/Review record hashes and manifest hashes. A dedicated admission service is the alternative
-when online revocation or multi-team issuance is required. The repository provides no local
-fallback.
+The external admission decision is accepted: a protected CI identity signs a canonical Ed25519
+admission envelope. The repository now defines the strict envelope/trust-policy schema and verifies
+expiry, repository/commit/ref/workflow/run identity, policy, authority-root bundle, verifier release,
+the evaluated artifact set and exact authorized Source/Review and manifest hashes. The trust policy
+and signing key stay outside repository job control. No local envelope path, public-key option or
+environment-variable fallback is exposed.
+
+The repository has no CI provider configuration, so operational provisioning remains open: create
+the protected trust policy and KMS/signing identity, connect the protected runner to the verification
+API and issue the first real envelope. A dedicated admission service remains a future option for
+online revocation or multi-team issuance.
+
+### E0-C5b. Protected CI admission implementation
+
+The accepted design is recorded in
+`docs/adr/2026-07-30-gate3-protected-ci-admission.md`. The implementation adds:
+
+- `gate3-admission-envelope.schema.json` for the external trust policy and signed envelope;
+- `gate3_external_admission.py` for canonical bytes, domain separation, Ed25519 verification,
+  trust-policy/key validity, runner-context checks and immutable verified authority;
+- an exact verifier-release digest and evaluated-artifact map in readiness;
+- revalidation of envelope expiry and every repository binding before authority roots or authorized
+  record/manifest hashes are admitted;
+- verifier-release coverage for Python 3.12, `pyproject.toml`, `uv.lock`, immutable workflow
+  revision, runner release and run attempt;
+- a canonical Gate entry that accepts no caller-selected path, key, context, clock or verified
+  object and remains blocked until a provider adapter is implemented;
+- twelve contract/attack tests covering payload tampering, commit/ref/workflow/run replay, trust
+  rotation, stale verifier or artifact bindings, key/envelope expiry, local environment injection,
+  verified-object injection and receipt tampering.
+
+The pure cryptographic contract can validate a test envelope. It cannot pass
+`external_admission_verified` in the canonical Gate until a provider adapter proves mount/artifact
+provenance, monotonic trust state and actual runner/runtime identity. Source, independent review,
+measurement gold, counterfactual, calibration, held-out, promotion and run-manifest conditions
+remain independent strict-AND gates.
 
 ## 4. Review package
 
@@ -156,8 +188,8 @@ entry_decision = deny_g3_1
 
 ## 6. Verification evidence
 
-- `npm run test:bootstrap`: 106 tests passed, 7 environment-dependent tests skipped;
-- Gate 3 trust/attack suite: 43 tests passed;
+- `npm run test:bootstrap`: 118 tests passed, 7 environment-dependent tests skipped;
+- Gate 3 trust/attack suite: 55 tests passed;
 - `npm run check:contracts`: passed;
 - `npm run check:evals:gate3`: structural integrity passed with honest blocked readiness;
 - `npm run check`: clean-copy build/test/health passed under Python 3.12.13;
@@ -166,3 +198,21 @@ entry_decision = deny_g3_1
 
 The clean-copy audit also verifies that Gate 3 source evidence is owned under `vnext/`; deleting
 repository-external documentation does not change the readiness result.
+
+## 7. Adversarial closure
+
+The combined review first reproduced:
+
+- process-local verified-object forgery;
+- caller-selected trust policy and historical clock injection;
+- a missing canonical protected-runner entry;
+- movable workflow tags and missing run-attempt identity;
+- incomplete Python/dependency/runtime binding;
+- file mode bits being mistaken for protected control-plane provenance;
+- trust-policy triplet rollback without an external monotonic anchor.
+
+The repository fixes the contract-level findings and removes the process-local admission path from
+canonical readiness. Final review found no remaining Blocking or Major on the current canonical
+surface. The three control-plane findings that require a concrete provider—artifact provenance,
+monotonic trust/key state and actual runner/runtime attestation—remain explicit readiness blockers
+and provider-onboarding exit criteria.

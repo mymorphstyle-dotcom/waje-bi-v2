@@ -372,7 +372,8 @@ effectively-once 状态变更。分布式 exactly-once 不进入设计假设。
 **入口访谈判断**
 
 - 状态：已执行。
-- 结论：本 Gate 无需用户决策。
+- 结论：用户已确认 Gate 3 外部 authority 采用 protected CI identity 签发 canonical
+  admission envelope。
 - 理由：实现根目录、零兼容、参考边界和产品范围已在任务中明确；仓库结构与依赖可自行调查。
 
 **交付物**
@@ -513,8 +514,10 @@ Exit evidence：
   Episode v2、Source/Review/Corpus/Grader registries、双视图、三层 verdict、cross-Gate
   profiles、review packages 与 derived readiness 已落地；本地 verifier 拒绝全部
   repository-local self-signing，claim/boundary ceiling、truth support、counterfactual
-  materialization 和 manifest history 均 fail closed；外部 issuer 方案、来源、双审、
-  truth/per-claim review、calibration、held-out、promotion/run freeze 仍阻止 G3.1。
+  materialization 和 manifest history 均 fail closed；protected CI envelope schema 与
+  纯验签合同已落地，provider adapter、外部 key/trust-policy provisioning、monotonic
+  trust state、runtime attestation、来源、双审、truth/per-claim review、calibration、
+  held-out、promotion/run freeze 仍阻止 G3.1。
 - durable async adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`；
   periodic heartbeat、terminal JobDisposition、obligation scheduler、Reviewer worker 与
@@ -841,7 +844,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.E0 fail-closed infrastructure complete; gold promotion blocked | 本 Gate 无需用户决策；authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
+| Gate 3 | G3.E0 fail-closed infrastructure complete; protected CI cryptographic contract complete; provider admission adapter and gold promotion blocked | 已确认 protected CI identity；provider adapter、外部 key/trust policy、authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -870,3 +873,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | runtime 采用整体异步、authority commit 局部同步 | 用户顶层架构要求 | command 短事务、durable mailbox、跨进程 job、case 串行 admission、head/epoch fence 与 cursor projection |
 | 2026-07-30 | at-least-once 是 delivery 基础假设 | 用户顶层架构要求 | 依靠幂等、CAS、唯一约束、receipt 和 fencing 达到 effectively-once mutation |
 | 2026-07-30 | 八类付费金额问题进入真实用户 candidate pool | 用户原始问题集 | 形成 8 个独立 Episode；真实措辞有 source trace，拟合 world/expectation 仍待双审 |
+| 2026-07-30 | Gate 3 外部 authority 采用 protected CI identity | 用户确认 | CI 在仓库控制域外持有 trust policy 与 signing key；canonical envelope 精确绑定 commit/ref/workflow revision/runner release/run attempt、trust-policy epoch/key validity、policy、root bundle、Python dependency、verifier release、artifact set 和授权 record/manifest hashes |

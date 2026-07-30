@@ -42,11 +42,23 @@ verifier therefore rejects every configured authority root and emits
 `external_admission_verified=blocked`. A local receipt file, registry edit, invented reviewer or
 locally generated predecessor chain cannot unlock readiness.
 
-The remaining architecture decision is the external issuer boundary: a protected CI identity with
-a signed admission envelope, or a dedicated admission service. Once selected, the adapter must
-verify issuer identity outside repository control and return exact authorized Source/Review and
-manifest hashes. Every manifest transition will continue to bind the same root, exact prior epoch,
-canonical predecessor hash, monotonic status transition and recursively authorized history.
+The external issuer boundary is a protected CI identity with a signed canonical admission envelope.
+`gate3-admission-envelope.schema.json` and `gate3_external_admission.py` enforce Ed25519 signatures,
+trust-policy epoch/hash and key validity, expiry, protected repository/ref/workflow revision/runner
+release/run-attempt identity and exact policy, root-bundle, verifier-release, Python dependency and
+artifact-set bindings. A valid envelope returns only its exact authorized Source/Review and manifest
+hashes. Every manifest transition continues to bind the same root, exact prior epoch, canonical
+predecessor hash, monotonic status transition and recursively authorized history.
+
+The CI control plane must hold its trust policy, public-key rotation and signing key outside
+repository job control. This repository currently has no CI provider configuration or provisioned
+key. Local commands accept no envelope, trust-policy, runner-context, verified-object or clock
+argument and continue to emit `external_admission_verified=blocked`.
+
+Provider onboarding must add a protected adapter that proves issuer identity, protected status
+publication, monotonic trust-policy/key state, immutable workflow/run attempt, read-only artifact
+channel provenance, current clock and actual runner-image/Python/dependency/import provenance. A
+plain file path, mode-bit check or environment-variable fallback cannot establish this authority.
 
 ## Authority layout
 
@@ -55,6 +67,7 @@ gate3/
 ├── evaluation-episode.schema.json
 ├── evaluation-views.schema.json
 ├── evaluation-run-result.schema.json
+├── gate3-admission-envelope.schema.json
 ├── gate3-e0-trust.schema.json
 ├── gate3-eval-policy.json
 ├── taxonomy/
@@ -130,7 +143,8 @@ arbitrary sibling hashes remain unexecutable.
 7. Calibrate graders using human labels.
 8. Seal an external held-out manifest without checked-in plaintext.
 9. Freeze the run manifest.
-10. Derive the read-only readiness manifest and allow G3.1 only when every condition passes.
+10. Obtain a provider-attested external admission and derive the read-only readiness manifest.
+11. Allow G3.1 only when every condition passes.
 
 No eval failure becomes a runtime rule automatically.
 

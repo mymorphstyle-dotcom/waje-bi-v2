@@ -3,11 +3,15 @@
   "artifact_version": "gate3.e0-readiness.v2",
   "registry_epoch": 1,
   "evaluated_artifact_hashes": {
+    ".python-version": "aa0d6581054e6e4ff3f91839deca7a854ad37221b8784d060b42d0f847ff1a3b",
+    "pyproject.toml": "f48694db9ef3433064eba59bf059e3e831b9ad666c2ec74e8326a38f7394f599",
+    "uv.lock": "463594956e0eb7e2dfa6a0e5fd298df740fc93f56fbf6e4b30bd0b00ea40a3fc",
     "catalog/gate3-authoring-candidates.json": "2773c10762ab4da72a9b88f3e43d21d1424f5d32fbdf11eb9e3a29a17a952039",
     "coverage-ledger.json": "da61fab1856289b93ca5be3f68de10421b06fe30ed7ad30dc1bc44855406181d",
     "gate3-eval-policy.json": "a0325f4faf59e38e4ad88f5b9e14e76d3ec9342ea95e13404a551aaae6b7098b",
     "evaluation-episode.schema.json": "e13cb7ed38b9a653cbb98d0640b25c339c521802691c1f544e927d811e413a8a",
     "gate3-eval-policy.schema.json": "dc1275f9ea2071ca7011a738452be44817f40e16a622272842f2083888fc486f",
+    "gate3-admission-envelope.schema.json": "cbd8ef6b0644d6616e2755d1676fc9070be992be8d7808dd151e93bce4b8a5d2",
     "gate3-e0-trust.schema.json": "e331612aeceb2c06d22a3ed47b0a12082d1a8429235ae3f2d60ddba28c26a817",
     "review-package.schema.json": "73eacd95ff807a98cc96c04c043bac1b8407b26af38266f81db758df3c00345b",
     "evaluation-views.schema.json": "98295f1d698b359b724d30d3b033717fe808e687ed04508db88989b8b112592e",
@@ -28,15 +32,16 @@
     "tools/compile_gate3_eval_views.py": "ce6dee25643d6bb75c67431783237870c8dbd6abf02dd35183a988710bf29e7a",
     "tools/validate_gate3_eval_catalog.py": "fabee062cb204ac563f2b517356d02b596c56298e54271c77ebabd44d11cca7e",
     "tools/validate_gate3_eval_result.py": "f945dda8ee9f20414d4ca96385f67069fb5e52a8d982f15a022961ca84c236ca",
-    "tools/verify_gate3_e0.py": "4a4f79451a57c574e0a56f847a6e7965556ee692696e627216ea7157ee364687",
-    "tools/assert_gate3_1_entry.py": "7278e7b5615c910f9fc320a952a8bdcea335e52f87245f567290b24dcbe68aa4"
+    "tools/verify_gate3_e0.py": "c0f94787dd7df86880696bac56a78832e53e2b9fa141b4ddf5d816fd94497b5c",
+    "tools/assert_gate3_1_entry.py": "7278e7b5615c910f9fc320a952a8bdcea335e52f87245f567290b24dcbe68aa4",
+    "tools/gate3_external_admission.py": "51c590d93de3c429ce558a1a5d8711bf512fb2f32cf231b0ce5502621389a15d"
   },
   "condition_verdicts": [
     {
       "condition_id": "external_admission_verified",
       "verdict": "blocked",
       "evidence": [
-        "local execution has no trusted issuer/runner identity; external admission design requires user confirmation"
+        "protected CI provider adapter, monotonic trust state and runtime attestation are unprovisioned"
       ]
     },
     {
