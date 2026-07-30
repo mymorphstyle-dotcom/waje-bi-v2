@@ -12,10 +12,12 @@ from waje_vnext.domain.actions import (
     AgentActionProposal,
     CallCapabilityPayload,
 )
+from waje_vnext.domain.async_runtime import AsyncJobKind, OperationIdentity
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
 from waje_vnext.domain.context import (
     ContextEvidenceItem,
     ContextEventItem,
+    ContextUserMessageItem,
     build_context_packet,
 )
 from waje_vnext.domain.controller import ControllerPhase, ControllerState
@@ -46,6 +48,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             "contracts/domain/context-packet.v1.schema.json",
             "contracts/domain/runtime-state.v1.schema.json",
             "contracts/domain/controller-state.v1.schema.json",
+            "contracts/domain/async-runtime.v1.schema.json",
             "contracts/events/journal-entry.v1.schema.json",
         )
         for path in paths:
@@ -101,7 +104,15 @@ class JsonSchemaContractTest(unittest.TestCase):
         packet = build_context_packet(
             packet_id="packet-1",
             case=case,
-            user_message="Investigate the pattern",
+            user_messages=(
+                ContextUserMessageItem(
+                    message_id="message-1",
+                    sequence=1,
+                    authority_epoch=1,
+                    kind="user_message",
+                    content="Investigate the pattern",
+                ),
+            ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
             accepted_frame=None,
@@ -133,6 +144,16 @@ class JsonSchemaContractTest(unittest.TestCase):
             cursor=2,
             event_type=JournalEventType.ACTION_ADMITTED,
             recorded_at=NOW,
+            operation=OperationIdentity(
+                operation_id="operation-event-2",
+                idempotency_key="event-key-2",
+                causation_id="action-1",
+                correlation_id="case-1",
+                authority_revision=0,
+                payload_sha256=content_sha256(
+                    {"kind": "call_capability"}
+                ),
+            ),
             action_id="action-1",
             authority_ref=None,
             payload={"kind": "call_capability"},
@@ -180,11 +201,13 @@ class JsonSchemaContractTest(unittest.TestCase):
             phase=ControllerPhase.READY_FOR_AGENT,
             step_number=2,
             head_version=2,
+            authority_epoch=1,
+            mailbox_cursor=1,
             last_event_cursor=8,
             context_packet_id="packet-1",
             latest_user_message="Investigate the pattern",
             pending_action_id=None,
-            pending_outbox_message_id=None,
+            pending_job_ids=(),
             pending_decision_request_id=None,
             accepted_answer_version_id=None,
             consecutive_rejections=0,
@@ -234,6 +257,17 @@ class JsonSchemaContractTest(unittest.TestCase):
                 case_id="case-1",
                 source_event_cursor=5,
                 action_id="action-1",
+                job_kind=AsyncJobKind.CAPABILITY,
+                operation=OperationIdentity(
+                    operation_id="operation-outbox-1",
+                    idempotency_key="effect-key-1",
+                    causation_id="action-1",
+                    correlation_id="case-1",
+                    authority_revision=1,
+                    payload_sha256=content_sha256(outbox_payload),
+                ),
+                expected_head_version=2,
+                expected_authority_epoch=1,
                 idempotency_key="effect-key-1",
                 destination="capability-fabric",
                 contract_ref="capability-request.v1",
@@ -291,6 +325,8 @@ class MigrationContractTest(unittest.TestCase):
         self.assertIn("action_receipts", migration)
         self.assertIn("checkpoint_records", migration)
         self.assertIn("outbox_messages", migration)
+        self.assertIn("case_mailbox_messages", migration)
+        self.assertIn("authority_epoch", migration)
         self.assertIn("reject_immutable_change", migration)
 
     def test_gate2_migration_adds_controller_runtime_storage(self) -> None:
@@ -302,6 +338,8 @@ class MigrationContractTest(unittest.TestCase):
         self.assertIn("user_decision_requests", migration)
         self.assertIn("effect_attempts", migration)
         self.assertIn("controller_leases", migration)
+        self.assertIn("outbox_delivery_leases", migration)
+        self.assertIn("heartbeat_at", migration)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,40 @@ CREATE TABLE waje_vnext.event_stream_heads (
     last_cursor bigint NOT NULL DEFAULT 0 CHECK (last_cursor >= 0)
 );
 
+CREATE TABLE waje_vnext.case_mailbox_heads (
+    case_id text PRIMARY KEY
+        REFERENCES waje_vnext.investigation_cases(case_id) ON DELETE RESTRICT,
+    last_sequence bigint NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+    authority_epoch bigint NOT NULL DEFAULT 0 CHECK (authority_epoch >= 0),
+    updated_at timestamptz NOT NULL
+);
+
+CREATE TABLE waje_vnext.case_mailbox_messages (
+    message_id text PRIMARY KEY,
+    case_id text NOT NULL
+        REFERENCES waje_vnext.investigation_cases(case_id) ON DELETE RESTRICT,
+    sequence bigint NOT NULL CHECK (sequence >= 1),
+    authority_epoch bigint NOT NULL CHECK (authority_epoch >= 0),
+    message_kind text NOT NULL CHECK (
+        message_kind IN (
+            'user_message',
+            'user_correction',
+            'user_challenge',
+            'user_scope_revision'
+        )
+    ),
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    causation_id text NOT NULL,
+    correlation_id text NOT NULL,
+    authority_revision bigint NOT NULL CHECK (authority_revision >= 0),
+    payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
+    payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    created_at timestamptz NOT NULL,
+    UNIQUE (case_id, sequence),
+    UNIQUE (case_id, idempotency_key)
+);
+
 CREATE TABLE waje_vnext.analysis_frame_revisions (
     frame_revision_id text PRIMARY KEY,
     case_id text NOT NULL
@@ -206,6 +240,12 @@ CREATE TABLE waje_vnext.event_journal (
     event_id text NOT NULL UNIQUE,
     event_type text NOT NULL,
     recorded_at timestamptz NOT NULL,
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    causation_id text NOT NULL,
+    correlation_id text NOT NULL,
+    authority_revision bigint NOT NULL CHECK (authority_revision >= 0),
+    payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
     action_id text,
     authority_ref text,
     payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
@@ -260,12 +300,37 @@ CREATE TABLE waje_vnext.outbox_messages (
         REFERENCES waje_vnext.investigation_cases(case_id) ON DELETE RESTRICT,
     source_event_cursor bigint NOT NULL,
     action_id text,
+    job_kind text NOT NULL CHECK (
+        job_kind IN (
+            'controller_wake',
+            'primary_agent',
+            'semantic_inspection',
+            'data_probe',
+            'capability',
+            'sensitivity',
+            'reviewer',
+            'projection'
+        )
+    ),
+    operation_id text NOT NULL,
+    causation_id text NOT NULL,
+    correlation_id text NOT NULL,
+    authority_revision bigint NOT NULL CHECK (authority_revision >= 0),
+    expected_head_version bigint NOT NULL CHECK (expected_head_version >= 0),
+    expected_authority_epoch bigint NOT NULL CHECK (
+        expected_authority_epoch >= 1
+    ),
     idempotency_key text NOT NULL,
     destination text NOT NULL,
     contract_ref text NOT NULL,
     payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
     payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
     created_at timestamptz NOT NULL,
+    CHECK (
+        payload ? 'operation'
+        AND payload->'operation'->>'payload_sha256' = payload_sha256
+        AND payload->>'payload_sha256' = payload_sha256
+    ),
     UNIQUE (case_id, idempotency_key),
     FOREIGN KEY (case_id, source_event_cursor)
         REFERENCES waje_vnext.event_journal(case_id, cursor)
@@ -314,6 +379,9 @@ CREATE TRIGGER checkpoint_records_immutable
     FOR EACH ROW EXECUTE FUNCTION waje_vnext.reject_immutable_change();
 CREATE TRIGGER outbox_messages_immutable
     BEFORE UPDATE OR DELETE ON waje_vnext.outbox_messages
+    FOR EACH ROW EXECUTE FUNCTION waje_vnext.reject_immutable_change();
+CREATE TRIGGER case_mailbox_messages_immutable
+    BEFORE UPDATE OR DELETE ON waje_vnext.case_mailbox_messages
     FOR EACH ROW EXECUTE FUNCTION waje_vnext.reject_immutable_change();
 CREATE TRIGGER event_journal_immutable
     BEFORE UPDATE OR DELETE ON waje_vnext.event_journal

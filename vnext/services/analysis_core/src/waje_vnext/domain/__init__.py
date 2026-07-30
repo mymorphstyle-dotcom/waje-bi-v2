@@ -38,12 +38,22 @@ from .authority import (
     WorkTask,
     compute_answer_settlement_fingerprint,
 )
+from .async_runtime import (
+    AsyncJobKind,
+    JobLease,
+    MailboxHead,
+    MailboxMessage,
+    MailboxMessageKind,
+    MessageIngressReceipt,
+    OperationIdentity,
+)
 from .context import (
     ContextDecisionItem,
     ContextEvidenceItem,
     ContextEventItem,
     ContextPacket,
     ContextReviewerObjectionItem,
+    ContextUserMessageItem,
     build_context_packet,
 )
 from .controller import (
@@ -68,6 +78,7 @@ __all__ = [
     "AnswerClaim",
     "AnswerStatus",
     "AnswerVersion",
+    "AsyncJobKind",
     "AskUserPayload",
     "CallCapabilityPayload",
     "CheckpointRecord",
@@ -78,6 +89,7 @@ __all__ = [
     "ContextEventItem",
     "ContextPacket",
     "ContextReviewerObjectionItem",
+    "ContextUserMessageItem",
     "ControllerLease",
     "ControllerPhase",
     "ControllerState",
@@ -93,6 +105,12 @@ __all__ = [
     "InvestigationCase",
     "InterpretationRecord",
     "JournalEventType",
+    "JobLease",
+    "MailboxHead",
+    "MailboxMessage",
+    "MailboxMessageKind",
+    "MessageIngressReceipt",
+    "OperationIdentity",
     "OutboxMessage",
     "PersistedAction",
     "PrimaryAgentRequest",

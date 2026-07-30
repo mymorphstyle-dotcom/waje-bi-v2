@@ -7,11 +7,13 @@
 | 日期 | 2026-07-30 |
 | 状态 | Planned；组合对抗式审查已合并，生产实现尚未开始 |
 | Gate | 3 |
-| 前置代码基线 | Gate 2 commit `01c28dbf795e2d6b0b2272c1c46b4cfa96aab453` |
+| 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 本 Gate 无需用户决策 |
 | Entry 理由 | 用户已确认开放业务日期与测量语义由 Primary Agent 自主设计；确定性系统验证结构、日历、合同、证据、状态与发布安全 |
 | Gate 0–2 审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md` |
+| Durable async amendment | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
 | 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md` |
+| Durable async 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md` |
 
 Gate 1 与 Gate 2 的历史验收事实继续成立。G3.1、G3.2 是进入 Gate 3 业务闭环实现前的
 强制修订包；在这两个包完成前，不创建新的生产 EvidenceRecord、AnswerVersion 或 Workflow
@@ -95,6 +97,37 @@ Gate 3 定义 Gate 4 必须消费的 logical query binding。Gate 3 不生成生
 用 conformance executor 冒充真实数据能力。Gate 3 可以在隔离测试 realm 验证全链路合同，
 该 realm 的结果不能进入 production EvidenceStore。
 
+### 3.3 Runtime topology
+
+Gate 3 运行在“整体异步、authority commit 局部同步”的 case-scoped runtime：
+
+```mermaid
+flowchart LR
+    UI["Chat / Workspace"] --> API["Command API"]
+    API --> TX["Mailbox + Journal + Outbox short transaction"]
+    TX --> MB["Case Mailbox"]
+    MB --> AG["Primary Agent Controller"]
+    AG --> LLM["LLM Jobs"]
+    AG --> CAP["Obligation / Capability Jobs"]
+    AG --> REV["Reviewer Jobs"]
+    LLM --> AC["Serial authority admission"]
+    CAP --> AC
+    REV --> AC
+    AC --> JR["Event Journal"]
+    JR --> PROJ["Workflow / Answer projections"]
+    PROJ --> UI
+```
+
+- command API 完成鉴权、message persistence、case create/wake 后立即返回 runId 与 cursor；
+- 每个 case 的 mailbox 按序进入 Primary Agent，accepted authority 只能串行 CAS；
+- 不同 obligation 可以并行，result 可以乱序到达；
+- 每个 admission 重新验证 question/frame/plan heads、mailbox epoch、obligation identity、
+  snapshot/release 和 result hash；
+- correction 先推进 mailbox authority epoch，再异步判断开放 message impact；
+- at-least-once delivery 配合 idempotency、CAS、unique constraint、receipt 和 fencing；
+- journal + authority mutation + downstream outbox enqueue 位于同一个短事务；
+- projection 和 SSE/WebSocket 可以重建，断连与 UI 刷新不影响调查。
+
 ## 4. 顶层不变量
 
 1. Primary Business Analysis Agent 持续拥有开放业务语义。
@@ -125,6 +158,14 @@ Gate 3 定义 Gate 4 必须消费的 logical query binding。Gate 3 不生成生
 19. question family 只用于 eval coverage，不参与 runtime 关键词路由。
 20. strict schema 证明输出形状；source grounding、业务一致性、合同兼容和证据适用范围分别
     由独立校验层负责。
+21. `asyncio` 只允许作为 worker 内部并发实现；durability、recovery 和 cross-process
+    coordination 由 mailbox、journal、outbox、checkpoint 与 lease 提供。
+22. 每个异步 job 绑定 operation/causation/correlation、expected heads、authority epoch 和
+    payload hash；缺少任一 identity 不得执行或 admission。
+23. job success 只产生 receipt/result。Frame/Plan/Evidence/Answer acceptance 必须经过独立
+    短事务硬校验。
+24. correction 后完成的旧 job 可以保留审计结果，不能进入新 Evidence、Answer 或 succeeded
+    Workflow。
 
 ## 5. 权威链
 
@@ -177,16 +218,19 @@ LLM 的问题改写保存在 SemanticBinding，不能替代 source message。
 
 ### 6.2 跨阶段消息接纳
 
-controller 提供统一 `submit_user_message`。除依法封存的 case 外，它可在 READY、
-WAITING_FOR_EFFECT、WAITING_FOR_MEASUREMENT_REVIEW、WAITING_FOR_EVIDENCE_ADMISSION 和
-历史 run 已结束后接纳新消息。
+command API 提供统一 `submit_user_message`。除依法封存的 case 外，它可在 READY、
+WAITING_FOR_LLM、WAITING_FOR_EFFECT、WAITING_FOR_MEASUREMENT_REVIEW、
+WAITING_FOR_EVIDENCE_ADMISSION、WAITING_FOR_USER 和历史 run 已结束后接纳新消息。接纳
+事务不等待 Primary Agent 或 MessageImpactBinding。
 
 开放 message impact 使用 durable LLM saga：
 
-1. 第一个短事务幂等持久化 `MessageIngressRecord` 与 `PendingUserMessage`，创建 input epoch，
+1. 第一个短事务幂等持久化 case mailbox message、`MessageIngressRecord` 与
+   `PendingUserMessage`，推进 authority epoch，
    并把该 case 的新 Frame/Plan/Evidence/Answer admission 暂停在
    `WAITING_FOR_MESSAGE_BINDING`；
-2. in-flight effect 可以完成并持久化 result receipt，Evidence admission 保持 pending；
+2. in-flight LLM/review/effect 可以完成并持久化 receipt，所有旧 epoch authority admission
+   保持 pending 或 superseded；
 3. 事务外由 Primary Agent 产生 strict `MessageImpactBinding`，绑定 message hash、accepted
    question head 与 expected head version；
 4. 独立 semantic consistency pass 检查 impact binding；
@@ -318,10 +362,12 @@ CANDIDATE_RECORDED
 → ACCEPTED | SUPERSEDED | REJECTED
 ```
 
-Reviewer 通过 outbox/effect 运行，不能跨越数据库事务持有 lease。review request/result 都
-绑定 candidate hash、question head 和 expected head version。crash/resume 从同一 candidate
-继续；最终 CAS 重算 objection closure proof，只接受 `blocking_objection_count=0` 或所有
-blocking objection 都有 system-verified closure record 的 candidate hash。
+Reviewer 通过 outbox/effect 运行。job delivery lease 可跨 provider 调用并由 worker
+heartbeat；数据库事务和 case authority lease 不能跨 provider 调用。review request/result
+都绑定 candidate hash、question head、mailbox epoch 和 expected head version。crash/resume
+从同一 candidate 继续；最终 CAS 重算 objection closure proof，只接受
+`blocking_objection_count=0` 或所有 blocking objection 都有 system-verified closure record
+的 candidate hash。
 
 Reviewer 只输出 `MeasurementObjection`：risk、severity、assertion/frame refs、conflict、
 requested action、status 与 disposition。它不能提交 Frame、WorkPlan 或 Answer。
@@ -905,6 +951,22 @@ ingress PendingUserMessage
 → stop at Gate 3 settlement boundary
 ```
 
+上图是业务依赖，不要求按一个同步调用栈串行执行。accepted WorkPlan 中依赖已满足的
+obligation 可以同时 enqueue。每个 completion 先写 immutable result receipt，再进入按 case
+串行的 admission mailbox。乱序 completion 只影响可运行 obligation 集合，不能改变
+WorkPlan/Frame。controller crash 后从 accepted heads、mailbox cursor、pending job IDs、
+effect receipts 和 journal cursor 重建。
+
+局部同步提交只发生在：
+
+- accepted question/frame/plan head CAS；
+- Frame/Plan acceptance；
+- Evidence admission 与 obligation satisfaction；
+- 权限、隐私、数据合同和 scope compatibility；
+- settlement precondition；
+- Answer publication；
+- journal + authority state + outbox 原子写。
+
 Frame acceptance 与 resolution persistence 分为两个可证明阶段：
 
 1. accepted Frame CAS 只接受 blocking closure proof 通过的 candidate hash；
@@ -1008,7 +1070,8 @@ grader version 与 evidence manifest 都保存在仓库或 WAJE-owned artifact s
 
 Exit：
 
-- [x] `git diff --exit-code 01c28dbf -- vnext`；
+- [x] rollback 当时曾以 `git diff --exit-code 01c28dbf -- vnext` 证明回到 Gate 2；该命令是
+  durable async amendment 与 G3.E0 之前的历史证据，当前工作树不再以它作为可执行 exit；
 - [x] `npm run check:contracts`；
 - [x] Gate 0–2 baseline tests；
 - [x] 旧 Gate 3 artifact 不在工作区。
@@ -1018,8 +1081,9 @@ Exit：
 本工作包先于任何 G3.1 生产实现。它以业务决策和真实交互为起点，不能从 runtime 类、
 action、工具或 SQL 反推测试。
 
-当前状态：**Blocked**。37 个 authoring candidates 已形成，组合对抗审查打开 10 个
-Blocking、11 个 Major，本轮即时关闭 1 个 Blocking、2 个 Major；详见
+当前状态：**Blocked**。45 个 authoring candidates 已形成，其中 8 个保留用户提供的真实
+付费金额问题措辞；组合对抗审查打开 10 个 Blocking、11 个 Major，本轮即时关闭 1 个
+Blocking、2 个 Major；详见
 `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`。
 
 交付：
@@ -1036,15 +1100,16 @@ Blocking、11 个 Major，本轮即时关闭 1 个 Blocking、2 个 Major；详�
 
 Authoring checkpoint：
 
-- [ ] 至少 36 个 schema-valid candidate Episode；
-- [ ] coverage dimensions 无空白，至少 12 个多轮 Episode、6 个 high/critical Episode；
-- [ ] 每个 Episode 的三类反事实关系齐备；
-- [ ] 未经访谈或真实 trace 获取的措辞不标记为 `real_user_language`；
-- [ ] catalog readiness gaps 由 validator 机器生成并 checked in。
+- [x] 45 个 schema-valid candidate Episode；
+- [x] coverage dimensions 无空白，21 个多轮 Episode、41 个 high/critical Episode；
+- [x] 每个 Episode 的三类反事实关系齐备；
+- [x] 8 个 `real_user_language` Episode 绑定 durable source trace；拟合 business world 与
+  expectation 仍明确标成 candidate；
+- [x] catalog readiness gaps 由 validator 机器生成并 checked in。
 
 进入 G3.1 的 hard precondition：
 
-- [ ] 每个来源池达到 Gate3EvalPolicy 最低数量；
+- [x] 每个来源池达到 Gate3EvalPolicy 数量 floor；
 - [ ] 进入 development/calibration/held-out 分区的全部 base Episode 完成 business owner 与
   measurement reviewer 双审，reviewed base 总量达到 policy floor；
 - [ ] semantic/model grader 完成人工标注校准；
@@ -1074,17 +1139,28 @@ Exit：
 
 交付：
 
-- submit_user_message 与跨阶段 correction；
-- MessageIngressRecord、PendingUserMessage、MessageImpactBinding saga；
+- 消费现有 durable case mailbox、authority epoch、Primary Agent job、job lease/heartbeat 和
+  stale-result rejection substrate；
+- MessageIngressRecord、PendingUserMessage、strict MessageImpactBinding saga；
 - strict provider/tool contract；
 - ContextPacket question/binding payload；
 - durable Frame candidate review saga；
+- Reviewer async job、obligation fan-out/fan-in、乱序 completion admission；
+- periodic job heartbeat supervisor、expired-lease takeover 与旧 fencing-token rejection；
+- terminal `JobDispositionRecord`、pending-job claim query 与 dispatcher recovery cursor；
+- command/event/job/authority record 的 operation lineage matrix；
 - ModelInvocationRecord、RunTraceManifest；
-- WAITING state skeleton。
+- `WAITING_FOR_MESSAGE_BINDING`、`WAITING_FOR_MEASUREMENT_REVIEW`、
+  `WAITING_FOR_EVIDENCE_ADMISSION` typed states。
 
 Exit：
 
 - [ ] correction 并发 fencing 测试通过；
+- [ ] correction-vs-review、parallel obligations、out-of-order completion、duplicate
+  delivery、worker crash/lease takeover 与 stale-result rejection 通过；
+- [ ] terminal job disposition 与 completion/supersede journal 原子且按 outbox ID 唯一；
+- [ ] periodic heartbeat failure 阻止旧 worker authority commit；
+- [ ] operation lineage 从 ingress 到 provisional Answer 闭合；
 - [ ] crash/resume 继续同一 message binding/candidate/review；
 - [ ] blocking objection 无 closure proof 时 Frame 无法接受；
 - [ ] provider 不能提交 system ID；
@@ -1248,6 +1324,22 @@ LLM 或子智能体生成的自然措辞只能进入 candidate authoring，不�
 `real_user_language`。base Episode 进入 development/calibration/held-out 前必须经过 business
 owner 与 measurement reviewer 双审；grader 标注分歧保留并进入 calibration。
 
+2026-07-30 用户问题集形成 `G3-USER-001..008`：
+
+| Slice | 主要产品行为 |
+|---|---|
+| 付费金额变化解释 | 多因素恒等式、交互/residual、支付成功率分母 |
+| 规律解释 | 多周期、时区/业务日、实际窗口、exposure normalization、维度带动 |
+| 事件影响复盘 | event timeline、identification ceiling、并发事件与局部因果边界 |
+| 收入健康度 | 多轴健康 profile、集中度、活动依赖、异常渠道和 horizon |
+| 维度/因子归因 | 维度内 bridge、跨维度重叠、行为因素和时点有效映射 |
+| 异常/黑天鹅 | 条件 baseline、多时间粒度、恢复过程与隐私边界 |
+| 多基准比较 | 前日、rolling、上周同日独立 contrast 与 release maturity |
+| 数据质量/证据 | claim-scoped validity、局部降级、新旧 Evidence lineage |
+
+八例只承担一个真实用户 slice。Gate 3 仍需完整覆盖其他行业、指标、definition、cohort、
+funnel、distribution、association、causal challenge 和无时间问题。
+
 ### 21.3 Coverage 维度
 
 | 维度 | 必须覆盖 |
@@ -1333,6 +1425,21 @@ answers。每项可以由多个行业、指标和交互形态实例化。
 
 implementation 或 conformance 通过不能抵消 product behavior 失败。
 
+Durable async conformance 必须使用 schedule perturbation，而非固定 happy-path 顺序：
+
+- correction 在 LLM、effect、review 开始前、运行中、result receipt 后和 authority commit
+  前到达；
+- 两个以上独立 obligations 以所有关键完成顺序运行；
+- duplicate enqueue、duplicate delivery、duplicate completion；
+- crash after mailbox append、journal append、outbox enqueue、provider response、result
+  receipt、Evidence admission 和 checkpoint；
+- worker heartbeat 中断、lease expiry、另一进程 takeover、旧 fencing token 延迟返回；
+- head 未变但 mailbox epoch 变化，以及 epoch 未变但 Frame/Plan head 变化；
+- projection 断连、cursor replay、乱序 transport delivery 和静态重建。
+
+每个 case 同时验证安全性与活性：旧结果无法提交，新 scope 最终可以继续；重复 delivery
+不产生重复 authority；合法并行不会被全局串行化；局部失败不清空无关 obligation。
+
 Lane A：semantic/frame eval
 
 - 真实 provider 接收自然语言；
@@ -1392,6 +1499,10 @@ revision，旧结果保留以供比较。
 
 - [ ] QuestionRevision 可恢复、可纠正、可跨阶段 CAS。
 - [ ] MessageIngress/MessageImpactBinding saga 可 crash/resume，无本地开放语义 classifier。
+- [ ] command ingress 可立即返回 durable runId/cursor，任何 LLM/capability/reviewer 调用均
+  不占用 command HTTP 生命周期。
+- [ ] parallel obligations、乱序 completion、duplicate delivery、lease takeover 和
+  correction fence 通过 schedule-perturbation conformance。
 - [ ] SemanticBinding 的 material assertions 有 grounding 和独立 consistency pass。
 - [ ] Frame candidate review saga 可 crash/resume，blocking objection 需要 closure proof。
 - [ ] AnalysisFrame 条件完备地表达第 21 节所有 ClaimTargetKind。
@@ -1408,6 +1519,7 @@ revision，旧结果保留以供比较。
 - [ ] technical retry、FrameRevision、PlanRevision 边界通过 mutation tests。
 - [ ] SettlementPreconditionReport system-derived，Gate 3 settlement 全层 fail closed。
 - [ ] Workflow 使用 execution/obligation/publication/delivery 四轴。
+- [ ] journal、authority mutation 与 outbox enqueue 原子提交；projection 可从 cursor 重建。
 - [ ] real-provider 两条 lane 和独立 Reviewer lane 有完整 trace。
 - [ ] contract-supported eval 无 boundary escape。
 - [ ] old Gate 3 代码、fixture、artifact 不进入当前依赖。
@@ -1422,6 +1534,9 @@ revision，旧结果保留以供比较。
 - supported case 用 boundary 掩盖系统失败；
 - Reviewer result 无 durable candidate/hash binding；
 - correction 无法 supersede in-flight work；
+- 用单进程 `asyncio` task 或长 HTTP request 代替 durable cross-process job；
+- 并行 obligation 共享可变业务状态，或以完成顺序改写 Frame/Plan；
+- stale result 只比较 checkpoint，未比较 accepted heads 与 mailbox authority epoch；
 - resolver 或 capability 拥有隐藏 accepted authority；
 - Plan 降低 Frame evidence requirement；
 - Gate 3 生成生产物理 QuerySpec；

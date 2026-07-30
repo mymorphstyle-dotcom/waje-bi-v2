@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Iterator, Mapping, TypeVar
@@ -18,6 +18,14 @@ from psycopg.types.json import Jsonb
 from waje_vnext.domain.actions import (
     ActionKind,
     AskUserPayload,
+)
+from waje_vnext.domain.async_runtime import (
+    AsyncJobKind,
+    JobLease,
+    MailboxHead,
+    MailboxMessage,
+    MailboxMessageKind,
+    OperationIdentity,
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
@@ -32,6 +40,7 @@ from waje_vnext.domain.authority import (
     WorkPlanRevision,
 )
 from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.controller import (
     ControllerLease,
     EffectAttemptRecord,
@@ -80,6 +89,12 @@ _EFFECT_ACTION_KINDS = {
     ActionKind.RUN_PROBE,
     ActionKind.CALL_CAPABILITY,
     ActionKind.RUN_SENSITIVITY,
+}
+_ACTION_JOB_KINDS = {
+    ActionKind.INSPECT_SEMANTICS: AsyncJobKind.SEMANTIC_INSPECTION,
+    ActionKind.RUN_PROBE: AsyncJobKind.DATA_PROBE,
+    ActionKind.CALL_CAPABILITY: AsyncJobKind.CAPABILITY,
+    ActionKind.RUN_SENSITIVITY: AsyncJobKind.SENSITIVITY,
 }
 
 
@@ -199,6 +214,14 @@ class PostgresAuthorityStore:
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(
+                        hashtextextended(%s, 1729)
+                    )
+                    """,
+                    (case_id,),
+                )
                 existing = self._event_by_id(cursor, event_id)
                 if existing is not None:
                     if (
@@ -232,6 +255,17 @@ class PostgresAuthorityStore:
                         """,
                         (case_id,),
                     )
+                    cursor.execute(
+                        """
+                        INSERT INTO waje_vnext.case_mailbox_heads (
+                            case_id,
+                            last_sequence,
+                            authority_epoch,
+                            updated_at
+                        ) VALUES (%s, 0, 0, %s)
+                        """,
+                        (case_id, opened_at),
+                    )
                 except errors.UniqueViolation as error:
                     raise AuthorityConflict("case ID already exists") from error
                 self._append_event(
@@ -252,6 +286,171 @@ class PostgresAuthorityStore:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
                 return self._get_case(cursor, case_id)
+
+    def append_mailbox_message(
+        self,
+        *,
+        message_id: str,
+        case_id: str,
+        kind: MailboxMessageKind,
+        operation: OperationIdentity,
+        payload: dict[str, object],
+        created_at: datetime,
+    ) -> MailboxMessage:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (case_id,),
+                )
+                head_row = cursor.fetchone()
+                if head_row is None:
+                    raise AuthorityNotFound(
+                        "case mailbox head does not exist"
+                    )
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_messages
+                    WHERE message_id = %s
+                       OR (
+                           case_id = %s
+                           AND idempotency_key = %s
+                       )
+                    """,
+                    (message_id, case_id, operation.idempotency_key),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row is not None:
+                    existing = _mailbox_message_from_row(existing_row)
+                    if (
+                        existing.case_id == case_id
+                        and existing.kind is kind
+                        and existing.operation == operation
+                        and existing.payload == payload
+                    ):
+                        return existing
+                    raise AuthorityConflict(
+                        "mailbox identity already has different content"
+                    )
+                sequence = head_row["last_sequence"] + 1
+                authority_epoch = head_row["authority_epoch"] + 1
+                message = MailboxMessage(
+                    message_id=message_id,
+                    case_id=case_id,
+                    sequence=sequence,
+                    authority_epoch=authority_epoch,
+                    kind=kind,
+                    operation=operation,
+                    payload=payload,
+                    created_at=created_at,
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.case_mailbox_messages (
+                        message_id,
+                        case_id,
+                        sequence,
+                        authority_epoch,
+                        message_kind,
+                        operation_id,
+                        idempotency_key,
+                        causation_id,
+                        correlation_id,
+                        authority_revision,
+                        payload_sha256,
+                        payload,
+                        created_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        message.message_id,
+                        message.case_id,
+                        message.sequence,
+                        message.authority_epoch,
+                        message.kind.value,
+                        message.operation.operation_id,
+                        message.operation.idempotency_key,
+                        message.operation.causation_id,
+                        message.operation.correlation_id,
+                        message.operation.authority_revision,
+                        message.operation.payload_sha256,
+                        Jsonb(encode_record(message)["payload"]),
+                        message.created_at,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.case_mailbox_heads
+                    SET last_sequence = %s,
+                        authority_epoch = %s,
+                        updated_at = %s
+                    WHERE case_id = %s
+                    """,
+                    (
+                        message.sequence,
+                        message.authority_epoch,
+                        message.created_at,
+                        message.case_id,
+                    ),
+                )
+                return message
+
+    def get_mailbox_head(self, case_id: str) -> MailboxHead:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise AuthorityNotFound("case mailbox head does not exist")
+                return MailboxHead(
+                    case_id=row["case_id"],
+                    last_sequence=row["last_sequence"],
+                    authority_epoch=row["authority_epoch"],
+                    updated_at=row["updated_at"],
+                )
+
+    def list_mailbox_messages(
+        self,
+        case_id: str,
+        *,
+        after_sequence: int = 0,
+    ) -> tuple[MailboxMessage, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_messages
+                    WHERE case_id = %s
+                      AND sequence > %s
+                    ORDER BY sequence
+                    """,
+                    (case_id, after_sequence),
+                )
+                return tuple(
+                    _mailbox_message_from_row(row)
+                    for row in cursor.fetchall()
+                )
 
     def get_frame(self, frame_revision_id: str) -> AnalysisFrameRevision:
         return self._get_authority(
@@ -884,6 +1083,11 @@ class PostgresAuthorityStore:
                             "case_id",
                             "expected_head_version",
                             "idempotency_key",
+                            "operation_id",
+                            "causation_id",
+                            "correlation_id",
+                            "authority_revision",
+                            "payload_sha256",
                             "proposal_sha256",
                             "payload",
                             "recorded_at",
@@ -892,6 +1096,11 @@ class PostgresAuthorityStore:
                             action.action.case_id,
                             action.action.expected_head_version,
                             action.action.idempotency_key,
+                            action.action.operation.operation_id,
+                            action.action.operation.causation_id,
+                            action.action.operation.correlation_id,
+                            action.action.operation.authority_revision,
+                            action.action.operation.payload_sha256,
                             action.proposal_sha256,
                             Jsonb(payload),
                             action.recorded_at,
@@ -1126,7 +1335,29 @@ class PostgresAuthorityStore:
         payload = encode_record(message)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                self._get_case(cursor, message.case_id)
+                case = self._get_case(cursor, message.case_id)
+                if message.expected_head_version != case.head_version:
+                    raise StaleHead("outbox expected case head is stale")
+                cursor.execute(
+                    """
+                    SELECT authority_epoch
+                    FROM waje_vnext.case_mailbox_heads
+                    WHERE case_id = %s
+                    """,
+                    (message.case_id,),
+                )
+                mailbox_epoch = cursor.fetchone()["authority_epoch"]
+                if message.expected_authority_epoch != mailbox_epoch:
+                    raise StaleHead(
+                        "outbox expected mailbox authority is stale"
+                    )
+                if (
+                    message.operation.authority_revision
+                    != message.expected_authority_epoch
+                ):
+                    raise InvalidAuthorityTransition(
+                        "outbox operation authority does not match its fence"
+                    )
                 self._require_event_cursor(
                     cursor,
                     message.case_id,
@@ -1149,6 +1380,12 @@ class PostgresAuthorityStore:
                         raise InvalidAuthorityTransition(
                             "outbox requires an effect action"
                         )
+                    if message.job_kind is not _ACTION_JOB_KINDS[
+                        action.action.kind
+                    ]:
+                        raise InvalidAuthorityTransition(
+                            "outbox job kind does not match action"
+                        )
                     if (
                         message.payload.get("action_kind")
                         != action.action.kind.value
@@ -1156,6 +1393,10 @@ class PostgresAuthorityStore:
                         raise InvalidAuthorityTransition(
                             "outbox payload kind does not match action"
                         )
+                elif message.job_kind in set(_ACTION_JOB_KINDS.values()):
+                    raise InvalidAuthorityTransition(
+                        "effect outbox requires an admitted action"
+                    )
                 try:
                     self._insert_idempotent_immutable(
                         cursor,
@@ -1166,7 +1407,14 @@ class PostgresAuthorityStore:
                             "case_id",
                             "source_event_cursor",
                             "action_id",
+                            "job_kind",
+                            "operation_id",
                             "idempotency_key",
+                            "causation_id",
+                            "correlation_id",
+                            "authority_revision",
+                            "expected_head_version",
+                            "expected_authority_epoch",
                             "destination",
                             "contract_ref",
                             "payload_sha256",
@@ -1177,7 +1425,14 @@ class PostgresAuthorityStore:
                             message.case_id,
                             message.source_event_cursor,
                             message.action_id,
+                            message.job_kind.value,
+                            message.operation.operation_id,
                             message.idempotency_key,
+                            message.operation.causation_id,
+                            message.operation.correlation_id,
+                            message.operation.authority_revision,
+                            message.expected_head_version,
+                            message.expected_authority_epoch,
                             message.destination,
                             message.contract_ref,
                             message.payload_sha256,
@@ -1201,6 +1456,218 @@ class PostgresAuthorityStore:
             label="outbox message",
             decoder=decode_outbox_message,
         )
+
+    def list_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                if case_id is None:
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.outbox_messages
+                        ORDER BY created_at, source_event_cursor,
+                                 outbox_message_id
+                        """
+                    )
+                else:
+                    self._get_case(cursor, case_id)
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.outbox_messages
+                        WHERE case_id = %s
+                        ORDER BY created_at, source_event_cursor,
+                                 outbox_message_id
+                        """,
+                        (case_id,),
+                    )
+                return tuple(
+                    decode_outbox_message(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def acquire_job_lease(
+        self,
+        *,
+        outbox_message_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> JobLease:
+        lease_duration = expires_at - now
+        if lease_duration <= timedelta(0):
+            raise ValueError("job lease duration must be positive")
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT outbox_message_id
+                    FROM waje_vnext.outbox_messages
+                    WHERE outbox_message_id = %s
+                    FOR UPDATE
+                    """,
+                    (outbox_message_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise AuthorityNotFound(
+                        "outbox message {!r} does not exist".format(
+                            outbox_message_id
+                        )
+                    )
+                cursor.execute(
+                    "SELECT clock_timestamp() AS database_now"
+                )
+                database_now = cursor.fetchone()["database_now"]
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.outbox_delivery_leases
+                    WHERE outbox_message_id = %s
+                    FOR UPDATE
+                    """,
+                    (outbox_message_id,),
+                )
+                row = cursor.fetchone()
+                current = (
+                    None
+                    if row is None
+                    else _job_lease_from_row(row)
+                )
+                active = False if row is None else row["active"]
+                if (
+                    current is not None
+                    and active
+                    and current.expires_at > database_now
+                ):
+                    raise LeaseConflict(
+                        "job already has an active delivery lease"
+                    )
+                token = (
+                    1
+                    if current is None
+                    else current.fencing_token + 1
+                )
+                lease = JobLease(
+                    outbox_message_id=outbox_message_id,
+                    owner_id=owner_id,
+                    fencing_token=token,
+                    acquired_at=database_now,
+                    heartbeat_at=database_now,
+                    expires_at=database_now + lease_duration,
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.outbox_delivery_leases (
+                        outbox_message_id,
+                        owner_id,
+                        fencing_token,
+                        active,
+                        acquired_at,
+                        heartbeat_at,
+                        expires_at
+                    ) VALUES (%s, %s, %s, true, %s, %s, %s)
+                    ON CONFLICT (outbox_message_id) DO UPDATE SET
+                        owner_id = EXCLUDED.owner_id,
+                        fencing_token = EXCLUDED.fencing_token,
+                        active = true,
+                        acquired_at = EXCLUDED.acquired_at,
+                        heartbeat_at = EXCLUDED.heartbeat_at,
+                        expires_at = EXCLUDED.expires_at
+                    """,
+                    (
+                        lease.outbox_message_id,
+                        lease.owner_id,
+                        lease.fencing_token,
+                        lease.acquired_at,
+                        lease.heartbeat_at,
+                        lease.expires_at,
+                    ),
+                )
+                return lease
+
+    def heartbeat_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        heartbeat_at: datetime,
+        expires_at: datetime,
+    ) -> JobLease:
+        lease_duration = expires_at - heartbeat_at
+        if lease_duration <= timedelta(0):
+            raise ValueError("job lease duration must be positive")
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    "SELECT clock_timestamp() AS database_now"
+                )
+                database_now = cursor.fetchone()["database_now"]
+                renewed = JobLease(
+                    outbox_message_id=lease.outbox_message_id,
+                    owner_id=lease.owner_id,
+                    fencing_token=lease.fencing_token,
+                    acquired_at=lease.acquired_at,
+                    heartbeat_at=database_now,
+                    expires_at=database_now + lease_duration,
+                )
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.outbox_delivery_leases
+                    SET heartbeat_at = %s, expires_at = %s
+                    WHERE outbox_message_id = %s
+                      AND owner_id = %s
+                      AND fencing_token = %s
+                      AND active = true
+                      AND heartbeat_at = %s
+                      AND expires_at = %s
+                      AND expires_at > %s
+                    """,
+                    (
+                        renewed.heartbeat_at,
+                        renewed.expires_at,
+                        renewed.outbox_message_id,
+                        renewed.owner_id,
+                        renewed.fencing_token,
+                        lease.heartbeat_at,
+                        lease.expires_at,
+                        database_now,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LeaseFenceLost(
+                        "job delivery lease fencing token was lost"
+                    )
+                return renewed
+
+    def release_job_lease(self, lease: JobLease) -> None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.outbox_delivery_leases
+                    SET active = false
+                    WHERE outbox_message_id = %s
+                      AND owner_id = %s
+                      AND fencing_token = %s
+                      AND active = true
+                      AND heartbeat_at = %s
+                      AND expires_at = %s
+                    """,
+                    (
+                        lease.outbox_message_id,
+                        lease.owner_id,
+                        lease.fencing_token,
+                        lease.heartbeat_at,
+                        lease.expires_at,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LeaseFenceLost(
+                        "job delivery lease fencing token was lost"
+                    )
 
     def record_decision_request(
         self,
@@ -1417,17 +1884,16 @@ class PostgresAuthorityStore:
         now: datetime,
         expires_at: datetime,
     ) -> ControllerLease:
-        proposed = ControllerLease(
-            case_id=case_id,
-            run_id=run_id,
-            owner_id=owner_id,
-            fencing_token=1,
-            acquired_at=now,
-            expires_at=expires_at,
-        )
+        lease_duration = expires_at - now
+        if lease_duration <= timedelta(0):
+            raise ValueError("controller lease duration must be positive")
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
                 self._get_case(cursor, case_id, for_update=True)
+                cursor.execute(
+                    "SELECT clock_timestamp() AS database_now"
+                )
+                database_now = cursor.fetchone()["database_now"]
                 cursor.execute(
                     """
                     SELECT *
@@ -1439,13 +1905,11 @@ class PostgresAuthorityStore:
                 )
                 row = cursor.fetchone()
                 current = None if row is None else _lease_from_row(row)
+                active = False if row is None else row["active"]
                 if (
                     current is not None
-                    and current.expires_at > now
-                    and (
-                        current.run_id != run_id
-                        or current.owner_id != owner_id
-                    )
+                    and active
+                    and current.expires_at > database_now
                 ):
                     raise LeaseConflict(
                         "case already has an active controller lease"
@@ -1453,21 +1917,15 @@ class PostgresAuthorityStore:
                 token = (
                     1
                     if current is None
-                    else (
-                        current.fencing_token
-                        if current.run_id == run_id
-                        and current.owner_id == owner_id
-                        and current.expires_at > now
-                        else current.fencing_token + 1
-                    )
+                    else current.fencing_token + 1
                 )
                 lease = ControllerLease(
-                    case_id=proposed.case_id,
-                    run_id=proposed.run_id,
-                    owner_id=proposed.owner_id,
+                    case_id=case_id,
+                    run_id=run_id,
+                    owner_id=owner_id,
                     fencing_token=token,
-                    acquired_at=proposed.acquired_at,
-                    expires_at=proposed.expires_at,
+                    acquired_at=database_now,
+                    expires_at=database_now + lease_duration,
                 )
                 cursor.execute(
                     """
@@ -1476,13 +1934,15 @@ class PostgresAuthorityStore:
                         run_id,
                         owner_id,
                         fencing_token,
+                        active,
                         acquired_at,
                         expires_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, true, %s, %s)
                     ON CONFLICT (case_id) DO UPDATE SET
                         run_id = EXCLUDED.run_id,
                         owner_id = EXCLUDED.owner_id,
                         fencing_token = EXCLUDED.fencing_token,
+                        active = true,
                         acquired_at = EXCLUDED.acquired_at,
                         expires_at = EXCLUDED.expires_at
                     """,
@@ -1502,18 +1962,23 @@ class PostgresAuthorityStore:
             with self._cursor() as cursor:
                 cursor.execute(
                     """
-                    DELETE FROM waje_vnext.controller_leases
-                    WHERE
-                        case_id = %s
+                    UPDATE waje_vnext.controller_leases
+                    SET active = false
+                    WHERE case_id = %s
                         AND run_id = %s
                         AND owner_id = %s
                         AND fencing_token = %s
+                        AND active = true
+                        AND acquired_at = %s
+                        AND expires_at = %s
                     """,
                     (
                         lease.case_id,
                         lease.run_id,
                         lease.owner_id,
                         lease.fencing_token,
+                        lease.acquired_at,
+                        lease.expires_at,
                     ),
                 )
                 if cursor.rowcount != 1:
@@ -1533,6 +1998,7 @@ class PostgresAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -1548,6 +2014,7 @@ class PostgresAuthorityStore:
                     authority_ref=authority_ref,
                     payload=payload,
                     customer_projection=customer_projection,
+                    operation=operation,
                 )
 
     def list_events(
@@ -2146,7 +2613,15 @@ class PostgresAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
+        resolved_operation = operation or _derived_event_operation(
+            case_id=case_id,
+            event_id=event_id,
+            action_id=action_id,
+            authority_ref=authority_ref,
+            payload=payload,
+        )
         existing = self._event_by_id(cursor, event_id)
         if existing is not None:
             candidate = EventJournalEntry(
@@ -2155,6 +2630,7 @@ class PostgresAuthorityStore:
                 cursor=existing.cursor,
                 event_type=event_type,
                 recorded_at=recorded_at,
+                operation=resolved_operation,
                 action_id=action_id,
                 authority_ref=authority_ref,
                 payload=payload,
@@ -2183,6 +2659,7 @@ class PostgresAuthorityStore:
             cursor=updated["last_cursor"],
             event_type=event_type,
             recorded_at=recorded_at,
+            operation=resolved_operation,
             action_id=action_id,
             authority_ref=authority_ref,
             payload=payload,
@@ -2196,11 +2673,20 @@ class PostgresAuthorityStore:
                 event_id,
                 event_type,
                 recorded_at,
+                operation_id,
+                idempotency_key,
+                causation_id,
+                correlation_id,
+                authority_revision,
+                payload_sha256,
                 action_id,
                 authority_ref,
                 payload,
                 customer_projection
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s
+            )
             """,
             (
                 entry.case_id,
@@ -2208,6 +2694,12 @@ class PostgresAuthorityStore:
                 entry.event_id,
                 entry.event_type.value,
                 entry.recorded_at,
+                entry.operation.operation_id,
+                entry.operation.idempotency_key,
+                entry.operation.causation_id,
+                entry.operation.correlation_id,
+                entry.operation.authority_revision,
+                entry.operation.payload_sha256,
                 entry.action_id,
                 entry.authority_ref,
                 Jsonb(encode_record(entry)["payload"]),
@@ -2244,6 +2736,14 @@ class PostgresAuthorityStore:
             cursor=row["cursor"],
             event_type=JournalEventType(row["event_type"]),
             recorded_at=row["recorded_at"],
+            operation=OperationIdentity(
+                operation_id=row["operation_id"],
+                idempotency_key=row["idempotency_key"],
+                causation_id=row["causation_id"],
+                correlation_id=row["correlation_id"],
+                authority_revision=row["authority_revision"],
+                payload_sha256=row["payload_sha256"],
+            ),
             action_id=row["action_id"],
             authority_ref=row["authority_ref"],
             payload=row["payload"],
@@ -2265,6 +2765,50 @@ def _case_from_row(row: Mapping[str, Any]) -> InvestigationCase:
     )
 
 
+def _derived_event_operation(
+    *,
+    case_id: str,
+    event_id: str,
+    action_id: str | None,
+    authority_ref: str | None,
+    payload: dict[str, object],
+) -> OperationIdentity:
+    operation_id = action_id or authority_ref or event_id
+    authority_revision = payload.get("head_version", 0)
+    if not isinstance(authority_revision, int):
+        authority_revision = 0
+    return OperationIdentity(
+        operation_id=operation_id,
+        idempotency_key=event_id,
+        causation_id=action_id or event_id,
+        correlation_id=case_id,
+        authority_revision=authority_revision,
+        payload_sha256=content_sha256(payload),
+    )
+
+
+def _mailbox_message_from_row(
+    row: Mapping[str, Any],
+) -> MailboxMessage:
+    return MailboxMessage(
+        message_id=row["message_id"],
+        case_id=row["case_id"],
+        sequence=row["sequence"],
+        authority_epoch=row["authority_epoch"],
+        kind=MailboxMessageKind(row["message_kind"]),
+        operation=OperationIdentity(
+            operation_id=row["operation_id"],
+            idempotency_key=row["idempotency_key"],
+            causation_id=row["causation_id"],
+            correlation_id=row["correlation_id"],
+            authority_revision=row["authority_revision"],
+            payload_sha256=row["payload_sha256"],
+        ),
+        payload=row["payload"],
+        created_at=row["created_at"],
+    )
+
+
 def _lease_from_row(row: Mapping[str, Any]) -> ControllerLease:
     return ControllerLease(
         case_id=row["case_id"],
@@ -2272,5 +2816,16 @@ def _lease_from_row(row: Mapping[str, Any]) -> ControllerLease:
         owner_id=row["owner_id"],
         fencing_token=row["fencing_token"],
         acquired_at=row["acquired_at"],
+        expires_at=row["expires_at"],
+    )
+
+
+def _job_lease_from_row(row: Mapping[str, Any]) -> JobLease:
+    return JobLease(
+        outbox_message_id=row["outbox_message_id"],
+        owner_id=row["owner_id"],
+        fencing_token=row["fencing_token"],
+        acquired_at=row["acquired_at"],
+        heartbeat_at=row["heartbeat_at"],
         expires_at=row["expires_at"],
     )

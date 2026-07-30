@@ -8,14 +8,23 @@ export type WAJEVNextControllerStateV1 = {
 } & {
   run_id: Id;
   case_id: Id;
-  phase: "ready_for_agent" | "waiting_for_user" | "waiting_for_effect" | "completed" | "stopped";
+  phase:
+    | "ready_for_agent"
+    | "waiting_for_llm"
+    | "waiting_for_user"
+    | "waiting_for_effect"
+    | "waiting_for_review"
+    | "completed"
+    | "stopped";
   step_number: number;
   head_version: number;
+  authority_epoch: number;
+  mailbox_cursor: number;
   last_event_cursor: number;
   context_packet_id: Id;
   latest_user_message: Id;
   pending_action_id: NullableId;
-  pending_outbox_message_id: NullableId;
+  pending_job_ids: Id[];
   pending_decision_request_id: NullableId;
   accepted_answer_version_id: NullableId;
   consecutive_rejections: number;

@@ -100,8 +100,17 @@ export interface ActionBase {
   case_id?: string;
   expected_head_version?: number;
   idempotency_key?: string;
+  operation?: OperationIdentity;
   issued_at?: string;
   [k: string]: unknown;
+}
+export interface OperationIdentity {
+  operation_id: string;
+  idempotency_key: string;
+  causation_id: string;
+  correlation_id: string;
+  authority_revision: number;
+  payload_sha256: string;
 }
 export interface ReviseFrame {
   revision_reason: string;

@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；旧 Gate 3 已撤销；新 Gate 3 处于 Planned |
+| 当前 Gate | Gate 2 complete + durable async amendment；旧 Gate 3 已撤销；新 Gate 3 处于 Planned |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -137,6 +137,10 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
   解释；每个 material assertion 都接受独立 semantic consistency pass。
 - `MessageIngressRecord` / `MessageImpactBinding`：跨阶段 follow-up 的 durable typed saga；
   Primary Agent 判断开放 message impact，controller 只执行持久化、CAS 与 fencing。
+- `CaseMailbox` / `OperationIdentity`：所有用户 command 和异步 job 的 durable ingress 与
+  causation/correlation 身份；mailbox authority epoch 在 correction 到达时立即 fence 旧工作。
+- `OutboxMessage` / `JobLease`：跨进程 at-least-once job、expected head/epoch fence、
+  heartbeat、lease expiry 与 effectively-once authority admission。
 - `FrameCandidateBundle`：未接受 proposal 的 durable review saga，绑定 candidate hash、
   question head、review request/result 与 disposition。
 - `ResolvedMeasurementInstance`：从 accepted Frame、calendar、contract 与 snapshot/release
@@ -202,8 +206,9 @@ stop
 ```
 
 每个 action 使用带版本的输入/输出 schema，包含 `case_id`、`action_id`、expected heads、
-幂等键、业务目的、目标 claim 或 task、参数和预期证据。controller 只接受合法 action，
-校验 expected heads，并把动作结果写入 event journal。
+幂等键、operation/causation/correlation identity、authority revision、payload hash、业务目的、
+目标 claim 或 task、参数和预期证据。controller 只接受合法 action，校验 expected heads 与
+mailbox authority epoch，并把动作结果写入 event journal。
 
 开放业务意图、纠正、挑战与澄清文本由 typed LLM binding 处理。本地系统不使用关键词字典
 猜测开放语义。
@@ -265,11 +270,15 @@ vnext/
 ├── apps/
 │   └── workbench/                 # Next.js Chat + Analysis + Workflow 与 TS gateway
 ├── services/
+│   ├── command_api/               # 短事务 ingress，立即返回 runId/cursor
+│   ├── agent_worker/              # case mailbox 与 Primary Agent controller worker
+│   ├── job_workers/               # LLM/capability/reviewer effect workers
+│   ├── projection_stream/         # journal projection 与 SSE/WebSocket transport
 │   └── analysis_core/
 │       └── src/waje_vnext/
 │           ├── domain/            # 五类权威对象、typed state、纯不变量
 │           ├── agent/             # Primary Agent binding、ContextPacket、typed actions
-│           ├── controller/        # admission、循环、checkpoint/resume、局部恢复
+│           ├── controller/        # durable async state machine、admission、fencing、恢复
 │           ├── capabilities/      # capability fabric 与 EvidenceRecord 构造
 │           ├── semantics/         # metric/dimension/factor/data contract 解析
 │           ├── query/             # QuerySpec、SQL compiler 与 governed escape hatch
@@ -303,15 +312,30 @@ vnext/
 
 | 边界 | 所有权 |
 |---|---|
+| Command API | 鉴权、用户消息持久化、case 创建/唤醒、短事务 mailbox + journal + outbox；立即返回 runId/cursor |
+| Primary Agent Controller Worker | 按 case 串行消费 durable mailbox，调度异步 job，并在短事务内提交 accepted authority |
+| LLM/Capability/Reviewer Workers | 事务外执行耗时 effect，持有可续租 job lease，返回 immutable receipt/result |
+| Projection/Streaming | 从 journal 和 accepted heads 重建 customer-safe projection，通过 cursor SSE/WebSocket 推送 |
 | TypeScript Workbench/Gateway | 页面、会话接入、流式 transport、customer-safe projection 展示；不持有编排或 BI 权威 |
 | Python Analysis Core | Primary Agent、controller、authority repositories、capabilities、semantic/query、trust、projection |
-| PostgreSQL | authority objects、accepted heads、event journal、checkpoint、outbox、result metadata、projection |
+| PostgreSQL | mailbox、authority objects、accepted heads、event journal、checkpoint、outbox、job lease、result metadata、projection |
 | ClickHouse | 受 QuerySpec 与 snapshot/release 约束的分析查询 |
 | Object/result storage | 大结果内容寻址与稳定 handle；PostgreSQL 保存 hash、schema、location 与生命周期 |
 | LLM provider | typed reasoning；timeout/retry/circuit breaker 统一位于 provider 层 |
 
 TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 `vnext/contracts/` 为源，
 生成物进入各自 build output，禁止手工维护两套含义。
+
+### 5.2 并发与提交原则
+
+WAJE 采用 case-scoped durable async runtime。耗时 LLM、semantic inspection、probe、
+capability、sensitivity 和 Reviewer job 可以跨进程并发；每个 InvestigationCase 的业务
+authority admission 沿单一串行通道提交。journal append、authority mutation 与 outbox
+enqueue 位于同一短数据库事务。
+
+delivery 采用 at-least-once。idempotency key、unique constraint、payload hash、accepted-head
+CAS、mailbox authority epoch、job fencing token 和 immutable receipt 共同形成
+effectively-once 状态变更。分布式 exactly-once 不进入设计假设。
 
 ## 6. 数据与迁移策略
 
@@ -336,7 +360,8 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - clean database 可按顺序 apply、rollback development-only change、re-apply。
 - 并发 migration 有 advisory lock，失败保持 ledger 与 schema 一致。
 - repository contract test 在 PostgreSQL 上验证 CAS、immutability、head acceptance、
-  event ordering、checkpoint/resume 和 outbox。
+  mailbox ordering、authority epoch、event ordering、checkpoint/resume、outbox fence、
+  job lease/heartbeat 和原子 rollback。
 - 旧 schema 缺失时 vNext 运行正常。
 - vNext schema 缺失时进程 fail closed 并给出可操作诊断。
 
@@ -355,6 +380,8 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - 本开发计划与对抗式自审记录。
 - 旧目录、构建入口、数据入口、运行入口和测试入口现状清单。
 - `vnext/` 独立根目录、包 namespace、最小 build/test/run 骨架。
+- command、case controller worker、job worker、journal/projection 和 streaming 的逻辑部署
+  边界；它们只通过 versioned contract 与 durable records 协作。
 - 隔离策略与 forbidden dependency manifest。
 - 独立 root Python/Node package manifests；Gate 0 验证 dependency graph 不指向仓库根级
   package 或旧目录，完整 Workbench build 在 Gate 6 验收。
@@ -371,6 +398,8 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - [x] 最小 Python runtime 可 compile、test、run。
 - [x] clean copy 使用 Python 3.12 virtualenv 完成 wheel build，低版本解释器 fail closed。
 - [x] 新根目录、服务边界、环境变量和数据库 namespace 已文档化。
+- [x] 服务边界已按 durable command/worker/journal/projection/streaming 模型回审，未把
+  `asyncio` 或长 HTTP 请求当作跨进程运行基础。
 - [x] 旧系统删除顺序与最终删除演练可执行。
 - [x] 对抗式自审中的 Gate 0 blocking finding 已清零。
 
@@ -391,8 +420,12 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 
 - 五类权威对象 schema 与 invariants。
 - typed actions、admission result、ContextPacket 和 event journal contract。
+- CaseMailbox、OperationIdentity、authority epoch、controller wake、异步 job 与 expected
+  head/epoch fence contract。
 - PostgreSQL v1 migrations、repository ports/adapters、CAS 与 append-only 写入。
 - 状态机、revision supersession、idempotency、checkpoint、outbox contract。
+- journal append、authority mutation 与 outbox enqueue 的同事务 contract；worker job
+  lease、heartbeat、expiry 和 fencing token。
 - generated TypeScript contract bindings、Python typed domain 与双向 schema contract tests；
   只支持当前 schema version，避免维护第二套生成式 Python runtime。
 
@@ -404,6 +437,13 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - [x] 口径变化缺少新 FrameRevision 时 admission 拒绝。
 - [x] ContextPacket 可由持久化状态确定性重建并 hash 相同。
 - [x] event journal 支持幂等 append、case 内单调 cursor 和 customer-safe projection。
+- [x] command/event/action/job 带 operation、idempotency、causation、correlation、
+  authority revision 与 payload hash。
+- [ ] storage authority mutation event 显式接收 causal operation，并移除 production path
+  的静默缺省派生；该项纳入 G3.2 operation-lineage blocker。
+- [x] duplicate ingress 只产生一个 mailbox authority；mailbox + journal + outbox 失败整体
+  rollback。
+- [x] outbox effect job 绑定 admitted action、accepted head 和 mailbox epoch。
 
 ### Gate 2：单主 Agent runtime
 
@@ -420,7 +460,12 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 **交付物**
 
 - Primary Business Analysis Agent binding。
-- controller action loop、lease、checkpoint/resume、outbox、provider retry。
+- durable async controller、case lease、job lease/heartbeat storage contract、
+  checkpoint/resume、outbox、provider retry；periodic heartbeat supervisor 与旧
+  fencing-token rejection 在 G3.2 关闭。
+- Primary Agent LLM job、`WAITING_FOR_LLM`、`WAITING_FOR_EFFECT`、`WAITING_FOR_REVIEW`、
+  `WAITING_FOR_USER` 与多 pending job state。
+- 任意运行阶段的 message ingress、correction authority epoch 与 stale-result rejection。
 - frame/plan 动态 revision、局部失败恢复、ask_user interruption。
 - deterministic fake provider 与真实 provider acceptance harness。
 - concurrent resume、duplicate delivery、stale head 和 crash boundary tests。
@@ -432,9 +477,17 @@ TypeScript 与 Python 通过版本化 API/event schema 通信。共享合同以 
 - [x] stale action 不能覆盖新 head。
 - [x] 内容问题局部修订，口径变化生成 FrameRevision。
 - [x] timeout/retry 只在 provider 或 tool supervision 层发生。
+- [x] 用户 command 在短事务后返回 durable cursor；Primary Agent provider 不在 command
+  request 调用栈执行。
+- [x] LLM/effect 在数据库事务外执行，提交前重检 accepted head 与 authority epoch。
+- [x] correction-vs-LLM/effect、duplicate ingress、atomic outbox failure、concurrent worker
+  和 crash/resume 测试通过。
+- [x] at-least-once job delivery 通过幂等、CAS、唯一约束和 receipt 达到 effectively-once
+  authority mutation。
 
 Exit evidence：
-`docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md`。
+`docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md`；
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md`。
 
 ### Gate 3：Universal Measurement Authority
 
@@ -446,6 +499,8 @@ Exit evidence：
   日历、data contract、证据和发布边界。
 - Gate 0–2 realignment audit：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。
+- Gate 0–2 durable async amendment：
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md`。
 - focused implementation plan：
   `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md`。
 - plan adversarial review：
@@ -454,6 +509,10 @@ Exit evidence：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`；
   authoring draft 打开 10 个 Blocking、11 个 Major；即时关闭 1 个 Blocking、2 个 Major，
   G3.E0/G3.1 保持 blocked。
+- durable async adversarial review：
+  `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`；
+  periodic heartbeat、terminal JobDisposition、obligation scheduler、Reviewer worker 与
+  operation lineage 是 G3.2 blocking work。
 - 组合审查第一轮 20 个 Blocking、8 个 Major；closure verification 再打开 6 个 Blocking、
   6 个 Major。两轮 finding 均已写入设计；实现证据尚未开始。
 - Gate 1/2 历史验收保持；G3.1/G3.2 是任何新 Gate 3 业务 Evidence、Answer 和 Workflow
@@ -466,6 +525,10 @@ Exit evidence：
 
 - QuestionRevision、跨阶段 correction、source-grounded SemanticBinding 与 accepted question
   head。
+- case mailbox 上的 durable MessageImpactBinding saga；LLM、capability、sensitivity 和
+  Reviewer 通过 async job 运行，authority admission 按 case 串行。
+- obligation-aware fan-out/fan-in、乱序完成、duplicate delivery、worker lease/heartbeat、
+  crash/resume 和 stale-result rejection。
 - durable FrameCandidateBundle review saga 与独立 MeasurementObjection。
 - 显式 EstimandSpec、条件完备的 AnalysisFrame measurement algebra、
   EvidenceRequirementSpec 与 ResolvedEvidenceObligation。
@@ -482,6 +545,8 @@ Exit evidence：
   lane 与 independent Reviewer lane。
 - behavior-first EvaluationEpisode corpus：真实/专家措辞、业务世界、决策风险、可接受
   结果空间、禁止结果、反事实 siblings 与分层 grader。
+- 用户提供的八类付费金额真实问题形成八个独立 candidate Episode：变化解释、规律、事件
+  影响、健康度、维度/因子归因、异常、多基准和证据质量；它们不收窄其他问题家族。
 
 **Exit criteria**
 
@@ -496,6 +561,8 @@ Exit evidence：
 - [ ] typed scope 与 identity 贯穿 Gate 3 conformance execution、Evidence、claim 和
   Workflow；Gate 4 的 physical execution 必须消费同一封闭合同。
 - [ ] correction、review、effect、Evidence admission 并发与 crash/resume 全部 fail safe。
+- [ ] independent obligations 可并行，乱序结果逐个重检 accepted heads/epoch；旧 result
+  只能进入 superseded 审计。
 - [ ] QueryBindingEnvelope/capability 无平行业务口径入口，Gate 3 不生成生产物理 QuerySpec。
 - [ ] technical retry 与 Frame/Plan revision 的 identity 边界通过。
 - [ ] provisional Answer 不触发 settled、completed 或 delivered Workflow。
@@ -611,9 +678,9 @@ Exit evidence：
 |---|---|---|---|
 | Domain contract | 五类权威对象、typed actions | schema、property、immutability、revision rules | invalid authority / illegal transition |
 | Question/measurement | QuestionRevision、SemanticBinding、measurement graph/identity | source grounding、graph completeness、metamorphic、mutation | authority drift / wrong estimand |
-| Storage | repositories、journal、checkpoint、outbox | PostgreSQL integration、concurrency、crash recovery | persistence / ordering / idempotency |
+| Storage | mailbox、repositories、journal、checkpoint、outbox、job lease | PostgreSQL integration、atomic commit、concurrency、heartbeat takeover、crash recovery | persistence / ordering / idempotency / fence loss |
 | Context | ContextPacket | reconstruction、boundedness、redaction、hash stability | missing context / leakage / stale head |
-| Controller | action loop | fake provider scenarios、stale action、retry/resume | orchestration / recovery |
+| Controller | durable async state machine | correction-vs-job、parallel obligations、乱序完成、duplicate delivery、stale action/result、retry/resume | orchestration / recovery / authority race |
 | Semantic/data | metric、dimension、snapshot、grain | contract fixtures + live schema profile | missing contract / unsupported grain / data absent |
 | Query/capability | QuerySpec、capability | compile golden、SQL safety、live ClickHouse | query / capability / provenance |
 | Evidence | EvidenceRecord、result handle | immutability、hash、scope compatibility | evidence mismatch / missing provenance |
@@ -638,6 +705,10 @@ Gate 1–4 可以扩充，Gate 7 前不得缩减为证明切片：
 - data quality、coverage 与 contract challenge；
 - sensitivity、alternative explanation、falsification 与 reversal；
 - follow-up、scope revision、challenge 与 evidence explanation。
+
+2026-07-30 用户提供的付费金额问题集作为真实用户 slice，覆盖变化解释、规律、事件影响、
+收入健康、维度/因子归因、异常/黑天鹅、多基准和数据质量/证据检查。它们用于检验上述家族
+的组合行为，不能成为 question router、固定 capability 路线或 launch 范围边界。
 
 ### 8.2 EvaluationEpisode 与 expectation envelope
 
@@ -672,7 +743,7 @@ eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、
 |---|---|
 | Gate 0 | 目录与 transport/projection 边界 |
 | Gate 1 | authority/event schema 的 TypeScript bindings |
-| Gate 2 | headless streaming 与 pending user decision contract |
+| Gate 2 | cursor-based headless event contract、durable runId 与 pending user decision contract |
 | Gate 3 | question/frame/measurement/evidence/claim identity 与 Workflow 状态 projection fixture |
 | Gate 4 | capability evidence/result handle 展开合同 |
 | Gate 5 | claim scope、limitation、provisional/settled、Reviewer disposition |
@@ -694,6 +765,9 @@ eval 失败不能自动升级为 runtime guardrail。升级需要人工确认、
 | LLM provider 能力不足 | typed action/schema 频繁失败 | provider adapter 统一重试与评测 | 需要换 provider 或改变产品质量门槛 |
 | 数据覆盖不足 | matrix cell 为 missing contract | 明确 boundary 与升级路径 | launch-required family 无法达到门槛 |
 | 性能成本失控 | 高成本 capability 反复运行 | plan budget、probe-first、cache by immutable key | 预算会改变默认调查深度 |
+| correction 与旧 job 竞态 | 新消息到达后旧 LLM/effect 仍尝试提交 | mailbox epoch 立即 fence；result 保留审计，authority admission 拒绝 | 产品希望旧 scope 结果自动合并到新问题 |
+| 并发 obligation 乱序 | 较晚计划的 job 先完成 | 每个 result 按 accepted head/epoch/obligation identity 独立 admission | 业务要求跨 obligation 原子成组发布 |
+| worker 丢失或重复投递 | heartbeat 过期、provider 调用重复 | job lease/fencing + at-least-once + 幂等 receipt/CAS | 外部 provider 无法支持安全重试且成本边界会改变 |
 | 删除独立性失真 | isolation test 依赖 repo root 或旧数据库 | 临时目录 + clean schema 验证 | 需要共享基础设施作为生产依赖 |
 
 ## 11. 提交与审查策略
@@ -760,7 +834,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 |---|---|---|---|
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
-| Gate 2 | Complete | 已确认 WAJE-owned controller；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md` |
+| Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
 | Gate 3 | Planned | 本 Gate 无需用户决策 | `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
@@ -787,3 +861,6 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | Gate 3 只产出 provisional Answer | Gate 分层审计 | identity preconditions 在 Gate 3 fail closed；完整 settled publication 由 Gate 5 实现 |
 | 2026-07-30 | G3.E0 采用 behavior-first EvaluationEpisode | 用户确认 + eval-first review | 测试先定义业务世界、可接受结果空间、禁止结果和反事实关系；G3.1 等待 readiness hard gate |
 | 2026-07-30 | 合成措辞不计入真实用户来源 | 组合对抗审查 | 真实用户池、双审、held-out 和 calibration 缺口保持显式，禁止用生成样本补数量 |
+| 2026-07-30 | runtime 采用整体异步、authority commit 局部同步 | 用户顶层架构要求 | command 短事务、durable mailbox、跨进程 job、case 串行 admission、head/epoch fence 与 cursor projection |
+| 2026-07-30 | at-least-once 是 delivery 基础假设 | 用户顶层架构要求 | 依靠幂等、CAS、唯一约束、receipt 和 fencing 达到 effectively-once mutation |
+| 2026-07-30 | 八类付费金额问题进入真实用户 candidate pool | 用户原始问题集 | 形成 8 个独立 Episode；真实措辞有 source trace，拟合 world/expectation 仍待双审 |

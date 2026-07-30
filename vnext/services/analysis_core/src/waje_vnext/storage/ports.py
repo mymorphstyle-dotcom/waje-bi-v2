@@ -5,6 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import ContextManager, Protocol
 
+from waje_vnext.domain.async_runtime import (
+    JobLease,
+    MailboxHead,
+    MailboxMessage,
+    MailboxMessageKind,
+    OperationIdentity,
+)
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerVersion,
@@ -170,7 +177,28 @@ class AuthorityStore(Protocol):
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry: ...
+
+    def append_mailbox_message(
+        self,
+        *,
+        message_id: str,
+        case_id: str,
+        kind: MailboxMessageKind,
+        operation: OperationIdentity,
+        payload: dict[str, object],
+        created_at: datetime,
+    ) -> MailboxMessage: ...
+
+    def get_mailbox_head(self, case_id: str) -> MailboxHead: ...
+
+    def list_mailbox_messages(
+        self,
+        case_id: str,
+        *,
+        after_sequence: int = 0,
+    ) -> tuple[MailboxMessage, ...]: ...
 
     def list_events(
         self,
@@ -214,6 +242,31 @@ class AuthorityStore(Protocol):
     def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage: ...
 
     def get_outbox_message(self, message_id: str) -> OutboxMessage: ...
+
+    def list_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]: ...
+
+    def acquire_job_lease(
+        self,
+        *,
+        outbox_message_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> JobLease: ...
+
+    def heartbeat_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        heartbeat_at: datetime,
+        expires_at: datetime,
+    ) -> JobLease: ...
+
+    def release_job_lease(self, lease: JobLease) -> None: ...
 
     def record_decision_request(
         self,

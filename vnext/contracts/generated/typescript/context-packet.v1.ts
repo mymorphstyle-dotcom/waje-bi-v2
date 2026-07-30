@@ -39,7 +39,10 @@ export interface WAJEVNextContextPacketV1 {
   accepted_frame_payload: NullableObject;
   accepted_plan_payload: NullableObject;
   accepted_answer_payload: NullableObject;
-  user_message: Id;
+  /**
+   * @minItems 1
+   */
+  user_messages: [ContextUserMessage, ...ContextUserMessage[]];
   relevant_event_cursor_start: number;
   relevant_event_cursor_end: number;
   /**
@@ -60,6 +63,13 @@ export interface WAJEVNextContextPacketV1 {
   reviewer_objection_index: ContextReviewerObjection[];
   built_at: Timestamp;
   content_sha256: Sha256;
+}
+export interface ContextUserMessage {
+  message_id: Id;
+  sequence: number;
+  authority_epoch: number;
+  kind: Id;
+  content: Id;
 }
 export interface ContextEvent {
   cursor: number;

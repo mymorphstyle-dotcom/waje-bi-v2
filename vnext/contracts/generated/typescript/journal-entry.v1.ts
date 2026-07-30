@@ -9,6 +9,7 @@ export interface WAJEVNextEventJournalEntryV1 {
   cursor: number;
   event_type:
     | "case_opened"
+    | "message_ingressed"
     | "action_admitted"
     | "action_rejected"
     | "user_decision_requested"
@@ -23,10 +24,16 @@ export interface WAJEVNextEventJournalEntryV1 {
     | "effect_enqueued"
     | "effect_attempt_failed"
     | "effect_completed"
+    | "llm_job_enqueued"
+    | "llm_job_completed"
+    | "reviewer_job_enqueued"
+    | "reviewer_job_completed"
+    | "job_superseded"
     | "run_resumed"
     | "case_stopped"
     | "case_closed";
   recorded_at: string;
+  operation: OperationIdentity;
   action_id: string | null;
   authority_ref: string | null;
   payload: {
@@ -35,4 +42,12 @@ export interface WAJEVNextEventJournalEntryV1 {
   customer_projection: {
     [k: string]: unknown;
   } | null;
+}
+export interface OperationIdentity {
+  operation_id: string;
+  idempotency_key: string;
+  causation_id: string;
+  correlation_id: string;
+  authority_revision: number;
+  payload_sha256: string;
 }

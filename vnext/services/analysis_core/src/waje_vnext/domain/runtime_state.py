@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Mapping
 
+from .async_runtime import AsyncJobKind, OperationIdentity
 from .canonical import (
     FrozenJson,
     content_sha256,
@@ -87,6 +88,10 @@ class OutboxMessage:
     case_id: str
     source_event_cursor: int
     action_id: str | None
+    job_kind: AsyncJobKind
+    operation: OperationIdentity
+    expected_head_version: int
+    expected_authority_epoch: int
     idempotency_key: str
     destination: str
     contract_ref: str
@@ -105,9 +110,25 @@ class OutboxMessage:
             require_nonempty(getattr(self, name), name)
         if self.action_id is not None:
             require_nonempty(self.action_id, "action_id")
+        if not isinstance(self.job_kind, AsyncJobKind):
+            raise TypeError("job_kind must be AsyncJobKind")
+        if not isinstance(self.operation, OperationIdentity):
+            raise TypeError("operation must be OperationIdentity")
+        if self.idempotency_key != self.operation.idempotency_key:
+            raise ValueError(
+                "outbox idempotency_key must match operation identity"
+            )
+        if self.expected_head_version < 0:
+            raise ValueError("expected_head_version must be non-negative")
+        if self.expected_authority_epoch < 1:
+            raise ValueError("expected_authority_epoch must be positive")
         if self.source_event_cursor < 1:
             raise ValueError("source_event_cursor must be positive")
         require_sha256(self.payload_sha256, "payload_sha256")
+        if self.operation.payload_sha256 != self.payload_sha256:
+            raise ValueError(
+                "outbox payload hash must match operation identity"
+            )
         require_aware_datetime(self.created_at, "created_at")
         frozen = _freeze_object(self.payload, "payload")
         if content_sha256(frozen) != self.payload_sha256:

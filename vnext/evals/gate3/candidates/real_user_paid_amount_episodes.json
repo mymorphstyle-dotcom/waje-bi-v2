@@ -1,0 +1,1725 @@
+{
+  "catalog_version": "gate3.behavior-eval.v1",
+  "episodes": [
+    {
+      "episode_id": "G3-USER-001",
+      "title": "昨日付费金额变化的公式与行为因素解释",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；业务世界、隐藏 truth 和 expectation 由测试作者拟合，尚未经过业务或测量评审。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#1",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "付费金额变化解释：昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-PAID-AMOUNT-CHANGE-001",
+        "narrative": "一款跨地区运营的游戏按业务日核算成功支付金额。管理层要判断昨日波动来自付费用户规模、频次、客单、首充结构、支付成功率或渠道构成，并决定先处理增长、商品还是支付问题。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "metric.paid_amount.successful.v2",
+            "state": "available",
+            "description": "付费金额按成功订单实付金额计，退款另列。"
+          },
+          {
+            "contract_ref": "metric.payment.behavior-factor.v1",
+            "state": "available",
+            "description": "付费人数、首充人数、频次、单笔金额和支付成功率有明确分母与去重规则。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PAID-CHANGE-LATE-STATUS",
+            "description": "昨日最后一小时支付状态仍有少量迟到更新。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-PAID-CHANGE-MIX",
+            "description": "一个高客单渠道的流量占比上升。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "昨日成功付费金额上涨主要由高客单渠道 mix 和付费频次共同驱动。",
+          "首充人数下降，支付成功率小幅下降，二者抵消了部分上涨。",
+          "简单逐因子独立相乘会产生交互项，需要可 reconciliation 的分解或顺序敏感性。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "确定昨日收入波动的主导机制和当天优先排查方向。",
+        "consequence_of_error": "错误归因会把资源投向拉新或支付治理，同时忽略渠道 mix 与频次变化。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "解释对象是昨日成功付费金额变化。",
+          "用户列出的因素是候选解释，不能预设其中某一个必然成立。",
+          "规模、频次、单笔金额、成功率和 mix 的分母及交互必须可核对。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "reconciled_revenue_factor_bridge",
+            "rationale": "用业务恒等式和可声明顺序的桥接分解解释金额差异，同时报告交互或 residual。",
+            "required_properties": [
+              "观察单位、业务日和对比基准明确。",
+              "分解贡献能够回收到总差异。",
+              "支付成功率使用支付尝试分母并与付费行为因子区分。"
+            ]
+          },
+          {
+            "design_family": "behavior_and_mix_counterfactual_decomposition",
+            "rationale": "分别评估行为强度和结构 mix 的反事实贡献，并用替代顺序做敏感性。",
+            "required_properties": [
+              "主设计和替代顺序均写入测量设计。",
+              "交互项不能伪装成单一因子贡献。",
+              "迟到支付状态限制 claim strength。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "昨日与可比基准的完整业务日覆盖及支付状态成熟度。",
+          "付费人数、首充人数、频次、单笔金额、成功率和渠道 mix 的变化。",
+          "分解顺序、交互项、异常大额用户和退款对结论的敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "partial_payment_status",
+          "conflicting_factor_contract"
+        ],
+        "claim_ceiling": "accounting_attribution",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "先从指标合同、业务日和发布状态查明定义；只有可比基准或收入定义仍存在重大业务选择时才询问。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "candidate_factor_declared_as_cause",
+          "description": "未经测量就把用户列出的某个因素宣布为原因。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "non_reconciled_factor_ranking",
+          "description": "给出前三因子但贡献无法回收到金额总变化且不报告 residual。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "late_status_ignored",
+          "description": "忽略支付状态迟到并发布无边界完整结论。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-001-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“昨天收入动了，帮我拆一下是人数、频次、客单、首充还是支付转化造成的”。",
+          "expected_invariants": [
+            "目标金额、候选机制和可 reconciliation 要求保持。"
+          ],
+          "expected_changes": [
+            "仅 source wording lineage 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-001-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "metric_definition",
+          "mutation": "把目标改为扣除退款后的净收入。",
+          "expected_invariants": [
+            "仍需解释规模、行为强度、支付和 mix。"
+          ],
+          "expected_changes": [
+            "金额定义、分解恒等式和证据身份改变。",
+            "退款成为显式因素。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-001-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "昨日支付状态只成熟到 80%，且迟到分布不可估计。",
+          "expected_invariants": [
+            "业务决策和候选因素保持。"
+          ],
+          "expected_changes": [
+            "完整金额方向和因素排序受到 typed boundary 或降级。",
+            "旧成熟数据证据不得复用。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "over_strong_claim"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "factor contributions plus declared interaction or residual reconcile to the target change",
+          "payment success rate declares its denominator",
+          "late payment status constrains evidence strength"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "alternative_and_sensitivity_quality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "accepted measurement binds business day, baseline and factor algebra",
+          "evidence and claim preserve the accepted target metric and factor identities"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-002",
+      "title": "付费金额周期规律与带动维度识别",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；测试作者补充了候选周期、数据条件和可接受设计空间。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#2",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "规律解释：最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？ 这个规律主要由哪个渠道、地区、用户类型或玩法带动？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-PAID-PATTERN-002",
+        "narrative": "游戏横跨多个时区，运营团队想判断近期收入是否存在周内、月内和日内规律，并区分稳定规律、活动日冲击与渠道构成变化。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.by-region.v2",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "metric.paid_amount.successful.v2",
+            "state": "available",
+            "description": "成功付费金额可按小时、业务日和地区时区聚合。"
+          },
+          {
+            "contract_ref": "dimension.payment.segmentation.v3",
+            "state": "available",
+            "description": "渠道、地区、用户类型和玩法具有时点有效映射。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PAID-PATTERN-CALENDAR",
+            "description": "月初窗口在不同月份拥有不同 calendar days，地区业务日边界也不同。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PAID-PATTERN-CAMPAIGN",
+            "description": "最近六周包含两个周末活动和一次月初礼包。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "控制活动后不存在稳定的全局周末效应。",
+          "月初的日均付费金额在两个高价值地区更高，但 raw total 会被窗口天数放大。",
+          "晚间规律主要来自地区时区与一项玩法的活跃时段，不应按服务器自然小时直接解释。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "决定排期、活动和渠道运营是否应围绕稳定的收入周期调整。",
+        "consequence_of_error": "把活动冲击或不等窗口总量当成固定规律会形成错误排期。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "同时检验周内、月内和日内候选规律。",
+          "规律与带动维度需要在同一可比测量下解释。",
+          "时区、业务日、窗口长度、活动与 exposure 都要进入设计。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "calendar_normalized_pattern_panel",
+            "rationale": "在多个完整周期上用 exposure-normalized 指标估计周内、月内与日内模式，并控制已知活动。",
+            "required_properties": [
+              "每个窗口解析为实际日期或本地小时。",
+              "不同窗口按 valid exposure 归一化。",
+              "模式稳定性跨周期检验。"
+            ]
+          },
+          {
+            "design_family": "hierarchical_segment_pattern_decomposition",
+            "rationale": "先确定总体模式，再用渠道、地区、用户与玩法的贡献和异质性解释。",
+            "required_properties": [
+              "总体与分组估计使用一致时间锚点。",
+              "区分构成贡献和组内强度。",
+              "多重比较和稀疏分组有边界。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "完整周期数量、活动日、节假日和数据覆盖。",
+          "calendar days、observed days、valid exposure 与时区业务日。",
+          "渠道、地区、用户类型和玩法的构成贡献及组内模式。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "insufficient_cycles",
+          "timezone_mapping_missing"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "Agent 可先提出覆盖多个候选周期的设计，并把主窗口、活动控制和时区选择写入 Frame；数据不足时再形成边界。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "raw_total_window_length_pattern",
+          "description": "用不同天数窗口的 raw total 宣布月初或月末更高。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "campaign_as_fixed_seasonality",
+          "description": "把少数活动日造成的峰值当成稳定周期。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "server_hour_timezone_collapse",
+          "description": "忽略地区本地时区并把服务器小时直接解释为用户晚间。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-002-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“收入最近有没有周末、月初或夜间效应，哪些人群和渠道在带动”。",
+          "expected_invariants": [
+            "候选周期、维度和稳定性目标保持。"
+          ],
+          "expected_changes": [
+            "叙事组织可变化。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-002-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "window_or_baseline",
+          "mutation": "用户将月初明确为每月前 3 个完整业务日，并要求与上月最后 5 个完整业务日比较。",
+          "expected_invariants": [
+            "仍需归一化 exposure 并检查带动维度。"
+          ],
+          "expected_changes": [
+            "跨月 offset、窗口长度、实际日期和 comparison identity 改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-002-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "只有一个完整月份，其他月份均缺失 30% 以上小时数据。",
+          "expected_invariants": [
+            "规律必须表示跨周期可重复性。"
+          ],
+          "expected_changes": [
+            "固定规律 claim 被禁止或降为探索性边界。",
+            "带动维度排序不能作为稳定结论。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "cross_month",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "complete",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "unequal windows cannot use raw total as directional support",
+          "every temporal window resolves actual range and valid exposure",
+          "segment attribution preserves the accepted pattern identity"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality",
+          "counterfactual_consistency"
+        ],
+        "trace_obligations": [
+          "calendar, timezone and campaign conditions enter the accepted measurement",
+          "window identity is preserved through evidence and claim"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-003",
+      "title": "活动投放版本支付与外部事件影响复盘",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；事件台账与 identification 条件由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#3",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "事件影响复盘：昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-PAID-EVENT-003",
+        "narrative": "昨日同时发生礼包活动、部分渠道加预算、素材轮换、客户端灰度更新和支付通道故障。管理层要区分时间重合、可归因影响和只能保留为候选解释的事件。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "event.operations.timeline.v2",
+            "state": "partial",
+            "description": "活动、预算、素材、版本和支付事件有开始结束时间，外部事件只记录到日。"
+          },
+          {
+            "contract_ref": "experiment.rollout.assignment.v1",
+            "state": "available",
+            "description": "版本灰度与部分素材轮换有稳定分配记录。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-PAID-EVENT-CONFOUNDING",
+            "description": "活动和预算调整在同一渠道同一小时启动。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-PAID-EVENT-OUTAGE",
+            "description": "支付通道故障有精确起止和未成功尝试。",
+            "discoverability": "provided_to_agent",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "支付通道故障对失败订单有可量化的直接影响。",
+          "版本灰度具有可比对照，能估计有限范围的影响。",
+          "活动与预算完全重合，现有观测无法分别识别其独立因果贡献。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "判断哪些事件需要继续、回滚或补救，并确定结论可达到的因果强度。",
+        "consequence_of_error": "把同期事件都归因成原因会导致错误预算和版本决策。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "逐个评估用户列出的事件族。",
+          "关联、时间顺序、机制证据和可识别因果影响分层表达。",
+          "重合事件不得被强行拆分成独立原因。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "event_timeline_and_identification_matrix",
+            "rationale": "建立事件时间线，对每类事件评估 exposure、对照、前趋势、机制和干扰。",
+            "required_properties": [
+              "事件 exposure 与业务日精确对齐。",
+              "每个事件单独声明 identification ceiling。",
+              "同时事件与外部冲击进入 alternatives。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "事件台账的时间、作用人群、渠道和 rollout 范围。",
+          "事件前趋势、对照组、并发变化和支付机制证据。",
+          "数据延迟与昨日结果成熟度。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "confounded_events",
+          "missing_event_timeline",
+          "no_identification_contract"
+        ],
+        "claim_ceiling": "causal",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "优先检查事件台账与 rollout；只有业务 owner 未记录的关键事件范围会改变结论时才询问。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "coincidence_promoted_to_cause",
+          "description": "仅凭昨日同期变化宣布事件造成收入变化。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "confounded_events_separated",
+          "description": "在活动和预算完全重合时给出各自独立因果贡献。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "single_claim_ceiling_for_all_events",
+          "description": "把所有事件都提升到最强事件的证据等级。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-003-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“把昨天所有运营、版本、支付和外部事件对收入的可能影响复盘一下”。",
+          "expected_invariants": [
+            "事件族、时间线和分层证据目标保持。"
+          ],
+          "expected_changes": [
+            "表达顺序可变化。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-003-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户只要求量化支付通道故障造成的失败金额，不再评估其他事件。",
+          "expected_invariants": [
+            "支付业务日和状态成熟度保持。"
+          ],
+          "expected_changes": [
+            "目标收敛到通道 outage exposure 和失败金额反事实。",
+            "其他事件退出主 obligation。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-003-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "版本灰度 assignment 丢失，只保留发布时间。",
+          "expected_invariants": [
+            "版本仍是待检查事件。"
+          ],
+          "expected_changes": [
+            "版本影响从可识别估计降为关联或 typed boundary。",
+            "原版本证据不能支持当前 causal claim。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "challenge",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "absolute"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "conflicting_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "each event family has its own identification ceiling",
+          "confounded events cannot receive independent causal contributions",
+          "event exposure precedes any claimed outcome effect"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "event timeline and identification evidence bind each claim",
+          "typed boundaries remain local to unsupported event claims"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-004",
+      "title": "收入健康度与集中度风险诊断",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；健康度概念族与隐藏 truth 由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#4",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "收入健康度检查：当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、短期活动或异常渠道拉动？ 收入结构里最大的风险点是什么？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-REVENUE-HEALTH-004",
+        "narrative": "管理层希望将收入健康度拆成增长广度、留存与复购、用户和渠道集中度、活动依赖、异常质量和可持续性，而非得到一个无定义的健康分数。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "metric.revenue.health-components.v1",
+            "state": "partial",
+            "description": "集中度、复购和活动依赖有正式指标，正常增长与异常渠道尚无统一判定阈值。"
+          },
+          {
+            "contract_ref": "entity.payer.cohort.v2",
+            "state": "available",
+            "description": "付费用户、首充 cohort、复购和大额用户可追踪。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-HEALTH-WHALE-CONCENTRATION",
+            "description": "最近七日 top 0.5% 用户贡献显著上升。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-HEALTH-CHANNEL-ANOMALY",
+            "description": "一个新渠道增长快但退款和重复账号比例高。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          }
+        ],
+        "hidden_business_truth": [
+          "总收入增长同时包含稳定复购增长和短期大额用户集中。",
+          "新渠道贡献的表面增长在剔除重复账号和退款后大幅缩水。",
+          "单一健康分数会隐藏增长广度与集中风险的相反方向。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "判断当前增长是否可持续，以及最需要治理的收入结构风险。",
+        "consequence_of_error": "只看总收入会放任集中度和异常渠道风险，过度悲观也会掩盖真实复购改善。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "健康度是多维决策概念，需要显式组件和边界。",
+          "正常用户增长、大额集中、活动依赖和异常渠道需要分别测量。",
+          "最大风险点的排序必须绑定决策 horizon 与证据。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "multi-axis_revenue_health_profile",
+            "rationale": "并列报告增长广度、留存复购、集中度、活动依赖、渠道质量和波动性。",
+            "required_properties": [
+              "每个轴有独立定义、观察单位和时间 horizon。",
+              "不把相反方向压成不可解释单分。",
+              "风险排序说明阈值或相对基准。"
+            ]
+          },
+          {
+            "design_family": "sustainable_base_and_transient_overlay",
+            "rationale": "把可持续用户基础与活动、大额和异常 overlay 分开重构收入。",
+            "required_properties": [
+              "正常基础的资格规则可审计。",
+              "大额阈值有分布或业务依据。",
+              "异常剔除前后都保留证据。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "新老付费用户、复购、留存和 cohort 贡献。",
+          "用户、渠道、地区和活动集中度及其时间稳定性。",
+          "退款、重复账号、异常订单和大额用户敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "clarification_required",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "health_threshold_undefined",
+          "identity_quality_gap"
+        ],
+        "claim_ceiling": "descriptive",
+        "clarification_policy": {
+          "mode": "ask_only_if_material_and_undiscoverable",
+          "rationale": "先给出多轴健康 profile；若“最大风险”依赖用户未说明的 horizon 或容忍阈值且会改变排序，再问一个带推荐项的问题。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "undefined_health_score",
+          "description": "生成一个没有组件、权重和阈值依据的收入健康分。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "growth_masks_concentration",
+          "description": "用总收入增长覆盖大额用户或异常渠道集中风险。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "risk_rank_without_horizon",
+          "description": "在 horizon 会改变排序时仍给出无边界唯一最大风险。",
+          "severity": "major"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-004-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“现在收入的底子稳不稳，是真增长还是被活动、大户或异常渠道撑起来的”。",
+          "expected_invariants": [
+            "健康多轴、可持续基础和集中风险保持。"
+          ],
+          "expected_changes": [
+            "措辞风格可变化。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-004-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "mutation": "用户明确只关心未来 30 天现金流稳定性，不评估长期用户质量。",
+          "expected_invariants": [
+            "集中度、活动和渠道异常仍需测量。"
+          ],
+          "expected_changes": [
+            "horizon、组件权重和风险排序 identity 改变。",
+            "长期 cohort 退出主结论。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-004-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "用户身份映射缺失，无法识别跨设备重复账号和用户级集中度。",
+          "expected_invariants": [
+            "健康度仍需呈现可测组件。"
+          ],
+          "expected_changes": [
+            "用户集中与重复账号进入 typed boundary。",
+            "渠道和订单级组件可局部继续。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "cohort_or_risk_set",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "health output exposes component definitions rather than an unsupported scalar",
+          "concentration uses an explicit population and distribution rule",
+          "unsupported identity quality only blocks affected health components"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "ambiguity_and_clarification_discipline",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "each health component has independent evidence and applicability",
+          "risk ranking references horizon and accepted boundary"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-005",
+      "title": "收入变化最大的维度与前三影响因子",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；维度桥接和排序 world 由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#5",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "维度/因子归因：昨天收入变化最大的是哪个一级渠道、地区、设备、包、支付方式或玩法？对收入影响最大的 3 个因子分别是什么？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-REVENUE-ATTRIBUTION-005",
+        "narrative": "运营团队需要在多个非互斥维度中定位收入变化，并区分维度贡献、行为因子和重叠人群，避免把各维度的 top 变化相加。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "dimension.revenue.bridge.v3",
+            "state": "available",
+            "description": "渠道、地区、设备、包、支付方式和玩法有时点有效层级。"
+          },
+          {
+            "contract_ref": "metric.revenue.factor-algebra.v2",
+            "state": "available",
+            "description": "收入因素与维度桥接分别定义，重叠贡献不可跨维度直接求和。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-ATTRIBUTION-OVERLAP",
+            "description": "高增长渠道、地区和玩法高度重叠。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ATTRIBUTION-DIMENSION-REMAP",
+            "description": "一个包在昨日中午更换一级渠道归属。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "按可加维度桥接，某一级渠道贡献最大。",
+          "跨维度的前三标签指向同一批用户，直接相加会三重计算。",
+          "行为层前三因素与维度层前三单元是两个不同问题。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "确定昨日收入变化的主要业务单元和可行动影响因素。",
+        "consequence_of_error": "重叠维度重复计数会夸大贡献并形成错误优先级。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "维度变化最大和影响因子前三需要区分。",
+          "每个维度内部可以桥接，跨维度排序需声明重叠处理方法。",
+          "渠道层级变更必须使用时点有效合同。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "within_dimension_revenue_bridges",
+            "rationale": "分别在每个可加维度内计算贡献，再以统一标准比较各维度最强单元。",
+            "required_properties": [
+              "每个维度贡献回收到总变化。",
+              "跨维度结果不直接相加。",
+              "层级映射按事件时点解析。"
+            ]
+          },
+          {
+            "design_family": "overlap_aware_factor_ranking",
+            "rationale": "使用条件分解、联合切片或明确顺序消除跨维度重叠后排序影响因素。",
+            "required_properties": [
+              "排序单位和贡献定义明确。",
+              "顺序依赖或交互进入敏感性。",
+              "行为因子与维度标签分层报告。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "各维度层级和时点映射完整性。",
+          "维度内贡献、跨维度重叠和交互。",
+          "因素排序对分解顺序、异常用户和基准的敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "dimension_mapping_break",
+          "overlap_unidentifiable"
+        ],
+        "claim_ceiling": "accounting_attribution",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "默认把维度 top change 与行为 factor top 3 作为两个关联 estimand，并在 Frame 记录；如用户只需一种，后续可局部修订。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "cross_dimension_double_count",
+          "description": "把渠道、地区、设备等重叠贡献直接相加或当成独立因素。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "dimension_and_factor_collapse",
+          "description": "把维度标签和行为机制混为同一个前三因子定义。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "stale_dimension_mapping",
+          "description": "忽略昨日渠道归属变化并使用当前静态映射。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-005-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“昨天哪些业务切片贡献变化最大，再给我三个最重要的影响因素”。",
+          "expected_invariants": [
+            "维度单元和行为因素双目标保持。"
+          ],
+          "expected_changes": [
+            "术语可适配用户措辞。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-005-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "scope",
+          "mutation": "用户明确只在一级渠道内部找前三贡献单元。",
+          "expected_invariants": [
+            "贡献需回收到总变化。"
+          ],
+          "expected_changes": [
+            "跨维度重叠退出主设计。",
+            "排序 scope 收敛到一级渠道。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-005-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "mutation": "渠道层级历史映射缺失，只保留当前归属。",
+          "expected_invariants": [
+            "其他维度和行为因素仍可调查。"
+          ],
+          "expected_changes": [
+            "渠道贡献进入局部 typed boundary。",
+            "其他维度不应整体停止。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "attribute",
+          "compare"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "within-dimension contributions reconcile without cross-dimension addition",
+          "dimension units and behavioral factors have distinct identities",
+          "time-valid hierarchy mapping binds every channel claim"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "alternative_and_sensitivity_quality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "dimension mapping version and overlap method remain in authority lineage",
+          "top-factor claims bind evidence at the same ranking scope"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-006",
+      "title": "昨日异常波动与黑天鹅来源复盘",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；异常 baseline、阈值和隐藏 truth 由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#6",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "异常/黑天鹅复盘：昨天有没有异常波动？如果有，是哪个渠道、支付通道、地区、设备、玩法或大额用户造成的？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-REVENUE-ANOMALY-006",
+        "narrative": "风控和运营希望判断昨日波动是否超出正常分布，并定位异常由系统故障、业务单元、结构突变或少数大额用户造成。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "metric.revenue.anomaly-baseline.v2",
+            "state": "available",
+            "description": "按业务日、星期、活动和地区建立滚动基线及预测区间。"
+          },
+          {
+            "contract_ref": "policy.large-payer.privacy.v1",
+            "state": "available",
+            "description": "大额用户只允许聚合贡献、阈值和匿名 cohort，不展示原始标识。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-ANOMALY-PAYMENT-DROP",
+            "description": "一个支付通道在两小时内成功率急跌。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-ANOMALY-WHALE",
+            "description": "两名大额用户在同一玩法集中支付，金额可解释峰值但受隐私约束。",
+            "discoverability": "evaluator_only",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "日级净变化不显著，但小时级存在支付通道故障和其后的补偿性回流。",
+          "大额用户制造局部峰值，不足以解释全天净额。",
+          "只看日总量会漏掉黑天鹅过程，只看小时峰值会夸大全天影响。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "判断是否发生需要处置的异常，并定位影响范围与恢复情况。",
+        "consequence_of_error": "漏报通道故障或误把正常大额支付当成系统异常都会造成运营损失。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "先定义异常 baseline、粒度和阈值，再定位来源。",
+          "日级与小时级异常可以给出不同结论。",
+          "大额用户证据遵守隐私和聚合边界。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "multi_resolution_anomaly_diagnosis",
+            "rationale": "在日、小时和关键业务切片上比较条件基线，区分瞬时冲击、恢复和全天净影响。",
+            "required_properties": [
+              "baseline 控制星期、活动和地区。",
+              "异常阈值与多重扫描策略明确。",
+              "来源贡献与异常程度分开。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "业务日与小时粒度的期望区间和异常阈值。",
+          "渠道、通道、地区、设备、玩法和大额 cohort 的局部贡献。",
+          "故障恢复、补偿支付和全天净影响。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "insufficient_baseline_history",
+          "privacy_limited_attribution"
+        ],
+        "claim_ceiling": "descriptive",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "Agent 可自主采用多粒度异常设计，阈值和 baseline 写入 Frame；业务处置阈值缺失时记录推断并保留敏感性。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "anomaly_without_baseline",
+          "description": "只因金额变大或变小就宣布异常。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "resolution_collapse",
+          "description": "用日级正常掩盖小时故障或用小时峰值夸大全天影响。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "raw_user_identity_exposure",
+          "description": "为解释大额用户而展示原始用户标识。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-006-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“昨天收入有没有超出正常范围，异常集中在哪些业务切片”。",
+          "expected_invariants": [
+            "条件 baseline、多粒度和来源诊断保持。"
+          ],
+          "expected_changes": [
+            "黑天鹅术语可以省略。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-006-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "time_semantics",
+          "mutation": "用户改为检查最近 30 天是否存在持续异常，而非昨日事件。",
+          "expected_invariants": [
+            "异常必须相对于条件 baseline。"
+          ],
+          "expected_changes": [
+            "目标从事件检测变为持续状态检测。",
+            "窗口、独立性和异常聚合方法改变。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-006-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "只有三天历史数据且包含一次大型活动。",
+          "expected_invariants": [
+            "不能凭绝对变化宣布异常。"
+          ],
+          "expected_changes": [
+            "稳定异常 baseline 无法估计并形成 typed boundary。",
+            "可保留数据质量和描述性事件证据。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "complete",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "anomaly claim binds a declared conditional baseline and resolution",
+          "daily and intraday conclusions remain distinct",
+          "large-payer evidence obeys privacy projection"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "baseline version and resolution bind anomaly evidence",
+          "privacy-limited attribution remains visible as a claim boundary"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-007",
+      "title": "昨日相对多基准的收入偏离解释",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；多基准和隐藏 truth 由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#7",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "基准对比：相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？哪些指标偏离了正常水平？",
+            "communication_function": "question"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-REVENUE-BASELINES-007",
+        "narrative": "运营希望同时查看日环比、短期均值和周同比基准。近七日包含活动日，前一天数据部分迟到，上周同日为普通工作日。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "metric.paid_amount.successful.v2",
+            "state": "available",
+            "description": "成功付费金额和行为指标有完整业务日定义。"
+          },
+          {
+            "contract_ref": "baseline.revenue.comparison.v1",
+            "state": "available",
+            "description": "前日、滚动均值和上周同日的包含规则及成熟度要求明确。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-BASELINE-ROLLING-EVENT",
+            "description": "近七日均值包含两个活动日。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-BASELINE-PRIOR-LATE",
+            "description": "前一天在同一 release cutoff 下仍有迟到支付。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          }
+        ],
+        "hidden_business_truth": [
+          "昨日高于前一天，低于含活动日的近七日均值，与上周同日接近。",
+          "支付成功率相对三个基准均显著偏低，但活动带来的付费人数抵消了金额下降。",
+          "用不同 release maturity 比较会夸大日环比。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "判断昨日变化是否偏离正常，并选择需要解释和处置的指标。",
+        "consequence_of_error": "混用基准和成熟度会制造相反方向并误判异常。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "三个基准各自回答不同问题，需分别保留。",
+          "比较使用一致业务日、snapshot/release 和完整性。",
+          "正常水平需要条件基准，不能由任意均值代替。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "multi_baseline_deviation_profile",
+            "rationale": "为每个基准建立独立 contrast，再汇总一致方向、冲突方向和指标偏离。",
+            "required_properties": [
+              "每个 contrast 有独立 identity。",
+              "rolling window 的活动和缺失处理明确。",
+              "release maturity 对齐。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "三个基准的业务意义、窗口成员和数据成熟度。",
+          "付费金额及规模、频次、客单和成功率相对每个基准的偏离。",
+          "活动日、星期和迟到数据对正常范围的影响。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "incomparable_release_cutoff",
+          "contaminated_baseline"
+        ],
+        "claim_ceiling": "descriptive",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "用户已给出三个基准，Agent 应分别建模并记录正常范围定义，无需先让用户选一个。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "baseline_collapse",
+          "description": "把三个基准合成一个无解释平均值或只保留最支持叙事的基准。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "release_maturity_mismatch",
+          "description": "比较不同成熟度 snapshot 并直接解释方向。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "normal_equals_seven_day_mean",
+          "description": "不检查活动和星期结构就把七日均值定义成正常水平。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-007-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“昨天对比前日、七日平均和上周同一天分别表现怎样，哪些指标不正常”。",
+          "expected_invariants": [
+            "三个独立基准和偏离解释保持。"
+          ],
+          "expected_changes": [
+            "展示顺序可变化。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-007-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "window_or_baseline",
+          "mutation": "用户把近 7 日均值改成剔除活动日后的最近 4 个同星期业务日均值。",
+          "expected_invariants": [
+            "release maturity 和业务日仍需对齐。"
+          ],
+          "expected_changes": [
+            "baseline population、窗口和 comparison identity 改变。",
+            "原七日均值证据不能直接回答新基准。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-007-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "前一天和上周同日均缺少最后四小时支付状态。",
+          "expected_invariants": [
+            "三个基准的业务用途保持。"
+          ],
+          "expected_changes": [
+            "不完整基准被排除、归一化或局部降级。",
+            "完整 rolling baseline 可继续。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "each requested baseline has a separate contrast identity",
+          "snapshot and release cutoff are comparable before direction claims",
+          "contaminated rolling baseline is not equated with normal without qualification"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "alternative_and_sensitivity_quality",
+          "evidence_and_claim_proportionality",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "baseline membership and release maturity persist through evidence and answer",
+          "conflicting baseline directions remain visible"
+        ],
+        "human_review_required": true
+      }
+    },
+    {
+      "episode_id": "G3-USER-008",
+      "title": "收入结论的数据质量与证据充分性检查",
+      "source_pool": "real_user_language",
+      "provenance": {
+        "authoring_method": "domain_interview",
+        "review_status": "candidate",
+        "origin_note": "用户原文来自当前 WAJE 产品设计任务；数据质量 world 和证据门槛由测试作者拟合。",
+        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#8",
+        "review_attestations": []
+      },
+      "dataset_partition": "authoring",
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "injection_point": "initial",
+            "text": "数据质量/证据检查：这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、支付状态缺失、重复订单或异常用户影响判断？",
+            "communication_function": "challenge"
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-REVENUE-EVIDENCE-008",
+        "narrative": "用户挑战一条已有的收入归因结论。系统需要重建结论绑定、检查发布成熟度、渠道映射、支付状态、去重和异常用户敏感性，并给出局部有效或局部降级的证据判断。",
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T10:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.game-day.04h.v1",
+          "release_cutoff_instant": "2026-07-30T09:30:00+08:00"
+        },
+        "available_contracts": [
+          {
+            "contract_ref": "quality.payment.release.v3",
+            "state": "available",
+            "description": "每个业务日有延迟、支付状态完整性、重复订单和退款质量指标。"
+          },
+          {
+            "contract_ref": "quality.channel.attribution.v2",
+            "state": "partial",
+            "description": "一级渠道归因有历史映射，一小部分合作渠道缺少昨日映射。"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-EVIDENCE-DUPLICATES",
+            "description": "昨日订单 ingestion 重放产生可识别重复记录。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-EVIDENCE-CHANNEL-GAP",
+            "description": "合作渠道映射缺口影响渠道归因，但不影响全量成功金额去重后总计。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          }
+        ],
+        "hidden_business_truth": [
+          "去重后总收入方向保持，原总量结论可降级后继续。",
+          "原渠道主因结论因映射缺口和异常用户集中而证据不足。",
+          "支付状态完整性足以支持成熟时点总量，不足以支持最后一小时粒度。"
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "决定已有收入结论哪些部分可信、哪些需要重算或降级。",
+        "consequence_of_error": "把局部质量缺口扩成全部不可用会浪费决策信息，忽略缺口会发布错误归因。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "检查对象是已有结论与其证据绑定，不是泛泛列质量清单。",
+          "每个质量问题映射到受影响的 metric、scope、grain 和 claim。",
+          "支持局部保留、局部重算和局部边界。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "claim_scoped_evidence_quality_audit",
+            "rationale": "逐 claim 重放 provenance、完整性、去重、归因和异常敏感性，派生证据有效性。",
+            "required_properties": [
+              "质量检查绑定 exact snapshot/release。",
+              "重复订单修正不原地改写旧 Evidence。",
+              "渠道缺口只阻止受影响 scope。"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "原 claim、Frame、Evidence、snapshot/release 和适用边界。",
+          "延迟、支付状态、重复订单、渠道映射和异常用户的影响范围。",
+          "修正前后方向、大小和因素排序的敏感性。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "evidence_provenance_missing",
+          "partial_attribution_mapping",
+          "immature_payment_status"
+        ],
+        "claim_ceiling": "data_quality_only",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "证据充分性可以从 provenance 和数据质量合同检查；缺少原结论 identity 时直接形成边界，无需让用户重述系统应保存的事实。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "generic_quality_checklist_only",
+          "description": "只列可能问题，不判断它们影响哪条结论及影响程度。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "quality_gap_globalizes",
+          "description": "把局部渠道映射缺口扩成全量金额完全不可用。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "immutable_evidence_rewritten",
+          "description": "用去重结果原地覆盖旧 EvidenceRecord 或丢失原 provenance。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-USER-008-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "mutation": "改写为“帮我审一下这条收入结论靠不靠谱，数据延迟、归因、支付状态、重复单和异常用户会不会推翻它”。",
+          "expected_invariants": [
+            "claim-scoped 证据审计和五类质量挑战保持。"
+          ],
+          "expected_changes": [
+            "叙述可以更口语化。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-008-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "claim_strength_request",
+          "mutation": "用户要求从“描述性相关”升级为“渠道导致收入下降”的因果结论。",
+          "expected_invariants": [
+            "原数据质量问题仍需检查。"
+          ],
+          "expected_changes": [
+            "新增 identification 证据要求。",
+            "现有描述性证据不能自动升级。"
+          ]
+        },
+        {
+          "sibling_id": "G3-USER-008-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "mutation": "原 Evidence 缺少 snapshot、query/result 和去重 provenance。",
+          "expected_invariants": [
+            "用户仍要求判断证据是否充分。"
+          ],
+          "expected_changes": [
+            "无法验证的 claim 进入 evidence provenance boundary。",
+            "系统不能凭当前聚合数字补写旧 provenance。"
+          ]
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "partial_coverage",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "challenge"
+        ],
+        "risk_types": [
+          "hidden_data_gap",
+          "over_strong_claim",
+          "authority_drift"
+        ]
+      },
+      "grading": {
+        "deterministic_checks": [
+          "each quality finding names affected claim scope and evidence identity",
+          "corrected results create new evidence lineage",
+          "local attribution gaps do not invalidate supported total claims"
+        ],
+        "semantic_rubric_dimensions": [
+          "decision_target_preservation",
+          "measurement_design_quality",
+          "investigation_adaptivity",
+          "evidence_and_claim_proportionality",
+          "authority_and_trace_integrity",
+          "answer_usefulness"
+        ],
+        "trace_obligations": [
+          "original and corrected evidence remain separately addressable",
+          "claim validity disposition records snapshot, quality checks and boundary"
+        ],
+        "human_review_required": true
+      }
+    }
+  ]
+}

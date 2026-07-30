@@ -228,3 +228,26 @@ Immutable EvaluationEpisodeCore
 | B2 EvaluationClock missing | **Closed at authoring-contract level** | schema 要求每个 business world 提供 as-of instant、business timezone、calendar contract、business-day contract 与 release cutoff；37 个候选均已冻结 clock。具体 clock 与业务 truth 的匹配仍需 measurement review。 |
 | M10 merged catalog union only compares IDs | **Closed** | unit test 比较 candidate 与 merged catalog 的完整 canonical Episode object，任一 hidden truth、outcome 或 grader 漂移都会失败。 |
 | M9 default check rewrites ledger | **Closed** | ledger generation 与 read-only freshness check 已拆成两个命令；Gate-ready command 独立 fail closed。 |
+
+## 8. 真实用户问题集追加后的审查增量
+
+2026-07-30 用户提供了八条付费金额分析原始问题。原文已单独保存，并形成
+`G3-USER-001` 至 `G3-USER-008` 八个 `real_user_language` candidate。更新后的 authoring
+checkpoint 为：
+
+- 45 个 base Episode；
+- 8 个有 durable source trace 的真实用户措辞 Episode；
+- 21 个多轮 Episode；
+- 41 个 high/critical Episode；
+- 五个 source pool 的数量 floor 已满足；
+- 45 个 Episode 仍全部处于 `candidate/authoring`；
+- `policy_ready=false`。
+
+这次追加关闭了“真实用户措辞数量为零”的采集缺口，没有关闭 B4。source registry、
+business owner / measurement reviewer 双审、Episode world/expectation 审核与 promotion
+authority 仍缺失。八个业务 world 明确标记为测试作者拟合，不能把真实问题措辞的来源证明
+扩张成 expectation 已被用户认可。
+
+新增 Episode 覆盖变化解释、规律、事件影响、收入健康、维度/因子归因、异常、多基准和证据
+质量。它们形成一个高价值产品 slice，同时仍需与其他行业、指标、定义、cohort、funnel、
+因果和无时间问题共同组成 Gate 3 测试集。

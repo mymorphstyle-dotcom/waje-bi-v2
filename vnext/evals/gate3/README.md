@@ -111,9 +111,11 @@ Review status is backed by durable attestations. `fully_reviewed` requires disti
 and measurement-reviewer references, review-record references, and the reviewed content hash.
 Changing an Episode after review invalidates the old attestation for promotion.
 
-The checked-in authoring catalog currently represents the authoring checkpoint. Its coverage
-ledger is the machine-readable readiness statement. `policy_ready=false` blocks G3.1 until authentic
-real-user Episodes are collected and every base Episode receives business and measurement review.
+The checked-in authoring catalog currently represents the authoring checkpoint. Eight authentic
+user-wording seeds are preserved from the 2026-07-30 paid-amount question set; their fitted business
+worlds and expectations remain candidates. The coverage ledger is the machine-readable readiness
+statement. `policy_ready=false` continues to block G3.1 until source/review registries, double review,
+grader calibration, protected partitions, and the remaining adversarial closures are complete.
 
 ## Runner projection
 

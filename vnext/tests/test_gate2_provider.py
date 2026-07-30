@@ -101,6 +101,7 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
         )
 
         controller.advance("case-provider")
+        controller.deliver_pending_llm("case-provider")
 
         self.assertIsNotNone(
             store.get_case("case-provider").accepted_frame_revision_id
@@ -142,6 +143,7 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
             "waje_vnext.providers.chat_completions.time.sleep"
         ) as sleep:
             controller.advance("case-provider-retry")
+            controller.deliver_pending_llm("case-provider-retry")
 
         self.assertEqual(len(transport.calls), 2)
         sleep.assert_called_once()
@@ -180,8 +182,9 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
             run_id="run-provider-malformed",
             user_message="定义测量",
         )
+        controller.advance("case-provider-malformed")
         with self.assertRaises(ProviderPermanentError):
-            controller.advance("case-provider-malformed")
+            controller.deliver_pending_llm("case-provider-malformed")
         with self.assertRaisesRegex(
             ProviderConfigurationError,
             "timeout must be positive",

@@ -40,10 +40,30 @@ export interface OutboxMessage {
   case_id: Id;
   source_event_cursor: number;
   action_id: Id | null;
+  job_kind:
+    | "controller_wake"
+    | "primary_agent"
+    | "semantic_inspection"
+    | "data_probe"
+    | "capability"
+    | "sensitivity"
+    | "reviewer"
+    | "projection";
+  operation: OperationIdentity;
+  expected_head_version: number;
+  expected_authority_epoch: number;
   idempotency_key: Id;
   destination: Id;
   contract_ref: Id;
   payload: ObjectPayload;
   payload_sha256: Sha256;
   created_at: Timestamp;
+}
+export interface OperationIdentity {
+  operation_id: Id;
+  idempotency_key: Id;
+  causation_id: Id;
+  correlation_id: Id;
+  authority_revision: number;
+  payload_sha256: Sha256;
 }

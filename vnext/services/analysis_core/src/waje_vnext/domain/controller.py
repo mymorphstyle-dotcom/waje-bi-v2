@@ -22,8 +22,10 @@ from .context import ContextPacket
 
 class ControllerPhase(StrEnum):
     READY_FOR_AGENT = "ready_for_agent"
+    WAITING_FOR_LLM = "waiting_for_llm"
     WAITING_FOR_USER = "waiting_for_user"
     WAITING_FOR_EFFECT = "waiting_for_effect"
+    WAITING_FOR_REVIEW = "waiting_for_review"
     COMPLETED = "completed"
     STOPPED = "stopped"
 
@@ -41,11 +43,13 @@ class ControllerState:
     phase: ControllerPhase
     step_number: int
     head_version: int
+    authority_epoch: int
+    mailbox_cursor: int
     last_event_cursor: int
     context_packet_id: str
     latest_user_message: str
     pending_action_id: str | None
-    pending_outbox_message_id: str | None
+    pending_job_ids: tuple[str, ...]
     pending_decision_request_id: str | None
     accepted_answer_version_id: str | None
     consecutive_rejections: int
@@ -65,19 +69,28 @@ class ControllerState:
             raise ValueError("step_number must be non-negative")
         if self.head_version < 0:
             raise ValueError("head_version must be non-negative")
+        if self.authority_epoch < 1:
+            raise ValueError("authority_epoch must be positive")
+        if self.mailbox_cursor < 0:
+            raise ValueError("mailbox_cursor must be non-negative")
         if self.last_event_cursor < 1:
             raise ValueError("last_event_cursor must be positive")
         if self.consecutive_rejections < 0:
             raise ValueError("consecutive_rejections must be non-negative")
         for field_name in (
             "pending_action_id",
-            "pending_outbox_message_id",
             "pending_decision_request_id",
             "accepted_answer_version_id",
         ):
             value = getattr(self, field_name)
             if value is not None:
                 require_nonempty(value, field_name)
+        if not isinstance(self.pending_job_ids, tuple):
+            raise TypeError("pending_job_ids must be a tuple")
+        if any(not item.strip() for item in self.pending_job_ids):
+            raise ValueError("pending_job_ids must contain non-empty IDs")
+        if len(self.pending_job_ids) != len(set(self.pending_job_ids)):
+            raise ValueError("pending_job_ids must be unique")
         require_aware_datetime(self.updated_at, "updated_at")
         _validate_phase_bindings(self)
 
@@ -232,16 +245,23 @@ def _validate_phase_bindings(state: ControllerState) -> None:
     if state.phase is ControllerPhase.WAITING_FOR_USER:
         if not state.pending_decision_request_id:
             raise ValueError("waiting_for_user requires a decision request")
-        if state.pending_outbox_message_id is not None:
-            raise ValueError("waiting_for_user cannot carry pending outbox")
-    elif state.phase is ControllerPhase.WAITING_FOR_EFFECT:
-        if not state.pending_outbox_message_id:
-            raise ValueError("waiting_for_effect requires pending outbox")
+        if state.pending_job_ids:
+            raise ValueError("waiting_for_user cannot carry pending jobs")
+    elif state.phase in {
+        ControllerPhase.WAITING_FOR_LLM,
+        ControllerPhase.WAITING_FOR_EFFECT,
+        ControllerPhase.WAITING_FOR_REVIEW,
+    }:
+        if not state.pending_job_ids:
+            raise ValueError(
+                "{} requires pending jobs".format(state.phase.value)
+            )
         if state.pending_decision_request_id is not None:
-            raise ValueError("waiting_for_effect cannot carry decision request")
+            raise ValueError(
+                "{} cannot carry decision request".format(state.phase.value)
+            )
     elif (
-        state.pending_outbox_message_id is not None
-        or state.pending_decision_request_id is not None
+        state.pending_job_ids or state.pending_decision_request_id is not None
     ):
         raise ValueError("current phase cannot carry pending interruption state")
 

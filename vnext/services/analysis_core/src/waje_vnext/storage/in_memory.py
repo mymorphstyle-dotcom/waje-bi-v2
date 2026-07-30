@@ -12,6 +12,14 @@ from waje_vnext.domain.actions import (
     ActionKind,
     AskUserPayload,
 )
+from waje_vnext.domain.async_runtime import (
+    AsyncJobKind,
+    JobLease,
+    MailboxHead,
+    MailboxMessage,
+    MailboxMessageKind,
+    OperationIdentity,
+)
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerStatus,
@@ -25,6 +33,7 @@ from waje_vnext.domain.authority import (
     WorkPlanRevision,
 )
 from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.controller import (
     ControllerLease,
     EffectAttemptRecord,
@@ -56,6 +65,12 @@ _EFFECT_ACTION_KINDS = {
     ActionKind.CALL_CAPABILITY,
     ActionKind.RUN_SENSITIVITY,
 }
+_ACTION_JOB_KINDS = {
+    ActionKind.INSPECT_SEMANTICS: AsyncJobKind.SEMANTIC_INSPECTION,
+    ActionKind.RUN_PROBE: AsyncJobKind.DATA_PROBE,
+    ActionKind.CALL_CAPABILITY: AsyncJobKind.CAPABILITY,
+    ActionKind.RUN_SENSITIVITY: AsyncJobKind.SENSITIVITY,
+}
 
 
 class InMemoryAuthorityStore:
@@ -72,16 +87,24 @@ class InMemoryAuthorityStore:
         self._decisions: dict[str, DecisionRecord] = {}
         self._objections: dict[str, ReviewerObjection] = {}
         self._actions: dict[str, PersistedAction] = {}
+        self._action_idempotency_keys: dict[tuple[str, str], str] = {}
         self._contexts: dict[str, ContextPacket] = {}
         self._receipts: dict[tuple[str, str], ActionReceipt] = {}
         self._receipt_action_ids: dict[str, tuple[str, str]] = {}
         self._checkpoints: dict[str, CheckpointRecord] = {}
+        self._checkpoint_event_keys: dict[tuple[str, int], str] = {}
         self._outbox: dict[str, OutboxMessage] = {}
         self._decision_requests: dict[str, UserDecisionRequest] = {}
+        self._decision_request_action_keys: dict[tuple[str, str], str] = {}
         self._effect_attempts: dict[str, EffectAttemptRecord] = {}
         self._leases: dict[str, ControllerLease] = {}
+        self._lease_tokens: dict[str, int] = {}
+        self._job_leases: dict[str, JobLease] = {}
+        self._job_lease_tokens: dict[str, int] = {}
         self._events: dict[str, list[EventJournalEntry]] = {}
         self._events_by_id: dict[str, EventJournalEntry] = {}
+        self._mailbox_heads: dict[str, MailboxHead] = {}
+        self._mailbox_messages: dict[str, MailboxMessage] = {}
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -126,6 +149,12 @@ class InMemoryAuthorityStore:
             )
             self._cases[case_id] = case
             self._events[case_id] = []
+            self._mailbox_heads[case_id] = MailboxHead(
+                case_id=case_id,
+                last_sequence=0,
+                authority_epoch=0,
+                updated_at=opened_at,
+            )
             self._append_event_locked(
                 case_id=case_id,
                 expected_next_cursor=1,
@@ -138,6 +167,96 @@ class InMemoryAuthorityStore:
                 customer_projection={"state": "open"},
             )
             return case
+
+    def append_mailbox_message(
+        self,
+        *,
+        message_id: str,
+        case_id: str,
+        kind: MailboxMessageKind,
+        operation: OperationIdentity,
+        payload: dict[str, object],
+        created_at: datetime,
+    ) -> MailboxMessage:
+        with self._lock:
+            self.get_case(case_id)
+            existing = self._mailbox_messages.get(message_id)
+            if existing is not None:
+                if (
+                    existing.case_id == case_id
+                    and existing.kind is kind
+                    and existing.operation == operation
+                    and existing.payload == payload
+                ):
+                    return existing
+                raise AuthorityConflict(
+                    "mailbox message ID already has different content"
+                )
+            duplicate = next(
+                (
+                    candidate
+                    for candidate in self._mailbox_messages.values()
+                    if candidate.case_id == case_id
+                    and candidate.operation.idempotency_key
+                    == operation.idempotency_key
+                ),
+                None,
+            )
+            if duplicate is not None:
+                if (
+                    duplicate.kind is kind
+                    and duplicate.operation == operation
+                    and duplicate.payload == payload
+                ):
+                    return duplicate
+                raise AuthorityConflict(
+                    "mailbox idempotency key already has different content"
+                )
+            head = self._mailbox_heads[case_id]
+            authority_epoch = head.authority_epoch + 1
+            message = MailboxMessage(
+                message_id=message_id,
+                case_id=case_id,
+                sequence=head.last_sequence + 1,
+                authority_epoch=authority_epoch,
+                kind=kind,
+                operation=operation,
+                payload=payload,
+                created_at=created_at,
+            )
+            self._mailbox_messages[message_id] = message
+            self._mailbox_heads[case_id] = MailboxHead(
+                case_id=case_id,
+                last_sequence=message.sequence,
+                authority_epoch=authority_epoch,
+                updated_at=created_at,
+            )
+            return message
+
+    def get_mailbox_head(self, case_id: str) -> MailboxHead:
+        with self._lock:
+            self.get_case(case_id)
+            return self._mailbox_heads[case_id]
+
+    def list_mailbox_messages(
+        self,
+        case_id: str,
+        *,
+        after_sequence: int = 0,
+    ) -> tuple[MailboxMessage, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        message
+                        for message in self._mailbox_messages.values()
+                        if message.case_id == case_id
+                        and message.sequence > after_sequence
+                    ),
+                    key=lambda message: message.sequence,
+                )
+            )
 
     def get_case(self, case_id: str) -> InvestigationCase:
         with self._lock:
@@ -691,12 +810,22 @@ class InMemoryAuthorityStore:
     def record_action(self, action: PersistedAction) -> PersistedAction:
         with self._lock:
             self.get_case(action.action.case_id)
+            key = (
+                action.action.case_id,
+                action.action.idempotency_key,
+            )
+            existing_id = self._action_idempotency_keys.get(key)
+            if existing_id is not None and existing_id != action.action.action_id:
+                raise AuthorityConflict(
+                    "action idempotency key already has different content"
+                )
             _put_idempotent_immutable(
                 self._actions,
                 action.action.action_id,
                 action,
                 "action",
             )
+            self._action_idempotency_keys[key] = action.action.action_id
             return action
 
     def get_action(self, action_id: str) -> PersistedAction:
@@ -785,12 +914,22 @@ class InMemoryAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "checkpoint must bind a checkpoint event"
                 )
+            key = (checkpoint.case_id, checkpoint.event_cursor)
+            existing_id = self._checkpoint_event_keys.get(key)
+            if (
+                existing_id is not None
+                and existing_id != checkpoint.checkpoint_id
+            ):
+                raise AuthorityConflict(
+                    "checkpoint event cursor already has different content"
+                )
             _put_idempotent_immutable(
                 self._checkpoints,
                 checkpoint.checkpoint_id,
                 checkpoint,
                 "checkpoint",
             )
+            self._checkpoint_event_keys[key] = checkpoint.checkpoint_id
             return checkpoint
 
     def latest_checkpoint(self, case_id: str) -> CheckpointRecord | None:
@@ -808,7 +947,19 @@ class InMemoryAuthorityStore:
 
     def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
         with self._lock:
-            self.get_case(message.case_id)
+            case = self.get_case(message.case_id)
+            mailbox = self.get_mailbox_head(message.case_id)
+            if message.expected_head_version != case.head_version:
+                raise StaleHead("outbox expected case head is stale")
+            if message.expected_authority_epoch != mailbox.authority_epoch:
+                raise StaleHead("outbox expected mailbox authority is stale")
+            if (
+                message.operation.authority_revision
+                != message.expected_authority_epoch
+            ):
+                raise InvalidAuthorityTransition(
+                    "outbox operation authority does not match its fence"
+                )
             self._require_event_cursor(
                 message.case_id,
                 message.source_event_cursor,
@@ -823,6 +974,12 @@ class InMemoryAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "outbox requires an effect action"
                     )
+                if message.job_kind is not _ACTION_JOB_KINDS[
+                    action.action.kind
+                ]:
+                    raise InvalidAuthorityTransition(
+                        "outbox job kind does not match action"
+                    )
                 if (
                     message.payload.get("action_kind")
                     != action.action.kind.value
@@ -830,6 +987,10 @@ class InMemoryAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "outbox payload kind does not match action"
                     )
+            elif message.job_kind in set(_ACTION_JOB_KINDS.values()):
+                raise InvalidAuthorityTransition(
+                    "effect outbox requires an admitted action"
+                )
             duplicate_key = next(
                 (
                     candidate
@@ -856,6 +1017,92 @@ class InMemoryAuthorityStore:
     def get_outbox_message(self, message_id: str) -> OutboxMessage:
         with self._lock:
             return _get(self._outbox, message_id, "outbox message")
+
+    def list_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]:
+        with self._lock:
+            if case_id is not None:
+                self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        message
+                        for message in self._outbox.values()
+                        if case_id is None or message.case_id == case_id
+                    ),
+                    key=lambda message: (
+                        message.created_at,
+                        message.source_event_cursor,
+                        message.outbox_message_id,
+                    ),
+                )
+            )
+
+    def acquire_job_lease(
+        self,
+        *,
+        outbox_message_id: str,
+        owner_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> JobLease:
+        with self._lock:
+            self.get_outbox_message(outbox_message_id)
+            current = self._job_leases.get(outbox_message_id)
+            if (
+                current is not None
+                and current.expires_at > now
+            ):
+                raise LeaseConflict("job already has an active delivery lease")
+            token = (
+                current.fencing_token + 1
+                if current is not None
+                else self._job_lease_tokens.get(outbox_message_id, 0) + 1
+            )
+            lease = JobLease(
+                outbox_message_id=outbox_message_id,
+                owner_id=owner_id,
+                fencing_token=token,
+                acquired_at=now,
+                heartbeat_at=now,
+                expires_at=expires_at,
+            )
+            self._job_leases[outbox_message_id] = lease
+            self._job_lease_tokens[outbox_message_id] = token
+            return lease
+
+    def heartbeat_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        heartbeat_at: datetime,
+        expires_at: datetime,
+    ) -> JobLease:
+        with self._lock:
+            current = self._job_leases.get(lease.outbox_message_id)
+            if current != lease:
+                raise LeaseFenceLost("job delivery lease fencing token was lost")
+            if current.expires_at <= heartbeat_at:
+                raise LeaseFenceLost(
+                    "expired job delivery lease cannot be renewed"
+                )
+            renewed = replace(
+                lease,
+                heartbeat_at=heartbeat_at,
+                expires_at=expires_at,
+            )
+            self._job_leases[lease.outbox_message_id] = renewed
+            return renewed
+
+    def release_job_lease(self, lease: JobLease) -> None:
+        with self._lock:
+            current = self._job_leases.get(lease.outbox_message_id)
+            if current != lease:
+                raise LeaseFenceLost("job delivery lease fencing token was lost")
+            del self._job_leases[lease.outbox_message_id]
 
     def record_decision_request(
         self,
@@ -886,11 +1133,23 @@ class InMemoryAuthorityStore:
                 raise AuthorityConflict(
                     "decision request does not match ask_user action"
                 )
+            key = (request.case_id, request.action_id)
+            existing_id = self._decision_request_action_keys.get(key)
+            if (
+                existing_id is not None
+                and existing_id != request.decision_request_id
+            ):
+                raise AuthorityConflict(
+                    "decision request action already has different content"
+                )
             _put_idempotent_immutable(
                 self._decision_requests,
                 request.decision_request_id,
                 request,
                 "decision request",
+            )
+            self._decision_request_action_keys[key] = (
+                request.decision_request_id
             )
             return request
 
@@ -993,22 +1252,10 @@ class InMemoryAuthorityStore:
             if (
                 current is not None
                 and current.expires_at > now
-                and (
-                    current.run_id != run_id
-                    or current.owner_id != owner_id
-                )
             ):
                 raise LeaseConflict("case already has an active controller lease")
             token = (
-                1
-                if current is None
-                else (
-                    current.fencing_token
-                    if current.run_id == run_id
-                    and current.owner_id == owner_id
-                    and current.expires_at > now
-                    else current.fencing_token + 1
-                )
+                self._lease_tokens.get(case_id, 0) + 1
             )
             lease = ControllerLease(
                 case_id=case_id,
@@ -1019,6 +1266,7 @@ class InMemoryAuthorityStore:
                 expires_at=expires_at,
             )
             self._leases[case_id] = lease
+            self._lease_tokens[case_id] = token
             return lease
 
     def release_lease(self, lease: ControllerLease) -> None:
@@ -1045,6 +1293,7 @@ class InMemoryAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
         with self._lock:
             self.get_case(case_id)
@@ -1058,6 +1307,7 @@ class InMemoryAuthorityStore:
                 authority_ref=authority_ref,
                 payload=payload,
                 customer_projection=customer_projection,
+                operation=operation,
             )
 
     def list_events(
@@ -1207,7 +1457,15 @@ class InMemoryAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
+        resolved_operation = operation or _derived_event_operation(
+            case_id=case_id,
+            event_id=event_id,
+            action_id=action_id,
+            authority_ref=authority_ref,
+            payload=payload,
+        )
         existing = self._events_by_id.get(event_id)
         if existing is not None:
             candidate = EventJournalEntry(
@@ -1216,6 +1474,7 @@ class InMemoryAuthorityStore:
                 cursor=existing.cursor,
                 event_type=event_type,
                 recorded_at=recorded_at,
+                operation=resolved_operation,
                 action_id=action_id,
                 authority_ref=authority_ref,
                 payload=payload,
@@ -1237,6 +1496,7 @@ class InMemoryAuthorityStore:
             cursor=actual_next,
             event_type=event_type,
             recorded_at=recorded_at,
+            operation=resolved_operation,
             action_id=action_id,
             authority_ref=authority_ref,
             payload=payload,
@@ -1273,19 +1533,29 @@ class InMemoryAuthorityStore:
             "_decisions": self._decisions.copy(),
             "_objections": self._objections.copy(),
             "_actions": self._actions.copy(),
+            "_action_idempotency_keys": self._action_idempotency_keys.copy(),
             "_contexts": self._contexts.copy(),
             "_receipts": self._receipts.copy(),
             "_receipt_action_ids": self._receipt_action_ids.copy(),
             "_checkpoints": self._checkpoints.copy(),
+            "_checkpoint_event_keys": self._checkpoint_event_keys.copy(),
             "_outbox": self._outbox.copy(),
             "_decision_requests": self._decision_requests.copy(),
+            "_decision_request_action_keys": (
+                self._decision_request_action_keys.copy()
+            ),
             "_effect_attempts": self._effect_attempts.copy(),
             "_leases": self._leases.copy(),
+            "_lease_tokens": self._lease_tokens.copy(),
+            "_job_leases": self._job_leases.copy(),
+            "_job_lease_tokens": self._job_lease_tokens.copy(),
             "_events": {
                 case_id: list(events)
                 for case_id, events in self._events.items()
             },
             "_events_by_id": self._events_by_id.copy(),
+            "_mailbox_heads": self._mailbox_heads.copy(),
+            "_mailbox_messages": self._mailbox_messages.copy(),
         }
 
     def _restore(self, snapshot: dict[str, object]) -> None:
@@ -1332,3 +1602,25 @@ def _put_idempotent_immutable(
     if existing == record:
         return
     raise AuthorityConflict("{} ID already has different content".format(label))
+
+
+def _derived_event_operation(
+    *,
+    case_id: str,
+    event_id: str,
+    action_id: str | None,
+    authority_ref: str | None,
+    payload: dict[str, object],
+) -> OperationIdentity:
+    operation_id = action_id or authority_ref or event_id
+    authority_revision = payload.get("head_version", 0)
+    if not isinstance(authority_revision, int):
+        authority_revision = 0
+    return OperationIdentity(
+        operation_id=operation_id,
+        idempotency_key=event_id,
+        causation_id=action_id or event_id,
+        correlation_id=case_id,
+        authority_revision=authority_revision,
+        payload_sha256=content_sha256(payload),
+    )

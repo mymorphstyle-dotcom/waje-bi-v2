@@ -56,7 +56,10 @@ def to_jsonable(value: Any) -> Any:
             str(key): to_jsonable(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
-    if isinstance(value, tuple):
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
         return [to_jsonable(item) for item in value]
     if value is None or isinstance(value, (str, bool, int, float)):
         return value

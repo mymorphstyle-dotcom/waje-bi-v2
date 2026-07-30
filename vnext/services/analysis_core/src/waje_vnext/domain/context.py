@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Mapping
 
+from .async_runtime import MailboxMessage
 from .authority import (
     AnalysisFrameRevision,
     AnswerVersion,
@@ -31,6 +32,36 @@ MAX_CONTEXT_EVENTS = 100
 MAX_CONTEXT_EVIDENCE = 200
 MAX_CONTEXT_DECISIONS = 100
 MAX_CONTEXT_OBJECTIONS = 100
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUserMessageItem:
+    message_id: str
+    sequence: int
+    authority_epoch: int
+    kind: str
+    content: str
+
+    def __post_init__(self) -> None:
+        for name in ("message_id", "kind", "content"):
+            require_nonempty(getattr(self, name), name)
+        if self.sequence < 1:
+            raise ValueError("message sequence must be positive")
+        if self.authority_epoch < 1:
+            raise ValueError("message authority_epoch must be positive")
+
+    @classmethod
+    def from_message(
+        cls,
+        message: MailboxMessage,
+    ) -> "ContextUserMessageItem":
+        return cls(
+            message_id=message.message_id,
+            sequence=message.sequence,
+            authority_epoch=message.authority_epoch,
+            kind=message.kind.value,
+            content=str(message.payload["message"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +229,7 @@ class ContextPacket:
     accepted_frame_payload: Mapping[str, FrozenJson] | None
     accepted_plan_payload: Mapping[str, FrozenJson] | None
     accepted_answer_payload: Mapping[str, FrozenJson] | None
-    user_message: str
+    user_messages: tuple[ContextUserMessageItem, ...]
     relevant_event_cursor_start: int
     relevant_event_cursor_end: int
     recent_events: tuple[ContextEventItem, ...]
@@ -211,7 +242,19 @@ class ContextPacket:
     def __post_init__(self) -> None:
         require_nonempty(self.packet_id, "packet_id")
         require_nonempty(self.case_id, "case_id")
-        require_nonempty(self.user_message, "user_message")
+        _validate_typed_index(
+            self.user_messages,
+            ContextUserMessageItem,
+            "user_messages",
+            None,
+        )
+        if not self.user_messages:
+            raise ValueError("user_messages cannot be empty")
+        sequences = tuple(item.sequence for item in self.user_messages)
+        if tuple(sorted(sequences)) != sequences:
+            raise ValueError("user_messages must be ordered by sequence")
+        if len(sequences) != len(set(sequences)):
+            raise ValueError("user message sequences must be unique")
         if self.head_version < 0:
             raise ValueError("head_version must be non-negative")
         if self.relevant_event_cursor_start < 0:
@@ -254,7 +297,7 @@ def build_context_packet(
     *,
     packet_id: str,
     case: InvestigationCase,
-    user_message: str,
+    user_messages: tuple[ContextUserMessageItem, ...],
     relevant_event_cursor_start: int,
     relevant_event_cursor_end: int,
     accepted_frame: AnalysisFrameRevision | None,
@@ -278,7 +321,7 @@ def build_context_packet(
         "accepted_frame_payload": frame_payload,
         "accepted_plan_payload": plan_payload,
         "accepted_answer_payload": answer_payload,
-        "user_message": user_message,
+        "user_messages": user_messages,
         "relevant_event_cursor_start": relevant_event_cursor_start,
         "relevant_event_cursor_end": relevant_event_cursor_end,
         "recent_events": recent_events,
@@ -296,7 +339,7 @@ def build_context_packet(
         accepted_frame_payload=frame_payload,
         accepted_plan_payload=plan_payload,
         accepted_answer_payload=answer_payload,
-        user_message=user_message,
+        user_messages=user_messages,
         relevant_event_cursor_start=relevant_event_cursor_start,
         relevant_event_cursor_end=relevant_event_cursor_end,
         recent_events=recent_events,
@@ -318,7 +361,7 @@ def _context_content(packet: ContextPacket) -> dict[str, object]:
         "accepted_frame_payload": packet.accepted_frame_payload,
         "accepted_plan_payload": packet.accepted_plan_payload,
         "accepted_answer_payload": packet.accepted_answer_payload,
-        "user_message": packet.user_message,
+        "user_messages": packet.user_messages,
         "relevant_event_cursor_start": packet.relevant_event_cursor_start,
         "relevant_event_cursor_end": packet.relevant_event_cursor_end,
         "recent_events": packet.recent_events,
@@ -386,11 +429,11 @@ def _validate_typed_index(
     values: tuple[object, ...],
     expected_type: type[object],
     field_name: str,
-    maximum: int,
+    maximum: int | None,
 ) -> None:
     if not isinstance(values, tuple):
         raise TypeError("{} must be a tuple".format(field_name))
-    if len(values) > maximum:
+    if maximum is not None and len(values) > maximum:
         raise ValueError(
             "{} exceeds maximum size {}".format(field_name, maximum)
         )

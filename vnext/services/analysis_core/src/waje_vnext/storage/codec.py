@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from waje_vnext.domain.action_codec import decode_agent_action_proposal
 from waje_vnext.domain.actions import ActionEnvelope, ActionKind
+from waje_vnext.domain.async_runtime import AsyncJobKind, OperationIdentity
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerClaim,
@@ -33,6 +34,7 @@ from waje_vnext.domain.context import (
     ContextEventItem,
     ContextPacket,
     ContextReviewerObjectionItem,
+    ContextUserMessageItem,
 )
 from waje_vnext.domain.controller import (
     ControllerPhase,
@@ -248,6 +250,7 @@ def decode_persisted_action(
         kind=ActionKind(action_payload["kind"]),
         expected_head_version=action_payload["expected_head_version"],
         idempotency_key=action_payload["idempotency_key"],
+        operation=OperationIdentity(**action_payload["operation"]),
         issued_at=_datetime(action_payload["issued_at"]),
         payload=proposal.payload,
     )
@@ -269,7 +272,16 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
         accepted_frame_payload=payload["accepted_frame_payload"],
         accepted_plan_payload=payload["accepted_plan_payload"],
         accepted_answer_payload=payload["accepted_answer_payload"],
-        user_message=payload["user_message"],
+        user_messages=tuple(
+            ContextUserMessageItem(
+                message_id=item["message_id"],
+                sequence=item["sequence"],
+                authority_epoch=item["authority_epoch"],
+                kind=item["kind"],
+                content=item["content"],
+            )
+            for item in payload["user_messages"]
+        ),
         relevant_event_cursor_start=payload["relevant_event_cursor_start"],
         relevant_event_cursor_end=payload["relevant_event_cursor_end"],
         recent_events=tuple(
@@ -361,6 +373,10 @@ def decode_outbox_message(payload: Mapping[str, Any]) -> OutboxMessage:
         case_id=payload["case_id"],
         source_event_cursor=payload["source_event_cursor"],
         action_id=payload["action_id"],
+        job_kind=AsyncJobKind(payload["job_kind"]),
+        operation=OperationIdentity(**payload["operation"]),
+        expected_head_version=payload["expected_head_version"],
+        expected_authority_epoch=payload["expected_authority_epoch"],
         idempotency_key=payload["idempotency_key"],
         destination=payload["destination"],
         contract_ref=payload["contract_ref"],
@@ -379,11 +395,13 @@ def decode_controller_state(
         phase=ControllerPhase(payload["phase"]),
         step_number=payload["step_number"],
         head_version=payload["head_version"],
+        authority_epoch=payload["authority_epoch"],
+        mailbox_cursor=payload["mailbox_cursor"],
         last_event_cursor=payload["last_event_cursor"],
         context_packet_id=payload["context_packet_id"],
         latest_user_message=payload["latest_user_message"],
         pending_action_id=payload["pending_action_id"],
-        pending_outbox_message_id=payload["pending_outbox_message_id"],
+        pending_job_ids=tuple(payload["pending_job_ids"]),
         pending_decision_request_id=payload["pending_decision_request_id"],
         accepted_answer_version_id=payload["accepted_answer_version_id"],
         consecutive_rejections=payload["consecutive_rejections"],

@@ -94,9 +94,10 @@ class Gate3EvaluationCatalogTests(unittest.TestCase):
         self.assertEqual([], findings)
         self.assertEqual(report, _load_json(LEDGER_PATH))
         self.assertFalse(report["policy_ready"])
-        self.assertEqual(
-            {"real_user_language": 6},
-            report["policy_gaps"]["source_pool_gaps"],
+        self.assertEqual({}, report["policy_gaps"]["source_pool_gaps"])
+        self.assertGreaterEqual(
+            report["source_pool_counts"]["real_user_language"],
+            8,
         )
         self.assertGreater(
             report["policy_gaps"]["fully_reviewed_episode_gap"],

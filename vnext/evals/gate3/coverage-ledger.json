@@ -1,21 +1,22 @@
 {
-  "catalog_sha256": "0a84fc478b33652a366d4a5fa63c1e8f25d426da33b7feff89a6b7d2568cb847",
+  "catalog_sha256": "9183942cde9650bd75024c6a14c89807936299aa4812b8f4352fb45f54ad5345",
   "schema_sha256": "eb69a940408f0098e909c162cac754f110fd956fbcfd39c589bda16ca8c9cb57",
   "policy_sha256": "818676d56b8cfdf8966870944ef3938321bb71d797c35861858be0472ed93cbf",
   "rubric_sha256": "1126bdd4fffd4ee0fd23ad06213555d0a14cfd07e5cb5aaf2142a02e0ec303ee",
   "policy_version": "gate3.behavior-eval-policy.v1",
-  "episode_count": 37,
+  "episode_count": 45,
   "source_pool_counts": {
     "adversarial_conversation": 15,
     "expert_business_case": 8,
     "generated_business_world": 8,
-    "historical_failure": 6
+    "historical_failure": 6,
+    "real_user_language": 8
   },
   "review_status_counts": {
-    "candidate": 37
+    "candidate": 45
   },
   "multi_turn_episode_count": 21,
-  "high_or_critical_risk_episode_count": 33,
+  "high_or_critical_risk_episode_count": 41,
   "coverage": {
     "decision_goals": [
       "attribute",
@@ -76,9 +77,7 @@
     ]
   },
   "policy_gaps": {
-    "source_pool_gaps": {
-      "real_user_language": 6
-    },
+    "source_pool_gaps": {},
     "fully_reviewed_episode_gap": 36,
     "multi_turn_episode_gap": 0,
     "high_or_critical_risk_episode_gap": 0,
@@ -109,7 +108,7 @@
       "cross_gate_world_profiles"
     ]
   },
-  "readiness_record_sha256": "4a7324adca0d5faa30254e2c74c0191de2d1fb6d6c23e74ce81e0ea3f9753b85",
+  "readiness_record_sha256": "247f00e9f2eba5e30e9f976c40519f6c22015d4d6d6ad640591505965c03609d",
   "policy_ready": false,
   "readiness_status": "blocked_by_explicit_gaps"
 }

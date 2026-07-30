@@ -2,7 +2,7 @@
   "readiness_version": "gate3.e0-readiness.v1",
   "status": "blocked",
   "evaluated_artifacts": {
-    "catalog_sha256": "0a84fc478b33652a366d4a5fa63c1e8f25d426da33b7feff89a6b7d2568cb847",
+    "catalog_sha256": "9183942cde9650bd75024c6a14c89807936299aa4812b8f4352fb45f54ad5345",
     "schema_sha256": "eb69a940408f0098e909c162cac754f110fd956fbcfd39c589bda16ca8c9cb57",
     "policy_sha256": "818676d56b8cfdf8966870944ef3938321bb71d797c35861858be0472ed93cbf",
     "rubric_sha256": "1126bdd4fffd4ee0fd23ad06213555d0a14cfd07e5cb5aaf2142a02e0ec303ee"

@@ -29,6 +29,39 @@
     "objectPayload": {
       "type": "object"
     },
+    "operationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "causation_id",
+        "correlation_id",
+        "authority_revision",
+        "payload_sha256"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/id"
+        },
+        "causation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
     "actionReceipt": {
       "type": "object",
       "additionalProperties": false,
@@ -132,6 +165,10 @@
         "case_id",
         "source_event_cursor",
         "action_id",
+        "job_kind",
+        "operation",
+        "expected_head_version",
+        "expected_authority_epoch",
         "idempotency_key",
         "destination",
         "contract_ref",
@@ -159,6 +196,29 @@
               "type": "null"
             }
           ]
+        },
+        "job_kind": {
+          "enum": [
+            "controller_wake",
+            "primary_agent",
+            "semantic_inspection",
+            "data_probe",
+            "capability",
+            "sensitivity",
+            "reviewer",
+            "projection"
+          ]
+        },
+        "operation": {
+          "$ref": "#/$defs/operationIdentity"
+        },
+        "expected_head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_authority_epoch": {
+          "type": "integer",
+          "minimum": 1
         },
         "idempotency_key": {
           "$ref": "#/$defs/id"

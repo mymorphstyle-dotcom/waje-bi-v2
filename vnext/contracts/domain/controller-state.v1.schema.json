@@ -10,11 +10,13 @@
     "phase",
     "step_number",
     "head_version",
+    "authority_epoch",
+    "mailbox_cursor",
     "last_event_cursor",
     "context_packet_id",
     "latest_user_message",
     "pending_action_id",
-    "pending_outbox_message_id",
+    "pending_job_ids",
     "pending_decision_request_id",
     "accepted_answer_version_id",
     "consecutive_rejections",
@@ -30,8 +32,10 @@
     "phase": {
       "enum": [
         "ready_for_agent",
+        "waiting_for_llm",
         "waiting_for_user",
         "waiting_for_effect",
+        "waiting_for_review",
         "completed",
         "stopped"
       ]
@@ -41,6 +45,14 @@
       "minimum": 0
     },
     "head_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authority_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mailbox_cursor": {
       "type": "integer",
       "minimum": 0
     },
@@ -57,8 +69,12 @@
     "pending_action_id": {
       "$ref": "#/$defs/nullableId"
     },
-    "pending_outbox_message_id": {
-      "$ref": "#/$defs/nullableId"
+    "pending_job_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "uniqueItems": true
     },
     "pending_decision_request_id": {
       "$ref": "#/$defs/nullableId"
@@ -89,8 +105,8 @@
           "pending_decision_request_id": {
             "$ref": "#/$defs/id"
           },
-          "pending_outbox_message_id": {
-            "type": "null"
+          "pending_job_ids": {
+            "maxItems": 0
           }
         }
       }
@@ -99,14 +115,18 @@
       "if": {
         "properties": {
           "phase": {
-            "const": "waiting_for_effect"
+            "enum": [
+              "waiting_for_llm",
+              "waiting_for_effect",
+              "waiting_for_review"
+            ]
           }
         }
       },
       "then": {
         "properties": {
-          "pending_outbox_message_id": {
-            "$ref": "#/$defs/id"
+          "pending_job_ids": {
+            "minItems": 1
           },
           "pending_decision_request_id": {
             "type": "null"
@@ -128,8 +148,8 @@
       },
       "then": {
         "properties": {
-          "pending_outbox_message_id": {
-            "type": "null"
+          "pending_job_ids": {
+            "maxItems": 0
           },
           "pending_decision_request_id": {
             "type": "null"

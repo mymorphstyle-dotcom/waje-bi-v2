@@ -351,6 +351,13 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                         case_id,
                         source_event_cursor,
                         action_id,
+                        job_kind,
+                        operation_id,
+                        causation_id,
+                        correlation_id,
+                        authority_revision,
+                        expected_head_version,
+                        expected_authority_epoch,
                         idempotency_key,
                         destination,
                         contract_ref,
@@ -361,16 +368,28 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                         'outbox-1',
                         'case-1',
                         11,
-                        'action-receipt-1',
+                        NULL,
+                        'controller_wake',
+                        'operation-outbox-1',
+                        'cause-outbox-1',
+                        'correlation-outbox-1',
+                        1,
+                        6,
+                        1,
                         'outbox-key-1',
-                        'capability-fabric',
-                        'capability-request.v1',
+                        'case-controller',
+                        'controller-wake.v1',
                         %s,
-                        '{}'::jsonb,
+                        jsonb_build_object(
+                            'operation',
+                            jsonb_build_object('payload_sha256', %s::text),
+                            'payload_sha256',
+                            %s::text
+                        ),
                         %s
                     )
                     """,
-                    ("e" * 64, NOW),
+                    ("e" * 64, "e" * 64, "e" * 64, NOW),
                 )
             with self.assertRaises(psycopg.errors.ObjectNotInPrerequisiteState):
                 with connection.transaction():

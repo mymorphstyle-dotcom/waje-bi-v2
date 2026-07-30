@@ -34,6 +34,7 @@ from waje_vnext.domain.context import (
     ContextEvidenceItem,
     ContextEventItem,
     ContextPacket,
+    ContextUserMessageItem,
     build_context_packet,
 )
 from waje_vnext.domain.events import JournalEventType
@@ -345,7 +346,15 @@ class ContextPacketTest(unittest.TestCase):
         first = build_context_packet(
             packet_id="packet-1",
             case=case,
-            user_message="Why is the exposure period higher?",
+            user_messages=(
+                ContextUserMessageItem(
+                    message_id="message-1",
+                    sequence=1,
+                    authority_epoch=1,
+                    kind="user_message",
+                    content="Why is the exposure period higher?",
+                ),
+            ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
             accepted_frame=None,
@@ -362,7 +371,15 @@ class ContextPacketTest(unittest.TestCase):
         second = build_context_packet(
             packet_id="packet-2",
             case=case,
-            user_message="Why is the exposure period higher?",
+            user_messages=(
+                ContextUserMessageItem(
+                    message_id="message-1",
+                    sequence=1,
+                    authority_epoch=1,
+                    kind="user_message",
+                    content="Why is the exposure period higher?",
+                ),
+            ),
             relevant_event_cursor_start=1,
             relevant_event_cursor_end=1,
             accepted_frame=None,

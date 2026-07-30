@@ -4,6 +4,11 @@ CREATE TABLE waje_vnext.action_records (
         REFERENCES waje_vnext.investigation_cases(case_id) ON DELETE RESTRICT,
     expected_head_version bigint NOT NULL CHECK (expected_head_version >= 0),
     idempotency_key text NOT NULL,
+    operation_id text NOT NULL,
+    causation_id text NOT NULL,
+    correlation_id text NOT NULL,
+    authority_revision bigint NOT NULL CHECK (authority_revision >= 0),
+    payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
     proposal_sha256 text NOT NULL CHECK (proposal_sha256 ~ '^[0-9a-f]{64}$'),
     payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
     recorded_at timestamptz NOT NULL,
@@ -64,9 +69,24 @@ CREATE TABLE waje_vnext.controller_leases (
     run_id text NOT NULL,
     owner_id text NOT NULL,
     fencing_token bigint NOT NULL CHECK (fencing_token >= 1),
+    active boolean NOT NULL,
     acquired_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
     CHECK (expires_at > acquired_at)
+);
+
+CREATE TABLE waje_vnext.outbox_delivery_leases (
+    outbox_message_id text PRIMARY KEY
+        REFERENCES waje_vnext.outbox_messages(outbox_message_id)
+        ON DELETE RESTRICT,
+    owner_id text NOT NULL,
+    fencing_token bigint NOT NULL CHECK (fencing_token >= 1),
+    active boolean NOT NULL,
+    acquired_at timestamptz NOT NULL,
+    heartbeat_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    CHECK (heartbeat_at >= acquired_at),
+    CHECK (expires_at > heartbeat_at)
 );
 
 CREATE TRIGGER action_records_immutable

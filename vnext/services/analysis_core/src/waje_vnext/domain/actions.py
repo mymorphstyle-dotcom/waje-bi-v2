@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
 
+from .async_runtime import OperationIdentity
 from .authority import DecisionOption, WorkTask
 from .canonical import (
     FrozenJson,
@@ -260,11 +261,36 @@ class ActionEnvelope:
     idempotency_key: str
     issued_at: datetime
     payload: ActionPayload
+    operation: OperationIdentity | None = None
 
     def __post_init__(self) -> None:
         require_nonempty(self.action_id, "action_id")
         require_nonempty(self.case_id, "case_id")
         require_nonempty(self.idempotency_key, "idempotency_key")
+        proposal = AgentActionProposal(kind=self.kind, payload=self.payload)
+        if self.operation is None:
+            object.__setattr__(
+                self,
+                "operation",
+                OperationIdentity(
+                    operation_id=self.action_id,
+                    idempotency_key=self.idempotency_key,
+                    causation_id=self.action_id,
+                    correlation_id=self.case_id,
+                    authority_revision=self.expected_head_version,
+                    payload_sha256=proposal.content_sha256,
+                ),
+            )
+        if not isinstance(self.operation, OperationIdentity):
+            raise TypeError("operation must be OperationIdentity")
+        if self.operation.idempotency_key != self.idempotency_key:
+            raise ValueError(
+                "action idempotency_key must match operation identity"
+            )
+        if self.operation.payload_sha256 != proposal.content_sha256:
+            raise ValueError(
+                "action proposal does not match operation payload_sha256"
+            )
         if self.expected_head_version < 0:
             raise ValueError("expected_head_version must be non-negative")
         require_aware_datetime(self.issued_at, "issued_at")

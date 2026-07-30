@@ -11,6 +11,12 @@
 - Source branch：`codex/bi-agent-vnext`
 - Gate 1 commit：`4525189c`
 
+> 2026-07-30 状态说明：本文件保留首次 Gate 2 验收证据；其中 controller 内调用 provider
+> 的运行拓扑已由 durable async amendment 替换。当前权威状态见
+> `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md`，生产完备性
+> 缺口见
+> `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`。
+
 ## 入口结论
 
 Primary Business Analysis Agent 持续拥有开放业务语义，通过 typed business proposal 与
@@ -139,7 +145,7 @@ Blocking findings：0。
 
 Gate 2 accepted。Gate 3 进入前仍按 `$grill-me` 纪律执行入口判断。
 
-## 2026-07-30 realignment note
+## 2026-07-30 realignment notes
 
 本 Gate 的单主 Agent、WAJE-owned controller、checkpoint/retry/resume 与 provider
 supervision 继续有效。新 Gate 3 需要先完成 G3.2：跨阶段 message-impact correction、
@@ -150,3 +156,15 @@ capability-result/Evidence atomic admission 和 execution/obligation/publication
 四轴状态。它们继续使用同一 controller，不新增平行 agent loop。G3.2 完成前不进入新业务
 Evidence/Answer/Workflow 分支。详见
 `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-realignment-audit.md`。
+
+durable async amendment 已进一步完成：
+
+- case mailbox ingress、authority epoch 与 controller wake 原子提交；
+- Primary Agent/effect 作为 outbox job 跨进程发现；
+- `WAITING_FOR_LLM`、多 pending job identity 与 correction stale-result fence；
+- job lease/heartbeat storage contract、operation lineage 基础字段和重复投递幂等提交。
+
+周期 heartbeat supervisor、terminal `JobDispositionRecord`、obligation scheduler、Reviewer
+worker 和 Gate 3 全链 operation lineage 仍是 G3.2 blocking work。详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` 与
+`docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`。
