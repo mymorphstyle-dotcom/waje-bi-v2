@@ -1,11 +1,13 @@
 # WAJE BI Agent vNext
 
-`vnext/` 是 WAJE BI Agent 新系统的独立实现根目录。Gate 0 隔离边界、Gate 1
+`vnext/` 是 WAJE BI Agent 新系统的独立应用实现根目录。Gate 0 隔离边界、Gate 1
 权威/存储合同和 Gate 2 单主 Agent runtime 已建立。
 
 ## Day 0 边界
 
-- 生产代码、合同、迁移、测试、eval、ops 和发布入口都在本目录内。
+- 应用生产代码、合同、迁移、测试、eval、ops 和运行入口都在本目录内。
+- GitHub provider 强制位于仓库根 `.github/` 的文件仅作为最小 deployment projection；
+  允许集合与精确 hash 由 `ops/github/workflow-authority-policy.json` 拥有。
 - 历史 `bi_agent/`、前端、contracts、runtime SQL、tests、fixtures 和 build manifests 只供
   调查参考。
 - 本目录不 import、调用、读取或发布历史实现。
@@ -29,9 +31,9 @@ verifier 会：
 
 1. 扫描可执行 source、SQL 和 dependency manifests；
 2. 检查 symlink、Python import 与 path dependency；
-3. 只复制本目录到临时空 workspace；
+3. 只复制本目录与 policy 列出的根级 `.github/` projection 到临时空 workspace；
 4. 在临时 workspace 中重新创建 Python 3.12.13 virtualenv 并执行 `npm ci`；
-5. 校验 JSON Schema 生成的 TypeScript bindings；
+5. 校验 JSON Schema 生成的 TypeScript bindings 与 GitHub deployment projection；
 6. 在该 virtualenv 中 build wheel、compile、运行 unit tests 和 health smoke。
 
 单独运行 bootstrap：

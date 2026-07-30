@@ -42,23 +42,28 @@ verifier therefore rejects every configured authority root and emits
 `external_admission_verified=blocked`. A local receipt file, registry edit, invented reviewer or
 locally generated predecessor chain cannot unlock readiness.
 
-The external issuer boundary is a protected CI identity with a signed canonical admission envelope.
-`gate3-admission-envelope.schema.json` and `gate3_external_admission.py` enforce Ed25519 signatures,
-trust-policy epoch/hash and key validity, expiry, protected repository/ref/workflow revision/runner
-release/run-attempt identity and exact policy, root-bundle, verifier-release, Python dependency and
-artifact-set bindings. A valid envelope returns only its exact authorized Source/Review and manifest
-hashes. Every manifest transition continues to bind the same root, exact prior epoch, canonical
-predecessor hash, monotonic status transition and recursively authorized history.
+The selected external issuer is GitHub Actions with public-repository Artifact Attestations backed
+by Sigstore. `github-admission-request.schema.json`, `github-provider-state.schema.json`,
+`gate3_admission_authority.py` and `github_gate3_admission.py` bind immutable numeric repository
+identity, protected ref/event/environment, exact workflow/source revision, run/attempt, release and
+trust epochs, admission and provider-state predecessors, complete evaluator release,
+candidate-measured Python/dependency/import runtime and exact authorized Source/Review and manifest
+hashes. One externally approved
+`admission_authority_sha256` binds the release, runtime and authorization sections together.
 
-The CI control plane must hold its trust policy, public-key rotation and signing key outside
-repository job control. This repository currently has no CI provider configuration or provisioned
-key. Local commands accept no envelope, trust-policy, runner-context, verified-object or clock
-argument and continue to emit `external_admission_verified=blocked`.
+The unprivileged job may execute repository code and has no OIDC or attestation permission. The
+authority policy permits exactly one signing job. The privileged job performs no checkout and
+executes no repository program. It validates the request against provisional protected environment
+secrets before `actions/attest` signs the request as the Sigstore subject. Verification fixes
+repository, signer workflow/digest, source ref/digest, OIDC issuer, SLSA predicate and the
+GitHub-hosted runner certificate property.
 
-Provider onboarding must add a protected adapter that proves issuer identity, protected status
-publication, monotonic trust-policy/key state, immutable workflow/run attempt, read-only artifact
-channel provenance, current clock and actual runner-image/Python/dependency/import provenance. A
-plain file path, mode-bit check or environment-variable fallback cannot establish this authority.
+The public remote, provider verification contract and candidate/attestation workflow exist.
+Protected review state, trusted workflow revision, first real bundle, trusted canonical
+provider-state connector, atomic monotonic admission/provider-state CAS and a digest-pinned
+hermetic builder remain unprovisioned. The candidate runtime payload is measured and hash-bound;
+it does not yet prove a complete runtime closure. Local commands accept no provider state, bundle,
+verified object or clock argument and continue to emit `external_admission_verified=blocked`.
 
 ## Authority layout
 
@@ -67,7 +72,8 @@ gate3/
 ├── evaluation-episode.schema.json
 ├── evaluation-views.schema.json
 ├── evaluation-run-result.schema.json
-├── gate3-admission-envelope.schema.json
+├── github-admission-request.schema.json
+├── github-provider-state.schema.json
 ├── gate3-e0-trust.schema.json
 ├── gate3-eval-policy.json
 ├── taxonomy/

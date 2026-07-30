@@ -6,13 +6,13 @@
 |---|---|
 | Authoring contract | Complete for E0 infrastructure |
 | Source/Review authority | Implemented; real records incomplete |
-| Protected CI admission | Contract complete; control-plane provisioning incomplete |
+| Protected CI admission | Verification contract and candidate/attestation workflow implemented; canonical provider connector and remote activation incomplete |
 | Agent/Evaluator projection contract | Complete; runtime process isolation belongs to G3.2 |
 | Grader/Authority profile contract | Complete |
 | Three-layer result contract | Complete |
 | Independent review and calibration | Blocked |
 | G3.1 entry | `deny_g3_1` |
-| Entry interview | 用户确认 protected CI identity；真实 reviewer 身份和来源证明出现前不伪造签字 |
+| Entry interview | 用户确认 public GitHub remote 与 GitHub Artifact Attestations/Sigstore；真实 reviewer 身份和来源证明出现前不伪造签字 |
 
 ## 2. Closed infrastructure findings
 
@@ -68,9 +68,10 @@ The following artifacts now have strict schemas and canonical hashes:
 
 `verify_gate3_e0.py` reads the canonical artifact set and never accepts a caller-selected catalog as
 Gate authority. Repository-local receipts and caller-controlled environment variables cannot
-establish trust. Until an external issuer is selected and implemented, the local verifier rejects
-all configured roots and keeps `external_admission_verified=blocked`. Final manifests additionally
-require a schema-valid, same-root, exact-epoch predecessor chain whose complete history is externally
+establish trust. The GitHub/Sigstore request, workflow and verification contracts are implemented;
+protected state, a real bundle and the trusted canonical connector remain unprovisioned. The local
+verifier rejects all configured roots and keeps `external_admission_verified=blocked`. Final manifests additionally require a
+schema-valid, same-root, exact-epoch predecessor chain whose complete history is externally
 authorized.
 
 ### E0-C5a. Measurement-gold self-assertion
@@ -116,42 +117,66 @@ These are business/evaluation authority gaps. Policy-pinned authority roots are 
 principals to a registry cannot create trust. Lowering floors, self-registering fictional experts or
 using subagent output as human attestation is forbidden.
 
-The external admission decision is accepted: a protected CI identity signs a canonical Ed25519
-admission envelope. The repository now defines the strict envelope/trust-policy schema and verifies
-expiry, repository/commit/ref/workflow/run identity, policy, authority-root bundle, verifier release,
-the evaluated artifact set and exact authorized Source/Review and manifest hashes. The trust policy
-and signing key stay outside repository job control. No local envelope path, public-key option or
-environment-variable fallback is exposed.
+### GitHub activation snapshot
 
-The repository has no CI provider configuration, so operational provisioning remains open: create
-the protected trust policy and KMS/signing identity, connect the protected runner to the verification
-API and issue the first real envelope. A dedicated admission service remains a future option for
-online revocation or multi-team issuance.
+The public remote is live at `https://github.com/mymorphstyle-dotcom/waje-bi-v2`; `main` and
+`codex/bi-agent-vnext` have been pushed.
+
+Current remote controls:
+
+- `main` requires a pull request, dismisses stale reviews, enforces administrators, requires linear
+  history and conversation resolution, and disables force-push/delete;
+- the current development account has no second collaborator, so approving-review count is `0` and
+  CODEOWNER review is not yet required;
+- `gate3-admission` exists and allows only protected branches;
+- the environment currently has no required reviewer, reports `can_admins_bypass=true`, and has no
+  approved admission-authority secrets;
+- required status checks will be configured after the first `vNext validation` check exists on
+  GitHub.
+
+This is sufficient to exercise ordinary public CI after merge. It does not satisfy independent
+change control or external admission authority. The machine-derived Gate keeps this state blocked.
+
+The external admission decision is accepted: public GitHub Actions workload identity signs the exact
+admission request through GitHub Artifact Attestations/Sigstore. The public remote is
+`mymorphstyle-dotcom/waje-bi-v2`, repository ID `1317104320`, owner ID `278493004`. The repository
+defines strict request/provider-state schemas and verifies repository/commit/ref/workflow/run
+identity. A single externally approved admission-authority digest covers policy, authority-root
+bundle, verifier release, evaluated artifacts, the candidate-measured runtime payload and exact
+authorized Source/Review and manifest hashes. No long-lived signing key enters a runner. The
+candidate measurement is hash-bound; a digest-pinned hermetic builder and complete runtime closure
+remain activation blockers.
+
+Operational provisioning remains open: merge the protected workflow, configure the
+`gate3-admission` environment and its provisional protected secrets, issue the first real bundle,
+then add an atomic admission/provider-state predecessor CAS and a trusted provider-state
+reader/connector into canonical readiness.
 
 ### E0-C5b. Protected CI admission implementation
 
 The accepted design is recorded in
-`docs/adr/2026-07-30-gate3-protected-ci-admission.md`. The implementation adds:
+`docs/adr/2026-07-30-gate3-protected-ci-admission.md`. The current implementation adds:
 
-- `gate3-admission-envelope.schema.json` for the external trust policy and signed envelope;
-- `gate3_external_admission.py` for canonical bytes, domain separation, Ed25519 verification,
-  trust-policy/key validity, runner-context checks and immutable verified authority;
-- an exact verifier-release digest and evaluated-artifact map in readiness;
-- revalidation of envelope expiry and every repository binding before authority roots or authorized
-  record/manifest hashes are admitted;
-- verifier-release coverage for Python 3.12, `pyproject.toml`, `uv.lock`, immutable workflow
-  revision, runner release and run attempt;
-- a canonical Gate entry that accepts no caller-selected path, key, context, clock or verified
-  object and remains blocked until a provider adapter is implemented;
-- twelve contract/attack tests covering payload tampering, commit/ref/workflow/run replay, trust
-  rotation, stale verifier or artifact bindings, key/envelope expiry, local environment injection,
-  verified-object injection and receipt tampering.
+- public GitHub remote with immutable numeric repository/owner identity;
+- `github-admission-request.schema.json` and `github-provider-state.schema.json`;
+- provider-neutral canonical hashing and verified authority values in
+  `gate3_admission_authority.py`;
+- `github_gate3_admission.py` for strict provider state, complete admission hash, dual predecessor
+  provenance, pinned `gh` executable, immutable input snapshots and Sigstore subject verification;
+- `build_gate3_github_admission_request.py` for Python 3.12 executable, dependency inventory,
+  critical import and evaluated source-tree attestation;
+- verifier-release coverage for Python, Node package/lock, uv lock, isolation policy, GitHub
+  workflows, CODEOWNERS, schemas and verifier code;
+- a read-only PR/merge-queue workflow and a push-to-main admission workflow with an exact
+  `{candidate, attest}` job set;
+- full-SHA action pinning, no checkout or repository-code execution in the privileged job;
+- provider/workflow attack tests covering identity drift, trust/release rollback, predecessor and
+  operation mismatch, subject substitution, duplicate JSON keys, local environment injection,
+  non-GitHub-hosted certificates, second signer jobs, symlinks and untrusted workflow triggers.
 
-The pure cryptographic contract can validate a test envelope. It cannot pass
-`external_admission_verified` in the canonical Gate until a provider adapter proves mount/artifact
-provenance, monotonic trust state and actual runner/runtime identity. Source, independent review,
-measurement gold, counterfactual, calibration, held-out, promotion and run-manifest conditions
-remain independent strict-AND gates.
+The canonical Gate still accepts no caller-selected provider state, bundle, context, clock or
+verified object. Source, independent review, measurement gold, counterfactual, calibration,
+held-out, promotion and run-manifest conditions remain independent strict-AND gates.
 
 ## 4. Review package
 
@@ -188,16 +213,18 @@ entry_decision = deny_g3_1
 
 ## 6. Verification evidence
 
-- `npm run test:bootstrap`: 118 tests passed, 7 environment-dependent tests skipped;
-- Gate 3 trust/attack suite: 55 tests passed;
+- `npm run test:bootstrap`: 127 tests passed, 7 environment-dependent tests skipped;
+- Gate 3 trust/attack suite: 64 tests passed;
 - `npm run check:contracts`: passed;
 - `npm run check:evals:gate3`: structural integrity passed with honest blocked readiness;
+- `actionlint v1.7.12`: both GitHub workflows passed;
 - `npm run check`: clean-copy build/test/health passed under Python 3.12.13;
 - `npm run check:evals:gate3:policy-ready`: exit 1 as required;
 - `npm run gate3:enter:g3.1`: exit 1 with `entry_decision=deny_g3_1`.
 
-The clean-copy audit also verifies that Gate 3 source evidence is owned under `vnext/`; deleting
-repository-external documentation does not change the readiness result.
+The clean-copy audit also verifies that Gate 3 source evidence is owned under `vnext/`. The only
+root-level deployment projection is the policy-listed `.github/` file set; clean-copy validation
+copies and exact-hash verifies it without any historical implementation directory.
 
 ## 7. Adversarial closure
 
@@ -210,9 +237,15 @@ The combined review first reproduced:
 - incomplete Python/dependency/runtime binding;
 - file mode bits being mistaken for protected control-plane provenance;
 - trust-policy triplet rollback without an external monotonic anchor.
+- self-authorizing policy/verifier changes inside a protected job;
+- mutable repository names without numeric IDs;
+- fork and privileged-event entry paths;
+- repository code executing in the OIDC/attestation job;
+- artifact subject substitution and JSON duplicate-key ambiguity.
+- candidate-controlled runtime and authorization fields outside the externally approved hash;
+- provider-mandated root `.github/` files missing from Day 0 deletion-independence proof.
 
-The repository fixes the contract-level findings and removes the process-local admission path from
-canonical readiness. Final review found no remaining Blocking or Major on the current canonical
-surface. The three control-plane findings that require a concrete provider—artifact provenance,
-monotonic trust/key state and actual runner/runtime attestation—remain explicit readiness blockers
-and provider-onboarding exit criteria.
+The repository fixes the implementable contract findings, selects GitHub/Sigstore, and removes the
+superseded raw Ed25519 profile. Remote environment protection, first-bundle verification, a trusted
+canonical connector, exact-SHA required-check publication, atomic provider-state/admission CAS and
+a digest-pinned hermetic builder remain explicit activation blockers.

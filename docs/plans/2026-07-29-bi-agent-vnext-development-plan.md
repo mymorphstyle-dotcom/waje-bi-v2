@@ -9,12 +9,14 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete + durable async amendment；旧 Gate 3 已撤销；新 Gate 3 处于 Planned |
+| 当前 Gate | Gate 2 complete + durable async amendment；新 Gate 3 的 G3.E0 fail-closed foundation 已实现，G3.1 仍 blocked |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
 `lib/`、`contracts/`、`tests/`、`tools/`、`evals/`、根级 runtime SQL 和历史文档只作为
-参考材料。vNext 生产代码、合同、迁移、测试、eval、运行和发布入口全部位于 `vnext/`。
+参考材料。vNext 应用代码、合同、迁移、测试、eval 与运行入口全部位于 `vnext/`。GitHub
+要求 workflow 位于仓库根 `.github/`；该目录只允许 vNext 的最小 deployment projection，
+由 `vnext/ops/github/workflow-authority-policy.json` 逐文件 hash 约束并进入删除独立性验收。
 
 ### 0.1 计划更新规则
 
@@ -72,7 +74,8 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
 
 ### 2.1 隔离规则
 
-1. vNext 生产代码只能位于 `vnext/`。
+1. vNext 应用生产代码只能位于 `vnext/`；provider 强制要求的根级 `.github/` 文件属于
+   exact-hash-bound deployment projection，不得承载业务逻辑、runtime 包或旧系统依赖。
 2. vNext 不 import、调用、继承、链接或运行旧生产实现。
 3. vNext 不把旧测试、fixture、contract、SQL migration 或前端构建产物纳入运行依赖。
 4. 从旧代码提取通用模式时，先记录来源与抽象理由，再在 `vnext/` 内形成新实现、新测试和
@@ -81,7 +84,8 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
    shared migration 形成隐性依赖。
 6. vNext 使用独立包名、数据库 schema、migration ledger、环境变量前缀、运行入口、测试
    入口和发布清单。
-7. vNext 的 CI 必须支持只复制 `vnext/` 到空临时目录后执行构建、测试和 smoke run。
+7. vNext 的 CI 必须支持只复制 `vnext/` 与 policy 列出的最小 `.github/` deployment
+   projection 到空临时目录后执行构建、测试、workflow 校验和 smoke run。
 8. Gate 7 必须在模拟删除全部历史实现的环境中完成 build、test、run、package 和 release
    manifest 验收。
 9. `vnext/tools/isolation-policy.json` 维护 machine-readable forbidden paths、package
@@ -372,8 +376,7 @@ effectively-once 状态变更。分布式 exactly-once 不进入设计假设。
 **入口访谈判断**
 
 - 状态：已执行。
-- 结论：用户已确认 Gate 3 外部 authority 采用 protected CI identity 签发 canonical
-  admission envelope。
+- 结论：本 Gate 无需用户决策。
 - 理由：实现根目录、零兼容、参考边界和产品范围已在任务中明确；仓库结构与依赖可自行调查。
 
 **交付物**
@@ -386,8 +389,9 @@ effectively-once 状态变更。分布式 exactly-once 不进入设计假设。
 - 隔离策略与 forbidden dependency manifest。
 - 独立 root Python/Node package manifests；Gate 0 验证 dependency graph 不指向仓库根级
   package 或旧目录，完整 Workbench build 在 Gate 6 验收。
-- deletion-independence verifier：只复制 `vnext/` 到临时目录后执行 compile、test 与
-  smoke run。
+- deletion-independence verifier：只复制 `vnext/` 与 machine-readable policy
+  明示的根级 `.github/` deployment projection 到临时目录后执行 compile、test、
+  workflow validation 与 smoke run。
 - Gate 0 验收报告。
 
 **Exit criteria**
@@ -395,7 +399,8 @@ effectively-once 状态变更。分布式 exactly-once 不进入设计假设。
 - [x] `vnext/` 内不存在对旧生产目录、旧包名、旧 runtime 命令或旧 schema 的依赖。
 - [x] machine-readable isolation policy 覆盖 import、dynamic path、shell、SQL、dependency
   manifest 和 artifact 扫描。
-- [x] 隔离 verifier 在仓库内和临时空目录各通过。
+- [x] 隔离 verifier 在仓库内和临时空目录各通过；provider-required `.github/`
+  projection 在 clean copy 中逐文件验证且不依赖历史目录。
 - [x] 最小 Python runtime 可 compile、test、run。
 - [x] clean copy 使用 Python 3.12 virtualenv 完成 wheel build，低版本解释器 fail closed。
 - [x] 新根目录、服务边界、环境变量和数据库 namespace 已文档化。
@@ -514,10 +519,14 @@ Exit evidence：
   Episode v2、Source/Review/Corpus/Grader registries、双视图、三层 verdict、cross-Gate
   profiles、review packages 与 derived readiness 已落地；本地 verifier 拒绝全部
   repository-local self-signing，claim/boundary ceiling、truth support、counterfactual
-  materialization 和 manifest history 均 fail closed；protected CI envelope schema 与
-  纯验签合同已落地，provider adapter、外部 key/trust-policy provisioning、monotonic
-  trust state、runtime attestation、来源、双审、truth/per-claim review、calibration、
-  held-out、promotion/run freeze 仍阻止 G3.1。
+  materialization 和 manifest history 均 fail closed；public GitHub remote、
+  GitHub/Sigstore verification contract、request/provider-state schema、privilege-separated
+  workflow、唯一签发 job、complete admission-authority binding、双 predecessor provenance
+  与攻击测试已落地；candidate runtime measurement 已 hash-bound，尚未形成 hermetic runtime
+  closure；protected environment activation、trusted workflow pin、首个真实 bundle、
+  trusted canonical connector、monotonic provider-state/admission CAS、digest-pinned builder、
+  来源、双审、
+  truth/per-claim review、calibration、held-out、promotion/run freeze 仍阻止 G3.1。
 - durable async adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`；
   periodic heartbeat、terminal JobDisposition、obligation scheduler、Reviewer worker 与
@@ -677,7 +686,8 @@ Exit evidence：
 - [ ] 所有 launch-required matrix cells 达到规定 evidence/data contract state。
 - [ ] 历史失败案例依据当前合同重新表达并通过。
 - [ ] full acceptance、replay determinism、recovery、security 与 UI 验收通过。
-- [ ] 只保留 `vnext/` 和最小仓库元数据时可构建、测试、运行和打包。
+- [ ] 只保留 `vnext/`、policy 列出的最小 `.github/` deployment projection 和发布所需
+  仓库元数据时可构建、测试、运行和打包。
 - [ ] release artifact 不含旧路径、旧包、旧 schema、旧 fixture 或旧 contract。
 - [ ] 旧实现可整体删除；删除不会改变 vNext release hash 中的运行依赖集合。
 
@@ -697,7 +707,7 @@ Exit evidence：
 | Replay | authority + journal | deterministic projection、partial chronology | replay divergence / synthetic state |
 | UI | Chat/Analysis/Workflow | component、browser e2e、visual、a11y | projection / usability / leakage |
 | Business acceptance | 问题家族 × factor/capability | real wording + structured expectation | business failure + responsibility point |
-| Isolation/release | `vnext/` only | clean-copy build/test/run/package | forbidden dependency / packaging |
+| Isolation/release | `vnext/` + policy-bound `.github/` projection | clean-copy build/test/workflow validation/run/package | forbidden dependency / packaging |
 
 ### 8.1 核心问题家族初始集合
 
@@ -823,7 +833,8 @@ Reviewer 检查重点：
 Gate 0 建立 verifier，Gate 7 执行完整协议：
 
 1. 生成 clean temporary workspace。
-2. 只复制 `vnext/`、license 和发布所需最小仓库元数据。
+2. 只复制 `vnext/`、policy 列出的 `.github/` deployment projection、license 和发布所需
+   最小仓库元数据。
 3. 清除 repo root `PYTHONPATH`、Node resolution path、旧环境变量和旧 build cache。
 4. 使用 clean PostgreSQL 创建 `waje_vnext`，确认 `waje_runtime` 不存在。
 5. 使用允许的独立 ClickHouse test dataset 或 hermetic fixture。
@@ -844,7 +855,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.E0 fail-closed infrastructure complete; protected CI cryptographic contract complete; provider admission adapter and gold promotion blocked | 已确认 protected CI identity；provider adapter、外部 key/trust policy、authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
+| Gate 3 | G3.E0 fail-closed infrastructure complete; GitHub/Sigstore verification contract and candidate/attestation workflow implemented; canonical provider entry, remote activation and gold promotion blocked | 已确认 public GitHub Artifact Attestations/Sigstore；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -873,4 +884,5 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | runtime 采用整体异步、authority commit 局部同步 | 用户顶层架构要求 | command 短事务、durable mailbox、跨进程 job、case 串行 admission、head/epoch fence 与 cursor projection |
 | 2026-07-30 | at-least-once 是 delivery 基础假设 | 用户顶层架构要求 | 依靠幂等、CAS、唯一约束、receipt 和 fencing 达到 effectively-once mutation |
 | 2026-07-30 | 八类付费金额问题进入真实用户 candidate pool | 用户原始问题集 | 形成 8 个独立 Episode；真实措辞有 source trace，拟合 world/expectation 仍待双审 |
-| 2026-07-30 | Gate 3 外部 authority 采用 protected CI identity | 用户确认 | CI 在仓库控制域外持有 trust policy 与 signing key；canonical envelope 精确绑定 commit/ref/workflow revision/runner release/run attempt、trust-policy epoch/key validity、policy、root bundle、Python dependency、verifier release、artifact set 和授权 record/manifest hashes |
+| 2026-07-30 | Gate 3 外部 authority 采用 public GitHub Actions + Artifact Attestations/Sigstore | 用户确认 | 使用 immutable repository IDs、protected ref/environment、exact workflow/source SHA、run/attempt、release/trust epoch、predecessor、完整 evaluator/runtime 与授权 hash；runner 无长期 signing key |
+| 2026-07-30 | 根级 `.github/` 作为 vNext provider deployment projection | GitHub provider 约束 + Day 0 隔离复核 | 应用实现仍只在 `vnext/`；projection 由 vNext policy exact-hash 绑定，并随 clean-copy 删除独立性验证 |

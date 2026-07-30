@@ -1,6 +1,11 @@
 {
-  "policy_version": 1,
+  "policy_version": 2,
   "implementation_root": ".",
+  "repository_deployment_paths": [
+    ".github/CODEOWNERS",
+    ".github/workflows/gate3-protected-admission.yml",
+    ".github/workflows/vnext-ci.yml"
+  ],
   "python": {
     "minimum": "3.12",
     "toolchain": "3.12.13"

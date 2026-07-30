@@ -13,6 +13,7 @@
     "check:evals:gate3": ".venv/bin/python tools/verify_gate3_e0.py --check",
     "check:evals:gate3:policy-ready": ".venv/bin/python tools/verify_gate3_e0.py --check --require-ready",
     "gate3:enter:g3.1": ".venv/bin/python tools/assert_gate3_1_entry.py",
+    "check:github-deployment": ".venv/bin/python tools/verify_github_workflow_deployment.py",
     "generate:contracts": "node tools/generate-contract-bindings.mjs",
     "check:contracts": "node tools/generate-contract-bindings.mjs --check",
     "test:bootstrap": "PYTHONPATH=services/analysis_core/src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'",

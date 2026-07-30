@@ -14,9 +14,9 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from build_gate3_eval_corpus import _expected_artifacts, _render
 from compile_gate3_eval_views import validate_all_views
-from gate3_external_admission import (
+from gate3_admission_authority import (
     AdmissionExpectation,
-    VerifiedExternalAdmission,
+    VerifiedAdmissionAuthority,
     canonical_file_set_sha256,
 )
 from validate_gate3_eval_catalog import (
@@ -37,8 +37,11 @@ TRUST_SCHEMA_PATH = EVAL_ROOT / "gate3-e0-trust.schema.json"
 REVIEW_PACKAGE_SCHEMA_PATH = EVAL_ROOT / "review-package.schema.json"
 EPISODE_SCHEMA_PATH = EVAL_ROOT / "evaluation-episode.schema.json"
 POLICY_SCHEMA_PATH = EVAL_ROOT / "gate3-eval-policy.schema.json"
-ADMISSION_SCHEMA_PATH = (
-    EVAL_ROOT / "gate3-admission-envelope.schema.json"
+GITHUB_ADMISSION_REQUEST_SCHEMA_PATH = (
+    EVAL_ROOT / "github-admission-request.schema.json"
+)
+GITHUB_PROVIDER_STATE_SCHEMA_PATH = (
+    EVAL_ROOT / "github-provider-state.schema.json"
 )
 READINESS_PATH = EVAL_ROOT / "gate3-e0-readiness.json"
 COVERAGE_LEDGER_PATH = EVAL_ROOT / "coverage-ledger.json"
@@ -74,7 +77,14 @@ VERIFIER_CODE_PATHS = (
     ROOT / "tools" / "validate_gate3_eval_result.py",
     ROOT / "tools" / "verify_gate3_e0.py",
     ROOT / "tools" / "assert_gate3_1_entry.py",
-    ROOT / "tools" / "gate3_external_admission.py",
+    ROOT / "tools" / "gate3_admission_authority.py",
+    ROOT / "tools" / "github_gate3_admission.py",
+    ROOT / "tools" / "build_gate3_github_admission_request.py",
+    ROOT / "tools" / "verify_github_workflow_deployment.py",
+)
+
+GITHUB_AUTHORITY_PATHS = (
+    ROOT / "ops" / "github" / "workflow-authority-policy.json",
 )
 
 SOURCE_AUTHORITY_REQUIREMENTS = {
@@ -127,14 +137,18 @@ TRUST_ARTIFACT_PATHS = (
 
 EVALUATED_PATHS = (
     ROOT / ".python-version",
+    ROOT / "package.json",
+    ROOT / "package-lock.json",
     ROOT / "pyproject.toml",
     ROOT / "uv.lock",
+    ROOT / "tools" / "isolation-policy.json",
     AUTHORING_CATALOG_PATH,
     COVERAGE_LEDGER_PATH,
     POLICY_PATH,
     EPISODE_SCHEMA_PATH,
     POLICY_SCHEMA_PATH,
-    ADMISSION_SCHEMA_PATH,
+    GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
+    GITHUB_PROVIDER_STATE_SCHEMA_PATH,
     TRUST_SCHEMA_PATH,
     REVIEW_PACKAGE_SCHEMA_PATH,
     VIEW_SCHEMA_PATH,
@@ -142,19 +156,25 @@ EVALUATED_PATHS = (
     *TRUST_ARTIFACT_PATHS,
     REVIEW_PACKAGES_PATH,
     *VERIFIER_CODE_PATHS,
+    *GITHUB_AUTHORITY_PATHS,
 )
 
 VERIFIER_RELEASE_PATHS = (
     ROOT / ".python-version",
+    ROOT / "package.json",
+    ROOT / "package-lock.json",
     ROOT / "pyproject.toml",
     ROOT / "uv.lock",
+    ROOT / "tools" / "isolation-policy.json",
     POLICY_SCHEMA_PATH,
-    ADMISSION_SCHEMA_PATH,
+    GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
+    GITHUB_PROVIDER_STATE_SCHEMA_PATH,
     TRUST_SCHEMA_PATH,
     REVIEW_PACKAGE_SCHEMA_PATH,
     VIEW_SCHEMA_PATH,
     RESULT_SCHEMA_PATH,
     *VERIFIER_CODE_PATHS,
+    *GITHUB_AUTHORITY_PATHS,
 )
 
 
@@ -194,12 +214,15 @@ def _evaluated_file_sha256(path: Path) -> str:
 
 
 def evaluated_artifact_hashes() -> dict[str, str]:
+    def artifact_name(path: Path) -> str:
+        if path.is_relative_to(EVAL_ROOT):
+            return str(path.relative_to(EVAL_ROOT))
+        if path.is_relative_to(ROOT):
+            return str(path.relative_to(ROOT))
+        return str(path.relative_to(WORKSPACE_ROOT))
+
     return {
-        (
-            str(path.relative_to(EVAL_ROOT))
-            if path.is_relative_to(EVAL_ROOT)
-            else str(path.relative_to(ROOT))
-        ): _evaluated_file_sha256(path)
+        artifact_name(path): _evaluated_file_sha256(path)
         for path in EVALUATED_PATHS
     }
 
@@ -207,11 +230,11 @@ def evaluated_artifact_hashes() -> dict[str, str]:
 def verifier_release_sha256() -> str:
     return canonical_file_set_sha256(
         VERIFIER_RELEASE_PATHS,
-        relative_to=ROOT,
+        relative_to=WORKSPACE_ROOT,
     )
 
 
-def build_external_admission_expectation(
+def build_admission_expectation(
     policy: Mapping[str, Any],
 ) -> AdmissionExpectation:
     return AdmissionExpectation(
@@ -568,7 +591,7 @@ def _authority_roots(
     policy: Mapping[str, Any],
     *,
     workspace_root: Path = WORKSPACE_ROOT,
-    external_admission: VerifiedExternalAdmission | None = None,
+    external_admission: VerifiedAdmissionAuthority | None = None,
 ) -> tuple[dict[str, dict[str, Mapping[str, Any]]], list[str]]:
     root_bundle = _authority_root_bundle(policy)
     roots: dict[str, dict[str, Mapping[str, Any]]] = {
@@ -852,7 +875,7 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
     review_packages = _load_json(REVIEW_PACKAGES_PATH)
     verified_external_admission = None
     admission_findings = [
-        "protected CI provider adapter, monotonic trust state and runtime attestation are unprovisioned"
+        "GitHub Actions/Sigstore verification contract and exclusive signer workflow are implemented; protected review state, trusted workflow revision, canonical provider connector, provider-state/admission CAS, hermetic builder and first real bundle are unprovisioned"
     ]
     external_admission_verified = False
     authorized_attestation_sha256s: set[str] = set()
@@ -875,7 +898,8 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
         )
     )
     for schema_path in (
-        ADMISSION_SCHEMA_PATH,
+        GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
+        GITHUB_PROVIDER_STATE_SCHEMA_PATH,
         VIEW_SCHEMA_PATH,
         RESULT_SCHEMA_PATH,
     ):
@@ -1356,8 +1380,8 @@ def compute_readiness() -> tuple[dict[str, Any], list[str]]:
             (
                 "protected issuer: {} / key: {} / envelope: {}".format(
                     verified_external_admission.issuer_id,
-                    verified_external_admission.key_id,
-                    verified_external_admission.envelope_sha256,
+                    verified_external_admission.authority_key_id,
+                    verified_external_admission.receipt_sha256,
                 )
                 if external_admission_verified
                 else "; ".join(admission_findings)

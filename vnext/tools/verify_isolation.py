@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = ROOT.parent
 POLICY_PATH = ROOT / "tools" / "isolation-policy.json"
 
 
@@ -65,6 +66,59 @@ def _check_required_paths(policy: Mapping[str, Any]) -> List[Finding]:
             findings.append(
                 Finding("required_path", relative_path, "required file is missing")
             )
+    return findings
+
+
+def _check_repository_deployment_paths(
+    policy: Mapping[str, Any],
+) -> List[Finding]:
+    findings: List[Finding] = []
+    workspace_root = WORKSPACE_ROOT.resolve()
+    for relative_path in policy["repository_deployment_paths"]:
+        candidate = WORKSPACE_ROOT / relative_path
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(workspace_root)
+        except (OSError, ValueError):
+            findings.append(
+                Finding(
+                    "repository_deployment_path",
+                    relative_path,
+                    "deployment path is missing or escapes the workspace",
+                )
+            )
+            continue
+        if candidate.is_symlink() or not resolved.is_file():
+            findings.append(
+                Finding(
+                    "repository_deployment_path",
+                    relative_path,
+                    "deployment path must be a regular non-symlink file",
+                )
+            )
+            continue
+        try:
+            content = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            findings.append(
+                Finding(
+                    "repository_deployment_path",
+                    relative_path,
+                    "deployment projection must be UTF-8 text",
+                )
+            )
+            continue
+        for reference in policy["forbidden_references"]:
+            if reference in content:
+                findings.append(
+                    Finding(
+                        "repository_deployment_path",
+                        relative_path,
+                        "deployment projection contains {!r}".format(
+                            reference
+                        ),
+                    )
+                )
     return findings
 
 
@@ -393,7 +447,8 @@ def _run_clean_copy(
     commands: List[Mapping[str, Any]] = []
     artifacts: List[Mapping[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="waje-vnext-isolation-") as temporary:
-        isolated_root = Path(temporary) / "vnext"
+        isolated_workspace = Path(temporary) / "workspace"
+        isolated_root = isolated_workspace / "vnext"
         shutil.copytree(
             ROOT,
             isolated_root,
@@ -413,6 +468,11 @@ def _run_clean_copy(
                 "*.egg-info",
             ),
         )
+        for relative_path in policy["repository_deployment_paths"]:
+            source = WORKSPACE_ROOT / relative_path
+            destination = isolated_workspace / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
         source_root = isolated_root / "services" / "analysis_core" / "src"
         wheel_root = Path(temporary) / "wheels"
         wheel_root.mkdir()
@@ -505,6 +565,24 @@ def _run_clean_copy(
                     "clean_copy_contracts",
                     ".",
                     "generated TypeScript contract bindings are stale",
+                )
+            )
+        deployment_check_command = (
+            str(isolated_root / ".venv" / "bin" / "python"),
+            "tools/verify_github_workflow_deployment.py",
+        )
+        deployment_check_result = _run(
+            deployment_check_command,
+            cwd=isolated_root,
+            environment=npm_environment,
+        )
+        commands.append(deployment_check_result)
+        if deployment_check_result["exit_code"] != 0:
+            findings.append(
+                Finding(
+                    "clean_copy_deployment",
+                    ".github",
+                    "repository deployment projection is invalid",
                 )
             )
 
@@ -627,6 +705,9 @@ def main() -> int:
     policy = _load_policy()
     findings_by_check = {
         "required_paths": _check_required_paths(policy),
+        "repository_deployment_paths": (
+            _check_repository_deployment_paths(policy)
+        ),
         "python_toolchain": _check_python_toolchain(policy),
         "symlinks": _check_symlinks(policy),
         "text_references": _check_text_references(policy),
