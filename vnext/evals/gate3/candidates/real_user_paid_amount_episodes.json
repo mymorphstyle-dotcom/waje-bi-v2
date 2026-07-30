@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v1",
+  "catalog_version": "gate3.behavior-eval.v2",
   "episodes": [
     {
       "episode_id": "G3-USER-001",
@@ -7,21 +7,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；业务世界、隐藏 truth 和 expectation 由测试作者拟合，尚未经过业务或测量评审。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#1",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "付费金额变化解释：昨天付费金额为什么上涨/下跌？主要是首充人数、付费频次、单笔付费金额，还是支付成功率等因素变化导致的",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -39,12 +40,16 @@
           {
             "contract_ref": "metric.paid_amount.successful.v2",
             "state": "available",
-            "description": "付费金额按成功订单实付金额计，退款另列。"
+            "description": "付费金额按成功订单实付金额计，退款另列。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "metric.payment.behavior-factor.v1",
             "state": "available",
-            "description": "付费人数、首充人数、频次、单笔金额和支付成功率有明确分母与去重规则。"
+            "description": "付费人数、首充人数、频次、单笔金额和支付成功率有明确分母与去重规则。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -61,10 +66,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "昨日成功付费金额上涨主要由高客单渠道 mix 和付费频次共同驱动。",
-          "首充人数下降，支付成功率小幅下降，二者抵消了部分上涨。",
-          "简单逐因子独立相乘会产生交互项，需要可 reconciliation 的分解或顺序敏感性。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-001-01",
+            "statement": "昨日成功付费金额上涨主要由高客单渠道 mix 和付费频次共同驱动。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-001-02",
+            "statement": "首充人数下降，支付成功率小幅下降，二者抵消了部分上涨。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-001-03",
+            "statement": "简单逐因子独立相乘会产生交互项，需要可 reconciliation 的分解或顺序敏感性。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -139,39 +159,51 @@
           "sibling_id": "G3-USER-001-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“昨天收入动了，帮我拆一下是人数、频次、客单、首充还是支付转化造成的”。",
           "expected_invariants": [
             "目标金额、候选机制和可 reconciliation 要求保持。"
           ],
           "expected_changes": [
             "仅 source wording lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“昨天收入动了，帮我拆一下是人数、频次、客单、首充还是支付转化造成的”。"
+          }
         },
         {
           "sibling_id": "G3-USER-001-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "metric_definition",
-          "mutation": "把目标改为扣除退款后的净收入。",
           "expected_invariants": [
             "仍需解释规模、行为强度、支付和 mix。"
           ],
           "expected_changes": [
             "金额定义、分解恒等式和证据身份改变。",
             "退款成为显式因素。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "把目标改为扣除退款后的净收入。"
+          }
         },
         {
           "sibling_id": "G3-USER-001-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "昨日支付状态只成熟到 80%，且迟到分布不可估计。",
           "expected_invariants": [
             "业务决策和候选因素保持。"
           ],
           "expected_changes": [
             "完整金额方向和因素排序受到 typed boundary 或降级。",
             "旧成熟数据证据不得复用。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "昨日支付状态只成熟到 80%，且迟到分布不可估计。"
+          }
         }
       ],
       "coverage_tags": {
@@ -200,24 +232,42 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "factor contributions plus declared interaction or residual reconcile to the target change",
-          "payment success rate declares its denominator",
-          "late payment status constrains evidence strength"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "metric.paid_amount.successful.v2",
+          "metric.payment.behavior-factor.v1",
+          "DC-PAID-CHANGE-LATE-STATUS",
+          "DC-PAID-CHANGE-MIX"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "alternative_and_sensitivity_quality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "accepted measurement binds business day, baseline and factor algebra",
-          "evidence and claim preserve the accepted target metric and factor identities"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "partial_payment_status",
+            "allowed_when_refs": [
+              "DC-PAID-CHANGE-LATE-STATUS",
+              "DC-PAID-CHANGE-MIX"
+            ],
+            "required_observation_refs": [
+              "DC-PAID-CHANGE-LATE-STATUS",
+              "DC-PAID-CHANGE-MIX"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          },
+          {
+            "boundary_code": "conflicting_factor_contract",
+            "allowed_when_refs": [
+              "DC-PAID-CHANGE-LATE-STATUS",
+              "DC-PAID-CHANGE-MIX"
+            ],
+            "required_observation_refs": [
+              "DC-PAID-CHANGE-LATE-STATUS",
+              "DC-PAID-CHANGE-MIX"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          }
+        ]
       }
     },
     {
@@ -226,21 +276,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；测试作者补充了候选周期、数据条件和可接受设计空间。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#2",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "规律解释：最近付费金额是否存在固定规律，比如周末更高、月初更高、晚上更高？ 这个规律主要由哪个渠道、地区、用户类型或玩法带动？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -258,12 +309,16 @@
           {
             "contract_ref": "metric.paid_amount.successful.v2",
             "state": "available",
-            "description": "成功付费金额可按小时、业务日和地区时区聚合。"
+            "description": "成功付费金额可按小时、业务日和地区时区聚合。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "dimension.payment.segmentation.v3",
             "state": "available",
-            "description": "渠道、地区、用户类型和玩法具有时点有效映射。"
+            "description": "渠道、地区、用户类型和玩法具有时点有效映射。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -280,10 +335,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "控制活动后不存在稳定的全局周末效应。",
-          "月初的日均付费金额在两个高价值地区更高，但 raw total 会被窗口天数放大。",
-          "晚间规律主要来自地区时区与一项玩法的活跃时段，不应按服务器自然小时直接解释。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-002-01",
+            "statement": "控制活动后不存在稳定的全局周末效应。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-002-02",
+            "statement": "月初的日均付费金额在两个高价值地区更高，但 raw total 会被窗口天数放大。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-002-03",
+            "statement": "晚间规律主要来自地区时区与一项玩法的活跃时段，不应按服务器自然小时直接解释。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -358,38 +428,50 @@
           "sibling_id": "G3-USER-002-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“收入最近有没有周末、月初或夜间效应，哪些人群和渠道在带动”。",
           "expected_invariants": [
             "候选周期、维度和稳定性目标保持。"
           ],
           "expected_changes": [
             "叙事组织可变化。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“收入最近有没有周末、月初或夜间效应，哪些人群和渠道在带动”。"
+          }
         },
         {
           "sibling_id": "G3-USER-002-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "window_or_baseline",
-          "mutation": "用户将月初明确为每月前 3 个完整业务日，并要求与上月最后 5 个完整业务日比较。",
           "expected_invariants": [
             "仍需归一化 exposure 并检查带动维度。"
           ],
           "expected_changes": [
             "跨月 offset、窗口长度、实际日期和 comparison identity 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "用户将月初明确为每月前 3 个完整业务日，并要求与上月最后 5 个完整业务日比较。"
+          }
         },
         {
           "sibling_id": "G3-USER-002-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "只有一个完整月份，其他月份均缺失 30% 以上小时数据。",
           "expected_invariants": [
             "规律必须表示跨周期可重复性。"
           ],
           "expected_changes": [
             "固定规律 claim 被禁止或降为探索性边界。",
             "带动维度排序不能作为稳定结论。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "只有一个完整月份，其他月份均缺失 30% 以上小时数据。"
+          }
         }
       ],
       "coverage_tags": {
@@ -419,24 +501,42 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "unequal windows cannot use raw total as directional support",
-          "every temporal window resolves actual range and valid exposure",
-          "segment attribution preserves the accepted pattern identity"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "metric.paid_amount.successful.v2",
+          "dimension.payment.segmentation.v3",
+          "DC-PAID-PATTERN-CALENDAR",
+          "DC-PAID-PATTERN-CAMPAIGN"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "calendar, timezone and campaign conditions enter the accepted measurement",
-          "window identity is preserved through evidence and claim"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "insufficient_cycles",
+            "allowed_when_refs": [
+              "DC-PAID-PATTERN-CALENDAR",
+              "DC-PAID-PATTERN-CAMPAIGN"
+            ],
+            "required_observation_refs": [
+              "DC-PAID-PATTERN-CALENDAR",
+              "DC-PAID-PATTERN-CAMPAIGN"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "timezone_mapping_missing",
+            "allowed_when_refs": [
+              "DC-PAID-PATTERN-CALENDAR",
+              "DC-PAID-PATTERN-CAMPAIGN"
+            ],
+            "required_observation_refs": [
+              "DC-PAID-PATTERN-CALENDAR",
+              "DC-PAID-PATTERN-CAMPAIGN"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -445,21 +545,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；事件台账与 identification 条件由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#3",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "事件影响复盘：昨天的活动、投放预算、素材更换、版本更新、支付通道、节日或外部事件，是否影响了付费金额？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -477,12 +578,16 @@
           {
             "contract_ref": "event.operations.timeline.v2",
             "state": "partial",
-            "description": "活动、预算、素材、版本和支付事件有开始结束时间，外部事件只记录到日。"
+            "description": "活动、预算、素材、版本和支付事件有开始结束时间，外部事件只记录到日。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "experiment.rollout.assignment.v1",
             "state": "available",
-            "description": "版本灰度与部分素材轮换有稳定分配记录。"
+            "description": "版本灰度与部分素材轮换有稳定分配记录。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -499,10 +604,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "支付通道故障对失败订单有可量化的直接影响。",
-          "版本灰度具有可比对照，能估计有限范围的影响。",
-          "活动与预算完全重合，现有观测无法分别识别其独立因果贡献。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-003-01",
+            "statement": "支付通道故障对失败订单有可量化的直接影响。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-003-02",
+            "statement": "版本灰度具有可比对照，能估计有限范围的影响。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-003-03",
+            "statement": "活动与预算完全重合，现有观测无法分别识别其独立因果贡献。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -569,39 +689,51 @@
           "sibling_id": "G3-USER-003-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“把昨天所有运营、版本、支付和外部事件对收入的可能影响复盘一下”。",
           "expected_invariants": [
             "事件族、时间线和分层证据目标保持。"
           ],
           "expected_changes": [
             "表达顺序可变化。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“把昨天所有运营、版本、支付和外部事件对收入的可能影响复盘一下”。"
+          }
         },
         {
           "sibling_id": "G3-USER-003-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只要求量化支付通道故障造成的失败金额，不再评估其他事件。",
           "expected_invariants": [
             "支付业务日和状态成熟度保持。"
           ],
           "expected_changes": [
             "目标收敛到通道 outage exposure 和失败金额反事实。",
             "其他事件退出主 obligation。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只要求量化支付通道故障造成的失败金额，不再评估其他事件。"
+          }
         },
         {
           "sibling_id": "G3-USER-003-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "版本灰度 assignment 丢失，只保留发布时间。",
           "expected_invariants": [
             "版本仍是待检查事件。"
           ],
           "expected_changes": [
             "版本影响从可识别估计降为关联或 typed boundary。",
             "原版本证据不能支持当前 causal claim。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "版本灰度 assignment 丢失，只保留发布时间。"
+          }
         }
       ],
       "coverage_tags": {
@@ -630,24 +762,59 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "each event family has its own identification ceiling",
-          "confounded events cannot receive independent causal contributions",
-          "event exposure precedes any claimed outcome effect"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "experiment.rollout.assignment.v1",
+          "DC-PAID-EVENT-CONFOUNDING",
+          "DC-PAID-EVENT-OUTAGE"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "event timeline and identification evidence bind each claim",
-          "typed boundaries remain local to unsupported event claims"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "confounded_events",
+            "allowed_when_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "required_observation_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "maximum_claim_ceiling": "causal"
+          },
+          {
+            "boundary_code": "missing_event_timeline",
+            "allowed_when_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "required_observation_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "maximum_claim_ceiling": "causal"
+          },
+          {
+            "boundary_code": "no_identification_contract",
+            "allowed_when_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "required_observation_refs": [
+              "event.operations.timeline.v2",
+              "DC-PAID-EVENT-CONFOUNDING",
+              "DC-PAID-EVENT-OUTAGE"
+            ],
+            "maximum_claim_ceiling": "causal"
+          }
+        ]
       }
     },
     {
@@ -656,21 +823,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；健康度概念族与隐藏 truth 由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#4",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "收入健康度检查：当前收入健康吗？是靠正常用户增长带动，还是靠少数大额用户、短期活动或异常渠道拉动？ 收入结构里最大的风险点是什么？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -688,12 +856,16 @@
           {
             "contract_ref": "metric.revenue.health-components.v1",
             "state": "partial",
-            "description": "集中度、复购和活动依赖有正式指标，正常增长与异常渠道尚无统一判定阈值。"
+            "description": "集中度、复购和活动依赖有正式指标，正常增长与异常渠道尚无统一判定阈值。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "entity.payer.cohort.v2",
             "state": "available",
-            "description": "付费用户、首充 cohort、复购和大额用户可追踪。"
+            "description": "付费用户、首充 cohort、复购和大额用户可追踪。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -710,10 +882,25 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "总收入增长同时包含稳定复购增长和短期大额用户集中。",
-          "新渠道贡献的表面增长在剔除重复账号和退款后大幅缩水。",
-          "单一健康分数会隐藏增长广度与集中风险的相反方向。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-004-01",
+            "statement": "总收入增长同时包含稳定复购增长和短期大额用户集中。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-004-02",
+            "statement": "新渠道贡献的表面增长在剔除重复账号和退款后大幅缩水。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-004-03",
+            "statement": "单一健康分数会隐藏增长广度与集中风险的相反方向。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -789,39 +976,51 @@
           "sibling_id": "G3-USER-004-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“现在收入的底子稳不稳，是真增长还是被活动、大户或异常渠道撑起来的”。",
           "expected_invariants": [
             "健康多轴、可持续基础和集中风险保持。"
           ],
           "expected_changes": [
             "措辞风格可变化。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“现在收入的底子稳不稳，是真增长还是被活动、大户或异常渠道撑起来的”。"
+          }
         },
         {
           "sibling_id": "G3-USER-004-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户明确只关心未来 30 天现金流稳定性，不评估长期用户质量。",
           "expected_invariants": [
             "集中度、活动和渠道异常仍需测量。"
           ],
           "expected_changes": [
             "horizon、组件权重和风险排序 identity 改变。",
             "长期 cohort 退出主结论。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户明确只关心未来 30 天现金流稳定性，不评估长期用户质量。"
+          }
         },
         {
           "sibling_id": "G3-USER-004-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "用户身份映射缺失，无法识别跨设备重复账号和用户级集中度。",
           "expected_invariants": [
             "健康度仍需呈现可测组件。"
           ],
           "expected_changes": [
             "用户集中与重复账号进入 typed boundary。",
             "渠道和订单级组件可局部继续。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "用户身份映射缺失，无法识别跨设备重复账号和用户级集中度。"
+          }
         }
       ],
       "coverage_tags": {
@@ -849,24 +1048,45 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "health output exposes component definitions rather than an unsupported scalar",
-          "concentration uses an explicit population and distribution rule",
-          "unsupported identity quality only blocks affected health components"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "entity.payer.cohort.v2",
+          "DC-HEALTH-WHALE-CONCENTRATION",
+          "DC-HEALTH-CHANNEL-ANOMALY"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "ambiguity_and_clarification_discipline",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "each health component has independent evidence and applicability",
-          "risk ranking references horizon and accepted boundary"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "health_threshold_undefined",
+            "allowed_when_refs": [
+              "metric.revenue.health-components.v1",
+              "DC-HEALTH-WHALE-CONCENTRATION",
+              "DC-HEALTH-CHANNEL-ANOMALY"
+            ],
+            "required_observation_refs": [
+              "metric.revenue.health-components.v1",
+              "DC-HEALTH-WHALE-CONCENTRATION",
+              "DC-HEALTH-CHANNEL-ANOMALY"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          },
+          {
+            "boundary_code": "identity_quality_gap",
+            "allowed_when_refs": [
+              "metric.revenue.health-components.v1",
+              "DC-HEALTH-WHALE-CONCENTRATION",
+              "DC-HEALTH-CHANNEL-ANOMALY"
+            ],
+            "required_observation_refs": [
+              "metric.revenue.health-components.v1",
+              "DC-HEALTH-WHALE-CONCENTRATION",
+              "DC-HEALTH-CHANNEL-ANOMALY"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          }
+        ]
       }
     },
     {
@@ -875,21 +1095,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；维度桥接和排序 world 由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#5",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "维度/因子归因：昨天收入变化最大的是哪个一级渠道、地区、设备、包、支付方式或玩法？对收入影响最大的 3 个因子分别是什么？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -907,12 +1128,16 @@
           {
             "contract_ref": "dimension.revenue.bridge.v3",
             "state": "available",
-            "description": "渠道、地区、设备、包、支付方式和玩法有时点有效层级。"
+            "description": "渠道、地区、设备、包、支付方式和玩法有时点有效层级。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "metric.revenue.factor-algebra.v2",
             "state": "available",
-            "description": "收入因素与维度桥接分别定义，重叠贡献不可跨维度直接求和。"
+            "description": "收入因素与维度桥接分别定义，重叠贡献不可跨维度直接求和。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -929,10 +1154,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "按可加维度桥接，某一级渠道贡献最大。",
-          "跨维度的前三标签指向同一批用户，直接相加会三重计算。",
-          "行为层前三因素与维度层前三单元是两个不同问题。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-005-01",
+            "statement": "按可加维度桥接，某一级渠道贡献最大。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-005-02",
+            "statement": "跨维度的前三标签指向同一批用户，直接相加会三重计算。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-005-03",
+            "statement": "行为层前三因素与维度层前三单元是两个不同问题。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -1007,39 +1247,51 @@
           "sibling_id": "G3-USER-005-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“昨天哪些业务切片贡献变化最大，再给我三个最重要的影响因素”。",
           "expected_invariants": [
             "维度单元和行为因素双目标保持。"
           ],
           "expected_changes": [
             "术语可适配用户措辞。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“昨天哪些业务切片贡献变化最大，再给我三个最重要的影响因素”。"
+          }
         },
         {
           "sibling_id": "G3-USER-005-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "scope",
-          "mutation": "用户明确只在一级渠道内部找前三贡献单元。",
           "expected_invariants": [
             "贡献需回收到总变化。"
           ],
           "expected_changes": [
             "跨维度重叠退出主设计。",
             "排序 scope 收敛到一级渠道。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/must_preserve",
+            "operation": "replace",
+            "value_description": "用户明确只在一级渠道内部找前三贡献单元。"
+          }
         },
         {
           "sibling_id": "G3-USER-005-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "渠道层级历史映射缺失，只保留当前归属。",
           "expected_invariants": [
             "其他维度和行为因素仍可调查。"
           ],
           "expected_changes": [
             "渠道贡献进入局部 typed boundary。",
             "其他维度不应整体停止。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "渠道层级历史映射缺失，只保留当前归属。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1067,24 +1319,42 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "within-dimension contributions reconcile without cross-dimension addition",
-          "dimension units and behavioral factors have distinct identities",
-          "time-valid hierarchy mapping binds every channel claim"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "dimension.revenue.bridge.v3",
+          "metric.revenue.factor-algebra.v2",
+          "DC-ATTRIBUTION-OVERLAP",
+          "DC-ATTRIBUTION-DIMENSION-REMAP"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "alternative_and_sensitivity_quality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "dimension mapping version and overlap method remain in authority lineage",
-          "top-factor claims bind evidence at the same ranking scope"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "dimension_mapping_break",
+            "allowed_when_refs": [
+              "DC-ATTRIBUTION-OVERLAP",
+              "DC-ATTRIBUTION-DIMENSION-REMAP"
+            ],
+            "required_observation_refs": [
+              "DC-ATTRIBUTION-OVERLAP",
+              "DC-ATTRIBUTION-DIMENSION-REMAP"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          },
+          {
+            "boundary_code": "overlap_unidentifiable",
+            "allowed_when_refs": [
+              "DC-ATTRIBUTION-OVERLAP",
+              "DC-ATTRIBUTION-DIMENSION-REMAP"
+            ],
+            "required_observation_refs": [
+              "DC-ATTRIBUTION-OVERLAP",
+              "DC-ATTRIBUTION-DIMENSION-REMAP"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          }
+        ]
       }
     },
     {
@@ -1093,21 +1363,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；异常 baseline、阈值和隐藏 truth 由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#6",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "异常/黑天鹅复盘：昨天有没有异常波动？如果有，是哪个渠道、支付通道、地区、设备、玩法或大额用户造成的？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1125,12 +1396,16 @@
           {
             "contract_ref": "metric.revenue.anomaly-baseline.v2",
             "state": "available",
-            "description": "按业务日、星期、活动和地区建立滚动基线及预测区间。"
+            "description": "按业务日、星期、活动和地区建立滚动基线及预测区间。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "policy.large-payer.privacy.v1",
             "state": "available",
-            "description": "大额用户只允许聚合贡献、阈值和匿名 cohort，不展示原始标识。"
+            "description": "大额用户只允许聚合贡献、阈值和匿名 cohort，不展示原始标识。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1147,10 +1422,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "日级净变化不显著，但小时级存在支付通道故障和其后的补偿性回流。",
-          "大额用户制造局部峰值，不足以解释全天净额。",
-          "只看日总量会漏掉黑天鹅过程，只看小时峰值会夸大全天影响。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-006-01",
+            "statement": "日级净变化不显著，但小时级存在支付通道故障和其后的补偿性回流。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-006-02",
+            "statement": "大额用户制造局部峰值，不足以解释全天净额。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-006-03",
+            "statement": "只看日总量会漏掉黑天鹅过程，只看小时峰值会夸大全天影响。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -1216,39 +1506,51 @@
           "sibling_id": "G3-USER-006-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“昨天收入有没有超出正常范围，异常集中在哪些业务切片”。",
           "expected_invariants": [
             "条件 baseline、多粒度和来源诊断保持。"
           ],
           "expected_changes": [
             "黑天鹅术语可以省略。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“昨天收入有没有超出正常范围，异常集中在哪些业务切片”。"
+          }
         },
         {
           "sibling_id": "G3-USER-006-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "time_semantics",
-          "mutation": "用户改为检查最近 30 天是否存在持续异常，而非昨日事件。",
           "expected_invariants": [
             "异常必须相对于条件 baseline。"
           ],
           "expected_changes": [
             "目标从事件检测变为持续状态检测。",
             "窗口、独立性和异常聚合方法改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "用户改为检查最近 30 天是否存在持续异常，而非昨日事件。"
+          }
         },
         {
           "sibling_id": "G3-USER-006-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "只有三天历史数据且包含一次大型活动。",
           "expected_invariants": [
             "不能凭绝对变化宣布异常。"
           ],
           "expected_changes": [
             "稳定异常 baseline 无法估计并形成 typed boundary。",
             "可保留数据质量和描述性事件证据。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "只有三天历史数据且包含一次大型活动。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1277,24 +1579,42 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "anomaly claim binds a declared conditional baseline and resolution",
-          "daily and intraday conclusions remain distinct",
-          "large-payer evidence obeys privacy projection"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "metric.revenue.anomaly-baseline.v2",
+          "policy.large-payer.privacy.v1",
+          "DC-ANOMALY-PAYMENT-DROP",
+          "DC-ANOMALY-WHALE"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "baseline version and resolution bind anomaly evidence",
-          "privacy-limited attribution remains visible as a claim boundary"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "insufficient_baseline_history",
+            "allowed_when_refs": [
+              "DC-ANOMALY-PAYMENT-DROP",
+              "DC-ANOMALY-WHALE"
+            ],
+            "required_observation_refs": [
+              "DC-ANOMALY-PAYMENT-DROP",
+              "DC-ANOMALY-WHALE"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          },
+          {
+            "boundary_code": "privacy_limited_attribution",
+            "allowed_when_refs": [
+              "DC-ANOMALY-PAYMENT-DROP",
+              "DC-ANOMALY-WHALE"
+            ],
+            "required_observation_refs": [
+              "DC-ANOMALY-PAYMENT-DROP",
+              "DC-ANOMALY-WHALE"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          }
+        ]
       }
     },
     {
@@ -1303,21 +1623,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；多基准和隐藏 truth 由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#7",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "基准对比：相比前一天、近 7 日均值、上周同日，昨天付费金额为什么变化？哪些指标偏离了正常水平？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1335,12 +1656,16 @@
           {
             "contract_ref": "metric.paid_amount.successful.v2",
             "state": "available",
-            "description": "成功付费金额和行为指标有完整业务日定义。"
+            "description": "成功付费金额和行为指标有完整业务日定义。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "baseline.revenue.comparison.v1",
             "state": "available",
-            "description": "前日、滚动均值和上周同日的包含规则及成熟度要求明确。"
+            "description": "前日、滚动均值和上周同日的包含规则及成熟度要求明确。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1357,10 +1682,25 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "昨日高于前一天，低于含活动日的近七日均值，与上周同日接近。",
-          "支付成功率相对三个基准均显著偏低，但活动带来的付费人数抵消了金额下降。",
-          "用不同 release maturity 比较会夸大日环比。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-007-01",
+            "statement": "昨日高于前一天，低于含活动日的近七日均值，与上周同日接近。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-007-02",
+            "statement": "支付成功率相对三个基准均显著偏低，但活动带来的付费人数抵消了金额下降。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-007-03",
+            "statement": "用不同 release maturity 比较会夸大日环比。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -1426,39 +1766,51 @@
           "sibling_id": "G3-USER-007-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“昨天对比前日、七日平均和上周同一天分别表现怎样，哪些指标不正常”。",
           "expected_invariants": [
             "三个独立基准和偏离解释保持。"
           ],
           "expected_changes": [
             "展示顺序可变化。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“昨天对比前日、七日平均和上周同一天分别表现怎样，哪些指标不正常”。"
+          }
         },
         {
           "sibling_id": "G3-USER-007-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "window_or_baseline",
-          "mutation": "用户把近 7 日均值改成剔除活动日后的最近 4 个同星期业务日均值。",
           "expected_invariants": [
             "release maturity 和业务日仍需对齐。"
           ],
           "expected_changes": [
             "baseline population、窗口和 comparison identity 改变。",
             "原七日均值证据不能直接回答新基准。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "用户把近 7 日均值改成剔除活动日后的最近 4 个同星期业务日均值。"
+          }
         },
         {
           "sibling_id": "G3-USER-007-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "前一天和上周同日均缺少最后四小时支付状态。",
           "expected_invariants": [
             "三个基准的业务用途保持。"
           ],
           "expected_changes": [
             "不完整基准被排除、归一化或局部降级。",
             "完整 rolling baseline 可继续。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "前一天和上周同日均缺少最后四小时支付状态。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1487,24 +1839,42 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "each requested baseline has a separate contrast identity",
-          "snapshot and release cutoff are comparable before direction claims",
-          "contaminated rolling baseline is not equated with normal without qualification"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "metric.paid_amount.successful.v2",
+          "baseline.revenue.comparison.v1",
+          "DC-BASELINE-ROLLING-EVENT",
+          "DC-BASELINE-PRIOR-LATE"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "baseline membership and release maturity persist through evidence and answer",
-          "conflicting baseline directions remain visible"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "incomparable_release_cutoff",
+            "allowed_when_refs": [
+              "DC-BASELINE-ROLLING-EVENT",
+              "DC-BASELINE-PRIOR-LATE"
+            ],
+            "required_observation_refs": [
+              "DC-BASELINE-ROLLING-EVENT",
+              "DC-BASELINE-PRIOR-LATE"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          },
+          {
+            "boundary_code": "contaminated_baseline",
+            "allowed_when_refs": [
+              "DC-BASELINE-ROLLING-EVENT",
+              "DC-BASELINE-PRIOR-LATE"
+            ],
+            "required_observation_refs": [
+              "DC-BASELINE-ROLLING-EVENT",
+              "DC-BASELINE-PRIOR-LATE"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          }
+        ]
       }
     },
     {
@@ -1513,21 +1883,22 @@
       "source_pool": "real_user_language",
       "provenance": {
         "authoring_method": "domain_interview",
-        "review_status": "candidate",
         "origin_note": "用户原文来自当前 WAJE 产品设计任务；数据质量 world 和证据门槛由测试作者拟合。",
-        "source_trace_ref": "docs/product/2026-07-30-real-user-paid-amount-question-seed.md#8",
-        "review_attestations": []
+        "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+        "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "数据质量/证据检查：这个结论的数据证据够不够？是否存在数据延迟、渠道归因异常、支付状态缺失、重复订单或异常用户影响判断？",
-            "communication_function": "challenge"
+            "communication_function": "challenge",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1545,12 +1916,16 @@
           {
             "contract_ref": "quality.payment.release.v3",
             "state": "available",
-            "description": "每个业务日有延迟、支付状态完整性、重复订单和退款质量指标。"
+            "description": "每个业务日有延迟、支付状态完整性、重复订单和退款质量指标。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "quality.channel.attribution.v2",
             "state": "partial",
-            "description": "一级渠道归因有历史映射，一小部分合作渠道缺少昨日映射。"
+            "description": "一级渠道归因有历史映射，一小部分合作渠道缺少昨日映射。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1567,10 +1942,25 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "去重后总收入方向保持，原总量结论可降级后继续。",
-          "原渠道主因结论因映射缺口和异常用户集中而证据不足。",
-          "支付状态完整性足以支持成熟时点总量，不足以支持最后一小时粒度。"
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-USER-008-01",
+            "statement": "去重后总收入方向保持，原总量结论可降级后继续。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-008-02",
+            "statement": "原渠道主因结论因映射缺口和异常用户集中而证据不足。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-USER-008-03",
+            "statement": "支付状态完整性足以支持成熟时点总量，不足以支持最后一小时粒度。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
         ]
       },
       "decision_stakes": {
@@ -1637,39 +2027,51 @@
           "sibling_id": "G3-USER-008-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "改写为“帮我审一下这条收入结论靠不靠谱，数据延迟、归因、支付状态、重复单和异常用户会不会推翻它”。",
           "expected_invariants": [
             "claim-scoped 证据审计和五类质量挑战保持。"
           ],
           "expected_changes": [
             "叙述可以更口语化。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "改写为“帮我审一下这条收入结论靠不靠谱，数据延迟、归因、支付状态、重复单和异常用户会不会推翻它”。"
+          }
         },
         {
           "sibling_id": "G3-USER-008-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "claim_strength_request",
-          "mutation": "用户要求从“描述性相关”升级为“渠道导致收入下降”的因果结论。",
           "expected_invariants": [
             "原数据质量问题仍需检查。"
           ],
           "expected_changes": [
             "新增 identification 证据要求。",
             "现有描述性证据不能自动升级。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/claim_ceiling",
+            "operation": "replace",
+            "value_description": "用户要求从“描述性相关”升级为“渠道导致收入下降”的因果结论。"
+          }
         },
         {
           "sibling_id": "G3-USER-008-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "原 Evidence 缺少 snapshot、query/result 和去重 provenance。",
           "expected_invariants": [
             "用户仍要求判断证据是否充分。"
           ],
           "expected_changes": [
             "无法验证的 claim 进入 evidence provenance boundary。",
             "系统不能凭当前聚合数字补写旧 provenance。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "原 Evidence 缺少 snapshot、query/result 和去重 provenance。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1700,25 +2102,59 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "each quality finding names affected claim scope and evidence identity",
-          "corrected results create new evidence lineage",
-          "local attribution gaps do not invalidate supported total claims"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "quality.payment.release.v3",
+          "DC-EVIDENCE-DUPLICATES",
+          "DC-EVIDENCE-CHANNEL-GAP"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "evidence_and_claim_proportionality",
-          "authority_and_trace_integrity",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "original and corrected evidence remain separately addressable",
-          "claim validity disposition records snapshot, quality checks and boundary"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "evidence_provenance_missing",
+            "allowed_when_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "required_observation_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          },
+          {
+            "boundary_code": "partial_attribution_mapping",
+            "allowed_when_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "required_observation_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          },
+          {
+            "boundary_code": "immature_payment_status",
+            "allowed_when_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "required_observation_refs": [
+              "quality.channel.attribution.v2",
+              "DC-EVIDENCE-DUPLICATES",
+              "DC-EVIDENCE-CHANNEL-GAP"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          }
+        ]
       }
     }
   ]

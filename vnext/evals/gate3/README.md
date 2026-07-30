@@ -1,147 +1,153 @@
-# Gate 3 Behavior-first Evaluation Corpus
+# Gate 3 Behavior-first Evaluation Authority
 
 ## Purpose
 
-This corpus tests whether a Business Analysis Agent can handle real, unfamiliar business questions.
-It is authored before Gate 3 production implementation and cannot depend on runtime classes, action
-names, tool sequences, SQL shapes, or one canonical AnalysisFrame.
+Gate 3 tests whether a Business Analysis Agent can handle unfamiliar business questions without
+deriving the test design from WAJE actions, tools, SQL, controller nodes, or one canonical
+`AnalysisFrame`.
 
-The evaluation unit is an `EvaluationEpisode`:
+The authoring Episode describes:
 
 ```text
 natural user conversation
-+ business world and data conditions
-+ hidden evaluator truth
++ business world and EvaluationClock
 + decision stakes
++ support expectation
 + acceptable outcome envelope
 + forbidden outcomes
-+ counterfactual siblings
-+ behavior and trace graders
++ atomic counterfactual relations
 ```
 
-Contract, identity, calendar, persistence, and publication tests remain necessary conformance suites.
-They do not replace episode-level product evaluation.
+Review, partition, coverage promotion, grader choice, authority conformance, calibration and Gate
+readiness live outside the Episode. An Episode cannot declare itself reviewed or promote itself.
 
-## Authoring rules
+## Current state
 
-1. Start from a business decision and a plausible user conversation.
-2. Define the business world independently of any WAJE implementation.
-3. Preserve multiple defensible measurement designs when the question permits them.
-4. State observable properties of a good outcome; do not prescribe one action or tool sequence.
-5. Give every episode counterfactual siblings that change one material factor at a time.
-6. Separate evaluator-only hidden truth from information available to the Agent.
-7. Use deterministic graders for hard invariants and calibrated model/human graders for professional
-   judgment.
-8. Keep `contract_supported`, allowed boundaries, and claim ceilings under reviewed catalog
-   authority.
-9. A run manifest may select or repeat episodes; it cannot weaken their expectations.
-10. Evaluation failures enter the regression corpus before any runtime-guardrail decision.
+- 45 schema-valid authoring Episodes;
+- 8 real-user paid-amount questions from one source task;
+- 21 multi-turn Episodes;
+- 41 high/critical-risk Episodes;
+- 147 structured counterfactual mutations;
+- 45 independent-review packages;
+- G3.E0 remains `blocked`; `entry_decision=deny_g3_1`.
 
-Every base episode has at least three counterfactual roles:
+The blocked state is intentional. Expert/historical provenance, independent double review, truth
+identifiability, per-claim ceilings, grader calibration, a sealed held-out set, promotion and a
+frozen run manifest remain incomplete.
 
-| Role | Minimal mutation | Expected behavior |
-|---|---|---|
-| `meaning_preserving` | wording, order, or irrelevant context | preserve decision and measurement meaning |
-| `measurement_changing` | metric, population, time, unit, denominator, exposure, or decision goal | revise the affected measurement identity |
-| `boundary_changing` or `interaction_changing` | contract/coverage/evidence availability or a material user correction | revise disposition, claim ceiling, or accepted authority |
+## Protected trust boundary
 
-The siblings are evaluated as relations, not as three extra golden answers. They detect semantic
-overreaction, semantic blindness, and evidence-boundary escape.
+Checked-in JSON and caller-controlled environment variables cannot authorize themselves. The local
+verifier therefore rejects every configured authority root and emits
+`external_admission_verified=blocked`. A local receipt file, registry edit, invented reviewer or
+locally generated predecessor chain cannot unlock readiness.
 
-## Layout
+The remaining architecture decision is the external issuer boundary: a protected CI identity with
+a signed admission envelope, or a dedicated admission service. Once selected, the adapter must
+verify issuer identity outside repository control and return exact authorized Source/Review and
+manifest hashes. Every manifest transition will continue to bind the same root, exact prior epoch,
+canonical predecessor hash, monotonic status transition and recursively authorized history.
+
+## Authority layout
 
 ```text
 gate3/
 ├── evaluation-episode.schema.json
+├── evaluation-views.schema.json
+├── evaluation-run-result.schema.json
+├── gate3-e0-trust.schema.json
 ├── gate3-eval-policy.json
-├── grader-rubric.json
+├── taxonomy/
+│   └── coverage-taxonomy.json
 ├── candidates/
-│   ├── real_expert_episodes.json
-│   ├── generated_failure_episodes.json
-│   ├── adversarial_conversation_episodes.json
-│   └── root_counterfactual_anchor_episodes.json
 ├── catalog/
 │   └── gate3-authoring-candidates.json
-└── coverage-ledger.json
+├── registries/
+│   ├── source-registry.json
+│   ├── review-registry.json
+│   ├── corpus-registry.json
+│   └── grader-registry.json
+├── profiles/
+│   ├── authority-conformance-profiles.json
+│   └── cross-gate-world-profiles.json
+├── promotion/
+│   └── review-packages.json
+├── calibration/
+│   └── grader-calibration-package.json
+├── manifests/
+│   ├── promotion-manifest.json
+│   ├── protected-held-out-manifest.json
+│   └── run-manifest.json
+├── coverage-ledger.json
+└── gate3-e0-readiness.json
 ```
 
-`candidates/` preserves independent authoring provenance. The merged authoring catalog remains
-non-executable while any review or source gap is open. Business and measurement review later
-promote selected Episodes into versioned development/calibration partitions. A protected held-out
-set must live outside model and prompt development context; the repository stores only its manifest,
-policy version, and content hashes.
+`candidates/` contains human/agent authoring inputs and is read-only to the corpus generator. The
+exact-union catalog and registry/profile/review-package artifacts are deterministic outputs.
+Review, promotion, calibration, held-out and run manifests are authority-owned inputs; generation
+commands cannot reset them.
 
-## Evaluation layers
+## Agent and evaluator isolation
 
-| Layer | Question answered |
-|---|---|
-| Product behavior | Does the Agent understand the decision, design a defensible measurement, investigate adaptively, and respect evidence limits? |
-| Authority/trust conformance | Can semantic drift, stale state, evidence mismatch, or unsafe publication cross a hard boundary? |
-| Implementation | Do codecs, stores, resolvers, providers, retries, and projections satisfy their local contracts? |
+`compile_gate3_eval_views.py --check` validates both projections from explicit whitelists:
 
-Launch readiness requires all three. Passing implementation tests cannot compensate for a failed
-business episode.
+- `AgentWorldView` receives the current injected messages, frozen clock, provided context and
+  governed semantic/data inspection references;
+- `EvaluatorOracleView` receives the complete message plan, truth facts, support expectation,
+  outcome envelope, forbidden outcomes and grader/profile references.
 
-## Dataset lifecycle
+The Agent view also excludes Episode IDs, core hashes and world-profile handles that could act as
+oracle lookup keys. It excludes title, provenance, future messages, decision-stakes oracle text, truth,
+acceptable outcomes, forbidden outcomes, siblings and grader authority. Canary tests cover future
+message, truth, title and evaluator-only data-condition leakage. The CLI cannot emit an oracle or
+accept a caller-selected future turn. Runtime process/credential separation is completed in G3.2.
 
-1. `authoring`: independently drafted episodes and worlds.
-2. `reviewed`: business and measurement reviewers approve outcome envelopes.
-3. `calibration`: human labels calibrate semantic/model graders.
-4. `development`: visible regression cases used during implementation.
-5. `held_out`: protected cases used for model/prompt/release comparison.
-6. `production_mined`: reviewed, redacted cases derived from real traces after launch.
+## Three-layer verdict
 
-No case becomes a hard runtime rule automatically. Promotion requires a recurring, generalizable
-failure pattern plus business and engineering ownership.
+Every run cell has independent:
 
-## Source protocol
+1. product-behavior verdict;
+2. authority-conformance verdict;
+3. implementation verdict.
 
-| Source pool | Accepted provenance |
-|---|---|
-| `real_user_language` | redacted interview record, pilot conversation, or production trace reference |
-| `expert_business_case` | named business/measurement authoring review |
-| `historical_failure` | failure reconstruction with a durable incident or eval reference |
-| `generated_business_world` | controlled world authored before the expected Agent behavior |
-| `adversarial_conversation` | independent red-team authoring |
+The final verdict is derived by strict AND. A critical veto, missing artifact, blocked layer,
+invalid layer or oracle leakage cannot be averaged away.
 
-Generated natural language remains a candidate even when it sounds realistic. The validator rejects
-`real_user_language` without interview/trace provenance and a `source_trace_ref`.
+For measurement gold, an Episode-level claim ceiling is the maximum for every claim target. A truth
+fact marked identifiable must cite world facts the Agent can discover and access. An executable
+counterfactual must carry one semantic intervention, exact non-null before/after values where
+applicable, and a digest recomputed by replaying its JSON Pointer mutation. Textual assertions and
+arbitrary sibling hashes remain unexecutable.
 
-Review status is backed by durable attestations. `fully_reviewed` requires distinct business-owner
-and measurement-reviewer references, review-record references, and the reviewed content hash.
-Changing an Episode after review invalidates the old attestation for promotion.
+## Lifecycle
 
-The checked-in authoring catalog currently represents the authoring checkpoint. Eight authentic
-user-wording seeds are preserved from the 2026-07-30 paid-amount question set; their fitted business
-worlds and expectations remain candidates. The coverage ledger is the machine-readable readiness
-statement. `policy_ready=false` continues to block G3.1 until source/review registries, double review,
-grader calibration, protected partitions, and the remaining adversarial closures are complete.
+1. Author candidate Episodes and business worlds.
+2. Normalize and hash immutable Episode cores.
+3. Resolve a verified Source Registry record.
+4. Compile Agent/Evaluator views and cross-Gate profiles.
+5. Obtain independent business-owner and measurement-reviewer records against the same core hash.
+6. Promote reviewed Episodes through the PromotionManifest.
+7. Calibrate graders using human labels.
+8. Seal an external held-out manifest without checked-in plaintext.
+9. Freeze the run manifest.
+10. Derive the read-only readiness manifest and allow G3.1 only when every condition passes.
 
-## Runner projection
-
-The catalog contains both Agent inputs and evaluator-only truth. A runner must construct input
-incrementally:
-
-- inject each user message only at its declared interaction point;
-- expose `provided_to_agent` conditions directly;
-- expose semantic- or data-discoverable conditions only through the corresponding governed
-  inspection/probe surface;
-- keep evaluator-only conditions, hidden business truth, provenance, acceptable outcomes, forbidden
-  outcomes, siblings, and grading rules outside Agent context;
-- give graders the frozen Episode and complete trace after the run.
-
-Leaking future turns or evaluator truth invalidates the run even when the final answer looks correct.
+No eval failure becomes a runtime rule automatically.
 
 ## Commands
 
 From `vnext/`:
 
 ```bash
+npm run generate:eval-corpus:gate3
 npm run generate:eval-ledger:gate3
+npm run generate:eval-readiness:gate3
 npm run check:evals:gate3
 npm run check:evals:gate3:policy-ready
+npm run gate3:enter:g3.1
 ```
 
-Generation is an explicit authoring action. Normal checks are read-only and fail if the ledger is
-stale. The policy-ready command is the Gate entry check and currently fails on the checked-in open
-findings, missing artifacts, authentic-source gap, and review gap.
+The three generation commands are explicit authoring actions. Both checks are read-only.
+`check:evals:gate3` verifies structural integrity while preserving honest blocked conditions.
+`check:evals:gate3:policy-ready` and `gate3:enter:g3.1` currently exit nonzero. Every future G3.1
+entrypoint must depend on the latter hard gate.

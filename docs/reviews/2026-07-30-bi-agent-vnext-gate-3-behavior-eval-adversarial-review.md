@@ -1,5 +1,10 @@
 # WAJE BI Agent vNext Gate 3 Behavior Eval 对抗式审查
 
+> 2026-07-30 closure update：本文保留首次攻击证据和原始计数。E0 trust infrastructure
+> 的当前实现、45 个 Episode 状态与剩余 external-authority blockers 以
+> `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` 和
+> `vnext/evals/gate3/gate3-e0-readiness.json` 为准。
+
 ## 1. 结论
 
 | 项 | 结论 |

@@ -1,5 +1,27 @@
 {
-  "policy_version": "gate3.behavior-eval-policy.v1",
+  "policy_version": "gate3.behavior-eval-policy.v2",
+  "parent_policy": {
+    "policy_version": "gate3.behavior-eval-policy.v1",
+    "canonical_sha256": "31bca083c1acf70f0980428f7b0ad5695373eac6d608ba703404caf736869add",
+    "floor_change": "monotonic_strengthening_only",
+    "minimum_catalog_snapshot": {
+      "reviewed_base_episodes": 36,
+      "source_pool_minimums": {
+        "real_user_language": 6,
+        "expert_business_case": 6,
+        "historical_failure": 6,
+        "generated_business_world": 6,
+        "adversarial_conversation": 6
+      },
+      "counterfactual_siblings_per_episode": 3,
+      "multi_turn_episodes": 12,
+      "critical_risk_episodes": 6
+    }
+  },
+  "coverage_taxonomy": {
+    "artifact_version": "gate3.coverage-taxonomy.v1",
+    "canonical_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3"
+  },
   "corpus_authority": {
     "review_required": [
       "business_owner",
@@ -7,7 +29,20 @@
     ],
     "run_manifest_can_weaken_expectations": false,
     "eval_failure_auto_promotes_runtime_guardrail": false,
-    "held_out_content_visible_to_prompt_development": false
+    "held_out_content_visible_to_prompt_development": false,
+    "reviewer_authority_roots": [],
+    "source_authority_roots": [],
+    "manifest_authority_roots": []
+  },
+  "promotion_requirements": {
+    "source_record_must_be_verified": true,
+    "business_and_measurement_review_must_be_independent": true,
+    "coverage_must_be_reviewed": true,
+    "truth_identifiability_must_be_reviewed": true,
+    "multi_estimand_requires_per_claim_ceiling": true,
+    "held_out_plaintext_must_be_absent": true,
+    "run_manifest_must_be_frozen": true,
+    "three_layer_verdict_is_strict_and": true
   },
   "minimum_catalog": {
     "reviewed_base_episodes": 36,
@@ -18,6 +53,13 @@
       "generated_business_world": 6,
       "adversarial_conversation": 6
     },
+    "independent_sources_per_pool": {
+      "real_user_language": 2,
+      "expert_business_case": 2,
+      "historical_failure": 2,
+      "generated_business_world": 2,
+      "adversarial_conversation": 2
+    },
     "counterfactual_siblings_per_episode": 3,
     "required_counterfactual_roles_per_episode": [
       "meaning_preserving",
@@ -26,65 +68,6 @@
     ],
     "multi_turn_episodes": 12,
     "critical_risk_episodes": 6
-  },
-  "required_coverage": {
-    "decision_goals": [
-      "define",
-      "estimate",
-      "compare",
-      "diagnose",
-      "attribute",
-      "validate",
-      "challenge",
-      "recommend_with_boundary"
-    ],
-    "measurement_challenges": [
-      "denominator",
-      "exposure",
-      "observation_unit",
-      "window_or_baseline",
-      "distribution",
-      "cohort_or_risk_set",
-      "funnel_or_sequence",
-      "decomposition",
-      "association_or_causal_ceiling",
-      "multi_estimand"
-    ],
-    "temporal_shapes": [
-      "no_time",
-      "absolute",
-      "relative",
-      "cross_month",
-      "cross_year",
-      "partial_period",
-      "timezone_or_business_day"
-    ],
-    "data_conditions": [
-      "complete",
-      "partial_coverage",
-      "missing_contract",
-      "conflicting_contract",
-      "stale_release",
-      "late_arrival",
-      "contradictory_evidence"
-    ],
-    "conversation_dynamics": [
-      "single_turn",
-      "clarification",
-      "correction",
-      "scope_revision",
-      "challenge",
-      "long_context_noise",
-      "concurrent_message"
-    ],
-    "risk_types": [
-      "authority_drift",
-      "wrong_business_decision",
-      "over_strong_claim",
-      "hidden_data_gap",
-      "misleading_comparison",
-      "out_of_scope_request"
-    ]
   },
   "run_policy": {
     "hidden_business_truth_visible_to_agent": false,
@@ -99,6 +82,9 @@
     "high_risk_full_trace_paraphrases": 2,
     "high_risk_full_trace_repeats": 2,
     "semantic_grader_requires_human_calibration": true,
+    "minimum_calibration_episodes": 12,
+    "minimum_grader_human_agreement_basis_points": 8000,
+    "minimum_held_out_episodes": 12,
     "aggregate_score_can_mask_critical_failure": false
   }
 }

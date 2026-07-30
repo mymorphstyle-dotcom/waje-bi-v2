@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/gate3-eval-policy.v2.schema.json",
+  "title": "WAJE Gate 3 Evaluation Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_version",
+    "parent_policy",
+    "coverage_taxonomy",
+    "corpus_authority",
+    "promotion_requirements",
+    "minimum_catalog",
+    "run_policy"
+  ],
+  "properties": {
+    "policy_version": {
+      "const": "gate3.behavior-eval-policy.v2"
+    },
+    "parent_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_version",
+        "canonical_sha256",
+        "floor_change",
+        "minimum_catalog_snapshot"
+      ],
+      "properties": {
+        "policy_version": {
+          "const": "gate3.behavior-eval-policy.v1"
+        },
+        "canonical_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "floor_change": {
+          "const": "monotonic_strengthening_only"
+        },
+        "minimum_catalog_snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reviewed_base_episodes",
+            "source_pool_minimums",
+            "counterfactual_siblings_per_episode",
+            "multi_turn_episodes",
+            "critical_risk_episodes"
+          ],
+          "properties": {
+            "reviewed_base_episodes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "source_pool_minimums": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "counterfactual_siblings_per_episode": {
+              "type": "integer",
+              "minimum": 3
+            },
+            "multi_turn_episodes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "critical_risk_episodes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "coverage_taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_version",
+        "canonical_sha256"
+      ],
+      "properties": {
+        "artifact_version": {
+          "const": "gate3.coverage-taxonomy.v1"
+        },
+        "canonical_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "corpus_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_required",
+        "run_manifest_can_weaken_expectations",
+        "eval_failure_auto_promotes_runtime_guardrail",
+        "held_out_content_visible_to_prompt_development",
+        "reviewer_authority_roots",
+        "source_authority_roots",
+        "manifest_authority_roots"
+      ],
+      "properties": {
+        "review_required": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "business_owner",
+              "measurement_reviewer"
+            ]
+          }
+        },
+        "run_manifest_can_weaken_expectations": {
+          "const": false
+        },
+        "eval_failure_auto_promotes_runtime_guardrail": {
+          "const": false
+        },
+        "held_out_content_visible_to_prompt_development": {
+          "const": false
+        },
+        "reviewer_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reviewerAuthorityRoot"
+          }
+        },
+        "source_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sourceAuthorityRoot"
+          }
+        },
+        "manifest_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/manifestAuthorityRoot"
+          }
+        }
+      }
+    },
+    "promotion_requirements": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "const": true
+      }
+    },
+    "minimum_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewed_base_episodes",
+        "source_pool_minimums",
+        "independent_sources_per_pool",
+        "counterfactual_siblings_per_episode",
+        "required_counterfactual_roles_per_episode",
+        "multi_turn_episodes",
+        "critical_risk_episodes"
+      ],
+      "properties": {
+        "reviewed_base_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_pool_minimums": {
+          "type": "object",
+          "minProperties": 5,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "independent_sources_per_pool": {
+          "type": "object",
+          "minProperties": 5,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "counterfactual_siblings_per_episode": {
+          "type": "integer",
+          "minimum": 3
+        },
+        "required_counterfactual_roles_per_episode": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "multi_turn_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "critical_risk_episodes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "run_policy": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": [
+          "boolean",
+          "integer"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "authorityReceipt": {
+      "type": "object",
+      "required": [
+        "authority_root_id",
+        "receipt_ref",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "authority_root_id": {
+          "$ref": "#/$defs/id"
+        },
+        "receipt_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "reviewerAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "principal_id",
+            "authorized_roles"
+          ],
+          "properties": {
+            "principal_id": {
+              "type": "string",
+              "pattern": "^REVIEWER-[A-Z0-9-]+$"
+            },
+            "authorized_roles": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "business_owner",
+                  "measurement_reviewer"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourceAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "authorized_source_pools"
+          ],
+          "properties": {
+            "authorized_source_pools": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "manifestAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "authorized_artifact_types"
+          ],
+          "properties": {
+            "authorized_artifact_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

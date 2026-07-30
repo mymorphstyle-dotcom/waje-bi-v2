@@ -1,0 +1,215 @@
+{
+  "artifact_type": "grader_registry",
+  "artifact_version": "gate3.grader-registry.v1",
+  "registry_epoch": 1,
+  "profiles": [
+    {
+      "profile_id": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "layer": "product_behavior",
+      "required_predicate_ids": [
+        "decision_target_preserved",
+        "measurement_design_defensible",
+        "support_disposition_valid",
+        "ambiguity_handled_proportionally",
+        "evidence_claim_proportional",
+        "counterfactual_relation_preserved",
+        "answer_supports_decision",
+        "agent_oracle_isolated"
+      ]
+    },
+    {
+      "profile_id": "GRADER-AUTHORITY-CONFORMANCE-V1",
+      "layer": "authority_conformance",
+      "required_predicate_ids": [
+        "source_measurement_identity_preserved",
+        "material_change_creates_revision",
+        "stale_result_rejected",
+        "evidence_claim_identity_compatible",
+        "settlement_preconditions_complete"
+      ]
+    },
+    {
+      "profile_id": "GRADER-IMPLEMENTATION-V1",
+      "layer": "implementation",
+      "required_predicate_ids": [
+        "contract_schema_valid",
+        "required_artifacts_complete",
+        "schedule_conformance_passed"
+      ]
+    }
+  ],
+  "predicates": [
+    {
+      "predicate_id": "decision_target_preserved",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "DecisionInterpretationView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "measurement_design_defensible",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "MeasurementDesignView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "support_disposition_valid",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "deterministic",
+        "human"
+      ],
+      "required_input_views": [
+        "InvestigationOutcomeView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "ambiguity_handled_proportionally",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "DecisionInterpretationView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "evidence_claim_proportional",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "deterministic",
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "ClaimView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "counterfactual_relation_preserved",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "deterministic",
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "EvaluationPairView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    },
+    {
+      "predicate_id": "answer_supports_decision",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "model",
+        "human"
+      ],
+      "required_input_views": [
+        "ClaimView",
+        "EvaluatorOracleView"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "major"
+    },
+    {
+      "predicate_id": "agent_oracle_isolated",
+      "layer": "product_behavior",
+      "evaluator_types": [
+        "deterministic"
+      ],
+      "required_input_views": [
+        "AgentWorldView",
+        "EvaluatorOracleView",
+        "InvocationLeakAudit"
+      ],
+      "unassessable_disposition": "blocked",
+      "severity": "blocking"
+    }
+  ],
+  "authority_invariants": [
+    {
+      "invariant_id": "source_measurement_identity_preserved",
+      "required_observation_kinds": [
+        "authority_input",
+        "measurement_authority"
+      ],
+      "severity": "blocking"
+    },
+    {
+      "invariant_id": "material_change_creates_revision",
+      "required_observation_kinds": [
+        "authority_input",
+        "measurement_authority",
+        "revision_acceptance"
+      ],
+      "severity": "blocking"
+    },
+    {
+      "invariant_id": "stale_result_rejected",
+      "required_observation_kinds": [
+        "effect_receipt",
+        "evidence_admission"
+      ],
+      "severity": "blocking"
+    },
+    {
+      "invariant_id": "evidence_claim_identity_compatible",
+      "required_observation_kinds": [
+        "measurement_authority",
+        "evidence_admission",
+        "claim_proposal"
+      ],
+      "severity": "blocking"
+    },
+    {
+      "invariant_id": "settlement_preconditions_complete",
+      "required_observation_kinds": [
+        "claim_proposal",
+        "publication_transition"
+      ],
+      "severity": "blocking"
+    }
+  ],
+  "implementation_checks": [
+    {
+      "check_id": "contract_schema_valid",
+      "severity": "blocking"
+    },
+    {
+      "check_id": "required_artifacts_complete",
+      "severity": "blocking"
+    },
+    {
+      "check_id": "schedule_conformance_passed",
+      "severity": "blocking"
+    }
+  ]
+}

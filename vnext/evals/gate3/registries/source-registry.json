@@ -1,0 +1,104 @@
+{
+  "artifact_type": "source_registry",
+  "artifact_version": "gate3.source-registry.v1",
+  "registry_epoch": 1,
+  "records": [
+    {
+      "source_record_id": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "source_pool": "real_user_language",
+      "provenance_kind": "task_transcript",
+      "verification_status": "verified",
+      "source_artifacts": [
+        {
+        "ref": "vnext/evals/gate3/sources/real-user-paid-amount-question-seed.md",
+          "content_sha256": "3d6ed9cef7d8ac78ae34dfd9bfb677a5671b9ae5efd8916fef3ee3d68e661820"
+        }
+      ],
+      "attested_scope": [
+        "user_wording"
+      ],
+      "independent_source_key": "codex-task:019facf9-2aea-7412-8a82-cbe59c891401",
+      "privacy_status": "approved_redacted"
+    },
+    {
+      "source_record_id": "SRC-EXPERT-CLAIM-PENDING-20260730",
+      "source_pool": "expert_business_case",
+      "provenance_kind": "expert_authorship",
+      "verification_status": "pending_external_evidence",
+      "source_artifacts": [
+        {
+          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
+          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
+        },
+        {
+          "ref": "vnext/evals/gate3/candidates/root_counterfactual_anchor_episodes.json",
+          "content_sha256": "3ba88b0577ac9255e6840f2a84d3d6363fae61e4de2c02c3c838864df3718b04"
+        }
+      ],
+      "attested_scope": [
+        "authoring_method"
+      ],
+      "independent_source_key": "pending:expert-author-identities",
+      "privacy_status": "not_applicable"
+    },
+    {
+      "source_record_id": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "source_pool": "historical_failure",
+      "provenance_kind": "incident_reconstruction",
+      "verification_status": "pending_external_evidence",
+      "source_artifacts": [
+      {
+          "ref": "vnext/evals/gate3/candidates/generated_failure_episodes.json",
+          "content_sha256": "6e146982c0d64525bca5bf9c7d315d185a5cb3e54e21577f09cf0148cc05e511"
+        }
+      ],
+      "attested_scope": [
+        "historical_failure_identity"
+      ],
+      "independent_source_key": "pending:incident-and-eval-records",
+      "privacy_status": "not_applicable"
+    },
+    {
+      "source_record_id": "SRC-CONTROLLED-WORLD-20260730",
+      "source_pool": "generated_business_world",
+      "provenance_kind": "controlled_generation",
+      "verification_status": "verified",
+      "source_artifacts": [
+        {
+          "ref": "vnext/evals/gate3/candidates/generated_failure_episodes.json",
+          "content_sha256": "6e146982c0d64525bca5bf9c7d315d185a5cb3e54e21577f09cf0148cc05e511"
+        },
+        {
+          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
+          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
+        }
+      ],
+      "attested_scope": [
+        "authoring_method"
+      ],
+      "independent_source_key": "authoring-batch:controlled-world-20260730",
+      "privacy_status": "not_applicable"
+    },
+    {
+      "source_record_id": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "source_pool": "adversarial_conversation",
+      "provenance_kind": "adversarial_generation",
+      "verification_status": "verified",
+      "source_artifacts": [
+        {
+          "ref": "vnext/evals/gate3/candidates/adversarial_conversation_episodes.json",
+          "content_sha256": "9ae79992cc64153885c97625f6c10130c7ae35b87e13cc0897f0dd114cf27e73"
+        },
+        {
+          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
+          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
+        }
+      ],
+      "attested_scope": [
+        "authoring_method"
+      ],
+      "independent_source_key": "authoring-batch:adversarial-20260730",
+      "privacy_status": "not_applicable"
+    }
+  ]
+}

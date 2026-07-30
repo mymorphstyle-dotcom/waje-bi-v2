@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v1",
+  "catalog_version": "gate3.behavior-eval.v2",
   "episodes": [
     {
       "episode_id": "G3-EXP-001",
@@ -7,34 +7,42 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于连锁零售常见经营诊断模式合成，采用拟真的用户措辞；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "华东这两周销售额还在涨，利润却掉得厉害，帮我查清楚到底哪里出了问题，顺便告诉我最该先管哪一块。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "先别把新开的 8 家店算进去，我更关心老店经营有没有恶化。",
-            "communication_function": "scope_revision"
+            "communication_function": "scope_revision",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "during_investigation",
             "text": "采购说只是猪肉涨价，但我怀疑外卖平台补贴也有影响。你要把这两个说法都验证一下。",
-            "communication_function": "challenge"
+            "communication_function": "challenge",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -45,22 +53,30 @@
           {
             "contract_ref": "contract://store/master/v1",
             "state": "available",
-            "description": "门店主数据包含开业日、区域和同店资格。"
+            "description": "门店主数据包含开业日、区域和同店资格。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://order/net-sales/v3",
             "state": "available",
-            "description": "订单包含实付、退款、平台补贴、商家补贴、渠道和营业日。"
+            "description": "订单包含实付、退款、平台补贴、商家补贴、渠道和营业日。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://food/cost/v2",
             "state": "partial",
-            "description": "菜品成本包含采购价、标准耗用和实际损耗，最近三天尚未关账。"
+            "description": "菜品成本包含采购价、标准耗用和实际损耗，最近三天尚未关账。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://finance/gross-profit/v4",
             "state": "conflicting",
-            "description": "财务毛利按完成订单扣除退款、食材成本和商家补贴；一个平台的补贴定义月中变更。"
+            "description": "财务毛利按完成订单扣除退款、食材成本和商家补贴；一个平台的补贴定义月中变更。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -89,17 +105,27 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "同店利润下滑由猪肉采购价上涨、低毛利外卖渠道替代堂食以及三家门店异常损耗共同造成。",
-          "收入增长主要来自新店；排除新店后同店收入基本持平。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-001-01",
+            "statement": "同店利润下滑由猪肉采购价上涨、低毛利外卖渠道替代堂食以及三家门店异常损耗共同造成。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-001-02",
+            "statement": "收入增长主要来自新店；排除新店后同店收入基本持平。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "在调价、退出平台活动和门店损耗治理之间确定本周优先级。",
@@ -175,20 +201,23 @@
           "sibling_id": "G3-EXP-001-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“华东老店最近收入看着不错，利润为何明显变薄，优先排查什么”。",
           "expected_invariants": [
             "同店利润诊断与优先级决策保持。",
             "收入、成本、渠道和损耗的调查义务保持。"
           ],
           "expected_changes": [
             "仅 source wording lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“华东老店最近收入看着不错，利润为何明显变薄，优先排查什么”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-001-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "scope",
-          "mutation": "用户明确要求包含新店并评估华东区域整体盈利。",
           "expected_invariants": [
             "利润定义和因素分解边界保持。",
             "补贴合同冲突仍需处理。"
@@ -196,13 +225,17 @@
           "expected_changes": [
             "门店总体与同店测量身份改变。",
             "新店构成成为主要解释对象。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/must_preserve",
+            "operation": "replace",
+            "value_description": "用户明确要求包含新店并评估华东区域整体盈利。"
+          }
         },
         {
           "sibling_id": "G3-EXP-001-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "最近三天完成关账，并使原来的利润下降方向反转。",
           "expected_invariants": [
             "目标门店集合和经营决策保持。",
             "正式毛利定义保持。"
@@ -210,7 +243,12 @@
           "expected_changes": [
             "partial cost boundary 解除。",
             "原 provisional 方向与因素排序必须重算。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "最近三天完成关账，并使原来的利润下降方向反转。"
+          }
         }
       ],
       "coverage_tags": {
@@ -243,23 +281,60 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "老店 scope revision 进入当前权威测量。",
-          "无关账证据不得支持完整利润归因。",
-          "分解贡献与 residual 可 reconciliation。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://store/master/v1",
+          "contract://order/net-sales/v3",
+          "DC-CHAIN-UNPOSTED-COST",
+          "DC-CHAIN-SUBSIDY-BREAK",
+          "DC-CHAIN-NEW-STORE-MIX",
+          "DC-CHAIN-BUSINESS-DAY"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存 scope revision 的 authority lineage。",
-          "保存合同冲突、敏感性与 claim boundary。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "partial_cost_close",
+            "allowed_when_refs": [
+              "contract://food/cost/v2",
+              "contract://finance/gross-profit/v4",
+              "DC-CHAIN-UNPOSTED-COST",
+              "DC-CHAIN-SUBSIDY-BREAK",
+              "DC-CHAIN-NEW-STORE-MIX",
+              "DC-CHAIN-BUSINESS-DAY"
+            ],
+            "required_observation_refs": [
+              "contract://food/cost/v2",
+              "contract://finance/gross-profit/v4",
+              "DC-CHAIN-UNPOSTED-COST",
+              "DC-CHAIN-SUBSIDY-BREAK",
+              "DC-CHAIN-NEW-STORE-MIX",
+              "DC-CHAIN-BUSINESS-DAY"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          },
+          {
+            "boundary_code": "conflicting_subsidy_contract",
+            "allowed_when_refs": [
+              "contract://food/cost/v2",
+              "contract://finance/gross-profit/v4",
+              "DC-CHAIN-UNPOSTED-COST",
+              "DC-CHAIN-SUBSIDY-BREAK",
+              "DC-CHAIN-NEW-STORE-MIX",
+              "DC-CHAIN-BUSINESS-DAY"
+            ],
+            "required_observation_refs": [
+              "contract://food/cost/v2",
+              "contract://finance/gross-profit/v4",
+              "DC-CHAIN-UNPOSTED-COST",
+              "DC-CHAIN-SUBSIDY-BREAK",
+              "DC-CHAIN-NEW-STORE-MIX",
+              "DC-CHAIN-BUSINESS-DAY"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          }
+        ]
       }
     },
     {
@@ -268,34 +343,42 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "根据已知跨月时间锚点漂移失败重构，业务数值和措辞为合成候选；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "看看 2026 年 3 月月初的付费金额，相比 2 月月末是好还是差。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "我说的月末是上个月最后那段，别拿 3 月中后段来比。具体取几天你按数据和日历自己设计，但要让我知道为什么这样取。",
-            "communication_function": "correction"
+            "communication_function": "correction",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "during_investigation",
             "text": "如果总额和每天平均的方向不一样，以每天可观察的表现为主，也把总额差异解释清楚。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -306,17 +389,23 @@
           {
             "contract_ref": "contract://payment/net/v3",
             "state": "available",
-            "description": "支付事实按上海业务日记录成功支付和退款。"
+            "description": "支付事实按上海业务日记录成功支付和退款。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://customer/status/v2",
             "state": "available",
-            "description": "用户状态支持全量、活跃和新老用户观察单位。"
+            "description": "用户状态支持全量、活跃和新老用户观察单位。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://release/daily-completeness/v1",
             "state": "partial",
-            "description": "数据发布合同标记每天是否完整及 snapshot 截止时间。"
+            "description": "数据发布合同标记每天是否完整及 snapshot 截止时间。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -339,17 +428,27 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "3 月月初 raw total 较高，主要来自多一个有效观察日。",
-          "按有效观察日归一化后，日均净付费较 2 月末下降，下降集中在续费用户。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-002-01",
+            "statement": "3 月月初 raw total 较高，主要来自多一个有效观察日。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-002-02",
+            "statement": "按有效观察日归一化后，日均净付费较 2 月末下降，下降集中在续费用户。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "判断月初付费经营表现是否真实改善，并决定是否排查续费。",
@@ -426,20 +525,23 @@
           "sibling_id": "G3-EXP-002-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“3 月开头的付费表现和 2 月收尾相比如何”。",
           "expected_invariants": [
             "目标月月初和前月月末的跨月身份保持。",
             "exposure-normalized 主比较保持。"
           ],
           "expected_changes": [
             "仅自然语言 source span 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“3 月开头的付费表现和 2 月收尾相比如何”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-002-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "time_semantics",
-          "mutation": "目标月改为 2026 年 1 月。",
           "expected_invariants": [
             "月初对前月月末的关系保持。",
             "主比较仍需 exposure-normalized。"
@@ -447,13 +549,17 @@
           "expected_changes": [
             "右侧跨年锚定 2025 年 12 月。",
             "实际日期和 resolution identity 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "目标月改为 2026 年 1 月。"
+          }
         },
         {
           "sibling_id": "G3-EXP-002-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "两侧 release 均完整，且有效观察日完全相等。",
           "expected_invariants": [
             "跨月测量身份和用户决策保持。",
             "日均为主、总额为辅助的优先关系保持。"
@@ -461,7 +567,12 @@
           "expected_changes": [
             "partial release boundary 解除。",
             "若总额与日均仍冲突，应调查退款或样本构成。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "两侧 release 均完整，且有效观察日完全相等。"
+          }
         }
       ],
       "coverage_tags": {
@@ -493,23 +604,51 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "右侧 month offset 必须为前月。",
-          "实际日期、calendar days 和 valid exposure 完整。",
-          "不同 exposure 的 raw total 不得支撑主方向。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://payment/net/v3",
+          "contract://customer/status/v2",
+          "DC-PAYMENT-FEB-28",
+          "DC-PAYMENT-PARTIAL-DAY",
+          "DC-PAYMENT-WEEKDAY-MIX"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "保存窗口选择、替代方案和 source grounding。",
-          "保存 Frame 到 Evidence 和 Answer 的 comparison identity。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "partial_release",
+            "allowed_when_refs": [
+              "contract://release/daily-completeness/v1",
+              "DC-PAYMENT-FEB-28",
+              "DC-PAYMENT-PARTIAL-DAY",
+              "DC-PAYMENT-WEEKDAY-MIX"
+            ],
+            "required_observation_refs": [
+              "contract://release/daily-completeness/v1",
+              "DC-PAYMENT-FEB-28",
+              "DC-PAYMENT-PARTIAL-DAY",
+              "DC-PAYMENT-WEEKDAY-MIX"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          },
+          {
+            "boundary_code": "material_window_ambiguity",
+            "allowed_when_refs": [
+              "contract://release/daily-completeness/v1",
+              "DC-PAYMENT-FEB-28",
+              "DC-PAYMENT-PARTIAL-DAY",
+              "DC-PAYMENT-WEEKDAY-MIX"
+            ],
+            "required_observation_refs": [
+              "contract://release/daily-completeness/v1",
+              "DC-PAYMENT-FEB-28",
+              "DC-PAYMENT-PARTIAL-DAY",
+              "DC-PAYMENT-WEEKDAY-MIX"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          }
+        ]
       }
     },
     {
@@ -518,34 +657,42 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于 B2B SaaS cohort 与非随机产品暴露模式合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "最近来的企业客户更留不住了吗？产品首页 5 月改过版，我想知道改版后有没有变差。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "销售说最近小微客户占比高，所以你要区分客户质量变化和产品问题。",
-            "communication_function": "context"
+            "communication_function": "context",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "during_investigation",
             "text": "还有一点，6 月那批客户目前只观察了四周，别把它和已经观察三个月的 cohort 直接比。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -556,17 +703,23 @@
           {
             "contract_ref": "contract://account/lifecycle/v2",
             "state": "available",
-            "description": "企业账户定义注册、激活、首次付费和取消事件。"
+            "description": "企业账户定义注册、激活、首次付费和取消事件。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://subscription/renewal/v3",
             "state": "available",
-            "description": "订阅区分月付、年付、暂停和欠费。"
+            "description": "订阅区分月付、年付、暂停和欠费。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://product/release-exposure/v1",
             "state": "partial",
-            "description": "产品发布记录企业用户首次暴露新版首页的时间，旧浏览器覆盖不完整。"
+            "description": "产品发布记录企业用户首次暴露新版首页的时间，旧浏览器覆盖不完整。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -595,18 +748,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "表面 8 周留存下降主要来自小微自助渠道占比上升。",
-          "可比企业规模和渠道内，新版暴露组核心功能采用率提高，续订没有显著变差。",
-          "未改版的低活跃旧浏览器客户流失较高。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-003-01",
+            "statement": "表面 8 周留存下降主要来自小微自助渠道占比上升。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-003-02",
+            "statement": "可比企业规模和渠道内，新版暴露组核心功能采用率提高，续订没有显著变差。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-003-03",
+            "statement": "未改版的低活跃旧浏览器客户流失较高。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定是否回滚首页、调整 onboarding，或把资源投入小微渠道筛选。",
@@ -682,20 +850,23 @@
           "sibling_id": "G3-EXP-003-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把问题改写为“5 月首页更新后，新签企业的留存表现有没有恶化”。",
           "expected_invariants": [
             "企业 cohort 留存和改版挑战保持。",
             "risk set、censoring 与 mix 调查保持。"
           ],
           "expected_changes": [
             "仅 source wording lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把问题改写为“5 月首页更新后，新签企业的留存表现有没有恶化”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-003-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只询问新版首页使用率，不再询问留存。",
           "expected_invariants": [
             "新版暴露合同和企业范围保持。",
             "旧浏览器覆盖问题仍需披露。"
@@ -703,13 +874,17 @@
           "expected_changes": [
             "结果事件由续订改为采用率。",
             "留存 risk set 退居辅助，measurement identity 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只询问新版首页使用率，不再询问留存。"
+          }
         },
         {
           "sibling_id": "G3-EXP-003-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "新版在企业账户层随机灰度，并完整记录分配和依从。",
           "expected_invariants": [
             "留存业务决策和企业观察单位保持。",
             "cohort maturity 要求保持。"
@@ -717,7 +892,12 @@
           "expected_changes": [
             "missing identification boundary 解除。",
             "claim ceiling 可在实验资格范围内提升。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "新版在企业账户层随机灰度，并完整记录分配和依从。"
+          }
         }
       ],
       "coverage_tags": {
@@ -748,22 +928,56 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "cohort horizon 与 risk set 必须明确。",
-          "未成熟 cohort 不得进入完整续订结论。",
-          "用户级暴露到企业 outcome 的聚合可重建。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://account/lifecycle/v2",
+          "contract://subscription/renewal/v3",
+          "DC-SAAS-UNEQUAL-HORIZON",
+          "DC-SAAS-YEARLY-RISK",
+          "DC-SAAS-GRAIN-MISMATCH",
+          "DC-SAAS-LATE-CANCEL"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality"
-        ],
-        "trace_obligations": [
-          "保存 cohort eligibility、删失和暴露聚合。",
-          "保存因果 claim ceiling 及其识别边界。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "immature_cohort",
+            "allowed_when_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "required_observation_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "missing_identification",
+            "allowed_when_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "required_observation_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -772,20 +986,22 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于金融申请漏斗、动态资格分母和埋点故障模式合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "这周贷款申请的转化怎么突然掉了？帮我看是用户在哪一步流失，还是风控规则变严了。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -796,17 +1012,23 @@
           {
             "contract_ref": "contract://loan/application/v3",
             "state": "available",
-            "description": "申请实例定义唯一 application_id 和用户关系。"
+            "description": "申请实例定义唯一 application_id 和用户关系。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://loan/funnel-event/v2",
             "state": "partial",
-            "description": "漏斗事件记录阶段、时间和流程版本；安卓旧版资料提交埋点不完整。"
+            "description": "漏斗事件记录阶段、时间和流程版本；安卓旧版资料提交埋点不完整。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://risk/decision/v4",
             "state": "available",
-            "description": "风控决策记录规则版本、决策时间和拒绝原因。"
+            "description": "风控决策记录规则版本、决策时间和拒绝原因。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -835,17 +1057,27 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "表面资料提交转化下降主要来自安卓埋点缺失。",
-          "新反欺诈规则降低审批通过率，但只影响一个高风险渠道。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-004-01",
+            "statement": "表面资料提交转化下降主要来自安卓埋点缺失。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-004-02",
+            "statement": "新反欺诈规则降低审批通过率，但只影响一个高风险渠道。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定修复客户端、回滚风控规则或优化申请流程。",
@@ -921,20 +1153,23 @@
           "sibling_id": "G3-EXP-004-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“本周申请通过链路在哪一步掉得最明显，风控是否也有变化”。",
           "expected_invariants": [
             "申请漏斗诊断与风控挑战保持。",
             "动态资格分母和 maturity 要求保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“本周申请通过链路在哪一步掉得最明显，风控是否也有变化”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-004-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户改问审批通过到放款的完成时长。",
           "expected_invariants": [
             "申请实例与规则版本范围保持。",
             "延迟 outcome 数据条件保持。"
@@ -942,13 +1177,17 @@
           "expected_changes": [
             "目标变为完成时间分布和删失。",
             "阶段转化率退居辅助。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户改问审批通过到放款的完成时长。"
+          }
         },
         {
           "sibling_id": "G3-EXP-004-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "安卓埋点完整且资料提交下降仍存在。",
           "expected_invariants": [
             "漏斗实体、资格路径和规则版本保持。",
             "渠道范围保持。"
@@ -956,7 +1195,12 @@
           "expected_changes": [
             "event coverage boundary 解除。",
             "调查重心转向流程体验与真实流失。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "安卓埋点完整且资料提交下降仍存在。"
+          }
         }
       ],
       "coverage_tags": {
@@ -986,22 +1230,56 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "漏斗阶段分母符合 eligibility。",
-          "未成熟申请不计为失败。",
-          "缺失事件不能作为流失 Evidence。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://loan/application/v3",
+          "contract://risk/decision/v4",
+          "DC-LOAN-SKIPPABLE-STAGE",
+          "DC-LOAN-DELAYED-OUTCOME",
+          "DC-LOAN-RULE-CHANGE",
+          "DC-LOAN-ANDROID-MISSING"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "investigation_adaptivity",
-          "evidence_and_claim_proportionality"
-        ],
-        "trace_obligations": [
-          "保存数据质量 probe、规则版本和阶段 eligibility。",
-          "保存被拒绝的错误漏斗解释。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "event_coverage_failure",
+            "allowed_when_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "required_observation_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_application_outcome",
+            "allowed_when_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "required_observation_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -1010,34 +1288,42 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于电商增长恒等式、口径断点和贡献 reconciliation 模式合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "Q2 GMV 比 Q1 涨了不少，究竟是买家更多、买得更勤，还是客单价上去了？也看看哪个品类贡献最大。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "财务提醒 4 月开始把运费算进 GMV 了，你先把口径对齐再分析。",
-            "communication_function": "correction"
+            "communication_function": "correction",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "during_investigation",
             "text": "我不接受几项贡献加起来对不上总增长，剩余部分要单独交代。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -1048,22 +1334,30 @@
           {
             "contract_ref": "contract://commerce/gmv/v4",
             "state": "conflicting",
-            "description": "GMV 提供含运费和不含运费版本；看板在 4 月改变默认定义。"
+            "description": "GMV 提供含运费和不含运费版本；看板在 4 月改变默认定义。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://commerce/order/v3",
             "state": "available",
-            "description": "订单定义支付、取消、退款和跨品类分摊。"
+            "description": "订单定义支付、取消、退款和跨品类分摊。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://buyer/activity/v2",
             "state": "available",
-            "description": "买家合同支持活跃买家、频次和新老客。"
+            "description": "买家合同支持活跃买家、频次和新老客。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://catalog/category-history/v2",
             "state": "available",
-            "description": "品类映射按商品销售时点版本化。"
+            "description": "品类映射按商品销售时点版本化。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1092,18 +1386,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "统一为不含运费净 GMV 后，约一半增长来自活跃买家增加。",
-          "频次小幅上升，客单价下降；低价美妆贡献最多。",
-          "跨品类 interaction 和延迟退款形成不可忽略 residual。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-005-01",
+            "statement": "统一为不含运费净 GMV 后，约一半增长来自活跃买家增加。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-005-02",
+            "statement": "频次小幅上升，客单价下降；低价美妆贡献最多。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-005-03",
+            "statement": "跨品类 interaction 和延迟退款形成不可忽略 residual。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "判断增长质量，并决定 Q3 预算投向获客、复购还是品类供给。",
@@ -1179,20 +1488,23 @@
           "sibling_id": "G3-EXP-005-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“拆一下 Q2 相对 Q1 的 GMV 增量，买家、频次、客单价和品类各贡献多少”。",
           "expected_invariants": [
             "季度增长分解与品类贡献目标保持。",
             "统一口径和 reconciliation 要求保持。"
           ],
           "expected_changes": [
             "仅 source wording lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“拆一下 Q2 相对 Q1 的 GMV 增量，买家、频次、客单价和品类各贡献多少”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-005-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只询问 Q2 的品类构成，不要求解释相对 Q1 的总增长。",
           "expected_invariants": [
             "净 GMV 定义和品类分摊规则保持。",
             "跨品类重复风险保持。"
@@ -1200,13 +1512,17 @@
           "expected_changes": [
             "目标从 decomposition 改为 composition。",
             "季度增长 reconciliation 不再是主义务。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只询问 Q2 的品类构成，不要求解释相对 Q1 的总增长。"
+          }
         },
         {
           "sibling_id": "G3-EXP-005-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "GMV 定义全期一致，且退款已完整成熟。",
           "expected_invariants": [
             "增长分解目标和买家观察单位保持。",
             "贡献 reconciliation 保持。"
@@ -1214,7 +1530,12 @@
           "expected_changes": [
             "定义冲突和退款 maturity boundary 解除。",
             "剩余不确定性集中在 interaction 分配。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "GMV 定义全期一致，且退款已完整成熟。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1243,22 +1564,57 @@
           "misleading_comparison"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "两个季度采用同一 GMV definition version。",
-          "分解贡献与 residual 合计等于总变化。",
-          "跨品类订单只能按声明规则分配一次。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://commerce/order/v3",
+          "contract://buyer/activity/v2",
+          "contract://catalog/category-history/v2",
+          "DC-GMV-DEFINITION-BREAK",
+          "DC-GMV-MULTI-CATEGORY",
+          "DC-GMV-LATE-REFUND",
+          "DC-GMV-PROMO-MIX"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存口径修订、分解规则和 residual policy。",
-          "保存 composition 与 causal claim 的边界。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "conflicting_gmv_definition",
+            "allowed_when_refs": [
+              "contract://commerce/gmv/v4",
+              "DC-GMV-DEFINITION-BREAK",
+              "DC-GMV-MULTI-CATEGORY",
+              "DC-GMV-LATE-REFUND",
+              "DC-GMV-PROMO-MIX"
+            ],
+            "required_observation_refs": [
+              "contract://commerce/gmv/v4",
+              "DC-GMV-DEFINITION-BREAK",
+              "DC-GMV-MULTI-CATEGORY",
+              "DC-GMV-LATE-REFUND",
+              "DC-GMV-PROMO-MIX"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          },
+          {
+            "boundary_code": "unreconciled_residual",
+            "allowed_when_refs": [
+              "contract://commerce/gmv/v4",
+              "DC-GMV-DEFINITION-BREAK",
+              "DC-GMV-MULTI-CATEGORY",
+              "DC-GMV-LATE-REFUND",
+              "DC-GMV-PROMO-MIX"
+            ],
+            "required_observation_refs": [
+              "contract://commerce/gmv/v4",
+              "DC-GMV-DEFINITION-BREAK",
+              "DC-GMV-MULTI-CATEGORY",
+              "DC-GMV-LATE-REFUND",
+              "DC-GMV-PROMO-MIX"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          }
+        ]
       }
     },
     {
@@ -1267,20 +1623,22 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于即时零售业务日、节假日和事件回补模式合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "最近六周配送准时率一直在变差吗？上海和深圳分别看，别让端午假期把趋势带偏。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1291,22 +1649,30 @@
           {
             "contract_ref": "contract://delivery/order-time/v3",
             "state": "available",
-            "description": "订单包含下单、承诺送达、实际送达和取消时间。"
+            "description": "订单包含下单、承诺送达、实际送达和取消时间。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://calendar/city-business-day/v2",
             "state": "available",
-            "description": "城市业务日历包含法定节假日、调休和版本。"
+            "description": "城市业务日历包含法定节假日、调休和版本。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://delivery/on-time-rate/v4",
             "state": "available",
-            "description": "准时率定义 eligible delivered orders 和容忍分钟数。"
+            "description": "准时率定义 eligible delivered orders 和容忍分钟数。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://delivery/event-release/v1",
             "state": "partial",
-            "description": "深圳一周的实际送达事件仍在回补。"
+            "description": "深圳一周的实际送达事件仍在回补。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1335,18 +1701,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "上海在控制节假日与天气后没有持续恶化，只在暴雨周下滑。",
-          "深圳从第五周开始稳定下降，集中在晚高峰和一个新站点。",
-          "回补数据会缩小但不会消除深圳下降。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-006-01",
+            "statement": "上海在控制节假日与天气后没有持续恶化，只在暴雨周下滑。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-006-02",
+            "statement": "深圳从第五周开始稳定下降，集中在晚高峰和一个新站点。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-006-03",
+            "statement": "回补数据会缩小但不会消除深圳下降。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定是否进行城市级运力扩充或只处理局部站点。",
@@ -1421,20 +1802,23 @@
           "sibling_id": "G3-EXP-006-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“分城市判断过去六个业务周的准时率是否持续下滑，并控制端午影响”。",
           "expected_invariants": [
             "六周城市趋势和节假日调整保持。",
             "eligible denominator 与 release 边界保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“分城市判断过去六个业务周的准时率是否持续下滑，并控制端午影响”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-006-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "time_semantics",
-          "mutation": "用户明确要求按自然周汇总，不采用业务周。",
           "expected_invariants": [
             "上海与深圳分开分析。",
             "订单事件仍使用当地时区。"
@@ -1442,13 +1826,17 @@
           "expected_changes": [
             "时间分组与 temporal identity 改变。",
             "跨周订单归属需按新规则重算。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "用户明确要求按自然周汇总，不采用业务周。"
+          }
         },
         {
           "sibling_id": "G3-EXP-006-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "深圳回补完成后下降趋势完全消失。",
           "expected_invariants": [
             "城市 scope、业务日和准时率定义保持。",
             "上海的趋势证据保持独立。"
@@ -1456,7 +1844,12 @@
           "expected_changes": [
             "深圳 provisional 趋势撤回。",
             "数据完整性成为深圳主解释。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "深圳回补完成后下降趋势完全消失。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1486,22 +1879,39 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "业务日按城市合同解析。",
-          "未回补记录不进入超时分子。",
-          "上海与深圳 claim scope 分开。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://delivery/order-time/v3",
+          "contract://calendar/city-business-day/v2",
+          "contract://delivery/on-time-rate/v4",
+          "DC-DELIVERY-DAY-CUTOFF",
+          "DC-DELIVERY-HOLIDAY",
+          "DC-DELIVERY-SZ-LAG",
+          "DC-DELIVERY-WEATHER"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存业务日历版本、release 状态和趋势 alternatives。",
-          "保存城市、站点和时段 scope。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "partial_delivery_release",
+            "allowed_when_refs": [
+              "contract://delivery/event-release/v1",
+              "DC-DELIVERY-DAY-CUTOFF",
+              "DC-DELIVERY-HOLIDAY",
+              "DC-DELIVERY-SZ-LAG",
+              "DC-DELIVERY-WEATHER"
+            ],
+            "required_observation_refs": [
+              "contract://delivery/event-release/v1",
+              "DC-DELIVERY-DAY-CUTOFF",
+              "DC-DELIVERY-HOLIDAY",
+              "DC-DELIVERY-SZ-LAG",
+              "DC-DELIVERY-WEATHER"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -1510,34 +1920,42 @@
       "source_pool": "adversarial_conversation",
       "provenance": {
         "authoring_method": "adversarial_authoring",
-        "review_status": "candidate",
         "origin_note": "为检验选择偏差、结果成熟度和时间压力下的因果边界而合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "我们给一批老用户涨了 10%，他们的收入反而更高，能不能证明这次涨价是成功的？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "这批人是客户成功团队挑的，主要是使用量高、续费意愿强的客户。",
-            "communication_function": "context"
+            "communication_function": "context",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "after_provisional_answer",
             "text": "老板下午就要结论。如果证明不了，也请明确告诉我还差什么，不要硬给因果结论。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "after_user_visible_provisional_answer",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -1548,17 +1966,23 @@
           {
             "contract_ref": "contract://pricing/change/v2",
             "state": "available",
-            "description": "合同变更记录报价、生效时间和实际执行价格。"
+            "description": "合同变更记录报价、生效时间和实际执行价格。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://revenue/customer-month/v4",
             "state": "available",
-            "description": "客户月收入区分价格、席位、增购、降级和流失。"
+            "description": "客户月收入区分价格、席位、增购、降级和流失。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://customer/success-selection/v1",
             "state": "partial",
-            "description": "触达日志记录挑选原因，没有随机分配或完整未观测判断。"
+            "description": "触达日志记录挑选原因，没有随机分配或完整未观测判断。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1587,18 +2011,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "被挑选客户原本就有更高席位增长和续费概率。",
-          "涨价提高已续费客户单位收入，但降低临界健康度客户续费。",
-          "短期总收入增长，长期净效果尚不确定。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-007-01",
+            "statement": "被挑选客户原本就有更高席位增长和续费概率。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-007-02",
+            "statement": "涨价提高已续费客户单位收入，但降低临界健康度客户续费。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-007-03",
+            "statement": "短期总收入增长，长期净效果尚不确定。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定是否把涨价扩展到更多存量客户。",
@@ -1676,20 +2115,23 @@
           "sibling_id": "G3-EXP-007-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“被涨价的老客收入更高，这足以说明涨价有效吗”。",
           "expected_invariants": [
             "涨价因果挑战和扩展决策保持。",
             "选择、续费 maturity 和席位变化调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“被涨价的老客收入更高，这足以说明涨价有效吗”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-007-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只问涨价客户当前实现价格提高多少。",
           "expected_invariants": [
             "客户范围和价格合同保持。",
             "实际执行价定义保持。"
@@ -1697,13 +2139,17 @@
           "expected_changes": [
             "目标变为描述性价格实现。",
             "续费因果 estimand 不再是主目标。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只问涨价客户当前实现价格提高多少。"
+          }
         },
         {
           "sibling_id": "G3-EXP-007-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "涨价在合格老用户中随机分配，且所有客户跨过完整续费节点。",
           "expected_invariants": [
             "扩展涨价决策和收入 outcome 保持。",
             "价格、席位和续费分解保持。"
@@ -1711,7 +2157,12 @@
           "expected_changes": [
             "selection 和 immature outcome boundary 解除。",
             "claim ceiling 可在实验资格范围内提升。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "涨价在合格老用户中随机分配，且所有客户跨过完整续费节点。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1740,22 +2191,74 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "未成熟续费不进入完整效果结论。",
-          "associational Evidence 不得支持 causal claim。",
-          "价格、席位和流失 outcome 不得混合。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://pricing/change/v2",
+          "contract://revenue/customer-month/v4",
+          "DC-PRICE-SELECTION",
+          "DC-PRICE-IMMATURE-RENEWAL",
+          "DC-PRICE-CONTROL-DISCOUNT",
+          "DC-PRICE-SEAT-GROWTH"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality"
-        ],
-        "trace_obligations": [
-          "保存 selection diagnosis 与 claim ceiling。",
-          "保存因果 falsification 和下一步识别设计。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "selection_bias",
+            "allowed_when_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "required_observation_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_renewal",
+            "allowed_when_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "required_observation_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "missing_identification",
+            "allowed_when_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "required_observation_refs": [
+              "contract://customer/success-selection/v1",
+              "DC-PRICE-SELECTION",
+              "DC-PRICE-IMMATURE-RENEWAL",
+              "DC-PRICE-CONTROL-DISCOUNT",
+              "DC-PRICE-SEAT-GROWTH"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -1764,27 +2267,32 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于账户去重、支付事件重复和退款成熟度模式合成，措辞未取自生产日志；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "看板上昨天新增付费用户突然翻倍，这个数可信吗？我们到底怎么定义新增付费用户的？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "退款后重新购买、换账号、先试用再付费这些情况都要说清楚。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -1795,22 +2303,30 @@
           {
             "contract_ref": "contract://payment/event/v3",
             "state": "partial",
-            "description": "支付记录成功、撤销、退款和币种；一个渠道出现重复投递。"
+            "description": "支付记录成功、撤销、退款和币种；一个渠道出现重复投递。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://identity/person-map/v2",
             "state": "stale",
-            "description": "账户合并提供版本化 person_id 映射，昨天发生历史回填。"
+            "description": "账户合并提供版本化 person_id 映射，昨天发生历史回填。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://subscription/paid-status/v4",
             "state": "available",
-            "description": "订阅区分试用、赠送和真实付费。"
+            "description": "订阅区分试用、赠送和真实付费。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://metric/new-payer/v1",
             "state": "conflicting",
-            "description": "看板按 account_id 计数，业务讨论常按自然人理解。"
+            "description": "看板按 account_id 计数，业务讨论常按自然人理解。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1839,17 +2355,27 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "翻倍主要由重复事件和账户合并回填造成。",
-          "按自然人首次净付费并排除全额退款后，真实新增仅增长约 8%。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-008-01",
+            "statement": "翻倍主要由重复事件和账户合并回填造成。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-008-02",
+            "statement": "按自然人首次净付费并排除全额退款后，真实新增仅增长约 8%。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定是否加大当日投放，并修正管理看板口径。",
@@ -1927,20 +2453,23 @@
           "sibling_id": "G3-EXP-008-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“昨天首付人数翻了一倍，先确认口径和数据是否可靠”。",
           "expected_invariants": [
             "指标定义和数据质量双目标保持。",
             "观察单位、重复事件和退款调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“昨天首付人数翻了一倍，先确认口径和数据是否可靠”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-008-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "observation_unit",
-          "mutation": "业务明确新增付费按 account_id 管理。",
           "expected_invariants": [
             "首次真实付费、退款和重复事件规则保持。",
             "昨天突增可信度问题保持。"
@@ -1948,13 +2477,17 @@
           "expected_changes": [
             "观察单位从 person 改为 account。",
             "person map 不再决定主计数。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "业务明确新增付费按 account_id 管理。"
+          }
         },
         {
           "sibling_id": "G3-EXP-008-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "没有管道异常，翻倍全部来自真实首次净付费。",
           "expected_invariants": [
             "指标定义和 observation unit 保持。",
             "退款成熟要求保持。"
@@ -1962,7 +2495,12 @@
           "expected_changes": [
             "duplicate event boundary 解除。",
             "结论从数据故障转为可信的描述性增长。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "没有管道异常，翻倍全部来自真实首次净付费。"
+          }
         }
       ],
       "coverage_tags": {
@@ -1993,22 +2531,85 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "支付事件按稳定唯一键去重。",
-          "observation unit 和 person map version 显式。",
-          "未成熟退款不得支持 settled 净新增。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://subscription/paid-status/v4",
+          "DC-PAYER-PERSON-BACKFILL",
+          "DC-PAYER-DUPLICATE-EVENT",
+          "DC-PAYER-LATE-REFUND",
+          "DC-PAYER-UNIT-CONFLICT"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "ambiguity_and_clarification_discipline",
-          "evidence_and_claim_proportionality"
-        ],
-        "trace_obligations": [
-          "保存指标定义候选、用户决策和 data-quality finding。",
-          "保存低风险推断或 clarification disposition。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "metric_definition_conflict",
+            "allowed_when_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "required_observation_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          },
+          {
+            "boundary_code": "duplicate_payment_events",
+            "allowed_when_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "required_observation_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          },
+          {
+            "boundary_code": "immature_refund_window",
+            "allowed_when_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "required_observation_refs": [
+              "contract://payment/event/v3",
+              "contract://identity/person-map/v2",
+              "contract://metric/new-payer/v1",
+              "DC-PAYER-PERSON-BACKFILL",
+              "DC-PAYER-DUPLICATE-EVENT",
+              "DC-PAYER-LATE-REFUND",
+              "DC-PAYER-UNIT-CONFLICT"
+            ],
+            "maximum_claim_ceiling": "data_quality_only"
+          }
+        ]
       }
     },
     {
@@ -2017,27 +2618,32 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "基于问卷选择性响应、分布尾部和工单成熟度模式合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "客服满意度这个月从 4.1 涨到 4.5，是真改善了吗？一线反馈反而说投诉更严重。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "别只给平均分，我想知道低分用户有没有减少，以及谁根本没填问卷。",
-            "communication_function": "constraint"
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -2048,17 +2654,23 @@
           {
             "contract_ref": "contract://support/ticket/v3",
             "state": "available",
-            "description": "工单包含问题类型、严重度、渠道、处理时长和关闭状态。"
+            "description": "工单包含问题类型、严重度、渠道、处理时长和关闭状态。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://survey/invitation-response/v2",
             "state": "conflicting",
-            "description": "问卷记录邀请、送达、响应和评分；月中停止向部分电话投诉用户发送短信。"
+            "description": "问卷记录邀请、送达、响应和评分；月中停止向部分电话投诉用户发送短信。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://support/escalation/v1",
             "state": "available",
-            "description": "投诉合同标记升级投诉与监管投诉。"
+            "description": "投诉合同标记升级投诉与监管投诉。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2087,18 +2699,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "观测平均分上升来自邀请渠道改变和机器人简单问题占比增加。",
-          "可比问题类型内评分基本持平，1 星升级投诉率上升。",
-          "非响应与问题严重度相关。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-009-01",
+            "statement": "观测平均分上升来自邀请渠道改变和机器人简单问题占比增加。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-009-02",
+            "statement": "可比问题类型内评分基本持平，1 星升级投诉率上升。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-009-03",
+            "statement": "非响应与问题严重度相关。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "判断客服质量是否改善，并决定是否调整团队绩效和投诉处理。",
@@ -2174,20 +2801,23 @@
           "sibling_id": "G3-EXP-009-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“本月 CSAT 均值更高，但投诉更重，这能说明体验改善吗”。",
           "expected_invariants": [
             "满意度可信度与严重投诉双目标保持。",
             "响应选择、分布和 maturity 调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“本月 CSAT 均值更高，但投诉更重，这能说明体验改善吗”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-009-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "scope",
-          "mutation": "用户明确只关心已响应用户的评分。",
           "expected_invariants": [
             "评分分布和低分尾部仍需分析。",
             "邀请覆盖作为适用边界保留。"
@@ -2195,13 +2825,17 @@
           "expected_changes": [
             "目标人群收窄为 responders。",
             "总体客户满意度 claim 不再允许。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/must_preserve",
+            "operation": "replace",
+            "value_description": "用户明确只关心已响应用户的评分。"
+          }
         },
         {
           "sibling_id": "G3-EXP-009-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "邀请和响应机制全月稳定，且所有升级投诉完成观察。",
           "expected_invariants": [
             "评分分布和问题类型构成分析保持。",
             "客服质量决策保持。"
@@ -2209,7 +2843,12 @@
           "expected_changes": [
             "邀请选择与 outcome maturity boundary 解除。",
             "总体描述性结论可更强。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "邀请和响应机制全月稳定，且所有升级投诉完成观察。"
+          }
         }
       ],
       "coverage_tags": {
@@ -2239,22 +2878,56 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "邀请、送达和响应分母不得混用。",
-          "未关闭升级投诉不得进入完整总体结论。",
-          "claim scope 不得超出 responder 或可比工单。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://support/ticket/v3",
+          "contract://support/escalation/v1",
+          "DC-CSAT-INVITE-CHANGE",
+          "DC-CSAT-CHANNEL-RESPONSE",
+          "DC-CSAT-OPEN-ESCALATION",
+          "DC-CSAT-SKEWED-DISTRIBUTION"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality"
-        ],
-        "trace_obligations": [
-          "保存 missingness 假设和分布比较。",
-          "保存总体与 responder scope 的 claim boundary。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "selection_by_invitation",
+            "allowed_when_refs": [
+              "contract://survey/invitation-response/v2",
+              "DC-CSAT-INVITE-CHANGE",
+              "DC-CSAT-CHANNEL-RESPONSE",
+              "DC-CSAT-OPEN-ESCALATION",
+              "DC-CSAT-SKEWED-DISTRIBUTION"
+            ],
+            "required_observation_refs": [
+              "contract://survey/invitation-response/v2",
+              "DC-CSAT-INVITE-CHANGE",
+              "DC-CSAT-CHANNEL-RESPONSE",
+              "DC-CSAT-OPEN-ESCALATION",
+              "DC-CSAT-SKEWED-DISTRIBUTION"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_escalation_outcome",
+            "allowed_when_refs": [
+              "contract://survey/invitation-response/v2",
+              "DC-CSAT-INVITE-CHANGE",
+              "DC-CSAT-CHANNEL-RESPONSE",
+              "DC-CSAT-OPEN-ESCALATION",
+              "DC-CSAT-SKEWED-DISTRIBUTION"
+            ],
+            "required_observation_refs": [
+              "contract://survey/invitation-response/v2",
+              "DC-CSAT-INVITE-CHANGE",
+              "DC-CSAT-CHANNEL-RESPONSE",
+              "DC-CSAT-OPEN-ESCALATION",
+              "DC-CSAT-SKEWED-DISTRIBUTION"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -2263,41 +2936,52 @@
       "source_pool": "adversarial_conversation",
       "provenance": {
         "authoring_method": "adversarial_authoring",
-        "review_status": "candidate",
         "origin_note": "为检验 treatment 定义、选择偏差、增量利润和实验建议而合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "客服给高流失风险用户打电话后，续费率比没打电话的高 12 个点。这个活动值不值得扩大？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "运营补充一下：坐席会优先打给还愿意沟通、合同金额也比较高的人。",
-            "communication_function": "context"
+            "communication_function": "context",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "during_investigation",
             "text": "成本也算进去，我们关心的是增量利润，不只是续费率。",
-            "communication_function": "scope_revision"
+            "communication_function": "scope_revision",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 4,
             "speaker": "user",
-            "injection_point": "after_provisional_answer",
             "text": "如果现有数据回答不了，就给我下一轮怎么试，样本别浪费。",
-            "communication_function": "request_for_explanation"
+            "communication_function": "request_for_explanation",
+            "trigger": {
+              "kind": "after_user_visible_provisional_answer",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -2308,22 +2992,30 @@
           {
             "contract_ref": "contract://churn/risk-score/v3",
             "state": "available",
-            "description": "风险评分记录评分时间、模型版本和合格阈值。"
+            "description": "风险评分记录评分时间、模型版本和合格阈值。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://outreach/contact/v2",
             "state": "partial",
-            "description": "触达记录分配、尝试、接通、通话和坐席；分配没有随机化。"
+            "description": "触达记录分配、尝试、接通、通话和坐席；分配没有随机化。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://renewal/outcome/v4",
             "state": "available",
-            "description": "续费记录合同金额、折扣和续费日期。"
+            "description": "续费记录合同金额、折扣和续费日期。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://outreach/cost/v1",
             "state": "available",
-            "description": "成本包含坐席时间和折扣让利。"
+            "description": "成本包含坐席时间和折扣让利。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2352,18 +3044,33 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "简单 12 个点差异大部分来自选择偏差。",
-          "边缘风险客户有小幅正向增量续费，最高风险客户效果很弱。",
-          "高价值客户折扣过大，部分续费带来负增量利润。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-010-01",
+            "statement": "简单 12 个点差异大部分来自选择偏差。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-010-02",
+            "statement": "边缘风险客户有小幅正向增量续费，最高风险客户效果很弱。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-010-03",
+            "statement": "高价值客户折扣过大，部分续费带来负增量利润。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "决定是否扩大挽回团队、调整目标人群和折扣政策。",
@@ -2440,20 +3147,23 @@
           "sibling_id": "G3-EXP-010-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“高风险客户被电话挽回后续费多 12 个点，扩团队划算吗”。",
           "expected_invariants": [
             "增量利润扩展决策保持。",
             "选择、treatment、maturity 和成本调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“高风险客户被电话挽回后续费多 12 个点，扩团队划算吗”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-010-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只询问活动历史成本。",
           "expected_invariants": [
             "触达与成本合同保持。",
             "坐席和折扣成本定义保持。"
@@ -2461,13 +3171,17 @@
           "expected_changes": [
             "目标变为描述性成本估计。",
             "增量续费和利润效果不再是主 estimand。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只询问活动历史成本。"
+          }
         },
         {
           "sibling_id": "G3-EXP-010-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "触达在 eligible 客户中随机分配，所有客户完成续费观察。",
           "expected_invariants": [
             "利润 outcome、风险分层和容量决策保持。",
             "assigned 与 reached 的 treatment 区分保持。"
@@ -2475,7 +3189,12 @@
           "expected_changes": [
             "分配选择和 maturity boundary 解除。",
             "可估计 assignment 的增量利润效果。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "触达在 eligible 客户中随机分配，所有客户完成续费观察。"
+          }
         }
       ],
       "coverage_tags": {
@@ -2506,23 +3225,75 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "treatment variants 和 assignment population 分离。",
-          "未成熟续费不进入效果。",
-          "最终 outcome 包含触达和折扣成本。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://churn/risk-score/v3",
+          "contract://renewal/outcome/v4",
+          "contract://outreach/cost/v1",
+          "DC-OUTREACH-NONRANDOM",
+          "DC-OUTREACH-CONTACTABILITY",
+          "DC-OUTREACH-SEAT-SELECTION",
+          "DC-OUTREACH-IMMATURE"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存 scope revision 到增量利润的 authority lineage。",
-          "保存选择诊断、boundary 和下一轮设计依据。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "nonrandom_treatment",
+            "allowed_when_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "required_observation_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_renewal",
+            "allowed_when_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "required_observation_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "missing_incremental_profit_identification",
+            "allowed_when_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "required_observation_refs": [
+              "contract://outreach/contact/v2",
+              "DC-OUTREACH-NONRANDOM",
+              "DC-OUTREACH-CONTACTABILITY",
+              "DC-OUTREACH-SEAT-SELECTION",
+              "DC-OUTREACH-IMMATURE"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -2531,20 +3302,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "为测试截断需求、库存 exposure、替代和反事实区间而构造的受控业务世界；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "618 期间华南卖得没预期好，是需求不行还是缺货拖了后腿？估一下少卖了多少，也告诉我哪些 SKU 应该补库存。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -2555,22 +3328,30 @@
           {
             "contract_ref": "contract://inventory/availability/v3",
             "state": "partial",
-            "description": "库存快照每小时一次，小时内短暂缺货可能缺失。"
+            "description": "库存快照每小时一次，小时内短暂缺货可能缺失。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://order/stockout-substitution/v2",
             "state": "available",
-            "description": "订单记录下单、缺货取消和替代 SKU。"
+            "description": "订单记录下单、缺货取消和替代 SKU。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://promotion/exposure/v2",
             "state": "partial",
-            "description": "促销记录价格、曝光和活动资格；缺货时曝光下降。"
+            "description": "促销记录价格、曝光和活动资格；缺货时曝光下降。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://forecast/promo-demand/v1",
             "state": "stale",
-            "description": "大促前需求预测对首次参加活动的新品不稳定。"
+            "description": "大促前需求预测对首次参加活动的新品不稳定。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2599,18 +3380,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "三款头部 SKU 的仓间调拨延迟造成显著缺货，部分需求转移到替代 SKU。",
-          "另一些长尾 SKU 需求低于预测。",
-          "用缺货前日均销量直接外推会高估机会损失。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-011-01",
+            "statement": "三款头部 SKU 的仓间调拨延迟造成显著缺货，部分需求转移到替代 SKU。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-011-02",
+            "statement": "另一些长尾 SKU 需求低于预测。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-011-03",
+            "statement": "用缺货前日均销量直接外推会高估机会损失。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "安排紧急补货、仓间调拨，并修正下一次大促备货。",
@@ -2687,20 +3483,23 @@
           "sibling_id": "G3-EXP-011-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“华南 618 销量未达标有多少来自缺货，哪些 SKU 值得马上补”。",
           "expected_invariants": [
             "需求与库存诊断、损失估计和补货排序保持。",
             "exposure、替代和不确定性调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“华南 618 销量未达标有多少来自缺货，哪些 SKU 值得马上补”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-011-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户只问哪些 SKU 实际缺货时间最长。",
           "expected_invariants": [
             "SKU、仓和区域范围保持。",
             "库存 availability 合同保持。"
@@ -2708,13 +3507,17 @@
           "expected_changes": [
             "目标变为 availability 描述。",
             "销量反事实与补货价值不再是主结论。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只问哪些 SKU 实际缺货时间最长。"
+          }
         },
         {
           "sibling_id": "G3-EXP-011-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "缺货时仍保留完整页面曝光，并记录到货提醒需求。",
           "expected_invariants": [
             "机会损失和补货决策保持。",
             "SKU 替代分析保持。"
@@ -2722,7 +3525,12 @@
           "expected_changes": [
             "潜在需求可观测性提高。",
             "censored demand boundary 减弱，损失区间可收窄。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "缺货时仍保留完整页面曝光，并记录到货提醒需求。"
+          }
         }
       ],
       "coverage_tags": {
@@ -2753,22 +3561,63 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "库存 exposure 与销量 observation window 对齐。",
-          "替代销量不重复进入 lost sales。",
-          "局部数据不足不得扩展到全部 SKU。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://order/stockout-substitution/v2",
+          "DC-STOCK-HOURLY-SNAPSHOT",
+          "DC-STOCK-CENSORED-DEMAND",
+          "DC-STOCK-SUBSTITUTION",
+          "DC-STOCK-NEW-SKU-FORECAST"
         ],
-        "semantic_rubric_dimensions": [
-          "measurement_design_quality",
-          "alternative_and_sensitivity_quality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存需求反事实假设、bounds 和 reversal conditions。",
-          "保存 SKU 级 Evidence scope 与建议边界。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "censored_demand",
+            "allowed_when_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "required_observation_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "insufficient_availability_resolution",
+            "allowed_when_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "required_observation_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -2777,34 +3626,42 @@
       "source_pool": "adversarial_conversation",
       "provenance": {
         "authoring_method": "adversarial_authoring",
-        "review_status": "candidate",
         "origin_note": "为检验归因与增量效果混淆、隐私缺失和预算决策压力而合成；尚未经过业务或测量专家审核。",
-        "review_attestations": []
+        "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "把最近一个月各广告渠道的 ROAS 排一下，预算应该从谁挪给谁？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           },
           {
             "turn": 2,
             "speaker": "user",
-            "injection_point": "after_measurement_proposal",
             "text": "市场用 7 天点击归因，财务看 30 天净收入，而且 iOS 有一部分转化看不到。你选一个合理主口径，也把另一种口径的影响讲清楚。",
-            "communication_function": "context"
+            "communication_function": "context",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           },
           {
             "turn": 3,
             "speaker": "user",
-            "injection_point": "after_provisional_answer",
             "text": "品牌渠道可能会带来自然搜索，别把最后一次点击排名直接当成增量效果。",
-            "communication_function": "challenge"
+            "communication_function": "challenge",
+            "trigger": {
+              "kind": "after_user_visible_provisional_answer",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
           }
         ]
       },
@@ -2815,22 +3672,30 @@
           {
             "contract_ref": "contract://ads/cost/v3",
             "state": "available",
-            "description": "广告成本按渠道、campaign、日期和币种记录。"
+            "description": "广告成本按渠道、campaign、日期和币种记录。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://attribution/touch/v4",
             "state": "conflicting",
-            "description": "归因提供 7 天点击、1 天浏览和 last-touch 版本，各团队默认不同。"
+            "description": "归因提供 7 天点击、1 天浏览和 last-touch 版本，各团队默认不同。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://revenue/net-30d/v2",
             "state": "partial",
-            "description": "订单净收入包含退款和 30 天成熟状态，最近七天未成熟。"
+            "description": "订单净收入包含退款和 30 天成熟状态，最近七天未成熟。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "contract://privacy/ios-coverage/v1",
             "state": "partial",
-            "description": "隐私合同记录 iOS 聚合转化和渠道可观测比例。"
+            "description": "隐私合同记录 iOS 聚合转化和渠道可观测比例。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2865,18 +3730,33 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "last-click ROAS 把搜索排在第一，但搜索承接明显。",
-          "成熟净收入和隐私覆盖校正后，社交效率低于表面值。",
-          "品牌视频存在辅助效应，现有观测数据无法给出可信增量回报。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-012-01",
+            "statement": "last-click ROAS 把搜索排在第一，但搜索承接明显。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-012-02",
+            "statement": "成熟净收入和隐私覆盖校正后，社交效率低于表面值。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-012-03",
+            "statement": "品牌视频存在辅助效应，现有观测数据无法给出可信增量回报。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "调整下月渠道预算，并决定是否保留品牌视频。",
@@ -2954,20 +3834,23 @@
           "sibling_id": "G3-EXP-012-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "把首问改写为“比较近一个月渠道 ROAS，并判断下月预算如何调整”。",
           "expected_invariants": [
             "渠道效率与预算决策保持。",
             "归因口径、收入成熟、隐私和 incrementality 调查保持。"
           ],
           "expected_changes": [
             "仅用户措辞 lineage 改变。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“比较近一个月渠道 ROAS，并判断下月预算如何调整”。"
+          }
         },
         {
           "sibling_id": "G3-EXP-012-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "预算问题改为边际再增加一万元的回报。",
           "expected_invariants": [
             "渠道范围和净收入 outcome 保持。",
             "归因与增量效果的边界保持。"
@@ -2975,13 +3858,17 @@
           "expected_changes": [
             "estimand 转向 marginal response。",
             "历史平均 ROAS 不能直接回答。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "预算问题改为边际再增加一万元的回报。"
+          }
         },
         {
           "sibling_id": "G3-EXP-012-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "所有渠道都有同期随机 geo holdout，净收入已完整成熟。",
           "expected_invariants": [
             "预算决策、渠道范围和成本定义保持。",
             "iOS 覆盖仍需纳入 outcome 观测。"
@@ -2989,7 +3876,12 @@
           "expected_changes": [
             "missing incrementality 和 revenue maturity boundary 解除。",
             "可优先用增量效果支持预算分配。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "所有渠道都有同期随机 geo holdout，净收入已完整成熟。"
+          }
         }
       ],
       "coverage_tags": {
@@ -3021,23 +3913,92 @@
           "misleading_comparison"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "ROAS numerator、denominator 和窗口版本一致。",
-          "未成熟收入不得充当零收入。",
-          "attributed Evidence 不得支持 incremental claim。"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://ads/cost/v3",
+          "DC-ROAS-IMMATURE-REVENUE",
+          "DC-ROAS-IOS-COVERAGE",
+          "DC-ROAS-BRAND-ASSIST",
+          "DC-ROAS-SEARCH-CAPTURE",
+          "DC-ROAS-SEASONAL-BUDGET"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "alternative_and_sensitivity_quality",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness"
-        ],
-        "trace_obligations": [
-          "保存主归因口径、替代口径和 coverage boundary。",
-          "保存 attributed 与 incremental claim 的分离。"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "conflicting_attribution_definition",
+            "allowed_when_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "required_observation_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_net_revenue",
+            "allowed_when_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "required_observation_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "missing_incrementality_design",
+            "allowed_when_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "required_observation_refs": [
+              "contract://attribution/touch/v4",
+              "contract://revenue/net-30d/v2",
+              "contract://privacy/ios-coverage/v1",
+              "DC-ROAS-IMMATURE-REVENUE",
+              "DC-ROAS-IOS-COVERAGE",
+              "DC-ROAS-BRAND-ASSIST",
+              "DC-ROAS-SEARCH-CAPTURE",
+              "DC-ROAS-SEASONAL-BUDGET"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     }
   ]

@@ -1,9 +1,9 @@
 {
-  "catalog_sha256": "9183942cde9650bd75024c6a14c89807936299aa4812b8f4352fb45f54ad5345",
-  "schema_sha256": "eb69a940408f0098e909c162cac754f110fd956fbcfd39c589bda16ca8c9cb57",
-  "policy_sha256": "818676d56b8cfdf8966870944ef3938321bb71d797c35861858be0472ed93cbf",
-  "rubric_sha256": "1126bdd4fffd4ee0fd23ad06213555d0a14cfd07e5cb5aaf2142a02e0ec303ee",
-  "policy_version": "gate3.behavior-eval-policy.v1",
+  "catalog_sha256": "2773c10762ab4da72a9b88f3e43d21d1424f5d32fbdf11eb9e3a29a17a952039",
+  "schema_sha256": "e13cb7ed38b9a653cbb98d0640b25c339c521802691c1f544e927d811e413a8a",
+  "policy_sha256": "a0325f4faf59e38e4ad88f5b9e14e76d3ec9342ea95e13404a551aaae6b7098b",
+  "taxonomy_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
+  "policy_version": "gate3.behavior-eval-policy.v2",
   "episode_count": 45,
   "source_pool_counts": {
     "adversarial_conversation": 15,
@@ -11,9 +11,6 @@
     "generated_business_world": 8,
     "historical_failure": 6,
     "real_user_language": 8
-  },
-  "review_status_counts": {
-    "candidate": 45
   },
   "multi_turn_episode_count": 21,
   "high_or_critical_risk_episode_count": 41,
@@ -76,39 +73,10 @@
       "wrong_business_decision"
     ]
   },
-  "policy_gaps": {
-    "source_pool_gaps": {},
-    "fully_reviewed_episode_gap": 36,
-    "multi_turn_episode_gap": 0,
-    "high_or_critical_risk_episode_gap": 0,
-    "counterfactual_role_gaps": {},
+  "authoring_gaps": {
     "missing_coverage": {},
-    "open_adversarial_findings": [
-      "B1_support_expectation_missing",
-      "B3_agent_evaluator_projection_unenforced",
-      "B4_source_and_review_self_attestation",
-      "B5_coverage_self_reporting",
-      "B6_episode_owned_grader_coupling",
-      "B7_layered_verdict_contract_missing",
-      "B8_counterfactual_atomicity_and_oracle_errors",
-      "B9_readiness_manifest_and_read_only_verification_missing",
-      "B10_cross_gate_world_profiles_missing"
-    ],
-    "missing_required_artifacts": [
-      "source_registry",
-      "review_registry",
-      "canonical_coverage_taxonomy",
-      "agent_evaluator_projection_contract",
-      "grader_registry",
-      "authority_conformance_profiles",
-      "evaluation_run_result_schema",
-      "run_manifest_schema",
-      "protected_held_out_manifest",
-      "grader_calibration_package",
-      "cross_gate_world_profiles"
-    ]
+    "counterfactual_role_gaps": {}
   },
-  "readiness_record_sha256": "247f00e9f2eba5e30e9f976c40519f6c22015d4d6d6ad640591505965c03609d",
-  "policy_ready": false,
-  "readiness_status": "blocked_by_explicit_gaps"
+  "promotion_ready": false,
+  "promotion_authority": "verify_gate3_e0.py"
 }

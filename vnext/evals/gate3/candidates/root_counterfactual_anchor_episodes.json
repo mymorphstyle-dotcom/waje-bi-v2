@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v1",
+  "catalog_version": "gate3.behavior-eval.v2",
   "episodes": [
     {
       "episode_id": "G3-ROOT-001",
@@ -7,20 +7,22 @@
       "source_pool": "expert_business_case",
       "provenance": {
         "authoring_method": "expert_authored",
-        "review_status": "candidate",
         "origin_note": "由主设计者从零构造的无时间锚点定义案例，用于检验 Agent 能否围绕决策用途处理同名指标合同冲突；未声称来自真实用户。",
-        "review_attestations": []
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-ROOT-COUNTERFACTUAL-ANCHOR-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "销售奖金和经营看板都要用“活跃企业客户”，但销售、产品、财务现在各算各的。请帮我给出一个能落地的统一定义，并说明哪些场景不能共用。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -31,22 +33,30 @@
           {
             "contract_ref": "metric.sales.active_account.v3",
             "state": "available",
-            "description": "销售定义按 account 去重，要求有效合同或处于正式续约宽限期。"
+            "description": "销售定义按 account 去重，要求有效合同或处于正式续约宽限期。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "metric.product.active_workspace.v5",
             "state": "available",
-            "description": "产品定义按 workspace 去重，要求完成一项关键协作行为。"
+            "description": "产品定义按 workspace 去重，要求完成一项关键协作行为。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "metric.finance.revenue_customer.v2",
             "state": "available",
-            "description": "财务定义按 customer legal entity 去重，要求存在可确认收入。"
+            "description": "财务定义按 customer legal entity 去重，要求存在可确认收入。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "entity.enterprise_customer_mapping",
             "state": "partial",
-            "description": "account、workspace、合同、付款主体和法人之间的多对多映射只覆盖直接销售渠道。"
+            "description": "account、workspace、合同、付款主体和法人之间的多对多映射只覆盖直接销售渠道。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -63,19 +73,39 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "奖金核算需要稳定、可审计且难被短期行为操纵的客户法人或合同主体口径。",
-          "产品采用需要 workspace 行为口径，无法与奖金口径共享同一个分子和观察单位。",
-          "统一语义层可以维护一个概念族和明确用途，强行生成单一万能数字会损害至少一个决策。",
-          "合作伙伴渠道在实体映射补齐前只能给出边界或分渠道口径。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-ROOT-001-01",
+            "statement": "奖金核算需要稳定、可审计且难被短期行为操纵的客户法人或合同主体口径。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-ROOT-001-02",
+            "statement": "产品采用需要 workspace 行为口径，无法与奖金口径共享同一个分子和观察单位。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-ROOT-001-03",
+            "statement": "统一语义层可以维护一个概念族和明确用途，强行生成单一万能数字会损害至少一个决策。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-ROOT-001-04",
+            "statement": "合作伙伴渠道在实体映射补齐前只能给出边界或分渠道口径。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "确定销售奖金、经营看板和产品采用分析如何使用活跃企业客户概念。",
@@ -157,20 +187,23 @@
           "sibling_id": "G3-ROOT-001-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将用户问题改写为“帮我们治理同名的活跃企业客户指标，先说哪些用途能共用、哪些必须分开”。",
           "expected_invariants": [
             "跨用途治理目标、观察单位冲突和 claim ceiling 保持。",
             "仍需先检查三个正式合同和实体映射。"
           ],
           "expected_changes": [
             "回答组织和术语可以随措辞调整。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将用户问题改写为“帮我们治理同名的活跃企业客户指标，先说哪些用途能共用、哪些必须分开”。"
+          }
         },
         {
           "sibling_id": "G3-ROOT-001-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户明确只为产品采用漏斗定义活跃 workspace，并取消奖金和经营规模用途。",
           "expected_invariants": [
             "仍需声明成员资格、去重规则和实体粒度。"
           ],
@@ -178,13 +211,17 @@
             "观察单位应收敛到 workspace。",
             "销售合同主体和财务客户法人口径退出主测量设计。",
             "metric family identity 和必须调查项相应修订。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户明确只为产品采用漏斗定义活跃 workspace，并取消奖金和经营规模用途。"
+          }
         },
         {
           "sibling_id": "G3-ROOT-001-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "实体映射合同升级为完整且已审计，奖金 owner 同时签署按客户法人去重的成员资格规则。",
           "expected_invariants": [
             "产品采用与经营/奖金仍有不同用途。",
             "不同观察单位的指标仍不能直接替换。"
@@ -193,7 +230,12 @@
             "合作伙伴渠道的 missing-contract boundary 可以关闭。",
             "奖金和经营规模可形成更强的 executable definition。",
             "旧边界证据不能直接代表新合同状态。"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "实体映射合同升级为完整且已审计，奖金 owner 同时签署按客户法人去重的成员资格规则。"
+          }
         }
       ],
       "coverage_tags": {
@@ -223,26 +265,61 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "claim ceiling does not exceed definition_only",
-          "every proposed metric declares an observation unit",
-          "boundary-changing sibling does not reuse the old contract state as current evidence"
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "metric.sales.active_account.v3",
+          "metric.product.active_workspace.v5",
+          "metric.finance.revenue_customer.v2",
+          "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+          "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "ambiguity_and_clarification_discipline",
-          "evidence_and_claim_proportionality",
-          "answer_usefulness",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "contract inspection precedes any material user clarification",
-          "accepted definition preserves purpose and observation-unit lineage",
-          "counterfactual contract change produces a new boundary or measurement relationship"
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "conflicting_contract",
+            "allowed_when_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "required_observation_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "maximum_claim_ceiling": "definition_only"
+          },
+          {
+            "boundary_code": "missing_contract",
+            "allowed_when_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "required_observation_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "maximum_claim_ceiling": "definition_only"
+          },
+          {
+            "boundary_code": "unsupported_grain",
+            "allowed_when_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "required_observation_refs": [
+              "entity.enterprise_customer_mapping",
+              "DC-ACTIVE-CUSTOMER-GRAIN-CONFLICT",
+              "DC-ACTIVE-CUSTOMER-MAPPING-GAP"
+            ],
+            "maximum_claim_ceiling": "definition_only"
+          }
+        ]
       }
     }
   ]

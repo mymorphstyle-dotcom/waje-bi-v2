@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-views.v1.schema.json",
+  "title": "WAJE Gate 3 Evaluation View Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent_world_view",
+    "evaluator_oracle_view"
+  ],
+  "properties": {
+    "agent_world_view": {
+      "$ref": "#/$defs/agentWorldView"
+    },
+    "evaluator_oracle_view": {
+      "$ref": "#/$defs/evaluatorOracleView"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn",
+        "speaker",
+        "text",
+        "communication_function"
+      ],
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speaker": {
+          "const": "user"
+        },
+        "text": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "communication_function": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "agentWorldView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view_version",
+        "evaluation_clock",
+        "injected_messages",
+        "public_context",
+        "inspection_surfaces",
+        "view_sha256"
+      ],
+      "properties": {
+        "view_version": {
+          "const": "gate3.agent-world-view.v1"
+        },
+        "evaluation_clock": {
+          "type": "object"
+        },
+        "injected_messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "public_context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref",
+              "description"
+            ],
+            "properties": {
+              "ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "description": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        },
+        "inspection_surfaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "surface_id",
+              "kind",
+              "discoverable_refs"
+            ],
+            "properties": {
+              "surface_id": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "kind": {
+                "enum": [
+                  "semantic_contract",
+                  "data_probe"
+                ]
+              },
+              "discoverable_refs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/nonEmptyString"
+                },
+                "uniqueItems": true
+              }
+            }
+          }
+        },
+        "view_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "evaluatorOracleView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view_version",
+        "episode_id",
+        "episode_core_sha256",
+        "complete_message_plan",
+        "truth_facts",
+        "decision_stakes",
+        "support_expectation",
+        "acceptable_outcome",
+        "forbidden_outcomes",
+        "counterfactual_siblings",
+        "source_record_ref",
+        "product_grader_profile_ref",
+        "authority_profile_ref",
+        "view_sha256"
+      ],
+      "properties": {
+        "view_version": {
+          "const": "gate3.evaluator-oracle-view.v1"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "complete_message_plan": {
+          "type": "array",
+          "minItems": 1
+        },
+        "truth_facts": {
+          "type": "array",
+          "minItems": 1
+        },
+        "decision_stakes": {
+          "type": "object"
+        },
+        "support_expectation": {
+          "type": "object"
+        },
+        "acceptable_outcome": {
+          "type": "object"
+        },
+        "forbidden_outcomes": {
+          "type": "array",
+          "minItems": 1
+        },
+        "counterfactual_siblings": {
+          "type": "array",
+          "minItems": 3
+        },
+        "source_record_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "product_grader_profile_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_profile_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "view_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

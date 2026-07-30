@@ -1081,10 +1081,11 @@ Exit：
 本工作包先于任何 G3.1 生产实现。它以业务决策和真实交互为起点，不能从 runtime 类、
 action、工具或 SQL 反推测试。
 
-当前状态：**Blocked**。45 个 authoring candidates 已形成，其中 8 个保留用户提供的真实
-付费金额问题措辞；组合对抗审查打开 10 个 Blocking、11 个 Major，本轮即时关闭 1 个
-Blocking、2 个 Major；详见
-`docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`。
+当前状态：**E0 trust foundation 已实现，promotion 仍 Blocked**。45 个 authoring
+candidates 已形成，其中 8 个保留用户提供的真实付费金额问题措辞。2026-07-30 已完成
+Episode v2、外部 Source/Review/Corpus/Grader authority、双视图 compiler、三层 verdict、
+跨 Gate profile、review package 与 derived readiness manifest；详见
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md`。
 
 交付：
 
@@ -1106,15 +1107,38 @@ Authoring checkpoint：
 - [x] 8 个 `real_user_language` Episode 绑定 durable source trace；拟合 business world 与
   expectation 仍明确标成 candidate；
 - [x] catalog readiness gaps 由 validator 机器生成并 checked in。
+- [x] Episode 无权自报 review status、partition 或 grader；
+- [x] 45 个 Episode 具备 support expectation、observable message trigger、contract
+  discoverability、structured truth 与 typed counterfactual mutation；
+- [x] Source/Review/Corpus/Grader registries 与 canonical coverage taxonomy；
+- [x] 45 组 hash-bound AgentWorldView/EvaluatorOracleView 和 authority/world profile；
+- [x] 45 份待独立双审 review package；
+- [x] EvaluationRunResult 三层 strict-AND contract；
+- [x] read-only readiness verifier 从固定 artifact set 派生 `deny_g3_1`。
 
 进入 G3.1 的 hard precondition：
 
-- [x] 每个来源池达到 Gate3EvalPolicy 数量 floor；
+- [ ] 每个来源池达到 verified Source Registry floor；expert 8 例与 historical 6 例仍缺
+  外部来源证明；
 - [ ] 进入 development/calibration/held-out 分区的全部 base Episode 完成 business owner 与
   measurement reviewer 双审，reviewed base 总量达到 policy floor；
+- [ ] 84 个 truth fact 完成 identifiability/support review；
+- [ ] 45 个 Episode 建立显式 estimand 列表，并由 claim target 双向完整覆盖；multi-estimand
+  只能由列表长度派生；每个 boundary authorization 显式绑定适用 claim targets 并逐
+  target 执行 ceiling lattice；
+- [ ] 147 个 counterfactual 形成可执行单一语义干预、before/after 与 materialized sibling
+  hash；validator 必须实际重放 JSON Pointer mutation 并重算 digest；
+- [ ] 来源、reviewer 与 manifest authority root 绑定外部可验签 admission envelope；本地
+  verifier 在 issuer 方案确认前拒绝全部 root，仓库内 receipt 和普通环境变量无自授权能力；
+- [ ] 每个 manifest 状态转换绑定同一 authority root、前一 epoch、canonical predecessor
+  hash 和递归授权历史；
 - [ ] semantic/model grader 完成人工标注校准；
+- [ ] PromotionManifest approved，protected held-out manifest sealed；
 - [ ] development、calibration、held-out 分区和 hash 已冻结；
 - [ ] run manifest 无权降低 Episode expectation 或 policy floor。
+- [ ] `npm run check:evals:gate3:policy-ready` 返回 0，readiness manifest 同时给出
+  `derived_status=ready` 与 `entry_decision=allow_g3_1`。
+- [ ] `npm run gate3:enter:g3.1` 返回 0；全部 G3.1 入口把它作为强制前置。
 
 ### G3.1 Gate 1 authority and storage amendment
 

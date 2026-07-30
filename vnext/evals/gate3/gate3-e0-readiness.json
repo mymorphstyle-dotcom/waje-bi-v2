@@ -1,36 +1,160 @@
 {
-  "readiness_version": "gate3.e0-readiness.v1",
-  "status": "blocked",
-  "evaluated_artifacts": {
-    "catalog_sha256": "9183942cde9650bd75024c6a14c89807936299aa4812b8f4352fb45f54ad5345",
-    "schema_sha256": "eb69a940408f0098e909c162cac754f110fd956fbcfd39c589bda16ca8c9cb57",
-    "policy_sha256": "818676d56b8cfdf8966870944ef3938321bb71d797c35861858be0472ed93cbf",
-    "rubric_sha256": "1126bdd4fffd4ee0fd23ad06213555d0a14cfd07e5cb5aaf2142a02e0ec303ee"
+  "artifact_type": "readiness_manifest",
+  "artifact_version": "gate3.e0-readiness.v2",
+  "registry_epoch": 1,
+  "evaluated_artifact_hashes": {
+    "catalog/gate3-authoring-candidates.json": "2773c10762ab4da72a9b88f3e43d21d1424f5d32fbdf11eb9e3a29a17a952039",
+    "coverage-ledger.json": "da61fab1856289b93ca5be3f68de10421b06fe30ed7ad30dc1bc44855406181d",
+    "gate3-eval-policy.json": "a0325f4faf59e38e4ad88f5b9e14e76d3ec9342ea95e13404a551aaae6b7098b",
+    "evaluation-episode.schema.json": "e13cb7ed38b9a653cbb98d0640b25c339c521802691c1f544e927d811e413a8a",
+    "gate3-eval-policy.schema.json": "dc1275f9ea2071ca7011a738452be44817f40e16a622272842f2083888fc486f",
+    "gate3-e0-trust.schema.json": "e331612aeceb2c06d22a3ed47b0a12082d1a8429235ae3f2d60ddba28c26a817",
+    "review-package.schema.json": "73eacd95ff807a98cc96c04c043bac1b8407b26af38266f81db758df3c00345b",
+    "evaluation-views.schema.json": "98295f1d698b359b724d30d3b033717fe808e687ed04508db88989b8b112592e",
+    "evaluation-run-result.schema.json": "9bd8c9c08fdd9cbecaf043915a0a9e8804b75918aacf13af6635a57ed2c0bc1f",
+    "taxonomy/coverage-taxonomy.json": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
+    "registries/source-registry.json": "b87df5d08e10d344808e535e546e4784337363a6113cf4f1b0bbaceefa7d2ab8",
+    "registries/review-registry.json": "f2a42eb5880e265f022f909365943a178e3d7748798d59a1c2b19c259c700e65",
+    "registries/corpus-registry.json": "28ac87a5dd3234f7aa9c6daf936bfd6e0a06ee84942e780e15c2a5e25c8e5a85",
+    "registries/grader-registry.json": "c619cc2deebaa8ceb91dc4989005f8eec6f1718cef65013a2fdd51d5a9403bb6",
+    "profiles/authority-conformance-profiles.json": "f232c033261383840a26e7233f63749a0af8fcad27e6ae889a43f2e8c24d77fc",
+    "profiles/cross-gate-world-profiles.json": "0f92d345d2b0e22f8d2167a23e73cd16f21a9448f3b435ed20887c6d58c3bba4",
+    "manifests/promotion-manifest.json": "53ca35e034b90770b5e975df8edbf85fc64c552ade4043c7289c274d403f0fa8",
+    "manifests/protected-held-out-manifest.json": "d851187b829a98659ec61fe1018edbaf9bf7bf89cad32f64f098a7c1d1394c34",
+    "calibration/grader-calibration-package.json": "1b0dbc52826b832017c0c930702425f060256714c987c2c0fd26afa2b3a4c243",
+    "manifests/run-manifest.json": "a9edd83ab15110b411a0cf2aa4891de3a013abd147e8507b5007b83c53d1cbcd",
+    "promotion/review-packages.json": "566474dabc8fd7bb6e5a564ba39c8315c3acd4d4c6b93a41a24bcd6ef6b07a35",
+    "tools/build_gate3_eval_corpus.py": "be542df693ff44e7b5e980b2657d83d418f4ef673e779bff36ee88fb6f07ca94",
+    "tools/compile_gate3_eval_views.py": "ce6dee25643d6bb75c67431783237870c8dbd6abf02dd35183a988710bf29e7a",
+    "tools/validate_gate3_eval_catalog.py": "fabee062cb204ac563f2b517356d02b596c56298e54271c77ebabd44d11cca7e",
+    "tools/validate_gate3_eval_result.py": "f945dda8ee9f20414d4ca96385f67069fb5e52a8d982f15a022961ca84c236ca",
+    "tools/verify_gate3_e0.py": "4a4f79451a57c574e0a56f847a6e7965556ee692696e627216ea7157ee364687",
+    "tools/assert_gate3_1_entry.py": "7278e7b5615c910f9fc320a952a8bdcea335e52f87245f567290b24dcbe68aa4"
   },
-  "review_record_ref": "docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md",
-  "open_adversarial_findings": [
-    "B1_support_expectation_missing",
-    "B3_agent_evaluator_projection_unenforced",
-    "B4_source_and_review_self_attestation",
-    "B5_coverage_self_reporting",
-    "B6_episode_owned_grader_coupling",
-    "B7_layered_verdict_contract_missing",
-    "B8_counterfactual_atomicity_and_oracle_errors",
-    "B9_readiness_manifest_and_read_only_verification_missing",
-    "B10_cross_gate_world_profiles_missing"
+  "condition_verdicts": [
+    {
+      "condition_id": "external_admission_verified",
+      "verdict": "blocked",
+      "evidence": [
+        "local execution has no trusted issuer/runner identity; external admission design requires user confirmation"
+      ]
+    },
+    {
+      "condition_id": "authoring_catalog_valid",
+      "verdict": "pass",
+      "evidence": [
+        "45 authoring Episodes"
+      ]
+    },
+    {
+      "condition_id": "generated_artifacts_fresh",
+      "verdict": "pass",
+      "evidence": [
+        "candidate union, corpus, profiles and review packages are deterministic"
+      ]
+    },
+    {
+      "condition_id": "agent_evaluator_projection_contract_safe",
+      "verdict": "pass",
+      "evidence": [
+        "45 whitelist projections validate; CLI cannot emit oracle or caller-selected future turns; runtime process isolation remains G3.2"
+      ]
+    },
+    {
+      "condition_id": "source_registry_verified",
+      "verdict": "blocked",
+      "evidence": [
+        "source binding findings: 21",
+        "verified source pool gaps: {'real_user_language': 6, 'expert_business_case': 6, 'historical_failure': 6, 'generated_business_world': 6, 'adversarial_conversation': 6}",
+        "independent source diversity gaps: {'real_user_language': 2, 'expert_business_case': 2, 'historical_failure': 2, 'generated_business_world': 2, 'adversarial_conversation': 2}",
+        "verified independent sources: {}"
+      ]
+    },
+    {
+      "condition_id": "independent_reviews_complete",
+      "verdict": "blocked",
+      "evidence": [
+        "0 independently double-reviewed Episodes",
+        "reviewed floor gap: 36"
+      ]
+    },
+    {
+      "condition_id": "reviewed_coverage_complete",
+      "verdict": "blocked",
+      "evidence": [
+        "reviewed coverage gaps: {'decision_goals': ['attribute', 'challenge', 'compare', 'define', 'diagnose', 'estimate', 'recommend_with_boundary', 'validate'], 'measurement_challenges': ['association_or_causal_ceiling', 'cohort_or_risk_set', 'decomposition', 'denominator', 'distribution', 'exposure', 'funnel_or_sequence', 'multi_estimand', 'observation_unit', 'window_or_baseline'], 'temporal_shapes': ['absolute', 'cross_month', 'cross_year', 'no_time', 'partial_period', 'relative', 'timezone_or_business_day'], 'data_conditions': ['complete', 'conflicting_contract', 'contradictory_evidence', 'late_arrival', 'missing_contract', 'partial_coverage', 'stale_release'], 'conversation_dynamics': ['challenge', 'clarification', 'concurrent_message', 'correction', 'long_context_noise', 'scope_revision', 'single_turn'], 'risk_types': ['authority_drift', 'hidden_data_gap', 'misleading_comparison', 'out_of_scope_request', 'over_strong_claim', 'wrong_business_decision']}"
+      ]
+    },
+    {
+      "condition_id": "truth_identifiability_reviewed",
+      "verdict": "blocked",
+      "evidence": [
+        "pending truth facts: 84"
+      ]
+    },
+    {
+      "condition_id": "per_claim_ceiling_complete",
+      "verdict": "blocked",
+      "evidence": [
+        "estimand/claim structure gaps: 45"
+      ]
+    },
+    {
+      "condition_id": "counterfactual_mutations_executable",
+      "verdict": "blocked",
+      "evidence": [
+        "unexecutable counterfactuals: 147"
+      ]
+    },
+    {
+      "condition_id": "grader_and_authority_profiles_resolve",
+      "verdict": "pass",
+      "evidence": [
+        "profile findings: 0"
+      ]
+    },
+    {
+      "condition_id": "promotion_manifest_approved",
+      "verdict": "blocked",
+      "evidence": [
+        "promotion status: draft",
+        "promotion entries: 0",
+        "promotion binding findings: 0"
+      ]
+    },
+    {
+      "condition_id": "grader_calibrated",
+      "verdict": "blocked",
+      "evidence": [
+        "calibration status: pending"
+      ]
+    },
+    {
+      "condition_id": "held_out_partition_sealed",
+      "verdict": "blocked",
+      "evidence": [
+        "held-out status: unsealed",
+        "held-out entries: 0",
+        "held-out receipt findings: 0"
+      ]
+    },
+    {
+      "condition_id": "run_manifest_frozen",
+      "verdict": "blocked",
+      "evidence": [
+        "run manifest status: draft",
+        "run-cell binding findings: 0"
+      ]
+    },
+    {
+      "condition_id": "three_layer_result_contract_present",
+      "verdict": "pass",
+      "evidence": [
+        "product, authority and implementation verdicts use strict AND",
+        "contract self-test findings: 0"
+      ]
+    }
   ],
-  "missing_required_artifacts": [
-    "source_registry",
-    "review_registry",
-    "canonical_coverage_taxonomy",
-    "agent_evaluator_projection_contract",
-    "grader_registry",
-    "authority_conformance_profiles",
-    "evaluation_run_result_schema",
-    "run_manifest_schema",
-    "protected_held_out_manifest",
-    "grader_calibration_package",
-    "cross_gate_world_profiles"
-  ],
+  "derived_status": "blocked",
   "entry_decision": "deny_g3_1"
 }

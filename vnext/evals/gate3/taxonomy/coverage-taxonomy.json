@@ -1,0 +1,64 @@
+{
+  "artifact_type": "coverage_taxonomy",
+  "artifact_version": "gate3.coverage-taxonomy.v1",
+  "registry_epoch": 1,
+  "dimensions": {
+    "decision_goals": [
+      "define",
+      "estimate",
+      "compare",
+      "diagnose",
+      "attribute",
+      "validate",
+      "challenge",
+      "recommend_with_boundary"
+    ],
+    "measurement_challenges": [
+      "denominator",
+      "exposure",
+      "observation_unit",
+      "window_or_baseline",
+      "distribution",
+      "cohort_or_risk_set",
+      "funnel_or_sequence",
+      "decomposition",
+      "association_or_causal_ceiling",
+      "multi_estimand"
+    ],
+    "temporal_shapes": [
+      "no_time",
+      "absolute",
+      "relative",
+      "cross_month",
+      "cross_year",
+      "partial_period",
+      "timezone_or_business_day"
+    ],
+    "data_conditions": [
+      "complete",
+      "partial_coverage",
+      "missing_contract",
+      "conflicting_contract",
+      "stale_release",
+      "late_arrival",
+      "contradictory_evidence"
+    ],
+    "conversation_dynamics": [
+      "single_turn",
+      "clarification",
+      "correction",
+      "scope_revision",
+      "challenge",
+      "long_context_noise",
+      "concurrent_message"
+    ],
+    "risk_types": [
+      "authority_drift",
+      "wrong_business_decision",
+      "over_strong_claim",
+      "hidden_data_gap",
+      "misleading_comparison",
+      "out_of_scope_request"
+    ]
+  }
+}

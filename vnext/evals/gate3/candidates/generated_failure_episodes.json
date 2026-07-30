@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v1",
+  "catalog_version": "gate3.behavior-eval.v2",
   "episodes": [
     {
       "episode_id": "G3-GF-001",
@@ -7,20 +7,22 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "由可复用的历史测量失败类型重建为受控业务世界，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "3 月月初的付费金额和 2 月月末相比表现怎么样？我想看全部付费用户，不要只看某个渠道。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -31,22 +33,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-001-01",
             "state": "available",
-            "description": "payment_amount 为成功支付且未撤销的金额，币种 CNY"
+            "description": "payment_amount 为成功支付且未撤销的金额，币种 CNY",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-001-02",
             "state": "available",
-            "description": "观察单位为业务日，population 为全部付费用户"
+            "description": "观察单位为业务日，population 为全部付费用户",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-001-03",
             "state": "available",
-            "description": "2025-02 与 2025-03 使用同一 metric contract 和 snapshot release"
+            "description": "2025-02 与 2025-03 使用同一 metric contract 和 snapshot release",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-001-04",
             "state": "available",
-            "description": "数据完整覆盖 2025-02-01 至 2025-03-07"
+            "description": "数据完整覆盖 2025-02-01 至 2025-03-07",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -69,16 +79,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "采用对称 7 日窗口时，3 月月初日均 1000 CNY，2 月月末日均 1300 CNY，目标月起步低 23.08%。核心语义是 M 的 month-start 与 M-1 的 month-end 配对，任何同月后段比较都改变了问题。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2025-03-08T10:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2025-03-08T10:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-001-01",
+            "statement": "采用对称 7 日窗口时，3 月月初日均 1000 CNY，2 月月末日均 1300 CNY，目标月起步低 23.08%。核心语义是 M 的 month-start 与 M-1 的 month-end 配对，任何同月后段比较都改变了问题。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否需要针对 3 月开局偏弱采取经营排查",
@@ -171,7 +186,6 @@
           "sibling_id": "G3-GF-001-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“请看 3 月开头相对 2 月收尾的全部付费金额表现”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -179,43 +193,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“请看 3 月开头相对 2 月收尾的全部付费金额表现”。"
+          }
         },
         {
           "sibling_id": "G3-GF-001-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "time_semantics",
-          "mutation": "目标月改为 2025 年 1 月",
           "expected_invariants": [
             "month-start 对 prior-month-end 的关系保持"
           ],
           "expected_changes": [
             "右侧解析为 2024 年 12 月末并保留跨年 offset"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "目标月改为 2025 年 1 月"
+          }
         },
         {
           "sibling_id": "G3-GF-001-CF03",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "exposure",
-          "mutation": "用户明确要求前后各 5 个业务日",
           "expected_invariants": [
             "跨月配对和全部付费用户保持"
           ],
           "expected_changes": [
             "窗口 selection 和 exposure unit 改为 business day，identity 相应改变"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "用户明确要求前后各 5 个业务日"
+          }
         },
         {
           "sibling_id": "G3-GF-001-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "2 月末有 1 个缺失日",
           "expected_invariants": [
             "不能把缺失日当作零，也不能改成同月窗口"
           ],
           "expected_changes": [
             "报告 6 个 valid days，并按 completeness policy 降级、补查或排除"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "2 月末有 1 个缺失日"
+          }
         }
       ],
       "coverage_tags": {
@@ -242,24 +273,20 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-001-01",
+          "CONTRACT-G3-GF-001-02",
+          "CONTRACT-G3-GF-001-03",
+          "CONTRACT-G3-GF-001-04",
+          "DC-G3-GF-001-01",
+          "DC-G3-GF-001-02",
+          "DC-G3-GF-001-03"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -268,20 +295,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "帮我比较 2023 和 2024 各个月最后 7 个自然日的日均订单量，看看月末效应是否稳定。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -292,22 +321,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-002-01",
             "state": "available",
-            "description": "订单量按成功创建订单事件计数，观察单位为 order_id"
+            "description": "订单量按成功创建订单事件计数，观察单位为 order_id",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-002-02",
             "state": "available",
-            "description": "自然日区间为左闭右开，时区 Asia/Shanghai"
+            "description": "自然日区间为左闭右开，时区 Asia/Shanghai",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-002-03",
             "state": "available",
-            "description": "last-N calendar days 从每个目标自然月末日向前解析"
+            "description": "last-N calendar days 从每个目标自然月末日向前解析",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-002-04",
             "state": "available",
-            "description": "数据 release 对两年全部月份完整"
+            "description": "数据 release 对两年全部月份完整",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -342,16 +379,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "不存在月末效应变化。正确 resolver 会根据每月真实末日生成不同起始日期，但每个 last-7-day 窗口长度相同，日均均为 100。把 2 月硬编码到 22 日或把月末当第 31 日会制造差异或无效日期。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-002-01",
+            "statement": "不存在月末效应变化。正确 resolver 会根据每月真实末日生成不同起始日期，但每个 last-7-day 窗口长度相同，日均均为 100。把 2 月硬编码到 22 日或把月末当第 31 日会制造差异或无效日期。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否把月末运营策略推广到不同月份",
@@ -439,7 +481,6 @@
           "sibling_id": "G3-GF-002-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“比较两年每个自然月末尾 7 天的日均订单”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -447,43 +488,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“比较两年每个自然月末尾 7 天的日均订单”。"
+          }
         },
         {
           "sibling_id": "G3-GF-002-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "exposure",
-          "mutation": "改问最后 7 个业务日",
           "expected_invariants": [
             "每侧 valid exposure 为 7 个业务日"
           ],
           "expected_changes": [
             "使用 business calendar 和 holiday version，窗口实际跨度可能超过 7 个自然日"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "改问最后 7 个业务日"
+          }
         },
         {
           "sibling_id": "G3-GF-002-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "2024-02-29 数据缺失",
           "expected_invariants": [
             "resolved calendar window 仍包含闰日"
           ],
           "expected_changes": [
             "observed days 降为 6，按完整性合同降级或排除"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "2024-02-29 数据缺失"
+          }
         },
         {
           "sibling_id": "G3-GF-002-CF04",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户改问每个月完整月总订单",
           "expected_invariants": [
             "月份边界仍由同一日历解析"
           ],
           "expected_changes": [
             "estimator 改为 total，实际月长成为结果的一部分，semantic identity 改变"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户改问每个月完整月总订单"
+          }
         }
       ],
       "coverage_tags": {
@@ -510,24 +568,22 @@
           "authority_drift"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-002-01",
+          "CONTRACT-G3-GF-002-02",
+          "CONTRACT-G3-GF-002-03",
+          "CONTRACT-G3-GF-002-04",
+          "DC-G3-GF-002-01",
+          "DC-G3-GF-002-02",
+          "DC-G3-GF-002-03",
+          "DC-G3-GF-002-04",
+          "DC-G3-GF-002-05"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -536,20 +592,22 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "由可复用的历史测量失败类型重建为受控业务世界，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "这个月转化率比上个月怎么样？要是掉得明显，我今天就调整投放。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -560,22 +618,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-003-01",
             "state": "available",
-            "description": "转化率为 completed_purchase_users 除以 eligible_visit_users，按 ratio-of-sums 聚合"
+            "description": "转化率为 completed_purchase_users 除以 eligible_visit_users，按 ratio-of-sums 聚合",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-003-02",
             "state": "available",
-            "description": "daily release 在 T+1 12:00 后成为 valid"
+            "description": "daily release 在 T+1 12:00 后成为 valid",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-003-03",
             "state": "available",
-            "description": "完整月资格要求该月所有自然日均达到 valid watermark"
+            "description": "完整月资格要求该月所有自然日均达到 valid watermark",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-003-04",
             "state": "available",
-            "description": "允许按 matched maturity 比较 MTD"
+            "description": "允许按 matched maturity 比较 MTD",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -604,16 +670,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "按同成熟度 MTD 比较，6 月高 0.5 个百分点；直接拿 6 月 MTD 对 5 月完整月会得到低 2 个百分点。当前证据只能描述 6 月已成熟的前 10 日，不能断言完整 6 月表现。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2025-06-12T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2025-06-12T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-003-01",
+            "statement": "按同成熟度 MTD 比较，6 月高 0.5 个百分点；直接拿 6 月 MTD 对 5 月完整月会得到低 2 个百分点。当前证据只能描述 6 月已成熟的前 10 日，不能断言完整 6 月表现。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否立即调整投放",
@@ -702,7 +773,6 @@
           "sibling_id": "G3-GF-003-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“按目前可比进度看，本月转化率相对上月如何”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -710,43 +780,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“按目前可比进度看，本月转化率相对上月如何”。"
+          }
         },
         {
           "sibling_id": "G3-GF-003-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户改问这个月完整月最终转化率会怎样。",
           "expected_invariants": [
             "不能改用完整 5 月作主比较"
           ],
           "expected_changes": [
             "同成熟度方向变为下降"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户改问这个月完整月最终转化率会怎样。"
+          }
         },
         {
           "sibling_id": "G3-GF-003-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "6 月第 8 日存在数据中断",
           "expected_invariants": [
             "as-of 与 matched maturity 原则保持"
           ],
           "expected_changes": [
             "valid exposure 和 eligibility 降级，不能默认为完整 10 日"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "6 月第 8 日存在数据中断"
+          }
         },
         {
           "sibling_id": "G3-GF-003-CF04",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "conversation_history",
-          "mutation": "用户明确问已过去 10 天的表现",
           "expected_invariants": [
             "完整月 claim ceiling 仍不可越过"
           ],
           "expected_changes": [
             "业务歧义降低，直接采用 matched 10-day design"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "用户明确问已过去 10 天的表现"
+          }
         }
       ],
       "coverage_tags": {
@@ -776,25 +863,21 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-003-01",
+          "CONTRACT-G3-GF-003-02",
+          "CONTRACT-G3-GF-003-03",
+          "CONTRACT-G3-GF-003-04",
+          "DC-G3-GF-003-01",
+          "DC-G3-GF-003-02",
+          "DC-G3-GF-003-03",
+          "DC-G3-GF-003-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "ambiguity_and_clarification_discipline",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -803,20 +886,22 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "由可复用的历史测量失败类型重建为受控业务世界，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "4 月开局付费金额比 3 月收尾少了，是经营真的变差了吗？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -827,22 +912,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-004-01",
             "state": "available",
-            "description": "付费金额单位为 CNY"
+            "description": "付费金额单位为 CNY",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-004-02",
             "state": "available",
-            "description": "valid exposure 为通过日终质量检查的业务日"
+            "description": "valid exposure 为通过日终质量检查的业务日",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-004-03",
             "state": "available",
-            "description": "总额和日均金额是两个独立 estimand"
+            "description": "总额和日均金额是两个独立 estimand",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-004-04",
             "state": "available",
-            "description": "comparability policy 要求方向性经营判断优先使用 exposure-normalized measure"
+            "description": "comparability policy 要求方向性经营判断优先使用 exposure-normalized measure",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -865,16 +958,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "raw total 下降 20.63%，主要来自少 2 个有效观察日；日均经营强度上升 11.11%。若以经营是否变差为决策目标，当前数据支持强度改善，同时总规模尚不能与 7 日总额直接比较。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-004-01",
+            "statement": "raw total 下降 20.63%，主要来自少 2 个有效观察日；日均经营强度上升 11.11%。若以经营是否变差为决策目标，当前数据支持强度改善，同时总规模尚不能与 7 日总额直接比较。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否启动经营下滑专项处置",
@@ -962,7 +1060,6 @@
           "sibling_id": "G3-GF-004-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“观察日数量不同的情况下，4 月开局经营强度有变差吗”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -970,43 +1067,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“观察日数量不同的情况下，4 月开局经营强度有变差吗”。"
+          }
         },
         {
           "sibling_id": "G3-GF-004-CF02",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "4 月也有 7 个 valid days 且总额 7000 CNY",
           "expected_invariants": [
             "单位、population 和 evidence identity 校验保持"
           ],
           "expected_changes": [
             "exposure 可比，total 与日均方向一致"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "4 月也有 7 个 valid days 且总额 7000 CNY"
+          }
         },
         {
           "sibling_id": "G3-GF-004-CF03",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户明确只问累计现金额",
           "expected_invariants": [
             "不能宣称单位经营强度"
           ],
           "expected_changes": [
             "total 成为目标 estimand，回答需提醒不同观察长度的局限"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户明确只问累计现金额"
+          }
         },
         {
           "sibling_id": "G3-GF-004-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "3 月末其中两日 invalid",
           "expected_invariants": [
             "invalid day 不能计入有效 exposure"
           ],
           "expected_changes": [
             "双方 valid exposure 均为 5，可直接比较 total 与日均但仍保留缺失原因"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "3 月末其中两日 invalid"
+          }
         }
       ],
       "coverage_tags": {
@@ -1034,24 +1148,20 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-004-01",
+          "CONTRACT-G3-GF-004-02",
+          "CONTRACT-G3-GF-004-03",
+          "CONTRACT-G3-GF-004-04",
+          "DC-G3-GF-004-01",
+          "DC-G3-GF-004-02",
+          "DC-G3-GF-004-03"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -1060,20 +1170,22 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "由可复用的历史测量失败类型重建为受控业务世界，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "本周付费率从上周 17% 掉到 9.5%，为什么？是新客质量突然差了吗？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1084,22 +1196,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-005-01",
             "state": "available",
-            "description": "付费率为 distinct paid_user_id 除以 distinct eligible_visitor_id"
+            "description": "付费率为 distinct paid_user_id 除以 distinct eligible_visitor_id",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-005-02",
             "state": "available",
-            "description": "员工、机器人和测试流量排除在 denominator 外"
+            "description": "员工、机器人和测试流量排除在 denominator 外",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-005-03",
             "state": "available",
-            "description": "新客定义为首次 eligible visit 发生在当周"
+            "description": "新客定义为首次 eligible visit 发生在当周",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-005-04",
             "state": "available",
-            "description": "允许按新客/回访客分层并做标准化或 accounting decomposition"
+            "description": "允许按新客/回访客分层并做标准化或 accounting decomposition",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1122,16 +1242,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "总体下降完全由新客占比从 20% 升到 70% 的 mix shift 解释，新客内部质量没有下降。当前证据支持构成性解释，无法证明拉新活动导致长期价值变化。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-005-01",
+            "statement": "总体下降完全由新客占比从 20% 升到 70% 的 mix shift 解释，新客内部质量没有下降。当前证据支持构成性解释，无法证明拉新活动导致长期价值变化。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否暂停拉新以及是否调整新客渠道",
@@ -1219,7 +1344,6 @@
           "sibling_id": "G3-GF-005-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“总体付费率下降是否来自新客占比变化或新客组内表现”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -1227,43 +1351,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“总体付费率下降是否来自新客占比变化或新客组内表现”。"
+          }
         },
         {
           "sibling_id": "G3-GF-005-CF02",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "新客占比维持 20%，新客付费率降到 5% 以下",
           "expected_invariants": [
             "总体率仍按 ratio-of-sums 计算"
           ],
           "expected_changes": [
             "主要解释转为组内率变化"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "新客占比维持 20%，新客付费率降到 5% 以下"
+          }
         },
         {
           "sibling_id": "G3-GF-005-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "本周 denominator contract 将机器人流量误纳入",
           "expected_invariants": [
             "错误分母不能被模型以文字合理化"
           ],
           "expected_changes": [
             "先形成 data contract boundary，不能直接做业务分解"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "本周 denominator contract 将机器人流量误纳入"
+          }
         },
         {
           "sibling_id": "G3-GF-005-CF04",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "decision_goal",
-          "mutation": "用户把问题改为新增付费人数为什么上升",
           "expected_invariants": [
             "population segmentation 仍可作为解释维度"
           ],
           "expected_changes": [
             "目标改为 count/decomposition，不能沿用付费率 estimand"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户把问题改为新增付费人数为什么上升"
+          }
         }
       ],
       "coverage_tags": {
@@ -1290,25 +1431,20 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-005-01",
+          "CONTRACT-G3-GF-005-02",
+          "CONTRACT-G3-GF-005-03",
+          "CONTRACT-G3-GF-005-04",
+          "DC-G3-GF-005-01",
+          "DC-G3-GF-005-02",
+          "DC-G3-GF-005-03"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "alternative_and_sensitivity_quality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -1317,20 +1453,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "昨天净收入比上周同一天高吗？活动复盘会马上要用。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1341,22 +1479,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-006-01",
             "state": "available",
-            "description": "净收入等于 settled payment amount 减 settled refund amount"
+            "description": "净收入等于 settled payment amount 减 settled refund amount",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-006-02",
             "state": "partial",
-            "description": "退款 release 达到 95% coverage 才允许 settled net-revenue direction claim"
+            "description": "退款 release 达到 95% coverage 才允许 settled net-revenue direction claim",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-006-03",
             "state": "available",
-            "description": "gross payment 可在 T+1 12:00 后使用"
+            "description": "gross payment 可在 T+1 12:00 后使用",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-006-04",
             "state": "available",
-            "description": "允许生成 provisional boundary 和后续重算计划"
+            "description": "允许生成 provisional boundary 和后续重算计划",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1385,16 +1531,21 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "早期 gross signal 为正，最终 net revenue 为负。当前 snapshot 无法支持净收入方向；可靠处置是说明数据边界、可选报告 gross provisional signal，并安排退款 release 成熟后重算。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-006-01",
+            "statement": "早期 gross signal 为正，最终 net revenue 为负。当前 snapshot 无法支持净收入方向；可靠处置是说明数据边界、可选报告 gross provisional signal，并安排退款 release 成熟后重算。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否追加活动预算",
@@ -1485,7 +1636,6 @@
           "sibling_id": "G3-GF-006-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“昨天扣除退款后的收入比上周同日高吗”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -1493,43 +1643,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“昨天扣除退款后的收入比上周同日高吗”。"
+          }
         },
         {
           "sibling_id": "G3-GF-006-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "metric_definition",
-          "mutation": "用户明确改问 gross payment",
           "expected_invariants": [
             "不能把 gross 结果重新标成 net"
           ],
           "expected_changes": [
             "目标 estimand 改变，可报告 +8% provisional 或 settled gross signal"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "用户明确改问 gross payment"
+          }
         },
         {
           "sibling_id": "G3-GF-006-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "退款 feed coverage 为 97% 且合同阈值仍为 95%",
           "expected_invariants": [
             "实际 refund amount 仍需绑定同一 release"
           ],
           "expected_changes": [
             "通过完整性资格，可比较 net revenue"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "退款 feed coverage 为 97% 且合同阈值仍为 95%"
+          }
         },
         {
           "sibling_id": "G3-GF-006-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "退款合同从 48 小时改为 7 天且没有成熟曲线",
           "expected_invariants": [
             "不能降低 95% eligibility 以满足会议时点"
           ],
           "expected_changes": [
             "boundary 等待期延长，provisional correction 设计失去合同支持"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "退款合同从 48 小时改为 7 天且没有成熟曲线"
+          }
         }
       ],
       "coverage_tags": {
@@ -1558,24 +1725,39 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "contract_blocked",
+        "contract_supported": false,
+        "required_disposition": "typed_boundary",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-006-01",
+          "CONTRACT-G3-GF-006-03",
+          "CONTRACT-G3-GF-006-04",
+          "DC-G3-GF-006-01",
+          "DC-G3-GF-006-02",
+          "DC-G3-GF-006-03",
+          "DC-G3-GF-006-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "refund_release_incomplete",
+            "allowed_when_refs": [
+              "CONTRACT-G3-GF-006-02",
+              "DC-G3-GF-006-01",
+              "DC-G3-GF-006-02",
+              "DC-G3-GF-006-03",
+              "DC-G3-GF-006-04"
+            ],
+            "required_observation_refs": [
+              "CONTRACT-G3-GF-006-02",
+              "DC-G3-GF-006-01",
+              "DC-G3-GF-006-02",
+              "DC-G3-GF-006-03",
+              "DC-G3-GF-006-04"
+            ],
+            "maximum_claim_ceiling": "descriptive"
+          }
+        ]
       }
     },
     {
@@ -1584,20 +1766,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "4 月获客的 D30 留存看起来比 3 月差很多，是真的吗？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1608,22 +1792,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-007-01",
             "state": "available",
-            "description": "cohort entry 为首次激活日"
+            "description": "cohort entry 为首次激活日",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-007-02",
             "state": "available",
-            "description": "D30 retention 表示 entry 后第 30 个自然日有 qualifying activity"
+            "description": "D30 retention 表示 entry 后第 30 个自然日有 qualifying activity",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-007-03",
             "state": "available",
-            "description": "未到达 D30 的用户为 right-censored，不能计为未留存"
+            "description": "未到达 D30 的用户为 right-censored，不能计为未留存",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-007-04",
             "state": "available",
-            "description": "可使用成熟 cohort 子集或显式 survival/risk-set estimator"
+            "description": "可使用成熟 cohort 子集或显式 survival/risk-set estimator",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1652,16 +1844,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "两个 cohort 的 D30 retention 相同。表面大幅下降完全由 calendar censoring 造成。正确设计需要 risk set、maturity 和 censoring policy。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2025-05-15T00:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2025-05-15T00:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-007-01",
+            "statement": "两个 cohort 的 D30 retention 相同。表面大幅下降完全由 calendar censoring 造成。正确设计需要 risk set、maturity 和 censoring policy。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否否定 4 月获客渠道并削减预算",
@@ -1749,7 +1946,6 @@
           "sibling_id": "G3-GF-007-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“比较 4 月与 3 月获客 cohort 的第 30 日留存”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -1757,43 +1953,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“比较 4 月与 3 月获客 cohort 的第 30 日留存”。"
+          }
         },
         {
           "sibling_id": "G3-GF-007-CF02",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "4 月成熟用户留存改为 30%",
           "expected_invariants": [
             "未成熟用户仍不能计为 churn"
           ],
           "expected_changes": [
             "成熟范围内支持下降，但完整 4 月仍需保留适用边界"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "4 月成熟用户留存改为 30%"
+          }
         },
         {
           "sibling_id": "G3-GF-007-CF03",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "window_or_baseline",
-          "mutation": "用户改问 D7 留存",
           "expected_invariants": [
             "right-censoring policy 保持"
           ],
           "expected_changes": [
             "horizon 改变，大部分 4 月用户进入 risk set，semantic identity 改变"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "用户改问 D7 留存"
+          }
         },
         {
           "sibling_id": "G3-GF-007-CF04",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "scope",
-          "mutation": "4 月后半月来自新渠道",
           "expected_invariants": [
             "不能以未成熟新渠道用户推断 D30"
           ],
           "expected_changes": [
             "成熟子集存在 selection concern，需要按渠道或 entry date 做敏感性"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/must_preserve",
+            "operation": "replace",
+            "value_description": "4 月后半月来自新渠道"
+          }
         }
       ],
       "coverage_tags": {
@@ -1820,24 +2033,21 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-007-01",
+          "CONTRACT-G3-GF-007-02",
+          "CONTRACT-G3-GF-007-03",
+          "CONTRACT-G3-GF-007-04",
+          "DC-G3-GF-007-01",
+          "DC-G3-GF-007-02",
+          "DC-G3-GF-007-03",
+          "DC-G3-GF-007-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -1846,20 +2056,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "这周从注册到首单的漏斗哪一步掉得最多？和上周比一下。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -1870,22 +2082,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-008-01",
             "state": "available",
-            "description": "同一 user_id 必须按事件顺序穿过漏斗"
+            "description": "同一 user_id 必须按事件顺序穿过漏斗",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-008-02",
             "state": "available",
-            "description": "实名认证 denominator 为已注册且到达 3-day maturity 的用户"
+            "description": "实名认证 denominator 为已注册且到达 3-day maturity 的用户",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-008-03",
             "state": "available",
-            "description": "首单 denominator 为已认证且到达 7-day maturity 的用户"
+            "description": "首单 denominator 为已认证且到达 7-day maturity 的用户",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-008-04",
             "state": "available",
-            "description": "重复事件取首次 qualifying timestamp"
+            "description": "重复事件取首次 qualifying timestamp",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -1914,16 +2134,21 @@
             "materiality": "material"
           }
         ],
-        "hidden_business_truth": [
-          "在已成熟 risk set 内，两个阶段与上周相同。当前不能评价尚未成熟用户的完整 funnel，动态 denominator 和 transition window 是测量本体。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-008-01",
+            "statement": "在已成熟 risk set 内，两个阶段与上周相同。当前不能评价尚未成熟用户的完整 funnel，动态 denominator 和 transition window 是测量本体。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否紧急修复某个漏斗阶段",
@@ -2011,7 +2236,6 @@
           "sibling_id": "G3-GF-008-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“对比本周和上周注册、认证、首单各转化步骤”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -2019,43 +2243,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“对比本周和上周注册、认证、首单各转化步骤”。"
+          }
         },
         {
           "sibling_id": "G3-GF-008-CF02",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "成熟实名认证率降到 40%",
           "expected_invariants": [
             "首单 denominator 仍只来自成熟认证者"
           ],
           "expected_changes": [
             "可以定位 registration-to-verification 阶段下降"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "成熟实名认证率降到 40%"
+          }
         },
         {
           "sibling_id": "G3-GF-008-CF03",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "window_or_baseline",
-          "mutation": "首单窗口从 7 天改为 24 小时",
           "expected_invariants": [
             "不能沿用旧窗口 Evidence"
           ],
           "expected_changes": [
             "maturity、denominator 和 semantic measurement identity 改变"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "首单窗口从 7 天改为 24 小时"
+          }
         },
         {
           "sibling_id": "G3-GF-008-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "发现 5% 用户跨设备 user_id 无法关联",
           "expected_invariants": [
             "不能通过放宽同一实体约束提高 funnel rate"
           ],
           "expected_changes": [
             "identity coverage 进入 data-quality boundary 或 sensitivity"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "发现 5% 用户跨设备 user_id 无法关联"
+          }
         }
       ],
       "coverage_tags": {
@@ -2083,24 +2324,21 @@
           "over_strong_claim"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-008-01",
+          "CONTRACT-G3-GF-008-02",
+          "CONTRACT-G3-GF-008-03",
+          "CONTRACT-G3-GF-008-04",
+          "DC-G3-GF-008-01",
+          "DC-G3-GF-008-02",
+          "DC-G3-GF-008-03",
+          "DC-G3-GF-008-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -2109,20 +2347,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "本月收入少了 100 万，价格、销量和产品 mix 各贡献多少？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -2133,22 +2373,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-009-01",
             "state": "available",
-            "description": "财务收入变化是 decomposition 的 reconciliation target"
+            "description": "财务收入变化是 decomposition 的 reconciliation target",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-009-02",
             "state": "available",
-            "description": "价格、销量和 mix 使用版本化对称分解规则"
+            "description": "价格、销量和 mix 使用版本化对称分解规则",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-009-03",
             "state": "available",
-            "description": "分解必须保留 residual，reconciliation tolerance 为 2 万"
+            "description": "分解必须保留 residual，reconciliation tolerance 为 2 万",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-009-04",
             "state": "missing",
-            "description": "汇率和重分类数据合同被标记为 unavailable"
+            "description": "汇率和重分类数据合同被标记为 unavailable",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2183,16 +2431,21 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "现有因素只能解释 40 万下降，仍有 60 万未解释。隐藏世界中 residual 来自 -35 万汇率和 -25 万收入重分类。当前不能把 residual 按比例摊给价格、销量或 mix。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-009-01",
+            "statement": "现有因素只能解释 40 万下降，仍有 60 万未解释。隐藏世界中 residual 来自 -35 万汇率和 -25 万收入重分类。当前不能把 residual 按比例摊给价格、销量或 mix。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "为收入下滑确定责任和优先动作",
@@ -2284,7 +2537,6 @@
           "sibling_id": "G3-GF-009-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“把本月 100 万收入降幅拆成价格、销量、mix 与未解释项”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -2292,43 +2544,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“把本月 100 万收入降幅拆成价格、销量、mix 与未解释项”。"
+          }
         },
         {
           "sibling_id": "G3-GF-009-CF02",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "residual 仅 -1 万，处于 2 万 tolerance 内",
           "expected_invariants": [
             "residual 仍要显示并绑定 tolerance"
           ],
           "expected_changes": [
             "允许按 policy 标记为 immaterial rounding residual"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "residual 仅 -1 万，处于 2 万 tolerance 内"
+          }
         },
         {
           "sibling_id": "G3-GF-009-CF03",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "metric_definition",
-          "mutation": "用户将 target 改成 gross merchandise value",
           "expected_invariants": [
             "不能复用财务收入 Evidence"
           ],
           "expected_changes": [
             "reconciliation target 和因素合同改变，需要新 measurement identity"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "用户将 target 改成 gross merchandise value"
+          }
         },
         {
           "sibling_id": "G3-GF-009-CF04",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "window_or_baseline",
-          "mutation": "分解规则改为先价格后销量的序贯方法",
           "expected_invariants": [
             "所有 component 加 residual 仍需 reconciliation"
           ],
           "expected_changes": [
             "component allocation 可能变化，identity 必须包含 order"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/valid_design_space",
+            "operation": "replace",
+            "value_description": "分解规则改为先价格后销量的序贯方法"
+          }
         }
       ],
       "coverage_tags": {
@@ -2355,25 +2624,42 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-009-01",
+          "CONTRACT-G3-GF-009-02",
+          "CONTRACT-G3-GF-009-03",
+          "DC-G3-GF-009-01",
+          "DC-G3-GF-009-02",
+          "DC-G3-GF-009-03",
+          "DC-G3-GF-009-04",
+          "DC-G3-GF-009-05"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "alternative_and_sensitivity_quality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "missing_decomposition_component_contract",
+            "allowed_when_refs": [
+              "CONTRACT-G3-GF-009-04",
+              "DC-G3-GF-009-01",
+              "DC-G3-GF-009-02",
+              "DC-G3-GF-009-03",
+              "DC-G3-GF-009-04",
+              "DC-G3-GF-009-05"
+            ],
+            "required_observation_refs": [
+              "CONTRACT-G3-GF-009-04",
+              "DC-G3-GF-009-01",
+              "DC-G3-GF-009-02",
+              "DC-G3-GF-009-03",
+              "DC-G3-GF-009-04",
+              "DC-G3-GF-009-05"
+            ],
+            "maximum_claim_ceiling": "accounting_attribution"
+          }
+        ]
       }
     },
     {
@@ -2382,20 +2668,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "拿到优惠券的用户流失率更低，说明优惠券能减少流失吗？",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -2406,22 +2694,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-010-01",
             "state": "available",
-            "description": "treatment 为优惠券送达且可使用"
+            "description": "treatment 为优惠券送达且可使用",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-010-02",
             "state": "available",
-            "description": "outcome 为送达后 30 日内是否流失"
+            "description": "outcome 为送达后 30 日内是否流失",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-010-03",
             "state": "available",
-            "description": "CRM targeting score、历史活跃和历史消费可用"
+            "description": "CRM targeting score、历史活跃和历史消费可用",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-010-04",
             "state": "available",
-            "description": "没有随机分配、有效工具变量或经审核的自然实验合同"
+            "description": "没有随机分配、有效工具变量或经审核的自然实验合同",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2450,16 +2746,21 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "原始差异来自 targeting selection，优惠券没有真实因果效果。Agent 应识别 confounding 和 positivity 风险，最多给关联或经调整的观察性估计，并提出实验或识别需求。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-010-01",
+            "statement": "原始差异来自 targeting selection，优惠券没有真实因果效果。Agent 应识别 confounding 和 positivity 风险，最多给关联或经调整的观察性估计，并提出实验或识别需求。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "是否扩大优惠券预算作为留存策略",
@@ -2551,7 +2852,6 @@
           "sibling_id": "G3-GF-010-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“发券用户流失较低能否支持优惠券降低流失的结论”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -2559,43 +2859,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“发券用户流失较低能否支持优惠券降低流失的结论”。"
+          }
         },
         {
           "sibling_id": "G3-GF-010-CF02",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "优惠券记录发生在 outcome 之后",
           "expected_invariants": [
             "不能靠统计相关性修复时间顺序"
           ],
           "expected_changes": [
             "temporal order 失败，连当前方向的 treatment-outcome 解释都应拒绝"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "优惠券记录发生在 outcome 之后"
+          }
         },
         {
           "sibling_id": "G3-GF-010-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "scope",
-          "mutation": "未发券组在高 targeting score 区域完全缺失",
           "expected_invariants": [
             "不能外推到全体用户"
           ],
           "expected_changes": [
             "positivity boundary 加强，只能限制到 common-support population"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/must_preserve",
+            "operation": "replace",
+            "value_description": "未发券组在高 targeting score 区域完全缺失"
+          }
         },
         {
           "sibling_id": "G3-GF-010-CF04",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "claim_strength_request",
-          "mutation": "用户改问两组流失率是否相关",
           "expected_invariants": [
             "不能顺带输出因果建议"
           ],
           "expected_changes": [
             "业务目标降为关联描述，但仍需说明 selection"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/acceptable_outcome/claim_ceiling",
+            "operation": "replace",
+            "value_description": "用户改问两组流失率是否相关"
+          }
         }
       ],
       "coverage_tags": {
@@ -2621,24 +2938,38 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-010-01",
+          "CONTRACT-G3-GF-010-02",
+          "CONTRACT-G3-GF-010-03",
+          "CONTRACT-G3-GF-010-04",
+          "DC-G3-GF-010-01",
+          "DC-G3-GF-010-02",
+          "DC-G3-GF-010-03",
+          "DC-G3-GF-010-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": [
+          {
+            "boundary_code": "causal_identification_unavailable",
+            "allowed_when_refs": [
+              "DC-G3-GF-010-01",
+              "DC-G3-GF-010-02",
+              "DC-G3-GF-010-03",
+              "DC-G3-GF-010-04"
+            ],
+            "required_observation_refs": [
+              "DC-G3-GF-010-01",
+              "DC-G3-GF-010-02",
+              "DC-G3-GF-010-03",
+              "DC-G3-GF-010-04"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
       }
     },
     {
@@ -2647,20 +2978,22 @@
       "source_pool": "generated_business_world",
       "provenance": {
         "authoring_method": "controlled_world_generation",
-        "review_status": "candidate",
         "origin_note": "由已知隐藏真相的受控业务世界生成，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "本月收入为什么下滑？明早给管理层一个解释。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -2671,22 +3004,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-011-01",
             "state": "conflicting",
-            "description": "Finance revenue：按会计期确认的 net recognized revenue，排除税费并计入退款调整"
+            "description": "Finance revenue：按会计期确认的 net recognized revenue，排除税费并计入退款调整",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-011-02",
             "state": "conflicting",
-            "description": "Growth revenue：支付成功时的 gross merchandise value，不扣退款"
+            "description": "Growth revenue：支付成功时的 gross merchandise value，不扣退款",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-011-03",
             "state": "available",
-            "description": "两个合同均有效，数据覆盖完整"
+            "description": "两个合同均有效，数据覆盖完整",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-011-04",
             "state": "available",
-            "description": "管理层既可能指 P&L，也可能指增长经营盘"
+            "description": "管理层既可能指 P&L，也可能指增长经营盘",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2715,16 +3056,21 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "选择哪一个合同会改变是否下滑以及原因。当前必须一次只问一个业务问题，推荐管理层财务复盘使用 Finance 口径，并说明若用户关心增长交易规模则结论方向相反。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-011-01",
+            "statement": "选择哪一个合同会改变是否下滑以及原因。当前必须一次只问一个业务问题，推荐管理层财务复盘使用 Finance 口径，并说明若用户关心增长交易规模则结论方向相反。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "管理层如何理解收入表现并追责",
@@ -2802,7 +3148,6 @@
           "sibling_id": "G3-GF-011-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“请解释这个月收入下降的主要原因，供管理层复盘”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -2810,43 +3155,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“请解释这个月收入下降的主要原因，供管理层复盘”。"
+          }
         },
         {
           "sibling_id": "G3-GF-011-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "metric_definition",
-          "mutation": "用户补充关心支付交易规模",
           "expected_invariants": [
             "不能沿用 Finance Evidence"
           ],
           "expected_changes": [
             "绑定 Growth GMV contract，目标方向变为上升"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "用户补充关心支付交易规模"
+          }
         },
         {
           "sibling_id": "G3-GF-011-CF03",
           "expected_relation": "interaction_changing",
           "mutation_dimension": "hidden_business_truth",
-          "mutation": "两个合同本月方向都下降",
           "expected_invariants": [
             "方向偶合不能消除语义冲突"
           ],
           "expected_changes": [
             "仍需澄清，因为分子、时间角色和原因解释不同"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/truth_facts",
+            "operation": "replace",
+            "value_description": "两个合同本月方向都下降"
+          }
         },
         {
           "sibling_id": "G3-GF-011-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "Finance contract 已失效且 registry 只接受 Growth contract",
           "expected_invariants": [
             "不能查询已失效定义"
           ],
           "expected_changes": [
             "可依据合同 currentness 绑定 Growth，同时记录过期合同排除证据"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "Finance contract 已失效且 registry 只接受 Growth contract"
+          }
         }
       ],
       "coverage_tags": {
@@ -2873,25 +3235,19 @@
           "hidden_data_gap"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "clarification_blocked",
+        "contract_supported": false,
+        "required_disposition": "clarification_required",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-011-03",
+          "CONTRACT-G3-GF-011-04",
+          "DC-G3-GF-011-01",
+          "DC-G3-GF-011-02",
+          "DC-G3-GF-011-03",
+          "DC-G3-GF-011-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "ambiguity_and_clarification_discipline",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     },
     {
@@ -2900,20 +3256,22 @@
       "source_pool": "historical_failure",
       "provenance": {
         "authoring_method": "historical_failure_reconstruction",
-        "review_status": "candidate",
         "origin_note": "由可复用的历史测量失败类型重建为受控业务世界，尚待业务与测量评审。",
-        "review_attestations": []
+        "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES"
       },
-      "dataset_partition": "authoring",
       "user_episode": {
         "locale": "zh-CN",
         "messages": [
           {
             "turn": 1,
             "speaker": "user",
-            "injection_point": "initial",
             "text": "双十一当天 GMV 比去年双十一增长了吗？按我们国内业务口径看。",
-            "communication_function": "question"
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
           }
         ]
       },
@@ -2924,22 +3282,30 @@
           {
             "contract_ref": "CONTRACT-G3-GF-012-01",
             "state": "available",
-            "description": "GMV 为成功支付订单金额，单位 CNY"
+            "description": "GMV 为成功支付订单金额，单位 CNY",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-012-02",
             "state": "available",
-            "description": "国内业务日时区 Asia/Shanghai，cutoff 为 04:00"
+            "description": "国内业务日时区 Asia/Shanghai，cutoff 为 04:00",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-012-03",
             "state": "available",
-            "description": "event time 为 paid_at，不能使用 ingestion_at"
+            "description": "event time 为 paid_at，不能使用 ingestion_at",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           },
           {
             "contract_ref": "CONTRACT-G3-GF-012-04",
             "state": "available",
-            "description": "同比要求两年使用同一 business-day calendar version"
+            "description": "同比要求两年使用同一 business-day calendar version",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
           }
         ],
         "data_conditions": [
@@ -2968,16 +3334,21 @@
             "materiality": "critical"
           }
         ],
-        "hidden_business_truth": [
-          "用户明确的国内业务口径对应 -3%。直接在 UTC 日期上做 DATE 过滤会得到 +12% 的相反结论。Frame 必须指定 event-time role、timezone、cutoff 和 resolved UTC boundaries。"
-        ],
         "evaluation_clock": {
           "as_of_instant": "2026-07-30T09:00:00+08:00",
           "default_business_timezone": "Asia/Shanghai",
           "calendar_contract_ref": "calendar.gregorian.v1",
           "business_day_contract_ref": "calendar.business-day.default.v1",
           "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
-        }
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-GF-012-01",
+            "statement": "用户明确的国内业务口径对应 -3%。直接在 UTC 日期上做 DATE 过滤会得到 +12% 的相反结论。Frame 必须指定 event-time role、timezone、cutoff 和 resolved UTC boundaries。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
       },
       "decision_stakes": {
         "business_decision": "双十一经营是否增长以及活动复盘定调",
@@ -3065,7 +3436,6 @@
           "sibling_id": "G3-GF-012-CF01",
           "expected_relation": "meaning_preserving",
           "mutation_dimension": "wording",
-          "mutation": "将问题改写为“按国内业务日比较今年和去年双十一 GMV”。",
           "expected_invariants": [
             "业务决策目标、metric、population、time semantics 和 claim ceiling 保持",
             "可接受测量设计空间与必须调查项保持"
@@ -3073,43 +3443,60 @@
           "expected_changes": [
             "仅 source wording 和对应 grounding span 改变",
             "semantic measurement identity 应保持，authority provenance 记录新 source"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "将问题改写为“按国内业务日比较今年和去年双十一 GMV”。"
+          }
         },
         {
           "sibling_id": "G3-GF-012-CF02",
           "expected_relation": "measurement_changing",
           "mutation_dimension": "time_semantics",
-          "mutation": "用户明确要求集团 UTC 报表口径",
           "expected_invariants": [
             "不能把该结果标为国内业务日"
           ],
           "expected_changes": [
             "绑定 UTC reporting contract，方向可以变为 +12%"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "用户明确要求集团 UTC 报表口径"
+          }
         },
         {
           "sibling_id": "G3-GF-012-CF03",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_contract",
-          "mutation": "去年数据使用旧 02:00 cutoff",
           "expected_invariants": [
             "cutoff mismatch 必须可见"
           ],
           "expected_changes": [
             "先处理 calendar-version comparability 或重算，不能直接同比"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "去年数据使用旧 02:00 cutoff"
+          }
         },
         {
           "sibling_id": "G3-GF-012-CF04",
           "expected_relation": "boundary_changing",
           "mutation_dimension": "data_coverage",
-          "mutation": "今年 paid_at 完整但 ingestion_at 延迟 6 小时",
           "expected_invariants": [
             "event-time role 保持"
           ],
           "expected_changes": [
             "若 paid_at release 仍完整，业务测量不应改成 ingestion-time window"
-          ]
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "今年 paid_at 完整但 ingestion_at 延迟 6 小时"
+          }
         }
       ],
       "coverage_tags": {
@@ -3137,25 +3524,21 @@
           "wrong_business_decision"
         ]
       },
-      "grading": {
-        "deterministic_checks": [
-          "Validate disposition is allowed and the proposed claim does not exceed claim_ceiling.",
-          "Validate material metric, population, time, denominator, exposure and contract identities against must_preserve.",
-          "Validate counterfactual siblings preserve or change only the properties declared by expected_relation."
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "CONTRACT-G3-GF-012-01",
+          "CONTRACT-G3-GF-012-02",
+          "CONTRACT-G3-GF-012-03",
+          "CONTRACT-G3-GF-012-04",
+          "DC-G3-GF-012-01",
+          "DC-G3-GF-012-02",
+          "DC-G3-GF-012-03",
+          "DC-G3-GF-012-04"
         ],
-        "semantic_rubric_dimensions": [
-          "decision_target_preservation",
-          "measurement_design_quality",
-          "evidence_and_claim_proportionality",
-          "authority_and_trace_integrity",
-          "counterfactual_consistency"
-        ],
-        "trace_obligations": [
-          "Record source-grounded semantic binding and the accepted or rejected measurement proposal.",
-          "Record contract and data inspections used to satisfy every must_investigate obligation.",
-          "Record the disposition, claim ceiling, alternatives, sensitivities and any typed boundary."
-        ],
-        "human_review_required": true
+        "boundary_authorizations": []
       }
     }
   ]

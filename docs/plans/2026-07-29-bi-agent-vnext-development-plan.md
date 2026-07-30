@@ -507,8 +507,14 @@ Exit evidence：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md`。
 - behavior-eval adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-behavior-eval-adversarial-review.md`；
-  authoring draft 打开 10 个 Blocking、11 个 Major；即时关闭 1 个 Blocking、2 个 Major，
-  G3.E0/G3.1 保持 blocked。
+  authoring draft 打开 10 个 Blocking、11 个 Major。
+- G3.E0 trust implementation：
+  `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md`；
+  Episode v2、Source/Review/Corpus/Grader registries、双视图、三层 verdict、cross-Gate
+  profiles、review packages 与 derived readiness 已落地；本地 verifier 拒绝全部
+  repository-local self-signing，claim/boundary ceiling、truth support、counterfactual
+  materialization 和 manifest history 均 fail closed；外部 issuer 方案、来源、双审、
+  truth/per-claim review、calibration、held-out、promotion/run freeze 仍阻止 G3.1。
 - durable async adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md`；
   periodic heartbeat、terminal JobDisposition、obligation scheduler、Reviewer worker 与
@@ -835,7 +841,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | Planned | 本 Gate 无需用户决策 | `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md` |
+| Gate 3 | G3.E0 fail-closed infrastructure complete; gold promotion blocked | 本 Gate 无需用户决策；authority roots、显式 estimand、可执行 counterfactual、真实来源与独立双审待关闭 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |

@@ -1,0 +1,11 @@
+{
+  "artifact_type": "grader_calibration_package",
+  "artifact_version": "gate3.grader-calibration.v1",
+  "registry_epoch": 1,
+  "status": "pending",
+  "grader_registry_sha256": "c619cc2deebaa8ceb91dc4989005f8eec6f1718cef65013a2fdd51d5a9403bb6",
+  "labeled_episode_refs": [],
+  "label_records": [],
+  "agreement": null,
+  "critical_false_passes": null
+}
