@@ -10,9 +10,17 @@ from .actions import (
     CallCapabilityPayload,
     ReviseFramePayload,
     RevisePlanPayload,
+    RunProbePayload,
     RunSensitivityPayload,
 )
-from .authority import CaseLifecycle, InvestigationCase, WorkPlanRevision
+from .authority import (
+    AnalysisFrameRevision,
+    CaseLifecycle,
+    InvestigationCase,
+    MeasurementDesignError,
+    WorkPlanRevision,
+    validate_measurement_design,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +36,7 @@ def admit_action(
     *,
     case: InvestigationCase,
     action: ActionEnvelope,
+    current_frame: AnalysisFrameRevision | None,
     current_plan: WorkPlanRevision | None,
 ) -> ActionAdmission:
     if action.case_id != case.case_id:
@@ -39,21 +48,52 @@ def admit_action(
 
     if action.kind is ActionKind.REVISE_FRAME:
         assert isinstance(action.payload, ReviseFramePayload)
+        try:
+            validate_measurement_design(
+                primary_estimator=action.payload.primary_estimator,
+                exposure=action.payload.exposure,
+                assumptions=action.payload.assumptions,
+                alternatives=action.payload.alternatives,
+                requirements=action.payload.requirements,
+                falsification_conditions=(
+                    action.payload.falsification_conditions
+                ),
+                reversal_conditions=action.payload.reversal_conditions,
+                success_conditions=action.payload.success_conditions,
+                stop_conditions=action.payload.stop_conditions,
+                semantic_contract_refs=action.payload.semantic_contract_refs,
+            )
+        except MeasurementDesignError as error:
+            return _rejected(case, error.reason_code)
+        except (TypeError, ValueError):
+            return _rejected(case, "frame_contract_invalid")
         return _accepted(case, frame=True)
 
     if action.kind is ActionKind.REVISE_PLAN:
         if case.accepted_frame_revision_id is None:
             return _rejected(case, "plan_requires_frame")
         assert isinstance(action.payload, RevisePlanPayload)
+        if (
+            current_frame is None
+            or current_frame.frame_revision_id
+            != case.accepted_frame_revision_id
+        ):
+            return _rejected(case, "current_frame_unavailable")
+        covered = {
+            requirement_id
+            for task in action.payload.tasks
+            for requirement_id in task.requirement_ids
+        }
+        required = {
+            requirement.requirement_id
+            for requirement in current_frame.requirements
+        }
+        if covered != required:
+            return _rejected(case, "plan_requirement_coverage_mismatch")
         return _accepted(case, plan=True)
 
-    if (
-        action.kind is ActionKind.RUN_PROBE
-        and case.accepted_frame_revision_id is None
-    ):
-        return _rejected(case, "probe_requires_frame")
-
     if action.kind in {
+        ActionKind.RUN_PROBE,
         ActionKind.CALL_CAPABILITY,
         ActionKind.RUN_SENSITIVITY,
         ActionKind.RECORD_INTERPRETATION,
@@ -62,13 +102,16 @@ def admit_action(
         return _rejected(case, "action_requires_plan")
 
     if action.kind in {
+        ActionKind.RUN_PROBE,
         ActionKind.CALL_CAPABILITY,
         ActionKind.RUN_SENSITIVITY,
     }:
         payload = action.payload
         assert isinstance(
             payload,
-            CallCapabilityPayload | RunSensitivityPayload,
+            CallCapabilityPayload
+            | RunProbePayload
+            | RunSensitivityPayload,
         )
         if current_plan is None or current_plan.plan_revision_id != (
             case.accepted_plan_revision_id

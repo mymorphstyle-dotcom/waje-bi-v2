@@ -1,0 +1,13 @@
+{
+  "contract_id": "source:paid_order_daily:v1",
+  "metric_ref": "metric:paid_amount:v1",
+  "engine": "clickhouse",
+  "physical_table": "waje_bi.paid_order_success_daily_20240101_20260704_v2",
+  "date_column": "business_date_lagos",
+  "value_column": "paid_amount_ngn",
+  "grain": "business_date",
+  "business_timezone": "Africa/Lagos",
+  "available_from": "2024-01-01",
+  "available_through": "2026-07-04",
+  "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a"
+}

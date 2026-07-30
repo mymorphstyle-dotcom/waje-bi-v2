@@ -7,7 +7,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
 
-from .authority import DecisionOption, WorkTask
+from .authority import (
+    AlternativeHypothesis,
+    ComparisonDesign,
+    DecisionOption,
+    EstimatorSpec,
+    ExposureDesign,
+    FrameRequirement,
+    WorkTask,
+)
 from .canonical import (
     FrozenJson,
     content_sha256,
@@ -34,13 +42,16 @@ class ActionKind(StrEnum):
 class ReviseFramePayload:
     revision_reason: str
     estimand: str
+    population: str
+    time_scope: str
     observation_unit: str
-    numerator: str
-    denominator: str
-    exposure: str
-    comparison: str
+    primary_estimator: EstimatorSpec
+    comparison: ComparisonDesign
+    exposure: ExposureDesign
+    measurement_rationale: str
     assumptions: tuple[str, ...]
-    alternatives: tuple[str, ...]
+    alternatives: tuple[AlternativeHypothesis, ...]
+    requirements: tuple[FrameRequirement, ...]
     falsification_conditions: tuple[str, ...]
     reversal_conditions: tuple[str, ...]
     success_conditions: tuple[str, ...]
@@ -52,7 +63,6 @@ class ReviseFramePayload:
         _validate_dataclass_strings(self)
         for name in (
             "assumptions",
-            "alternatives",
             "falsification_conditions",
             "reversal_conditions",
             "success_conditions",
@@ -61,6 +71,24 @@ class ReviseFramePayload:
             "semantic_contract_refs",
         ):
             _validate_string_tuple(getattr(self, name), name)
+        if not isinstance(self.comparison, ComparisonDesign):
+            raise TypeError("comparison must be ComparisonDesign")
+        if not isinstance(self.primary_estimator, EstimatorSpec):
+            raise TypeError("primary_estimator must be EstimatorSpec")
+        if not isinstance(self.exposure, ExposureDesign):
+            raise TypeError("exposure must be ExposureDesign")
+        _validate_typed_tuple(
+            self.alternatives,
+            AlternativeHypothesis,
+            "alternatives",
+        )
+        _validate_typed_tuple(
+            self.requirements,
+            FrameRequirement,
+            "requirements",
+        )
+        if not self.requirements:
+            raise ValueError("revise_frame requires investigation requirements")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,10 +115,12 @@ class InspectSemanticsPayload:
 
 @dataclass(frozen=True, slots=True)
 class RunProbePayload:
+    task_id: str
     probe_kind: str
     parameters: Mapping[str, FrozenJson]
 
     def __post_init__(self) -> None:
+        require_nonempty(self.task_id, "task_id")
         require_nonempty(self.probe_kind, "probe_kind")
         _freeze_parameters(self)
 

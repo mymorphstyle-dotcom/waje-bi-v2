@@ -3,6 +3,7 @@
 from .base import (
     PrimaryAgentProvider,
     ProviderConfigurationError,
+    ProviderContractError,
     ProviderError,
     ProviderPermanentError,
     ProviderTransientError,
@@ -22,6 +23,7 @@ __all__ = [
     "ChatTransport",
     "PrimaryAgentProvider",
     "ProviderConfigurationError",
+    "ProviderContractError",
     "ProviderError",
     "ProviderPermanentError",
     "ProviderTransientError",

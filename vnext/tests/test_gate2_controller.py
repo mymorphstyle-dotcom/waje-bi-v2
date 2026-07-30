@@ -25,9 +25,21 @@ from waje_vnext.domain.actions import (
     RevisePlanPayload,
 )
 from waje_vnext.domain.authority import (
+    AlternativeHypothesis,
     AnswerStatus,
     ClaimVerifierStatus,
+    ComparisonDesign,
+    ComparisonGroup,
+    ComparisonGroupRole,
+    ComparisonMode,
     DecisionOption,
+    ExposureAdjustmentMode,
+    ExposureBalance,
+    ExposureDesign,
+    EstimatorAggregation,
+    EstimatorSpec,
+    FrameRequirement,
+    FrameRequirementKind,
     WorkTask,
 )
 from waje_vnext.domain.controller import (
@@ -51,13 +63,84 @@ def frame_proposal() -> AgentActionProposal:
         payload=ReviseFramePayload(
             revision_reason="Define the measurement before querying",
             estimand="Average paid amount difference between exposure windows",
+            population="All valid paid orders in the accepted release",
+            time_scope="Complete business months in the requested interval",
             observation_unit="calendar month",
-            numerator="valid paid amount",
-            denominator="complete observed months",
-            exposure="contract-defined month-start window",
-            comparison="mid-month and month-end windows",
+            primary_estimator=EstimatorSpec(
+                quantity=(
+                    "Average paid amount difference between exposure windows"
+                ),
+                aggregation=EstimatorAggregation.MEAN,
+                numerator="valid paid amount",
+                denominator="observed eligible business days",
+                exposure_adjustment=(
+                    ExposureAdjustmentMode.PER_EXPOSURE_UNIT
+                ),
+            ),
+            comparison=ComparisonDesign(
+                mode=ComparisonMode.WITHIN_UNIT,
+                groups=(
+                    ComparisonGroup(
+                        group_id="focal",
+                        label="Agent-defined focal window",
+                        role=ComparisonGroupRole.FOCAL,
+                        membership_rule="Agent-selected focal membership",
+                    ),
+                    ComparisonGroup(
+                        group_id="reference",
+                        label="Agent-defined reference window",
+                        role=ComparisonGroupRole.REFERENCE,
+                        membership_rule="Agent-selected reference membership",
+                    ),
+                ),
+                contrast="Within-month focal minus reference estimate",
+            ),
+            exposure=ExposureDesign(
+                variable="Observed eligible business days per group and month",
+                unit="eligible business day",
+                balance_assumption=ExposureBalance.UNKNOWN,
+                sensitivity_adjustments=(
+                    ExposureAdjustmentMode.NONE,
+                    ExposureAdjustmentMode.DESIGN_EQUALIZED,
+                ),
+                normalization_strategy="Normalize by observed exposure units",
+                diagnostic_requirement_id="req-exposure",
+                sensitivity_requirement_id="req-sensitivity",
+            ),
+            measurement_rationale=(
+                "The agent-selected groups require observed exposure checks"
+            ),
             assumptions=("Paid amount contract is valid",),
-            alternatives=("Composition shift may explain the pattern",),
+            alternatives=(
+                AlternativeHypothesis(
+                    alternative_id="alt-composition",
+                    statement="Composition shift may explain the pattern",
+                    requirement_id="req-alternative",
+                ),
+            ),
+            requirements=(
+                FrameRequirement(
+                    requirement_id="req-exposure",
+                    kind=FrameRequirementKind.EXPOSURE,
+                    question="Are group exposure units balanced?",
+                    success_condition="Exposure is measured by group and unit",
+                    failure_consequence="Revise the estimator",
+                ),
+                FrameRequirement(
+                    requirement_id="req-sensitivity",
+                    kind=FrameRequirementKind.SENSITIVITY,
+                    question="Does adjustment change the conclusion?",
+                    success_condition="Adjusted and raw estimates are compared",
+                    failure_consequence="Reverse or limit the conclusion",
+                ),
+                FrameRequirement(
+                    requirement_id="req-alternative",
+                    kind=FrameRequirementKind.ALTERNATIVE,
+                    question="Can composition explain the pattern?",
+                    success_condition="Material composition is assessed",
+                    failure_consequence="Do not claim a mechanism",
+                ),
+            ),
             falsification_conditions=(
                 "Pattern disappears in complete-month sensitivity",
             ),
@@ -82,6 +165,11 @@ def plan_proposal() -> AgentActionProposal:
                     business_purpose="Measure the within-month pattern",
                     capability_intent="periodic pattern comparison",
                     target_claim_ids=("claim-pattern",),
+                    requirement_ids=(
+                        "req-exposure",
+                        "req-sensitivity",
+                        "req-alternative",
+                    ),
                     depends_on_task_ids=(),
                     success_conditions=("Comparable windows are measured",),
                     stop_conditions=("Coverage is insufficient",),
@@ -270,9 +358,10 @@ class Gate2ControllerTest(unittest.TestCase):
             if event.event_type == JournalEventType.EFFECT_COMPLETED.value
         )
         self.assertEqual(
-            completed_event.business_projection["result"]["rows"],
-            24,
+            completed_event.business_projection["business_summary"],
+            "Comparable windows were measured",
         )
+        self.assertNotIn("result", completed_event.business_projection)
         self.assertFalse(
             any(
                 event.event_type
@@ -417,7 +506,10 @@ class Gate2ControllerTest(unittest.TestCase):
             payload=replace(
                 frame_proposal().payload,
                 revision_reason="Change the business exposure definition",
-                exposure="first three complete business days",
+                exposure=replace(
+                    frame_proposal().payload.exposure,
+                    variable="First three complete eligible business days",
+                ),
             ),
         )
         revised_plan = replace(

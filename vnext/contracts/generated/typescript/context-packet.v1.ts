@@ -68,6 +68,7 @@ export interface ContextEvent {
   business_projection: {
     [k: string]: unknown;
   };
+  agent_result: NullableObject;
 }
 export interface ContextEvidence {
   evidence_record_id: Id;
@@ -79,6 +80,10 @@ export interface ContextEvidence {
   plan_revision_id: Id;
   task_id: Id;
   snapshot_release_ref: Id;
+  grain: Id;
+  capability_name: Id;
+  inline_payload: NullableObject;
+  result_handle_id: NullableId;
 }
 export interface ContextReviewerObjection {
   objection_id: Id;

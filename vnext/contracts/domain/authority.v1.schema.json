@@ -40,6 +40,221 @@
       },
       "uniqueItems": true
     },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "comparisonGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_id",
+        "label",
+        "role",
+        "membership_rule"
+      ],
+      "properties": {
+        "group_id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "focal",
+            "reference"
+          ]
+        },
+        "membership_rule": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "comparisonDesign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "groups",
+        "contrast"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "absolute",
+            "between_groups",
+            "within_unit",
+            "counterfactual"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/comparisonGroup"
+          }
+        },
+        "contrast": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "exposureDesign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variable",
+        "unit",
+        "balance_assumption",
+        "sensitivity_adjustments",
+        "normalization_strategy",
+        "diagnostic_requirement_id",
+        "sensitivity_requirement_id"
+      ],
+      "properties": {
+        "variable": {
+          "$ref": "#/$defs/id"
+        },
+        "unit": {
+          "$ref": "#/$defs/id"
+        },
+        "balance_assumption": {
+          "enum": [
+            "unknown",
+            "expected_equal",
+            "expected_unequal"
+          ]
+        },
+        "sensitivity_adjustments": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "none",
+              "per_exposure_unit",
+              "model_adjusted",
+              "stratified",
+              "design_equalized",
+              "other"
+            ]
+          }
+        },
+        "normalization_strategy": {
+          "$ref": "#/$defs/id"
+        },
+        "diagnostic_requirement_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sensitivity_requirement_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "estimatorSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quantity",
+        "aggregation",
+        "numerator",
+        "denominator",
+        "exposure_adjustment"
+      ],
+      "properties": {
+        "quantity": {
+          "$ref": "#/$defs/id"
+        },
+        "aggregation": {
+          "enum": [
+            "sum",
+            "mean",
+            "ratio",
+            "rate",
+            "difference",
+            "model_based",
+            "other"
+          ]
+        },
+        "numerator": {
+          "$ref": "#/$defs/id"
+        },
+        "denominator": {
+          "$ref": "#/$defs/id"
+        },
+        "exposure_adjustment": {
+          "enum": [
+            "none",
+            "per_exposure_unit",
+            "model_adjusted",
+            "stratified",
+            "design_equalized",
+            "other"
+          ]
+        }
+      }
+    },
+    "frameRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_id",
+        "kind",
+        "question",
+        "success_condition",
+        "failure_consequence"
+      ],
+      "properties": {
+        "requirement_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "semantic",
+            "coverage",
+            "exposure",
+            "sensitivity",
+            "alternative",
+            "falsification"
+          ]
+        },
+        "question": {
+          "$ref": "#/$defs/id"
+        },
+        "success_condition": {
+          "$ref": "#/$defs/id"
+        },
+        "failure_consequence": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "alternativeHypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alternative_id",
+        "statement",
+        "requirement_id"
+      ],
+      "properties": {
+        "alternative_id": {
+          "$ref": "#/$defs/id"
+        },
+        "statement": {
+          "$ref": "#/$defs/id"
+        },
+        "requirement_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
     "investigationCase": {
       "type": "object",
       "additionalProperties": false,
@@ -123,13 +338,16 @@
         "created_at",
         "revision_reason",
         "estimand",
+        "population",
+        "time_scope",
         "observation_unit",
-        "numerator",
-        "denominator",
+        "primary_estimator",
         "exposure",
         "comparison",
+        "measurement_rationale",
         "assumptions",
         "alternatives",
+        "requirements",
         "falsification_conditions",
         "reversal_conditions",
         "success_conditions",
@@ -170,44 +388,61 @@
         "estimand": {
           "$ref": "#/$defs/id"
         },
+        "population": {
+          "$ref": "#/$defs/id"
+        },
+        "time_scope": {
+          "$ref": "#/$defs/id"
+        },
         "observation_unit": {
           "$ref": "#/$defs/id"
         },
-        "numerator": {
-          "$ref": "#/$defs/id"
-        },
-        "denominator": {
-          "$ref": "#/$defs/id"
+        "primary_estimator": {
+          "$ref": "#/$defs/estimatorSpec"
         },
         "exposure": {
-          "$ref": "#/$defs/id"
+          "$ref": "#/$defs/exposureDesign"
         },
         "comparison": {
+          "$ref": "#/$defs/comparisonDesign"
+        },
+        "measurement_rationale": {
           "$ref": "#/$defs/id"
         },
         "assumptions": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         },
         "alternatives": {
-          "$ref": "#/$defs/stringArray"
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/alternativeHypothesis"
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/frameRequirement"
+          }
         },
         "falsification_conditions": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         },
         "reversal_conditions": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         },
         "success_conditions": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         },
         "stop_conditions": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         },
         "decision_record_ids": {
           "$ref": "#/$defs/stringArray"
         },
         "semantic_contract_refs": {
-          "$ref": "#/$defs/stringArray"
+          "$ref": "#/$defs/nonEmptyStringArray"
         }
       }
     },
@@ -219,6 +454,7 @@
         "business_purpose",
         "capability_intent",
         "target_claim_ids",
+        "requirement_ids",
         "depends_on_task_ids",
         "success_conditions",
         "stop_conditions"
@@ -234,6 +470,9 @@
           "$ref": "#/$defs/id"
         },
         "target_claim_ids": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "requirement_ids": {
           "$ref": "#/$defs/stringArray"
         },
         "depends_on_task_ids": {

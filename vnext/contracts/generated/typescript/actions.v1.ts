@@ -22,6 +22,10 @@ export type ReviseFrameAction = ActionBase & {
   payload: ReviseFrame;
   [k: string]: unknown;
 };
+/**
+ * @minItems 1
+ */
+export type NonEmptyStringArray = [string, ...string[]];
 export type StringArray = string[];
 export type RevisePlanAction = ActionBase & {
   kind: "revise_plan";
@@ -106,19 +110,79 @@ export interface ActionBase {
 export interface ReviseFrame {
   revision_reason: string;
   estimand: string;
+  population: string;
+  time_scope: string;
   observation_unit: string;
+  primary_estimator: EstimatorSpec;
+  exposure: ExposureDesign;
+  comparison: ComparisonDesign;
+  measurement_rationale: string;
+  assumptions: NonEmptyStringArray;
+  /**
+   * @minItems 1
+   */
+  alternatives: [AlternativeHypothesis, ...AlternativeHypothesis[]];
+  /**
+   * @minItems 1
+   */
+  requirements: [FrameRequirement, ...FrameRequirement[]];
+  falsification_conditions: NonEmptyStringArray;
+  reversal_conditions: NonEmptyStringArray;
+  success_conditions: NonEmptyStringArray;
+  stop_conditions: NonEmptyStringArray;
+  decision_record_ids: StringArray;
+  semantic_contract_refs: NonEmptyStringArray;
+}
+export interface EstimatorSpec {
+  quantity: string;
+  aggregation: "sum" | "mean" | "ratio" | "rate" | "difference" | "model_based" | "other";
   numerator: string;
   denominator: string;
-  exposure: string;
-  comparison: string;
-  assumptions: StringArray;
-  alternatives: StringArray;
-  falsification_conditions: StringArray;
-  reversal_conditions: StringArray;
-  success_conditions: StringArray;
-  stop_conditions: StringArray;
-  decision_record_ids: StringArray;
-  semantic_contract_refs: StringArray;
+  exposure_adjustment:
+    "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other";
+}
+export interface ExposureDesign {
+  variable: string;
+  unit: string;
+  balance_assumption: "unknown" | "expected_equal" | "expected_unequal";
+  /**
+   * @minItems 1
+   */
+  sensitivity_adjustments: [
+    "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other",
+    ...(
+      "none" | "per_exposure_unit" | "model_adjusted" | "stratified" | "design_equalized" | "other"
+    )[],
+  ];
+  normalization_strategy: string;
+  diagnostic_requirement_id: string;
+  sensitivity_requirement_id: string;
+}
+export interface ComparisonDesign {
+  mode: "absolute" | "between_groups" | "within_unit" | "counterfactual";
+  /**
+   * @minItems 1
+   */
+  groups: [ComparisonGroup, ...ComparisonGroup[]];
+  contrast: string;
+}
+export interface ComparisonGroup {
+  group_id: string;
+  label: string;
+  role: "focal" | "reference";
+  membership_rule: string;
+}
+export interface AlternativeHypothesis {
+  alternative_id: string;
+  statement: string;
+  requirement_id: string;
+}
+export interface FrameRequirement {
+  requirement_id: string;
+  kind: "semantic" | "coverage" | "exposure" | "sensitivity" | "alternative" | "falsification";
+  question: string;
+  success_condition: string;
+  failure_consequence: string;
 }
 export interface RevisePlan {
   revision_reason: string;
@@ -132,6 +196,7 @@ export interface WorkTask {
   business_purpose: string;
   capability_intent: string;
   target_claim_ids: StringArray;
+  requirement_ids: StringArray;
   depends_on_task_ids: StringArray;
   success_conditions: StringArray;
   stop_conditions: StringArray;
@@ -141,6 +206,7 @@ export interface InspectSemantics {
   contract_refs: StringArray;
 }
 export interface RunProbe {
+  task_id: string;
   probe_kind: string;
   parameters: Parameters;
 }

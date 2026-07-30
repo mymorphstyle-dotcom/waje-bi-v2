@@ -20,6 +20,10 @@ class ProviderTransientError(ProviderError):
     pass
 
 
+class ProviderContractError(ProviderError):
+    pass
+
+
 class ProviderPermanentError(ProviderError):
     pass
 

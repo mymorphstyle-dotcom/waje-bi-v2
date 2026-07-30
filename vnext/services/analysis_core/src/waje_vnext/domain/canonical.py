@@ -7,7 +7,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
@@ -51,12 +51,17 @@ def to_jsonable(value: Any) -> Any:
         return value.value
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, Mapping):
         return {
             str(key): to_jsonable(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
-    if isinstance(value, tuple):
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
         return [to_jsonable(item) for item in value]
     if value is None or isinstance(value, (str, bool, int, float)):
         return value

@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；Gate 3 尚未执行入口判断 |
+| 当前 Gate | Gate 3 complete；Gate 4 尚未执行入口判断 |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -114,7 +114,7 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
 | 权威对象 | 职责 | 核心不变量 |
 |---|---|---|
 | `InvestigationCase` | 稳定承载一个经营问题及其连续调查，只保存 identity、生命周期与 CAS accepted head pointers | 业务内容只存在于 immutable revision/version；每个 head 指向已持久化且被接受的对象；身份、业务结论与用户角色解耦 |
-| `AnalysisFrameRevision` | 测量设计唯一权威 | estimand、观察单位、分子、分母、exposure、comparison、assumptions、alternatives、falsification、reversal、success/stop conditions 全部在此定义 |
+| `AnalysisFrameRevision` | 测量设计唯一权威 | estimand、`EstimatorSpec`、观察单位、exposure、comparison、assumptions、alternatives、requirements、falsification、reversal、success/stop conditions 全部在此定义 |
 | `WorkPlanRevision` | 当前 accepted 业务调查任务图 | 任务可动态修订；业务口径变化必须引用新 FrameRevision；工具重试保持同一 plan revision |
 | `EvidenceRecord` | capability 原生返回的不可变证据 | 绑定 QuerySpec、contract、snapshot/release、grain、provenance、结果摘要或稳定 result handle；记录证据强度与限制 |
 | `AnswerVersion` | 用户可见答案及逐结论绑定 | `provisional \| settled`；每个 claim 绑定证据、frame、适用范围、限制、反例状态和 Reviewer disposition |
@@ -122,7 +122,8 @@ Primary Business Analysis Agent 持续拥有开放业务语义。它通过 typed
 ### 3.2 派生与从属记录
 
 - `ContextPacket`：从 accepted heads、最近相关事件、可见证据索引、未决异议和用户消息构造的
-  有界、可哈希、可重放输入；它是投影，不独立改写权威。
+  有界、可哈希、可重放输入；aggregate inline evidence 和内部 effect result 可供 Primary
+  Agent 修订测量设计，customer projection 继续保持安全摘要；它是投影，不独立改写权威。
 - `EventJournalEntry`：追加式运行事实，覆盖 action 请求、admission、执行、结果、失败、
   checkpoint、resume、revision acceptance、answer publication 和 delivery。
 - `InterpretationRecord`：Primary Agent 对证据的结构化解释，绑定 FrameRevision 与
@@ -194,6 +195,8 @@ stop
 ### 4.3 模型职责
 
 - 开放业务语义和测量设计候选。
+- 自主选择 estimand、comparison groups、exposure adjustment、主 estimator 和
+  sensitivity；合理候选差异进入 provisional Frame 和调查，不交给本地规则预选。
 - 动态调查路线、替代解释、证伪与反转条件。
 - 基于已接受证据的解释、洞察和叙事。
 - 发现需要用户决定的高影响歧义并提出业务化选项。
@@ -208,9 +211,12 @@ Reviewer objection。
 ### 4.4 决策与澄清协议
 
 - Gate 访谈遵循本文 0.1：一次一个重大决定，等待用户确认。
+- runtime 中可由语义合同、低成本 probe 或 sensitivity 检验的合理测量设计分歧，由 Primary
+  Agent 建 provisional Frame 自主调查；此类分歧不打开 ask_user。
 - runtime 高影响歧义会改变业务结论、baseline、时间语义、敏感输出、数据访问、claim 强度
-  或显著执行成本时，Primary Agent 生成 2–3 个业务选项、推荐解释、接受推荐继续的选项和
-  `tell the agent to do differently` 出口。
+  或显著执行成本，且缺失的业务政策、目标或定义无法从合同和数据检验时，Primary Agent
+  生成 2–3 个业务选项、推荐解释、接受推荐继续的选项和 `tell the agent to do differently`
+  出口。
 - 低风险缺口采用推荐推断继续，写入 `DecisionRecord`，并由 accepted Frame/Plan 引用。
 - 用户角色和数据能力等级不得成为业务澄清项。
 
@@ -236,7 +242,7 @@ vnext/
 │           ├── semantics/         # metric/dimension/factor/data contract 解析
 │           ├── query/             # QuerySpec、SQL compiler 与 governed escape hatch
 │           ├── trust/             # claim binding、数字/文字 verifier、Reviewer
-│           ├── projection/        # customer-safe Answer/Analysis/Workflow projection
+│           ├── projections/       # customer-safe Answer/Analysis/Workflow projection
 │           ├── storage/           # repository ports 与 PostgreSQL adapters
 │           └── providers/         # LLM、ClickHouse、PostgreSQL adapter
 ├── contracts/
@@ -404,6 +410,9 @@ Exit evidence：
 
 - 从业务 SSOT、真实字段和数据 profile 查明时间语义、金额口径、全样本定义。
 - 只有多种合理定义会改变结论时询问用户，一次确认一个决策。
+- 入口结论：用户明确要求测量设计由 Primary Agent 自主判断；确定性系统只验证 typed
+  measurement contract、exposure/sensitivity closure、可执行性和证据边界。本 Gate
+  无其他用户决策。
 
 **证明问题**
 
@@ -421,13 +430,16 @@ Exit evidence：
 
 **Exit criteria**
 
-- [ ] 月内边界由合同定义，禁止从问题字符串硬编码。
-- [ ] 全样本、完整月份、timezone、金额有效性和用户/订单观察单位可审计。
-- [ ] Frame 中所有 material alternatives 均被实际检验、证伪、降级，或绑定明确的数据/
+- [x] 月内边界由 Agent 的 typed Frame/QuerySpec 定义，禁止从问题字符串或本地规则硬编码。
+- [x] 全样本、完整月份、timezone、金额有效性和观察单位可审计。
+- [x] Frame 中所有 material alternatives 均被实际检验、证伪、降级，或绑定明确的数据/
   合同 boundary。
-- [ ] sensitivity 和 reversal condition 可改变或限制结论。
-- [ ] Answer 与 Workflow 从同一持久化权威和 journal 投影。
-- [ ] 测试只验证通用能力合同；launch 范围保持全问题家族。
+- [x] sensitivity 和 reversal condition 可改变或限制结论。
+- [x] Answer 与 Workflow 从同一持久化权威和 journal 投影。
+- [x] 测试只验证通用能力合同；launch 范围保持全问题家族。
+
+Exit evidence：
+`docs/reviews/2026-07-30-bi-agent-vnext-gate-3.md`。
 
 ### Gate 4：完整 capability fabric
 
@@ -672,7 +684,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete | 已确认 WAJE-owned controller；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-2.md` |
-| Gate 3 | Pending | 待执行 | — |
+| Gate 3 | Complete | 已确认 Primary Agent 自主决定测量设计；无其他用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -692,3 +704,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-29 | Python 最低版本为 3.12，Gate 0 使用 3.12.13 virtualenv | 用户补充 | 宿主 Python 不影响 vNext baseline；clean-copy 验收重建 venv |
 | 2026-07-29 | 确认 `InvestigationCase` 为第五类权威对象 | 用户确认 | Gate 1 以稳定 case root + 四类 immutable content authority 建模 |
 | 2026-07-29 | WAJE-owned controller 为唯一 runtime 权威 | 用户确认 | LangGraph 不进入 authoritative action loop；typed state、CAS、journal 与 checkpoint 保持单一来源 |
+| 2026-07-30 | 合理的 estimand、日期分段、exposure adjustment 与 sensitivity 由 Primary Agent 自主设计 | 用户确认 | 本地系统只校验 typed estimator/exposure contract、requirement closure、查询安全和证据边界；可检验的测量分歧不触发 ask_user |

@@ -4,13 +4,25 @@ from datetime import UTC, datetime, timedelta
 
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
+    AlternativeHypothesis,
     AnswerClaim,
     AnswerStatus,
     AnswerVersion,
     ClaimVerifierStatus,
+    ComparisonDesign,
+    ComparisonGroup,
+    ComparisonGroupRole,
+    ComparisonMode,
     EvidenceRecord,
     EvidenceStrength,
     EvidenceType,
+    ExposureAdjustmentMode,
+    ExposureBalance,
+    ExposureDesign,
+    EstimatorAggregation,
+    EstimatorSpec,
+    FrameRequirement,
+    FrameRequirementKind,
     ReviewerObjection,
     ReviewerObjectionStatus,
     ReviewerSeverity,
@@ -43,13 +55,86 @@ def make_frame(
         ),
         revision_reason="Define the current business measurement",
         estimand="Average exposed-period paid amount minus comparison-period amount",
+        population="All valid paid orders in the accepted release",
+        time_scope="Complete business months in the requested interval",
         observation_unit="calendar month",
-        numerator="valid paid amount in the exposure window",
-        denominator="complete observed months",
-        exposure="contract-defined month-start window",
-        comparison="contract-defined mid-month and month-end windows",
+        primary_estimator=EstimatorSpec(
+            quantity=(
+                "Average exposed-period paid amount minus comparison-period "
+                "amount"
+            ),
+            aggregation=EstimatorAggregation.MEAN,
+            numerator="valid paid amount in the exposure window",
+            denominator="observed eligible business days",
+            exposure_adjustment=(
+                ExposureAdjustmentMode.PER_EXPOSURE_UNIT
+            ),
+        ),
+        comparison=ComparisonDesign(
+            mode=ComparisonMode.WITHIN_UNIT,
+            groups=(
+                ComparisonGroup(
+                    group_id="focal-period",
+                    label="Agent-defined focal period",
+                    role=ComparisonGroupRole.FOCAL,
+                    membership_rule="Accepted semantic rule for the focal period",
+                ),
+                ComparisonGroup(
+                    group_id="reference-period",
+                    label="Agent-defined reference period",
+                    role=ComparisonGroupRole.REFERENCE,
+                    membership_rule="Accepted semantic rule for the reference period",
+                ),
+            ),
+            contrast="Within-month focal minus reference estimate",
+        ),
+        exposure=ExposureDesign(
+            variable="Observed eligible business days per group and month",
+            unit="eligible business day",
+            balance_assumption=ExposureBalance.UNKNOWN,
+            sensitivity_adjustments=(
+                ExposureAdjustmentMode.NONE,
+                ExposureAdjustmentMode.DESIGN_EQUALIZED,
+            ),
+            normalization_strategy="Estimate per observed eligible business day",
+            diagnostic_requirement_id="req-exposure",
+            sensitivity_requirement_id="req-sensitivity",
+        ),
+        measurement_rationale=(
+            "Preserve the agent-selected business groups while testing "
+            "whether unequal observation exposure changes the contrast"
+        ),
         assumptions=("Paid amount contract is valid",),
-        alternatives=("Composition shift may explain the pattern",),
+        alternatives=(
+            AlternativeHypothesis(
+                alternative_id="alt-composition",
+                statement="Composition shift may explain the pattern",
+                requirement_id="req-alternative-composition",
+            ),
+        ),
+        requirements=(
+            FrameRequirement(
+                requirement_id="req-exposure",
+                kind=FrameRequirementKind.EXPOSURE,
+                question="Are observed exposure units balanced across groups?",
+                success_condition="Exposure counts are measured for every unit",
+                failure_consequence="Revise normalization or comparison design",
+            ),
+            FrameRequirement(
+                requirement_id="req-sensitivity",
+                kind=FrameRequirementKind.SENSITIVITY,
+                question="Does the conclusion survive exposure adjustment?",
+                success_condition="Adjusted and unadjusted estimates are compared",
+                failure_consequence="Limit or reverse the primary conclusion",
+            ),
+            FrameRequirement(
+                requirement_id="req-alternative-composition",
+                kind=FrameRequirementKind.ALTERNATIVE,
+                question="Can observed composition explain the contrast?",
+                success_condition="Material composition dimensions are assessed",
+                failure_consequence="Keep mechanism claims bounded",
+            ),
+        ),
         falsification_conditions=("Pattern disappears in complete-month sensitivity",),
         reversal_conditions=("Comparison window exceeds exposure window",),
         success_conditions=("Exposure and comparison are measured at the same grain",),
@@ -83,6 +168,11 @@ def make_plan(
                 business_purpose="Measure the recurring within-month pattern",
                 capability_intent="periodic pattern comparison",
                 target_claim_ids=("claim-pattern",),
+                requirement_ids=(
+                    "req-exposure",
+                    "req-sensitivity",
+                    "req-alternative-composition",
+                ),
                 depends_on_task_ids=(),
                 success_conditions=("Comparable windows are measured",),
                 stop_conditions=("Coverage is insufficient",),

@@ -11,6 +11,9 @@
     "test:postgres": ".venv/bin/python tools/run_gate1_postgres_acceptance.py",
     "test:postgres:gate2": ".venv/bin/python tools/run_gate2_postgres_acceptance.py",
     "test:provider:gate2": "PYTHONPATH=services/analysis_core/src .venv/bin/python tools/run_gate2_provider_acceptance.py",
+    "test:data:gate3": "PYTHONPATH=services/analysis_core/src .venv/bin/python tools/run_gate3_real_data_acceptance.py",
+    "test:provider:gate3": "PYTHONPATH=services/analysis_core/src .venv/bin/python tools/run_gate3_provider_acceptance.py",
+    "test:slice:gate3": "PYTHONPATH=services/analysis_core/src .venv/bin/python tools/run_gate3_slice_acceptance.py",
     "run:bootstrap": "PYTHONPATH=services/analysis_core/src .venv/bin/python -m waje_vnext health"
   },
   "workspaces": [

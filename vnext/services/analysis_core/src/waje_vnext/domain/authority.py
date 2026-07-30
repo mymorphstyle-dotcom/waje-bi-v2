@@ -65,6 +65,58 @@ class ReviewerObjectionStatus(StrEnum):
     ACCEPTED_LIMITATION = "accepted_limitation"
 
 
+class ComparisonMode(StrEnum):
+    ABSOLUTE = "absolute"
+    BETWEEN_GROUPS = "between_groups"
+    WITHIN_UNIT = "within_unit"
+    COUNTERFACTUAL = "counterfactual"
+
+
+class ComparisonGroupRole(StrEnum):
+    FOCAL = "focal"
+    REFERENCE = "reference"
+
+
+class ExposureBalance(StrEnum):
+    UNKNOWN = "unknown"
+    EXPECTED_EQUAL = "expected_equal"
+    EXPECTED_UNEQUAL = "expected_unequal"
+
+
+class ExposureAdjustmentMode(StrEnum):
+    NONE = "none"
+    PER_EXPOSURE_UNIT = "per_exposure_unit"
+    MODEL_ADJUSTED = "model_adjusted"
+    STRATIFIED = "stratified"
+    DESIGN_EQUALIZED = "design_equalized"
+    OTHER = "other"
+
+
+class EstimatorAggregation(StrEnum):
+    SUM = "sum"
+    MEAN = "mean"
+    RATIO = "ratio"
+    RATE = "rate"
+    DIFFERENCE = "difference"
+    MODEL_BASED = "model_based"
+    OTHER = "other"
+
+
+class FrameRequirementKind(StrEnum):
+    SEMANTIC = "semantic"
+    COVERAGE = "coverage"
+    EXPOSURE = "exposure"
+    SENSITIVITY = "sensitivity"
+    ALTERNATIVE = "alternative"
+    FALSIFICATION = "falsification"
+
+
+class MeasurementDesignError(ValueError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class InvestigationCase:
     case_id: str
@@ -94,6 +146,145 @@ class InvestigationCase:
 
 
 @dataclass(frozen=True, slots=True)
+class ComparisonGroup:
+    group_id: str
+    label: str
+    role: ComparisonGroupRole
+    membership_rule: str
+
+    def __post_init__(self) -> None:
+        for name in ("group_id", "label", "membership_rule"):
+            require_nonempty(getattr(self, name), name)
+        _require_enum(self.role, ComparisonGroupRole, "role")
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonDesign:
+    mode: ComparisonMode
+    groups: tuple[ComparisonGroup, ...]
+    contrast: str
+
+    def __post_init__(self) -> None:
+        _require_enum(self.mode, ComparisonMode, "mode")
+        _require_tuple_of(self.groups, ComparisonGroup, "groups")
+        require_nonempty(self.contrast, "contrast")
+        if not self.groups:
+            raise ValueError("comparison design requires at least one group")
+        group_ids = tuple(group.group_id for group in self.groups)
+        if len(group_ids) != len(set(group_ids)):
+            raise ValueError("comparison group IDs must be unique")
+        if self.mode is ComparisonMode.ABSOLUTE:
+            return
+        if len(self.groups) < 2:
+            raise ValueError("comparative design requires at least two groups")
+        roles = {group.role for group in self.groups}
+        if roles != {
+            ComparisonGroupRole.FOCAL,
+            ComparisonGroupRole.REFERENCE,
+        }:
+            raise ValueError(
+                "comparative design requires focal and reference groups"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class EstimatorSpec:
+    quantity: str
+    aggregation: EstimatorAggregation
+    numerator: str
+    denominator: str
+    exposure_adjustment: ExposureAdjustmentMode
+
+    def __post_init__(self) -> None:
+        for name in ("quantity", "numerator", "denominator"):
+            require_nonempty(getattr(self, name), name)
+        _require_enum(
+            self.aggregation,
+            EstimatorAggregation,
+            "aggregation",
+        )
+        _require_enum(
+            self.exposure_adjustment,
+            ExposureAdjustmentMode,
+            "exposure_adjustment",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExposureDesign:
+    variable: str
+    unit: str
+    balance_assumption: ExposureBalance
+    sensitivity_adjustments: tuple[ExposureAdjustmentMode, ...]
+    normalization_strategy: str
+    diagnostic_requirement_id: str
+    sensitivity_requirement_id: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "variable",
+            "unit",
+            "normalization_strategy",
+            "diagnostic_requirement_id",
+            "sensitivity_requirement_id",
+        ):
+            require_nonempty(getattr(self, name), name)
+        _require_enum(
+            self.balance_assumption,
+            ExposureBalance,
+            "balance_assumption",
+        )
+        if not isinstance(self.sensitivity_adjustments, tuple):
+            raise TypeError("sensitivity_adjustments must be a tuple")
+        if not self.sensitivity_adjustments:
+            raise ValueError("exposure requires sensitivity adjustments")
+        for adjustment in self.sensitivity_adjustments:
+            _require_enum(
+                adjustment,
+                ExposureAdjustmentMode,
+                "sensitivity_adjustment",
+            )
+        if len(self.sensitivity_adjustments) != len(
+            set(self.sensitivity_adjustments)
+        ):
+            raise ValueError("sensitivity adjustments must be unique")
+        if self.diagnostic_requirement_id == self.sensitivity_requirement_id:
+            raise ValueError(
+                "exposure diagnostic and sensitivity requirements must differ"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class FrameRequirement:
+    requirement_id: str
+    kind: FrameRequirementKind
+    question: str
+    success_condition: str
+    failure_consequence: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "requirement_id",
+            "question",
+            "success_condition",
+            "failure_consequence",
+        ):
+            require_nonempty(getattr(self, name), name)
+        _require_enum(self.kind, FrameRequirementKind, "kind")
+
+
+@dataclass(frozen=True, slots=True)
+class AlternativeHypothesis:
+    alternative_id: str
+    statement: str
+    requirement_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("alternative_id", "statement", "requirement_id"):
+            require_nonempty(getattr(self, name), name)
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisFrameRevision:
     frame_revision_id: str
     case_id: str
@@ -103,13 +294,16 @@ class AnalysisFrameRevision:
     created_at: datetime
     revision_reason: str
     estimand: str
+    population: str
+    time_scope: str
     observation_unit: str
-    numerator: str
-    denominator: str
-    exposure: str
-    comparison: str
+    primary_estimator: EstimatorSpec
+    comparison: ComparisonDesign
+    exposure: ExposureDesign
+    measurement_rationale: str
     assumptions: tuple[str, ...]
-    alternatives: tuple[str, ...]
+    alternatives: tuple[AlternativeHypothesis, ...]
+    requirements: tuple[FrameRequirement, ...]
     falsification_conditions: tuple[str, ...]
     reversal_conditions: tuple[str, ...]
     success_conditions: tuple[str, ...]
@@ -124,11 +318,10 @@ class AnalysisFrameRevision:
             "created_by_action_id",
             "revision_reason",
             "estimand",
+            "population",
+            "time_scope",
             "observation_unit",
-            "numerator",
-            "denominator",
-            "exposure",
-            "comparison",
+            "measurement_rationale",
         ):
             require_nonempty(getattr(self, name), name)
         if self.revision_number < 1:
@@ -138,22 +331,148 @@ class AnalysisFrameRevision:
         if self.revision_number > 1 and not self.prior_frame_revision_id:
             raise ValueError("later frame revisions require prior_frame_revision_id")
         require_aware_datetime(self.created_at, "created_at")
+        if not isinstance(self.comparison, ComparisonDesign):
+            raise TypeError("comparison must be ComparisonDesign")
+        if not isinstance(self.primary_estimator, EstimatorSpec):
+            raise TypeError("primary_estimator must be EstimatorSpec")
+        if not isinstance(self.exposure, ExposureDesign):
+            raise TypeError("exposure must be ExposureDesign")
         _require_nonempty_members(self.assumptions, "assumptions")
-        _require_nonempty_members(self.alternatives, "alternatives")
-        _require_nonempty_members(
-            self.falsification_conditions, "falsification_conditions"
+        validate_measurement_design(
+            primary_estimator=self.primary_estimator,
+            exposure=self.exposure,
+            assumptions=self.assumptions,
+            alternatives=self.alternatives,
+            requirements=self.requirements,
+            falsification_conditions=self.falsification_conditions,
+            reversal_conditions=self.reversal_conditions,
+            success_conditions=self.success_conditions,
+            stop_conditions=self.stop_conditions,
+            semantic_contract_refs=self.semantic_contract_refs,
         )
-        _require_nonempty_members(self.reversal_conditions, "reversal_conditions")
-        _require_nonempty_members(self.success_conditions, "success_conditions")
-        _require_nonempty_members(self.stop_conditions, "stop_conditions")
         _require_nonempty_members(self.decision_record_ids, "decision_record_ids")
-        _require_nonempty_members(
-            self.semantic_contract_refs, "semantic_contract_refs"
-        )
 
     @property
     def content_sha256(self) -> str:
         return content_sha256(self)
+
+
+def validate_measurement_design(
+    *,
+    primary_estimator: EstimatorSpec,
+    exposure: ExposureDesign,
+    assumptions: tuple[str, ...],
+    alternatives: tuple[AlternativeHypothesis, ...],
+    requirements: tuple[FrameRequirement, ...],
+    falsification_conditions: tuple[str, ...],
+    reversal_conditions: tuple[str, ...],
+    success_conditions: tuple[str, ...],
+    stop_conditions: tuple[str, ...],
+    semantic_contract_refs: tuple[str, ...],
+) -> None:
+    if not isinstance(primary_estimator, EstimatorSpec):
+        raise TypeError("primary_estimator must be EstimatorSpec")
+    if not isinstance(exposure, ExposureDesign):
+        raise TypeError("exposure must be ExposureDesign")
+    _require_tuple_of(
+        alternatives,
+        AlternativeHypothesis,
+        "alternatives",
+    )
+    required_string_conditions = (
+        ("assumptions", assumptions),
+        ("falsification_conditions", falsification_conditions),
+        ("reversal_conditions", reversal_conditions),
+        ("success_conditions", success_conditions),
+        ("stop_conditions", stop_conditions),
+    )
+    for field_name, values in required_string_conditions:
+        _require_nonempty_members(values, field_name)
+        if not values:
+            raise MeasurementDesignError(
+                "frame_{}_required".format(field_name),
+                "{} must be non-empty".format(field_name),
+            )
+    if not alternatives:
+        raise MeasurementDesignError(
+            "frame_alternatives_required",
+            "analysis frame requires material alternatives",
+        )
+    _require_tuple_of(requirements, FrameRequirement, "requirements")
+    if not requirements:
+        raise MeasurementDesignError(
+            "frame_requirements_required",
+            "analysis frame requires investigation requirements",
+        )
+    requirement_ids = tuple(
+        requirement.requirement_id for requirement in requirements
+    )
+    if len(requirement_ids) != len(set(requirement_ids)):
+        raise MeasurementDesignError(
+            "frame_requirement_ids_invalid",
+            "frame requirement IDs must be unique",
+        )
+    requirement_by_id = {
+        requirement.requirement_id: requirement
+        for requirement in requirements
+    }
+    diagnostic = requirement_by_id.get(exposure.diagnostic_requirement_id)
+    if (
+        diagnostic is None
+        or diagnostic.kind is not FrameRequirementKind.EXPOSURE
+    ):
+        raise MeasurementDesignError(
+            "frame_exposure_diagnostic_requirement_invalid",
+            "exposure diagnostic must reference an exposure requirement"
+        )
+    sensitivity = requirement_by_id.get(
+        exposure.sensitivity_requirement_id
+    )
+    if (
+        sensitivity is None
+        or sensitivity.kind is not FrameRequirementKind.SENSITIVITY
+    ):
+        raise MeasurementDesignError(
+            "frame_exposure_sensitivity_requirement_invalid",
+            "exposure sensitivity must reference a sensitivity requirement"
+        )
+    if (
+        exposure.balance_assumption is not ExposureBalance.EXPECTED_EQUAL
+        and primary_estimator.exposure_adjustment
+        is ExposureAdjustmentMode.NONE
+        and all(
+            adjustment is ExposureAdjustmentMode.NONE
+            for adjustment in exposure.sensitivity_adjustments
+        )
+    ):
+        raise MeasurementDesignError(
+            "frame_adjusted_sensitivity_required",
+            "unbalanced exposure requires an adjusted sensitivity estimand"
+        )
+    alternative_ids = tuple(
+        alternative.alternative_id for alternative in alternatives
+    )
+    if len(alternative_ids) != len(set(alternative_ids)):
+        raise MeasurementDesignError(
+            "frame_alternative_ids_invalid",
+            "alternative hypothesis IDs must be unique",
+        )
+    for alternative in alternatives:
+        requirement = requirement_by_id.get(alternative.requirement_id)
+        if (
+            requirement is None
+            or requirement.kind is not FrameRequirementKind.ALTERNATIVE
+        ):
+            raise MeasurementDesignError(
+                "frame_alternative_requirement_invalid",
+                "material alternative must reference an alternative requirement"
+            )
+    _require_nonempty_members(semantic_contract_refs, "semantic_contract_refs")
+    if not semantic_contract_refs:
+        raise MeasurementDesignError(
+            "frame_semantic_contract_refs_required",
+            "analysis frame requires semantic contract refs",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +481,7 @@ class WorkTask:
     business_purpose: str
     capability_intent: str
     target_claim_ids: tuple[str, ...]
+    requirement_ids: tuple[str, ...]
     depends_on_task_ids: tuple[str, ...]
     success_conditions: tuple[str, ...]
     stop_conditions: tuple[str, ...]
@@ -173,6 +493,7 @@ class WorkTask:
         if self.task_id in self.depends_on_task_ids:
             raise ValueError("task cannot depend on itself")
         _require_nonempty_members(self.target_claim_ids, "target_claim_ids")
+        _require_nonempty_members(self.requirement_ids, "requirement_ids")
         _require_nonempty_members(self.depends_on_task_ids, "depends_on_task_ids")
         _require_nonempty_members(self.success_conditions, "success_conditions")
         _require_nonempty_members(self.stop_conditions, "stop_conditions")
