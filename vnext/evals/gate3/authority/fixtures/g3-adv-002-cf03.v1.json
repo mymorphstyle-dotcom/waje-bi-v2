@@ -1,0 +1,263 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-ADV-002-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-002-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-ADV-002:G3-ADV-002-CF03",
+    "episode_id": "G3-ADV-002",
+    "binding_id": "fixture_g3_adv_002_base",
+    "authority_slot_id": "fixture_g3_adv_002_cf03_v1",
+    "scope_claim_target_ids": [
+      "bounded_paid_amount_impact_claim",
+      "browser_failure_mechanism_claim",
+      "h5_conversion_change_claim",
+      "rollback_decision_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-ADV-002-01",
+      "state": "available",
+      "description": "checkout_start 与 payment_success 有稳定 session_id",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-002-02",
+      "state": "available",
+      "description": "新版通过账户级随机实验上线，分流、污染和实验 exposure 合同完整。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-002-03",
+      "state": "available",
+      "description": "付费金额合同同时提供支付成功金额 与七日成熟净付费口径",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-002-04",
+      "state": "available",
+      "description": "渠道、设备、地区和新老客维度可用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-002-05",
+      "state": "available",
+      "description": "充值活动折扣和流量来源合同可用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-ADV-002-01",
+      "description": "上线前后各有十四个完整业务日",
+      "discoverability": "provided_to_agent",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-002-02",
+      "description": "Android 可作为不完全可比的并行趋势参照",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-002-03",
+      "description": "充值活动显著改变了流量来源和客单价",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-002-04",
+      "description": "新版 H5 checkout_start 到 payment_success 转化下降",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-002-05",
+      "description": "同期 H5 流量增长，gross revenue 总额上升",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-ADV-002-01",
+        "statement": "新版 H5 对部分H5 浏览器存在支付按钮加载失败，但充值活动带来的新增流量令总付费金额上升。Android 与 H5 的用户构成不同，不能直接当作随机对照。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "h5_conversion_change_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_adv_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-ADV-002-BASE-V1",
+          "CONTRACT-ADV-002-01",
+          "DC-ADV-002-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ADV-002-01"
+        ],
+        "boundary_codes": [
+          "causal_identification_missing"
+        ],
+        "reversal_conditions": [
+          "平台前趋势、流量 mix 或污染检查使方向失去稳健性。"
+        ]
+      },
+      {
+        "claim_target_id": "bounded_paid_amount_impact_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_adv_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-ADV-002-BASE-V1",
+          "CONTRACT-ADV-002-03",
+          "DC-ADV-002-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ADV-002-01"
+        ],
+        "boundary_codes": [
+          "net_revenue_maturity_incomplete"
+        ],
+        "reversal_conditions": [
+          "成熟净额、故障反事实成功率或金额归属使影响范围跨过零。"
+        ]
+      },
+      {
+        "claim_target_id": "browser_failure_mechanism_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_adv_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-ADV-002-BASE-V1",
+          "CONTRACT-ADV-002-04",
+          "DC-ADV-002-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ADV-002-01"
+        ],
+        "boundary_codes": [
+          "causal_identification_missing"
+        ],
+        "reversal_conditions": [
+          "失败浏览器分布与下降集中区域不再一致。"
+        ]
+      },
+      {
+        "claim_target_id": "rollback_decision_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_adv_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-ADV-002-BASE-V1",
+          "CONTRACT-ADV-002-02",
+          "DC-ADV-002-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ADV-002-01"
+        ],
+        "boundary_codes": [
+          "causal_identification_missing",
+          "net_revenue_maturity_incomplete"
+        ],
+        "reversal_conditions": [
+          "损失范围、可逆性或回滚阈值变化。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

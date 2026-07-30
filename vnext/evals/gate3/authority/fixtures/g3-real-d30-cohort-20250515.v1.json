@@ -1,0 +1,37 @@
+{
+  "artifact_type": "gate3_real_snapshot_materialization",
+  "artifact_version": "gate3.real-snapshot-materialization.v1",
+  "authority_id": "REAL-WAJE-D30-COHORT-20250515",
+  "evaluation_clock": {
+    "as_of_instant": "2025-05-15T00:00:00+01:00",
+    "target_business_date": "2025-04-30",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "projection": "Public-safe immutable metadata receipt for the paid-order source available by the D30 cohort evaluation clock.",
+  "sources": [
+    {
+      "source_ref": "paid_order_success",
+      "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.4",
+      "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+      "physical_revision": "waje_bi.paid_order_success_clean_20240101_20260704_v2",
+      "schema_fingerprint": "3cf04abb2aae3d3dab023aeba72a3e0b80494dcc706961d814fa3166d6945feb",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-07-04",
+        "evaluation_cutoff_business_date": "2025-05-15",
+        "physical_rows": 41234677,
+        "eligible_rows_through_cutoff": 3233300
+      },
+      "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2025-05-15",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-D30-COHORT-20250515/paid_order_success/v1",
+      "evidence_boundary": "April first-payer cohorts have unequal D30 maturity by this clock; only members with complete follow-up are eligible for a D30 comparison."
+    }
+  ],
+  "verification": {
+    "query_class": "read_only_metadata_and_coverage",
+    "verified_against_clickhouse": true,
+    "verified_against_dataset_release_store": true,
+    "verified_at": "2026-07-31T00:00:00+08:00"
+  }
+}

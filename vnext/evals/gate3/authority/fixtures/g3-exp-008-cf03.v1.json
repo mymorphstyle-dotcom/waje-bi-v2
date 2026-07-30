@@ -1,0 +1,239 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-008-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-008-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-008:G3-EXP-008-CF03",
+    "episode_id": "G3-EXP-008",
+    "binding_id": "real_paid_order_success",
+    "authority_slot_id": "fixture_g3_exp_008_cf03_v1",
+    "scope_claim_target_ids": [
+      "dashboard_spike_validity_claim",
+      "duplicate_backfill_diagnosis_claim",
+      "new_payer_definition_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/payment-final-outcome/v3",
+      "state": "partial",
+      "description": "支付记录成功、撤销、支付冲正和币种；一个渠道出现重复投递。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/payer-identity-map/v2",
+      "state": "stale",
+      "description": "账户合并提供版本化 canonical_user_id 映射，昨天发生历史回填。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/paid-source-eligibility/v4",
+      "state": "available",
+      "description": "支付来源区分赠送余额、测试订单和真实支付。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/metric-first-payer/v1",
+      "state": "conflicting",
+      "description": "看板按 account_id 计数，业务讨论常按用户账户理解。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-PAYER-PERSON-BACKFILL",
+      "description": "昨天上线账户合并回填，历史支付映射到新的 canonical_user_id。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYER-DUPLICATE-EVENT",
+      "description": "一个支付渠道重复投递成功事件。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYER-LATE-REFUND",
+      "description": "部分支付冲正在次日到达。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-PAYER-UNIT-CONFLICT",
+      "description": "看板 observation unit 与业务用户账户语义冲突。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-008-01",
+        "statement": "没有管道异常，翻倍全部来自真实首次净付费。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-008-02",
+        "statement": "按用户账户首次净付费并排除全额支付冲正后，真实新增仅增长约 8%。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "new_payer_definition_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "paid_order_success",
+          "market_dashboard",
+          "contract://wajegame/metric-first-payer/v1",
+          "DC-PAYER-UNIT-CONFLICT"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-008-01",
+          "TRUTH-G3-EXP-008-02"
+        ],
+        "boundary_codes": [
+          "metric_definition_conflict"
+        ],
+        "reversal_conditions": [
+          "业务确认 account_id 为权威观察单位或 canonical map 恢复 current。"
+        ]
+      },
+      {
+        "claim_target_id": "dashboard_spike_validity_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "data_quality_only",
+        "required_observation_refs": [
+          "paid_order_success",
+          "market_dashboard",
+          "contract://wajegame/payment-final-outcome/v3",
+          "DC-PAYER-DUPLICATE-EVENT"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-008-01",
+          "TRUTH-G3-EXP-008-02"
+        ],
+        "boundary_codes": [
+          "duplicate_payment_events",
+          "immature_refund_window"
+        ],
+        "reversal_conditions": [
+          "去重与成熟净付费重算后翻倍仍成立。"
+        ]
+      },
+      {
+        "claim_target_id": "duplicate_backfill_diagnosis_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "data_quality_only",
+        "required_observation_refs": [
+          "paid_order_success",
+          "market_dashboard",
+          "contract://wajegame/payer-identity-map/v2",
+          "DC-PAYER-PERSON-BACKFILL"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-008-01",
+          "TRUTH-G3-EXP-008-02"
+        ],
+        "boundary_codes": [
+          "metric_definition_conflict",
+          "duplicate_payment_events"
+        ],
+        "reversal_conditions": [
+          "回填版本或重复事件修复不再解释主要差异。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "artifact_version": "gate3.authority-registry.v1",
+  "registry_id": "REGISTRY-G3-AUTHORITY-V1",
+  "schema_catalog": [
+    {
+      "artifact_kind": "authority_registry",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/authority-registry.v1.schema.json",
+      "path": "authority-registry.schema.json"
+    },
+    {
+      "artifact_kind": "milestone_schedule",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/milestone-schedule.v1.schema.json",
+      "path": "milestone-schedule.schema.json"
+    },
+    {
+      "artifact_kind": "prior_authority_fixture",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/prior-authority-fixture.v1.schema.json",
+      "path": "prior-authority-fixture.schema.json"
+    },
+    {
+      "artifact_kind": "authority_observation_bundle",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/authority-observation-bundle.v1.schema.json",
+      "path": "authority-observation-bundle.schema.json"
+    }
+  ],
+  "schedules": [
+    {
+      "schedule_id": "SCHEDULE-G3-AUTHORITY-REPAIR-V1",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/milestone-schedule.v1.schema.json",
+      "path": "schedules/gate3-authority-repair.v1.json"
+    }
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "FIXTURE-G3-USER-008-PRIOR-AUTHORITY-V1",
+      "fixture_uri": "fixture://wajegame/run-evidence-repair/v1",
+      "episode_id": "G3-USER-008",
+      "source_authority_id": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/prior-authority-fixture.v1.schema.json",
+      "path": "fixtures/g3-user-008-prior-authority.v1.json"
+    }
+  ],
+  "examples": [
+    {
+      "bundle_id": "BUNDLE-G3-USER-008-AUTHORITY-REPAIR-V1",
+      "episode_id": "G3-USER-008",
+      "schedule_id": "SCHEDULE-G3-AUTHORITY-REPAIR-V1",
+      "fixture_id": "FIXTURE-G3-USER-008-PRIOR-AUTHORITY-V1",
+      "schema_id": "https://waje.dev/schemas/evals/gate3/authority/authority-observation-bundle.v1.schema.json",
+      "path": "examples/g3-user-008-authority-observation-bundle.v1.json"
+    }
+  ],
+  "episode_bindings": [
+    {
+      "episode_id": "G3-USER-008",
+      "source_authority_id": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+      "fixture_id": "FIXTURE-G3-USER-008-PRIOR-AUTHORITY-V1",
+      "schedule_id": "SCHEDULE-G3-AUTHORITY-REPAIR-V1",
+      "example_bundle_id": "BUNDLE-G3-USER-008-AUTHORITY-REPAIR-V1"
+    }
+  ],
+  "integrity_rules": [
+    "all_registry_paths_exist",
+    "all_instances_validate_against_registered_schema",
+    "bundle_milestone_ids_resolve_in_schedule",
+    "bundle_observation_sequences_are_unique_and_monotonic",
+    "bundle_authority_refs_resolve_in_fixture_or_prior_observation",
+    "bundle_current_projection_resolves_to_appended_fixture_objects",
+    "fixture_repair_amounts_reconcile",
+    "duplicate_observation_appends_no_authority_object",
+    "gate3_projection_is_provisional_and_withheld",
+    "claim_dispositions_are_claim_scoped"
+  ]
+}

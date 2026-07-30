@@ -509,6 +509,11 @@ Exit evidence：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md`。
 - focused implementation plan：
   `docs/plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md`。
+- WAJEgame Episode suite rebase：
+  `docs/plans/2026-07-31-gate3-wajegame-episode-suite-rebase.md`；Required catalog 固定为
+  36 个 WAJEgame Episode，4 个跨域 transfer probe 物理隔离且不参与 Gate。
+- suite rebase adversarial audit：
+  `docs/reviews/2026-07-31-gate3-wajegame-episode-suite-adversarial-audit.md`。
 - plan adversarial review：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md`。
 - behavior-eval adversarial review：
@@ -516,8 +521,10 @@ Exit evidence：
   authoring draft 打开 10 个 Blocking、11 个 Major。
 - G3.E0 trust implementation：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md`；
-  Episode v2、Source/Review/Corpus/Grader registries、双视图、三层 verdict、cross-Gate
-  profiles、review packages 与 derived readiness 已落地；本地 verifier 拒绝全部
+  Episode v4（claim-scoped mixed case files + scheduled authority events）、
+  Source/Review/Corpus/Grader registries、双视图、三层 verdict、cross-Gate
+  profiles、review packages、USER008 的 19-milestone append-only authority repair
+  package 与 derived readiness 已落地；本地 verifier 拒绝全部
   repository-local self-signing，claim/boundary ceiling、truth support、counterfactual
   materialization 和 manifest history 均 fail closed；public GitHub remote、
   GitHub/Sigstore verification contract、request/provider-state schema、privilege-separated
@@ -537,9 +544,13 @@ Exit evidence：
   `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-1-implementation.md`。
 - Gate 1/2 历史验收保持；G3.1/G3.2 是任何新 Gate 3 业务 Evidence、Answer 和 Workflow
   实现的硬前置。
-- G3.E0 formal admission 仍要求冻结与实现无关的 EvaluationEpisode 合同、候选集、
-  反事实关系、review/calibration 流程与 coverage ledger。用户已明确授权 G3.1 local
-  implementation development override；代码完成不改变 `deny_g3_1`。
+- G3.E0 formal admission 仍要求冻结与实现无关的 EvaluationEpisode v4 合同、WAJEgame
+  Required 候选集、
+  反事实关系、review/calibration 流程与 coverage ledger。36 个 Required Episode、
+  120 个反事实和 41 个 case-file authority 的机器 authoring/materialization 已完成；
+  独立双审、truth review、calibration、held-out、promotion/run freeze 与外部 admission
+  继续阻止 formal entry。用户已明确授权 G3.1 local implementation development
+  override；代码完成不改变 `deny_g3_1`。
 
 **交付物**
 
@@ -565,13 +576,24 @@ Exit evidence：
   lane 与 independent Reviewer lane。
 - behavior-first EvaluationEpisode corpus：真实/专家措辞、业务世界、决策风险、可接受
   结果空间、禁止结果、反事实 siblings 与分层 grader。
+- claim-scoped case file：evaluation turn、source mode、实际 artifact identity/digest、
+  distinct reviewer approval、局部 disposition 与 reversal。
+- promoted run matrix：每个 Episode 的 base + 全部 sibling；每个 result 精确绑定 variant、
+  sibling ID 与 materialized digest。
 - 用户提供的八类付费金额真实问题形成八个独立 candidate Episode：变化解释、规律、事件
-  影响、健康度、维度/因子归因、异常、多基准和证据质量；它们不收窄其他问题家族。
+  影响、健康度、维度/因子归因、异常、多基准和证据质量；另有 10 个业务链、10 个
+  测量回归和 8 个异步 authority stress，覆盖 WAJEgame 全量 Required suite。
 
 **Exit criteria**
 
-- [ ] contract-supported 问题形成 executable design；clarification/boundary 符合 case
-  `required_disposition` 与 `allowed_dispositions`。
+- [ ] 每个 claim case 按自身 source binding、support state、disposition、applicability、
+  evaluation turn、effective ceiling 与 reversal conditions 验收；局部 gap 不取消无关
+  claim。
+- [ ] 每个 case-file authority 的物理 artifact digest、required identity fields、claim
+  scope 与两位独立 reviewer 的 content-bound approval 可重放；authority 内容变化后旧审查
+  自动失效。
+- [ ] 每个 promoted Episode 的 base 与全部 sibling 都进入 frozen run；counterfactual
+  逐 affected claim 绑定 base case hash 和 authority effect，并显式枚举 unaffected claims。
 - [ ] material assertions 全部有 grounding 和独立 semantic consistency pass。
 - [ ] Frame 条件完备地表达 definition、data quality、scalar/rate/distribution/time series、
   contrast、cohort、funnel、decomposition、association、causal challenge 与 diagnostic set。
@@ -590,7 +612,8 @@ Exit evidence：
 - [ ] 旧 Gate 3 实现、artifact、fixture 不进入当前依赖或 acceptance。
 - [ ] 对抗式审计 blocking findings 为 0。
 - [ ] G3.E0 corpus 达到 Gate3EvalPolicy，真实用户来源和 business/measurement review
-  均可验证；合成措辞不得冒充真实用户样本。
+  均可验证；四文件 allowlist、14 个 factor group、8 个 question family、3 个 source mode
+  与 transfer non-interference 全部通过；合成措辞不得冒充真实用户样本。
 
 ### Gate 4：完整 capability fabric
 
@@ -739,7 +762,8 @@ Gate 1–4 可以扩充，Gate 7 前不得缩减为证明切片：
 - 自然用户对话，可包含 clarification、correction、challenge 与 scope revision；
 - 独立于 WAJE 实现的 business world、数据条件、隐藏 evaluator truth 与决策风险；
 - 必须保持的业务含义、必须调查的问题和多个可接受 measurement design family；
-- allowed dispositions、allowed boundary codes、claim ceiling 与 clarification policy；
+- claim-scoped permitted resolution、allowed boundary codes、design/effective claim ceiling 与
+  clarification policy；
 - 明确的 forbidden outcomes；
 - 至少三个最小反事实 sibling，分别检测 meaning preservation、measurement change 和
   boundary/interaction change；
@@ -889,3 +913,8 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-30 | Gate 3 外部 authority 采用 public GitHub Actions + Artifact Attestations/Sigstore | 用户确认 | 使用 immutable repository IDs、protected ref/environment、exact workflow/source SHA、run/attempt、release/trust epoch、predecessor、完整 evaluator/runtime 与授权 hash；runner 无长期 signing key |
 | 2026-07-30 | 根级 `.github/` 作为 vNext provider deployment projection | GitHub provider 约束 + Day 0 隔离复核 | 应用实现仍只在 `vnext/`；projection 由 vNext policy exact-hash 绑定，并随 clean-copy 删除独立性验证 |
 | 2026-07-30 | 在 formal readiness 仍为 `deny_g3_1` 时先完成 G3.1 local implementation | 用户明确 development override | 允许 epoch-3 合同、存储、迁移与测试落地；gold promotion、protected admission 和 production Evidence 权限保持 fail closed |
+| 2026-07-31 | Gate 3 Required eval rebase 为 36 个 WAJEgame Episode + 4 个非门禁 transfer probe | 用户确认 + 组合对抗审查 | source pool 仅记录 provenance；Required 按 launch/business/measurement/authority 四组验收，suite binding 纳入 core hash，旧 v2 review/promotion/admission 全部失效 |
+| 2026-07-31 | Gate 3 eval authority 升级为 claim-scoped mixed case files | 用户确认 + launch Episode 对抗审查 | Episode v4 允许每个 claim 独立绑定 frozen real、controlled fixture 或 known gap；`data_source_bindings` 纳入 core hash，局部缺口不得取消无关 claim，formal admission 增加 case-file readiness |
+| 2026-07-31 | launch counterfactual 与 authority case file 进入可执行合同 | 用户确认 + 多智能体对抗审查 | 24 个 launch sibling 逐 claim 绑定、32-cell run matrix、result variant 强绑定；范围变化支持逐 claim 重算与 supersede 混合处置；跨 world/contract/source 的单一语义干预使用 composite authority；同一 authority slot 的替代来源必须互斥；counterfactual-only authority 同样进入 readiness；USER008 物化 prior-authority fixture 和 19-milestone repair package；formal admission 继续等待 9 个 authority 双审、41 个 base-or-counterfactual binding 物化、28 个 non-launch claim case 与 96 个 non-launch sibling |
+| 2026-07-31 | Gate 3 eval 投影、结果与 calibration 统一收紧时序和不可变绑定 | 多智能体对抗审查 | 每类投影对象按自身 turn 可见；claim 不得使用未来 truth support；全部 verdict 绑定 frozen manifest、grader registry 与 runner artifact index；typed veto 绑定 failed check；calibration label 绑定专用 human review、Episode/core、result 和 artifact index |
+| 2026-07-31 | G3.E0 机器 authoring/materialization 收口 | 多智能体实现 + 全量对抗复核 | 36 个 Episode、120 个 sibling、41 个 authority、52 个 materialization 全部通过结构、重放、hash 与 clean-copy 验证；formal admission 仅保留真人双审、truth/source/calibration/held-out/promotion/run 与 protected GitHub/Sigstore authority |

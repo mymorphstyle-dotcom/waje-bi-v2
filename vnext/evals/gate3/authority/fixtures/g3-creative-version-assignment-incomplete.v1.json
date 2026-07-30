@@ -1,0 +1,53 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1",
+  "fixture_version_ref": "fixture://wajegame/creative-version-assignment-incomplete/v1",
+  "business_timezone": "Africa/Lagos",
+  "assignment_contract": {
+    "unit": "eligible account",
+    "assignment_time": "2026-06-02T00:00:00+01:00",
+    "assignment_log_coverage": 0.61,
+    "actual_exposure_coverage": 0.48,
+    "control_population_stable": false,
+    "cross_device_identity_coverage": 0.57,
+    "pre_period_balance_available": false
+  },
+  "observed_aggregates": [
+    {
+      "label": "new_creative_observed",
+      "observed_accounts": 5400,
+      "paid_amount_ngn": 11800000
+    },
+    {
+      "label": "control_creative_observed",
+      "observed_accounts": 8100,
+      "paid_amount_ngn": 15100000
+    },
+    {
+      "label": "new_version_observed",
+      "observed_accounts": 4300,
+      "paid_amount_ngn": 9000000
+    },
+    {
+      "label": "control_version_observed",
+      "observed_accounts": 9200,
+      "paid_amount_ngn": 17900000
+    }
+  ],
+  "evaluator_oracle": {
+    "creative_effect_identifiable": false,
+    "version_effect_identifiable": false,
+    "maximum_claim_ceiling": "associational",
+    "required_boundary_code": "assignment_comparability_incomplete"
+  },
+  "agent_projection": {
+    "expose": [
+      "assignment_contract",
+      "observed_aggregates"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

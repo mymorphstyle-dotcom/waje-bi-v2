@@ -1,0 +1,44 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1",
+  "fixture_version_ref": "fixture://wajegame/run-summary-only/v1",
+  "business_timezone": "Africa/Lagos",
+  "prior_run_projection": {
+    "run_id": "run-summary-only-001",
+    "answer_text": "目标日付费金额比基线高 30%，Channel A 是最大增量渠道。",
+    "claim_labels": [
+      "prior_total_growth_claim",
+      "prior_channel_driver_claim"
+    ],
+    "visible_aggregate_values": {
+      "target_paid_amount_ngn": 1300,
+      "baseline_paid_amount_ngn": 1000
+    }
+  },
+  "missing_authority_manifest": {
+    "analysis_frame_revision_ref": null,
+    "work_plan_revision_ref": null,
+    "evidence_record_refs": [],
+    "query_spec_refs": [],
+    "query_result_refs": [],
+    "snapshot_release_refs": [],
+    "deduplication_policy_ref": null,
+    "claim_provenance_refs": []
+  },
+  "evaluator_oracle": {
+    "prior_total_growth_claim_disposition": "unverifiable",
+    "prior_channel_driver_claim_disposition": "unverifiable",
+    "aggregate_values_may_not_reconstruct_authority": true,
+    "required_recovery": "rerun from an accepted Frame and source authority; append new objects"
+  },
+  "agent_projection": {
+    "expose": [
+      "prior_run_projection",
+      "missing_authority_manifest"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

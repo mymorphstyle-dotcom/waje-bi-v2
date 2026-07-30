@@ -1,0 +1,51 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1",
+  "fixture_version_ref": "fixture://wajegame/canonical-payer-identity/v1",
+  "business_timezone": "Africa/Lagos",
+  "mapping_contract": {
+    "mapping_version": "canonical-payer-map-20260602-v1",
+    "effective_at": "2026-06-02T00:00:00+01:00",
+    "eligible_account_rows": 100000,
+    "mapped_account_rows": 97000,
+    "canonical_payers": 91000,
+    "ambiguous_account_rows": 1800,
+    "collision_account_rows": 300,
+    "unmapped_account_rows": 3000,
+    "coverage_ratio": 0.97,
+    "ambiguous_rows_excluded_from_payer_claims": true
+  },
+  "concentration_aggregates": {
+    "account_level_top_1_percent_share": 0.31,
+    "canonical_payer_top_1_percent_share": 0.38,
+    "canonical_payer_top_10_share": 0.07,
+    "canonical_payer_gini": 0.61,
+    "mapping_sensitivity_range": [
+      0.36,
+      0.41
+    ]
+  },
+  "unchanged_contract_gaps": [
+    "refund_or_reversal_policy",
+    "paid_active_retention_cohort_contract",
+    "product_operation_event_contracts",
+    "exposure_control_contracts"
+  ],
+  "evaluator_oracle": {
+    "payer_concentration_claim_supported": true,
+    "overall_health_claim_remains_bounded": true,
+    "priority_risk_must_separate_short_and_long_horizons": true,
+    "canonical_identity_does_not_resolve_refund_retention_or_activity_gaps": true
+  },
+  "agent_projection": {
+    "expose": [
+      "mapping_contract",
+      "concentration_aggregates",
+      "unchanged_contract_gaps"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

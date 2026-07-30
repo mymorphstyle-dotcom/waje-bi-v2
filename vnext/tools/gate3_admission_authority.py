@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,21 @@ class VerifiedAdmissionAuthority:
             ),
             authorized_manifest_sha256s=authorized_manifest_sha256s,
         )
+
+
+class AdmissionAuthorityConnector(Protocol):
+    """Trusted composition boundary used by the canonical readiness CLI.
+
+    Implementations own provider-state retrieval, cryptographic verification,
+    and monotonic admission storage. Readiness never accepts provider JSON,
+    bundle paths, or caller-created authority values directly.
+    """
+
+    def current_authority(
+        self,
+        expected: AdmissionExpectation,
+    ) -> tuple[VerifiedAdmissionAuthority | None, list[str]]:
+        """Return the current committed authority or fail-closed findings."""
 
 
 def canonical_json_bytes(value: Any) -> bytes:

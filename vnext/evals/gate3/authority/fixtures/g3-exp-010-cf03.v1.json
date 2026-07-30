@@ -1,0 +1,328 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-010-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-010-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-010:G3-EXP-010-CF03",
+    "episode_id": "G3-EXP-010",
+    "binding_id": "gap_exposure_control_contracts",
+    "authority_slot_id": "fixture_g3_exp_010_cf03_v1",
+    "scope_claim_target_ids": [
+      "incremental_profit_effect_claim",
+      "incremental_reactivation_effect_claim",
+      "next_experiment_design_claim",
+      "observed_reactivation_difference_claim",
+      "scale_decision_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/payer-silence-risk-score/v3",
+      "state": "available",
+      "description": "风险评分记录评分时间、模型版本和合格阈值。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/reactivation-contact-assignment/v2",
+      "state": "partial",
+      "description": "触达在 eligible 历史付费用户中随机分配，所有历史付费用户完成再次付费观察。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/payer-reactivation-outcome/v4",
+      "state": "available",
+      "description": "再次付费记录历史付费金额、充值奖励和再次付费日期。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/reactivation-incentive-cost/v1",
+      "state": "available",
+      "description": "成本包含玩家运营时间和充值奖励让利。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-OUTREACH-NONRANDOM",
+      "description": "触达分配没有随机化。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-OUTREACH-CONTACTABILITY",
+      "description": "接通受历史付费用户沟通意愿影响。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-OUTREACH-OPERATOR-SELECTION",
+      "description": "玩家运营优先级依赖用户价值和主观可挽回性。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-OUTREACH-IMMATURE",
+      "description": "部分历史付费用户尚未到再次付费日期。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-010-01",
+        "statement": "简单 12 个点差异大部分来自选择偏差。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-010-02",
+        "statement": "边缘风险历史付费用户有小幅正向增量再次付费，最高风险历史付费用户效果很弱。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-010-03",
+        "statement": "高价值历史付费用户充值奖励过大，部分再次付费带来负增量利润。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "observed_reactivation_difference_claim",
+        "evaluation_turn": 4,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "paid_order_success",
+          "contract://wajegame/payer-reactivation-outcome/v4",
+          "DC-OUTREACH-NONRANDOM"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-010-01",
+          "TRUTH-G3-EXP-010-02",
+          "TRUTH-G3-EXP-010-03"
+        ],
+        "boundary_codes": [
+          "nonrandom_treatment"
+        ],
+        "reversal_conditions": [
+          "冻结结果不支持 12 个点差异或 population identity 改变。"
+        ]
+      },
+      {
+        "claim_target_id": "incremental_reactivation_effect_claim",
+        "evaluation_turn": 4,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/reactivation-contact-assignment/v2",
+          "DC-OUTREACH-NONRANDOM"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-010-01",
+          "TRUTH-G3-EXP-010-02",
+          "TRUTH-G3-EXP-010-03"
+        ],
+        "boundary_codes": [
+          "nonrandom_treatment",
+          "immature_reactivation_outcome"
+        ],
+        "reversal_conditions": [
+          "随机 assignment 或可信识别设计给出不同增量方向。"
+        ]
+      },
+      {
+        "claim_target_id": "incremental_profit_effect_claim",
+        "evaluation_turn": 4,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/reactivation-incentive-cost/v1",
+          "DC-OUTREACH-IMMATURE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-010-01",
+          "TRUTH-G3-EXP-010-02",
+          "TRUTH-G3-EXP-010-03"
+        ],
+        "boundary_codes": [
+          "missing_incremental_profit_identification",
+          "immature_reactivation_outcome"
+        ],
+        "reversal_conditions": [
+          "成熟结果和真实奖励成本使增量利润跨过零。"
+        ]
+      },
+      {
+        "claim_target_id": "scale_decision_claim",
+        "evaluation_turn": 4,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/reactivation-contact-assignment/v2",
+          "DC-OUTREACH-OPERATOR-SELECTION"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-010-01",
+          "TRUTH-G3-EXP-010-02",
+          "TRUTH-G3-EXP-010-03"
+        ],
+        "boundary_codes": [
+          "nonrandom_treatment",
+          "missing_incremental_profit_identification"
+        ],
+        "reversal_conditions": [
+          "分层增量利润、预算约束或风险阈值改变。"
+        ]
+      },
+      {
+        "claim_target_id": "next_experiment_design_claim",
+        "evaluation_turn": 4,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/reactivation-contact-assignment/v2",
+          "DC-OUTREACH-NONRANDOM"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-010-01",
+          "TRUTH-G3-EXP-010-02",
+          "TRUTH-G3-EXP-010-03"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "业务约束禁止随机分配或可用样本与最小效应要求改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

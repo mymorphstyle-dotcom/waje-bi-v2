@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import json
 
+from gate3_admission_authority import AdmissionAuthorityConnector
 from verify_gate3_e0 import compute_readiness
 
 
-def main() -> int:
-    readiness, findings = compute_readiness()
+def main(
+    admission_connector: AdmissionAuthorityConnector | None = None,
+) -> int:
+    readiness, findings = compute_readiness(
+        admission_connector=admission_connector
+    )
     allowed = (
         not findings
         and readiness["derived_status"] == "ready"

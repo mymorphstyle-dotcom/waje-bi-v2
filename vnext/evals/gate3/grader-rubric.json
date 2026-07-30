@@ -136,5 +136,157 @@
     "pairwise_order_randomization": true,
     "verbosity_bias_check": true,
     "disagreement_disposition": "human_review"
+  },
+  "role_contracts": {
+    "primary_business_analysis_agent_v1": {
+      "role": "primary_business_analysis_agent",
+      "prompt_version": "gate3.primary-business-analysis-agent.v1",
+      "system_prompt": "You are WAJE's Primary Business Analysis Agent. For each case, propose an open-ended but typed business investigation. Preserve the user's decision, make measurement choices explicit, use available facts autonomously, and ask only for material decisions that cannot be discovered. Do not assume one canonical measurement window or fixed investigation recipe.\n\nReturn only JSON with a cases array. Each item must contain case_id, disposition, measurement_design, investigation, assumptions_or_decisions, revision_and_fencing, and answer_boundary. measurement_design must contain decision_target, estimand, population, time_or_comparison, observation_unit, numerator, denominator_or_exposure, and claim_ceiling.",
+      "input_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cases"
+        ],
+        "properties": {
+          "cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_id",
+                "conversation",
+                "world",
+                "decision"
+              ]
+            }
+          }
+        }
+      },
+      "output_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cases"
+        ],
+        "properties": {
+          "cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_id",
+                "disposition",
+                "measurement_design",
+                "investigation",
+                "assumptions_or_decisions",
+                "revision_and_fencing",
+                "answer_boundary"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "runtime_reviewer_v1": {
+      "role": "runtime_reviewer",
+      "prompt_version": "gate3.runtime-reviewer.v1",
+      "system_prompt": "You are WAJE's independent Runtime Reviewer. Review each complete candidate AnswerVersion once. There is no canonical measurement window. A justified alternative design can pass. Use only the supplied business world and run artifacts. Return publication decisions and repair targets; do not score.\n\nAllowed publication_decision: approve_provisional, approve_settled, block_and_repair, ask_user, stop_with_limits. Allowed repair_target: frame, plan, evidence, answer, user, null.\n\nReturn only JSON with a reviews array. Each review must contain case_ref, publication_decision, repair_target, claim_reviews, and concise_reason.",
+      "input_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cases"
+        ],
+        "properties": {
+          "cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_ref",
+                "business_world",
+                "run_artifacts"
+              ]
+            }
+          }
+        }
+      },
+      "output_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reviews"
+        ],
+        "properties": {
+          "reviews": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_ref",
+                "publication_decision",
+                "repair_target",
+                "claim_reviews",
+                "concise_reason"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "evaluation_reviewer_v1": {
+      "role": "evaluation_reviewer",
+      "prompt_version": "gate3.evaluation-reviewer.v1",
+      "system_prompt": "You are WAJE's independent Gate 3 Evaluation Reviewer. Score the completed episode from raw business context and real run artifacts. There is no canonical measurement window. Use four anchored levels: 3=professional and complete; 2=acceptable with non-critical gaps; 1=major gap requiring repair or degradation; 0=invalid.\n\nDimensions: question_and_measurement, investigation, evidence_and_claims, authority_consistency, answer_value. A critical failure forces fail. Use needs_review only when the record cannot support a confident judgment.\n\nReturn only JSON with a reviews array. Each review must contain case_ref, scores for all five dimensions, critical_failures, verdict, and concise_reason.",
+      "input_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cases"
+        ],
+        "properties": {
+          "cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_ref",
+                "business_world",
+                "run_artifacts"
+              ]
+            }
+          }
+        }
+      },
+      "output_contract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reviews"
+        ],
+        "properties": {
+          "reviews": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case_ref",
+                "scores",
+                "critical_failures",
+                "verdict",
+                "concise_reason"
+              ]
+            }
+          }
+        }
+      }
+    }
   }
 }

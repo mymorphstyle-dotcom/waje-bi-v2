@@ -1,0 +1,216 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-010-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-010-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-010",
+    "episode_id": "G3-GF-010",
+    "binding_id": "fixture_g3_gf_010_base",
+    "authority_slot_id": "fixture_g3_gf_010_base_v1",
+    "scope_claim_target_ids": [
+      "reactivation_unadjusted_association_claim",
+      "reactivation_adjusted_association_claim",
+      "reactivation_causal_effect_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-010-01",
+      "state": "available",
+      "description": "treatment 为召回充值奖励送达且可使用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-010-02",
+      "state": "available",
+      "description": "outcome 为送达后 30 日内是否再次付费",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-010-03",
+      "state": "available",
+      "description": "WAJEgame VIP 运营定向评分、历史活跃和历史付费可用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+      "state": "missing",
+      "description": "随机分配、有效工具变量或经审核自然实验的 exposure/control identification 合同缺失。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-010-01",
+      "description": "发券组观察30 日再次付费率 8%，未发券组 15%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-010-02",
+      "description": "发券组在发券前活跃度和消费显著更高",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-010-03",
+      "description": "高付费意愿用户更容易被 WAJEgame VIP 运营策略选中",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-010-01",
+        "statement": "原始差异来自 targeting selection，召回充值奖励没有真实因果效果。Agent 应识别 confounding 和 positivity 风险，最多给关联或经调整的观察性估计，并提出实验或识别需求。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "reactivation_unadjusted_association_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_010_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-010-BASE-V1",
+          "CONTRACT-G3-GF-010-01",
+          "CONTRACT-G3-GF-010-02",
+          "CONTRACT-G3-GF-010-03",
+          "DC-G3-GF-010-01",
+          "DC-G3-GF-010-02",
+          "DC-G3-GF-010-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-010-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "treatment/outcome 时序、30 日窗口或两组 risk set 改变。"
+        ]
+      },
+      {
+        "claim_target_id": "reactivation_adjusted_association_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_010_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-010-BASE-V1",
+          "CONTRACT-G3-GF-010-01",
+          "CONTRACT-G3-GF-010-02",
+          "CONTRACT-G3-GF-010-03",
+          "DC-G3-GF-010-01",
+          "DC-G3-GF-010-02",
+          "DC-G3-GF-010-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-010-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "overlap 不足、balance 未达标或替代调整集改变方向。",
+          "未观测 confounding 仍限制关联解释。"
+        ]
+      },
+      {
+        "claim_target_id": "reactivation_causal_effect_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_010_base",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_reactivation_identification",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "causal",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-010-BASE-V1",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "DC-G3-GF-010-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-010-01"
+        ],
+        "boundary_codes": [
+          "causal_identification_unavailable"
+        ],
+        "reversal_conditions": [
+          "取得经审核的 randomized holdout 或其他有效识别合同后创建新 FrameRevision。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

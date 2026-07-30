@@ -1,0 +1,182 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-006-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-006-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-006:G3-GF-006-CF03",
+    "episode_id": "G3-GF-006",
+    "binding_id": "gap_refund_or_reversal_policy",
+    "authority_slot_id": "fixture_g3_gf_006_cf03_v1",
+    "scope_claim_target_ids": [
+      "net_revenue_direction_claim",
+      "refund_release_eligibility_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-006-01",
+      "state": "available",
+      "description": "扣除退款与冲正后的净付费金额等于 最终支付成功金额 减 已结算退款与冲正金额",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-006-02",
+      "state": "partial",
+      "description": "退款 release 达到 95% coverage 才允许 settled 净付费 direction claim",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-006-03",
+      "state": "available",
+      "description": "支付成功总额 可在 T+1 12:00 后使用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-006-04",
+      "state": "available",
+      "description": "允许生成 provisional boundary 和后续重算计划",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-006-01",
+      "description": "退款 feed coverage 为 97% 且合同阈值仍为 95%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-006-02",
+      "description": "昨天 refund feed 预计 coverage 仅 55%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-006-03",
+      "description": "上周同一天支付与退款都已结算",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-006-04",
+      "description": "在最终退款到齐的数据世界中，昨天 net revenue 实际低 6%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-006-01",
+        "statement": "当前合同只能支持支付成功总额比较，无法识别扣除退款与冲正后的净付费方向。正确处置是发布局部 gross 证据并阻止净付费结论。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "net_revenue_direction_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_refund_or_reversal_policy",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "insufficient"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.refund_or_reversal_policy",
+          "CONTRACT-G3-GF-006-02",
+          "DC-G3-GF-006-02"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-006-01"
+        ],
+        "boundary_codes": [
+          "refund_release_incomplete"
+        ],
+        "reversal_conditions": [
+          "退款 coverage 达标后的成熟净额方向转正。"
+        ]
+      },
+      {
+        "claim_target_id": "refund_release_eligibility_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "gap_refund_or_reversal_policy",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "missing",
+          "business_evidence_state": "insufficient"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "contract_boundary_scope",
+        "effective_claim_ceiling": "data_quality_only",
+        "required_observation_refs": [
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.refund_or_reversal_policy",
+          "CONTRACT-G3-GF-006-02",
+          "DC-G3-GF-006-02"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-006-01"
+        ],
+        "boundary_codes": [
+          "refund_release_incomplete"
+        ],
+        "reversal_conditions": [
+          "退款 coverage 达到合同阈值并绑定成熟 release。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

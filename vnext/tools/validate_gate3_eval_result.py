@@ -78,6 +78,18 @@ def derive_final_verdict(result: Mapping[str, Any]) -> str:
     return "invalid"
 
 
+def _derive_layer_verdict(check_verdicts: set[str]) -> str:
+    if "fail" in check_verdicts:
+        return "fail"
+    if "invalid" in check_verdicts:
+        return "invalid"
+    if "blocked" in check_verdicts:
+        return "blocked"
+    if check_verdicts == {"pass"}:
+        return "pass"
+    return "invalid"
+
+
 def validate_result(
     result: Mapping[str, Any],
     *,
@@ -103,6 +115,13 @@ def validate_result(
         return findings
     if result["run_manifest_sha256"] != _canonical_sha256(run_manifest):
         findings.append("run_manifest_sha256 does not bind canonical manifest")
+    if (
+        run_manifest.get("grader_registry_sha256")
+        != _canonical_sha256(grader_registry)
+    ):
+        findings.append(
+            "frozen run manifest does not bind the canonical grader registry"
+        )
     run_cells = {
         cell["run_cell_id"]: cell for cell in run_manifest["run_cells"]
     }
@@ -120,9 +139,48 @@ def validate_result(
         "authority_profile_ref",
         "authority_profile_sha256",
         "product_grader_profile_ref",
+        "case_variant",
     ):
         if result[field] != cell[field]:
             findings.append("{} does not match frozen run cell".format(field))
+    world_profile_ids = [
+        profile["profile_id"] for profile in world_profiles["profiles"]
+    ]
+    authority_profile_ids = [
+        profile["profile_id"] for profile in authority_profiles["profiles"]
+    ]
+    grader_profile_ids = [
+        profile["profile_id"] for profile in grader_registry["profiles"]
+    ]
+    predicate_ids = [
+        predicate["predicate_id"]
+        for predicate in grader_registry.get("predicates", [])
+    ]
+    if len(world_profile_ids) != len(set(world_profile_ids)):
+        findings.append("world profile registry contains duplicate ids")
+    if len(authority_profile_ids) != len(set(authority_profile_ids)):
+        findings.append("authority profile registry contains duplicate ids")
+    if len(grader_profile_ids) != len(set(grader_profile_ids)):
+        findings.append("grader registry contains duplicate profile ids")
+    if len(predicate_ids) != len(set(predicate_ids)):
+        findings.append("grader registry contains duplicate predicate ids")
+    for profile in grader_registry["profiles"]:
+        predicate_ids = profile["required_predicate_ids"]
+        if len(predicate_ids) != len(set(predicate_ids)):
+            findings.append(
+                "grader profile {} contains duplicate predicate ids".format(
+                    profile["profile_id"]
+                )
+            )
+    implementation_check_ids = [
+        item["check_id"]
+        for item in grader_registry["implementation_checks"]
+    ]
+    if len(implementation_check_ids) != len(
+        set(implementation_check_ids)
+    ):
+        findings.append("implementation check registry contains duplicate ids")
+
     world_profiles_by_id = {
         profile["profile_id"]: profile
         for profile in world_profiles["profiles"]
@@ -158,10 +216,26 @@ def validate_result(
     if product_profile is None:
         findings.append("frozen run cell has unknown product grader profile")
         required_product_checks: set[str] = set()
+    elif product_profile["layer"] != "product_behavior":
+        findings.append(
+            "frozen run cell product grader has the wrong layer"
+        )
+        required_product_checks = set()
     else:
         required_product_checks = set(
             product_profile["required_predicate_ids"]
         )
+        registered_product_checks = {
+            predicate["predicate_id"]
+            for predicate in grader_registry.get("predicates", [])
+            if predicate["layer"] == "product_behavior"
+        }
+        if not required_product_checks.issubset(
+            registered_product_checks
+        ):
+            findings.append(
+                "product grader profile cites unregistered product predicates"
+            )
     required_checks = {
         "product_behavior": required_product_checks,
         "authority_conformance": set(
@@ -188,25 +262,50 @@ def validate_result(
                     layer_name
                 )
             )
-    if result["derived_final_verdict"] == "pass":
-        artifact_index = authority.get("artifact_index")
-        if artifact_index is None:
+    veto_ids = [veto["veto_id"] for veto in result["critical_vetoes"]]
+    if len(veto_ids) != len(set(veto_ids)):
+        findings.append("critical veto ids must be unique")
+    for veto in result["critical_vetoes"]:
+        layer_result = result["layer_results"][veto["layer"]]
+        child_verdict = next(
+            (
+                check["verdict"]
+                for check in layer_result["check_results"]
+                if check["check_id"] == veto["check_id"]
+            ),
+            None,
+        )
+        if child_verdict != "fail":
             findings.append(
-                "passing result requires a runner-verified artifact index"
+                "critical veto {} lacks a matching failed check".format(
+                    veto["veto_id"]
+                )
             )
-        else:
-            indexed_layers = artifact_index.get(result["run_cell_id"], {})
-            for layer_name, layer_result in result[
-                "layer_results"
-            ].items():
-                if set(layer_result["artifact_sha256s"]) != set(
-                    indexed_layers.get(layer_name, [])
-                ):
-                    findings.append(
-                        "{} artifacts do not match runner index".format(
-                            layer_name
-                        )
+        if (
+            veto["artifact_sha256"]
+            not in layer_result["artifact_sha256s"]
+        ):
+            findings.append(
+                "critical veto {} lacks a matching layer artifact".format(
+                    veto["veto_id"]
+                )
+            )
+    artifact_index = authority.get("artifact_index")
+    if artifact_index is None:
+        findings.append("result requires a runner-verified artifact index")
+    else:
+        indexed_layers = artifact_index.get(result["run_cell_id"], {})
+        for layer_name, layer_result in result[
+            "layer_results"
+        ].items():
+            if set(layer_result["artifact_sha256s"]) != set(
+                indexed_layers.get(layer_name, [])
+            ):
+                findings.append(
+                    "{} artifacts do not match runner index".format(
+                        layer_name
                     )
+                )
     expected = derive_final_verdict(result)
     if result["derived_final_verdict"] != expected:
         findings.append(
@@ -218,10 +317,13 @@ def validate_result(
         child_verdicts = {
             check["verdict"] for check in layer_result["check_results"]
         }
-        if layer_result["verdict"] == "pass" and child_verdicts != {"pass"}:
+        expected_layer_verdict = _derive_layer_verdict(child_verdicts)
+        if layer_result["verdict"] != expected_layer_verdict:
             findings.append(
-                "{} cannot pass with child verdicts {}".format(
-                    layer_name, sorted(child_verdicts)
+                "{} verdict must be {}, got {}".format(
+                    layer_name,
+                    expected_layer_verdict,
+                    layer_result["verdict"],
                 )
             )
     return findings
@@ -239,9 +341,16 @@ def contract_self_test() -> list[str]:
         "required_invariant_ids": ["authority_check"],
     }
     grader_registry = {
+        "predicates": [
+            {
+                "predicate_id": "product_check",
+                "layer": "product_behavior",
+            }
+        ],
         "profiles": [
             {
                 "profile_id": "GRADER-PRODUCT-SELF-TEST",
+                "layer": "product_behavior",
                 "required_predicate_ids": ["product_check"],
             }
         ],
@@ -256,8 +365,13 @@ def contract_self_test() -> list[str]:
         "authority_profile_ref": authority_profile["profile_id"],
         "authority_profile_sha256": _canonical_sha256(authority_profile),
         "product_grader_profile_ref": "GRADER-PRODUCT-SELF-TEST",
+        "case_variant": {"kind": "base"},
     }
-    run_manifest = {"status": "frozen", "run_cells": [run_cell]}
+    run_manifest = {
+        "status": "frozen",
+        "grader_registry_sha256": _canonical_sha256(grader_registry),
+        "run_cells": [run_cell],
+    }
     authority = {
         "run_manifest": run_manifest,
         "grader_registry": grader_registry,
@@ -289,6 +403,7 @@ def contract_self_test() -> list[str]:
                 "authority_profile_ref",
                 "authority_profile_sha256",
                 "product_grader_profile_ref",
+                "case_variant",
             )
         },
         "layer_results": {

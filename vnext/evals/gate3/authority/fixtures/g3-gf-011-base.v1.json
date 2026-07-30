@@ -1,0 +1,235 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-011-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-011-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-08-03T10:00:00+01:00",
+    "target_business_date": "2026-07-31",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-011",
+    "episode_id": "G3-GF-011",
+    "binding_id": "fixture_g3_gf_011_base",
+    "authority_slot_id": "fixture_g3_gf_011_base_v1",
+    "scope_claim_target_ids": [
+      "income_metric_resolution_claim",
+      "selected_ggr_change_claim",
+      "selected_ggr_driver_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-011-01",
+      "state": "conflicting",
+      "description": "支付经营口径：最终成功且未撤销的 gross paid_amount。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-011-02",
+      "state": "conflicting",
+      "description": "玩法经营口径：玩家下注金额减派奖后的 gameplay_profit/GGR。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-011-03",
+      "state": "available",
+      "description": "两个指标的最新完整月、前月和 decomposition 数据覆盖完整。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-011-04",
+      "state": "available",
+      "description": "管理层玩法经营复盘推荐 gameplay_profit/GGR；充值经营盘复盘推荐 gross paid_amount。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-011-05",
+      "state": "available",
+      "description": "GGR 月度变化使用玩法用户与下注量、平均下注金额、玩法 mix、yield/返奖相关项、interaction 和 residual 的版本化分解。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-011-01",
+      "description": "最新完整月 gameplay_profit/GGR 环比下降 8%。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-011-02",
+      "description": "同一完整月 gross paid_amount 环比上升 4%。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-011-03",
+      "description": "GGR 的 -8% 中，玩法用户与下注量贡献 -5 个百分点，yield/返奖相关项贡献 -3 个百分点，interaction 与 residual 在 tolerance 内。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-011-04",
+      "description": "首轮消息没有足够上下文选择 metric；第二轮用户明确选择玩法利润/GGR。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-011-01",
+        "statement": "首轮无法从上下文唯一确定“收入”口径；一次澄清后用户选择 gameplay_profit/GGR。正确答案解释 GGR 环比 -8%，其中玩法用户与下注量约 -5 个百分点、yield/返奖相关项约 -3 个百分点，并把 gross paid_amount +4% 作为并列背景，禁止混成同一指标。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "income_metric_resolution_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_011_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-011-BASE-V1",
+          "CONTRACT-G3-GF-011-01",
+          "CONTRACT-G3-GF-011-02",
+          "CONTRACT-G3-GF-011-03",
+          "CONTRACT-G3-GF-011-04",
+          "CONTRACT-G3-GF-011-05",
+          "DC-G3-GF-011-01",
+          "DC-G3-GF-011-02",
+          "DC-G3-GF-011-03",
+          "DC-G3-GF-011-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-011-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "用户选择改为 gross paid_amount 或业务决策上下文改变。"
+        ]
+      },
+      {
+        "claim_target_id": "selected_ggr_change_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_011_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-011-BASE-V1",
+          "CONTRACT-G3-GF-011-01",
+          "CONTRACT-G3-GF-011-02",
+          "CONTRACT-G3-GF-011-03",
+          "CONTRACT-G3-GF-011-04",
+          "CONTRACT-G3-GF-011-05",
+          "DC-G3-GF-011-01",
+          "DC-G3-GF-011-02",
+          "DC-G3-GF-011-03",
+          "DC-G3-GF-011-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-011-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "selected metric、完整月或 GGR contract 版本改变。"
+        ]
+      },
+      {
+        "claim_target_id": "selected_ggr_driver_claim",
+        "evaluation_turn": 2,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_011_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-011-BASE-V1",
+          "CONTRACT-G3-GF-011-01",
+          "CONTRACT-G3-GF-011-02",
+          "CONTRACT-G3-GF-011-03",
+          "CONTRACT-G3-GF-011-04",
+          "CONTRACT-G3-GF-011-05",
+          "DC-G3-GF-011-01",
+          "DC-G3-GF-011-02",
+          "DC-G3-GF-011-03",
+          "DC-G3-GF-011-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-011-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "decomposition rule、component totals 或 residual tolerance 改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

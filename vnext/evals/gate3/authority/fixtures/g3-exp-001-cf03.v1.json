@@ -1,0 +1,158 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-001-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-001-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-001:G3-EXP-001-CF03",
+    "episode_id": "G3-EXP-001",
+    "binding_id": "gap_exposure_control_contracts",
+    "authority_slot_id": "fixture_g3_exp_001_cf03_v1",
+    "scope_claim_target_ids": [
+      "recharge_activity_effect"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/channel-scope/v1",
+      "state": "available",
+      "description": "渠道主数据包含上线日期、地区、包体和稳定渠道资格，可按用户修订排除新上线渠道。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/paid-amount/v1",
+      "state": "available",
+      "description": "支付成功订单可按业务日、渠道和支付方式汇总 gross paid amount、付费人数、付费频次和单笔付费金额。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/gameplay-ggr/v1",
+      "state": "available",
+      "description": "玩法事实可按业务日、渠道和玩法汇总投注额、返奖额、返奖率及 GGR，并识别异常玩法单元。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-CHAIN-NEW-CHANNEL-MIX",
+      "description": "整体付费金额增长主要来自最近两周新上线渠道；排除新渠道后稳定渠道付费金额基本持平。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-CHAIN-STABLE-GGR-DECLINE",
+      "description": "稳定渠道 GGR 下滑同时伴随返奖率上升、低 GGR 玩法占比增加和三个异常玩法单元。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-CHAIN-ACTIVITY-EFFECT-GAP",
+      "description": "发布可接受的活动曝光、奖励归属、对照和支付到玩法关联合同，并提供完整覆盖。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-CHAIN-CROSS-SOURCE-GAP",
+      "description": "支付成功事实与玩法事实可以按渠道和业务日并列观察，缺少订单到玩法行为的稳定关联，禁止把同步变化直接写成跨链路因果归因。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-CHAIN-BUSINESS-DAY",
+      "description": "支付与玩法事件统一按 Africa/Lagos 凌晨 4 点切分业务日，最近一个业务日已完整释放。",
+      "discoverability": "provided_to_agent",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-001-01",
+        "statement": "稳定渠道的玩法利润/GGR下滑由返奖率上升、低利润玩法 mix 增加和三个玩法异常共同造成。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-001-02",
+        "statement": "付费金额增长主要来自新上线渠道；排除新渠道后稳定渠道付费金额基本持平。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-001-03",
+        "statement": "现有证据只能确认充值活动与变化时间重合；缺少曝光、奖励归属、对照和跨链路关联，不能判断充值活动是否造成付费金额或 GGR 变化。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "recharge_activity_effect",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          },
+          {
+            "binding_id": "gap_gameplay_metric_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "missing",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "contract_boundary_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.gameplay_metric_contracts",
+          "contract://wajegame/recharge-activity-effect/v1",
+          "DC-CHAIN-ACTIVITY-EFFECT-GAP"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-001-03"
+        ],
+        "boundary_codes": [
+          "recharge_activity_effect_contract_missing",
+          "payment_gameplay_linkage_missing"
+        ],
+        "reversal_conditions": [
+          "补齐活动 assignment、实际 exposure、对照和支付到玩法关联后增量方向改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

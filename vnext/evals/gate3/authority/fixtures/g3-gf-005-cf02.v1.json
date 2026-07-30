@@ -1,0 +1,235 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-005-CF02-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-005-cf02/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-005:G3-GF-005-CF02",
+    "episode_id": "G3-GF-005",
+    "binding_id": "fixture_g3_gf_005_base",
+    "authority_slot_id": "fixture_g3_gf_005_cf02_v1",
+    "scope_claim_target_ids": [
+      "composition_contribution_claim",
+      "new_customer_quality_claim",
+      "overall_payment_rate_claim",
+      "within_segment_rate_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-005-01",
+      "state": "available",
+      "description": "付费率为 distinct paid_user_id 除以 distinct eligible_visitor_id",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-005-02",
+      "state": "available",
+      "description": "员工、机器人和测试流量排除在 denominator 外",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-005-03",
+      "state": "available",
+      "description": "新客定义为首次 eligible visit 发生在当周",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-005-04",
+      "state": "available",
+      "description": "允许按新客/回访客分层并做标准化或 accounting decomposition",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-005-01",
+      "description": "上周回访客占 80%，付费率 20%；新客占 20%，付费率 5%；总体 17%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-005-02",
+      "description": "本周回访客占 30%，付费率 20%；新客占 70%，付费率 5%；总体 9.5%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-005-03",
+      "description": "两组内部付费率均未变化，denominator 总量扩大",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-005-01",
+        "statement": "新客占比维持 20%，新客付费率降到 5% 以下",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "overall_payment_rate_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-005-BASE-V1",
+          "CONTRACT-G3-GF-005-01",
+          "DC-G3-GF-005-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-005-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "eligible visitor 分母或去重规则改变总体方向。"
+        ]
+      },
+      {
+        "claim_target_id": "within_segment_rate_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-005-BASE-V1",
+          "CONTRACT-G3-GF-005-01",
+          "DC-G3-GF-005-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-005-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "新客定义或分层后的组内率发生变化。"
+        ]
+      },
+      {
+        "claim_target_id": "composition_contribution_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-005-BASE-V1",
+          "CONTRACT-G3-GF-005-01",
+          "DC-G3-GF-005-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-005-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "标准化权重或对称分解显示组内变化成为主贡献。"
+        ]
+      },
+      {
+        "claim_target_id": "new_customer_quality_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-005-BASE-V1",
+          "CONTRACT-G3-GF-005-01",
+          "DC-G3-GF-005-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-005-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "新客组内可比付费率出现实质下降。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

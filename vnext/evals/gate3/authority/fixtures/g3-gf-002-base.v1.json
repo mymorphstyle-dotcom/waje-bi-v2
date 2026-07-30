@@ -1,0 +1,237 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-002-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-002-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2025-12-31",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-002",
+    "episode_id": "G3-GF-002",
+    "binding_id": "fixture_g3_gf_002_base",
+    "authority_slot_id": "fixture_g3_gf_002_base_v1",
+    "scope_claim_target_ids": [
+      "monthly_resolved_window_claim",
+      "paired_year_over_year_month_end_claim",
+      "month_end_stability_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-002-01",
+      "state": "available",
+      "description": "付费金额按最终支付成功订单金额计数，观察单位为 支付订单",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-002-02",
+      "state": "available",
+      "description": "自然日区间为左闭右开，时区 Africa/Lagos",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-002-03",
+      "state": "available",
+      "description": "last-N calendar days 从每个目标自然月末日向前解析",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-002-04",
+      "state": "available",
+      "description": "数据 release 对两年全部月份完整",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-002-01",
+      "description": "2025-02 的 last-7-calendar-days 窗口解析为 2025-02-22 至 2025-02-28。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-002-02",
+      "description": "2024-02 的 last-7-calendar-days 窗口解析为 2024-02-23 至 2024-02-29，包含闰日。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-002-03",
+      "description": "30 天月窗口从当月 24 日开始，31 天月窗口从当月 25 日开始",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-002-04",
+      "description": "所有窗口均为 7 calendar days 和 7 valid observed days",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-002-05",
+      "description": "每个窗口真实日均付费金额均为 100，月度 raw total 均为 700",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-002-01",
+        "statement": "2024 与 2025 的逐月 month-end profile 都没有强度变化。resolver 根据每月真实末日生成不同起始日期；每个 last-7-day 窗口都有 7 个 calendar days、7 个 valid observed days、日均 100 NGN。把 2 月硬编码到 22 日或假设每月第 31 日为月末会制造差异或无效日期。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "monthly_resolved_window_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-002-BASE-V1",
+          "CONTRACT-G3-GF-002-01",
+          "CONTRACT-G3-GF-002-02",
+          "CONTRACT-G3-GF-002-03",
+          "CONTRACT-G3-GF-002-04",
+          "DC-G3-GF-002-01",
+          "DC-G3-GF-002-02",
+          "DC-G3-GF-002-03",
+          "DC-G3-GF-002-04",
+          "DC-G3-GF-002-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-002-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "calendar version、month-end resolver 或任一实际日期改变。",
+          "任一窗口 valid observed days 少于七日。"
+        ]
+      },
+      {
+        "claim_target_id": "paired_year_over_year_month_end_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-002-BASE-V1",
+          "CONTRACT-G3-GF-002-01",
+          "CONTRACT-G3-GF-002-02",
+          "CONTRACT-G3-GF-002-03",
+          "CONTRACT-G3-GF-002-04",
+          "DC-G3-GF-002-01",
+          "DC-G3-GF-002-02",
+          "DC-G3-GF-002-03",
+          "DC-G3-GF-002-04",
+          "DC-G3-GF-002-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-002-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "year pair、同月配对或完整月资格改变。",
+          "两年使用不同 metric 或 calendar contract。"
+        ]
+      },
+      {
+        "claim_target_id": "month_end_stability_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-002-BASE-V1",
+          "CONTRACT-G3-GF-002-01",
+          "CONTRACT-G3-GF-002-02",
+          "CONTRACT-G3-GF-002-03",
+          "CONTRACT-G3-GF-002-04",
+          "DC-G3-GF-002-01",
+          "DC-G3-GF-002-02",
+          "DC-G3-GF-002-03",
+          "DC-G3-GF-002-04",
+          "DC-G3-GF-002-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-002-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "替代 last-5/last-10 窗口产生稳定的反向模式。",
+          "完整月份或例外月份集合改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

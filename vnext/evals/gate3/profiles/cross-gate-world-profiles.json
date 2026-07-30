@@ -6,7 +6,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-001",
       "episode_id": "G3-ADV-001",
-      "episode_core_sha256": "658a09a8a7b7c8dbc90700939d38f154cb1daf9e12f5832da49f265c0e74b026",
+      "episode_core_sha256": "30aadcac85acaf99a64c0c48094dbd2f3b28f0971b0b0a4f571428d949826db0",
       "world_id": "WORLD-ADV-001",
       "stage_profiles": {
         "gate3": {
@@ -52,54 +52,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-002",
       "episode_id": "G3-ADV-002",
-      "episode_core_sha256": "16eb79f424956db2a74af493877cdf1eece7ef0a7c6eada58d7ba718c27d3605",
+      "episode_core_sha256": "35c42936dfeeed4418c826d3945ebe36992760791ace8f4458b88d1cf27f40ed",
       "world_id": "WORLD-ADV-002",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-ADV-003",
-      "episode_id": "G3-ADV-003",
-      "episode_core_sha256": "92e1615a5dcb11684c7743cb597c8cbec59270a8d465f447e7e9b3878e453c18",
-      "world_id": "WORLD-ADV-003",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -144,7 +98,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-004",
       "episode_id": "G3-ADV-004",
-      "episode_core_sha256": "8a946c82a7ee98b22b158d3d391b29c54743db484ed5f974e9803958529918b5",
+      "episode_core_sha256": "4d5d52e8818cd45692f2fe64910bd0223cc01beef9221ea8443f1e92c49f9888",
       "world_id": "WORLD-ADV-004",
       "stage_profiles": {
         "gate3": {
@@ -190,7 +144,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-005",
       "episode_id": "G3-ADV-005",
-      "episode_core_sha256": "cdc9a5a261edaac9a12b42d0c5197bb18dc4b2d8c695231c2b693025cf60747f",
+      "episode_core_sha256": "99eb9a8ea13c3f19619760df2029751397cf55a55e77b976cbe493c4d296a3db",
       "world_id": "WORLD-ADV-005",
       "stage_profiles": {
         "gate3": {
@@ -236,7 +190,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-006",
       "episode_id": "G3-ADV-006",
-      "episode_core_sha256": "8c7efe46c0c96723e30400c684776e5482a721f9e6724926c17b5c67ea5288f9",
+      "episode_core_sha256": "29a4c7c9e59e09b15e9c26e0c1a8f52192c615bd25b02c264732c0fb0742cf6c",
       "world_id": "WORLD-ADV-006",
       "stage_profiles": {
         "gate3": {
@@ -282,7 +236,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-007",
       "episode_id": "G3-ADV-007",
-      "episode_core_sha256": "cf441839d1ade93600ba61bf9c27e0670c876dd5340572d3c6d660f849694575",
+      "episode_core_sha256": "a76fce9ca9a82ce9d00cf4d1f4fa1761940163b58a47fe7c6f558c72c1ec788e",
       "world_id": "WORLD-ADV-007",
       "stage_profiles": {
         "gate3": {
@@ -328,7 +282,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-008",
       "episode_id": "G3-ADV-008",
-      "episode_core_sha256": "957f1c742481e8212060eb2c0a124c40e9e80082cb394c47790668750d417b14",
+      "episode_core_sha256": "80ab76617b628ad04ae7668c2cf44bb6944d581f715837d941bc9925b3c00dac",
       "world_id": "WORLD-ADV-008",
       "stage_profiles": {
         "gate3": {
@@ -374,146 +328,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ADV-009",
       "episode_id": "G3-ADV-009",
-      "episode_core_sha256": "949d8a595f06a3e8e9757acdebe1748b83ea2745a5327f472a0e7b200c6261a0",
+      "episode_core_sha256": "76b6690b9d6b5bf75a5c2f2e8a723751301326dc9ba787a2b503944e408b878f",
       "world_id": "WORLD-ADV-009",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-ADV-010",
-      "episode_id": "G3-ADV-010",
-      "episode_core_sha256": "24fe14fa3e6fc01bfafd6289371d84b5dce4540edd210c1ad50e9260fd4d4ca2",
-      "world_id": "WORLD-ADV-010",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-ADV-011",
-      "episode_id": "G3-ADV-011",
-      "episode_core_sha256": "345158fb230ae41aecd526f00eea9cf51dfa8e4af84e59e748b8d1cc51966717",
-      "world_id": "WORLD-ADV-011",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-ADV-012",
-      "episode_id": "G3-ADV-012",
-      "episode_core_sha256": "40e94f96014739af2aa1fb377f16dfde7be5fdd9be397d325f7182184f29b2cb",
-      "world_id": "WORLD-ADV-012",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -558,7 +374,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-001",
       "episode_id": "G3-EXP-001",
-      "episode_core_sha256": "c3d452be36cc6f647214593bdae56b09ebd2087ac7a7d2b100836073a1400ef4",
+      "episode_core_sha256": "be20fddca1eb740b55b0de00f3d3c87cf514e237b255dcb55d9afada66a8bc39",
       "world_id": "WORLD-CHAIN-PROFIT-001",
       "stage_profiles": {
         "gate3": {
@@ -604,100 +420,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-002",
       "episode_id": "G3-EXP-002",
-      "episode_core_sha256": "ccc277cf61c113f5033161eabc181b18d76b3b76d3503518f67774548c7d595b",
-      "world_id": "WORLD-CROSS-MONTH-PAYMENT-002",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-EXP-003",
-      "episode_id": "G3-EXP-003",
-      "episode_core_sha256": "0e09fc57c5b64423af4cfc0f47d2174306a7c20c63afa874dde275df39993082",
-      "world_id": "WORLD-SAAS-RETENTION-003",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-EXP-004",
-      "episode_id": "G3-EXP-004",
-      "episode_core_sha256": "48cde83c850b371164bfecd328b91326aa3a78a3ab40a7566ec2cc87ed668144",
-      "world_id": "WORLD-LOAN-FUNNEL-004",
+      "episode_core_sha256": "27904c5e6a2f24c6cdcba95f53a5b3460ef1feff84ef23ed05646253c1b5c8b0",
+      "world_id": "WORLD-PAYER-MIX-REVERSAL-002",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -742,54 +466,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-005",
       "episode_id": "G3-EXP-005",
-      "episode_core_sha256": "26b3cc40853f1122c0c8f4e98d016b52630ea4a358ad7aa73590f0e7d82ba09a",
-      "world_id": "WORLD-GMV-GROWTH-005",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-EXP-006",
-      "episode_id": "G3-EXP-006",
-      "episode_core_sha256": "4590a7d6848381eb03303a7e2444492b8369287c5c3e58ace062f5b3f72a25c0",
-      "world_id": "WORLD-DELIVERY-TREND-006",
+      "episode_core_sha256": "91e2467f0da1f67c5b28112a7bd3ce74d3aec7dac443d911af454842a21b7434",
+      "world_id": "WORLD-GGR-GROWTH-005",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -834,8 +512,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-007",
       "episode_id": "G3-EXP-007",
-      "episode_core_sha256": "eb17532963e8280013a1f4374e05e35c176a6b513ee4fcd0d6e04e01125d1c6f",
-      "world_id": "WORLD-SAAS-PRICING-007",
+      "episode_core_sha256": "e25e30955bca0553e0a902608d5ce9060256bdd94e0e9961aed5060d7205fa4b",
+      "world_id": "WORLD-WAJEGAME-PAYMENT-CONTRACT-RECOVERY",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -880,54 +558,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-008",
       "episode_id": "G3-EXP-008",
-      "episode_core_sha256": "f452fe5cc32f9303e54f35d23c43eb5f9f063dd108ae2b0adce0f4b5fa475234",
+      "episode_core_sha256": "0cc7431699b2d5320f6e3ba4b818f5f88482f2d2dc49026a5674616b53d86974",
       "world_id": "WORLD-NEW-PAYER-008",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-EXP-009",
-      "episode_id": "G3-EXP-009",
-      "episode_core_sha256": "af461656fbc6fda543238d4b48c6c32b6555b704c0ca74bb1efaee7d9eb7a0fb",
-      "world_id": "WORLD-CSAT-MISSINGNESS-009",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -972,54 +604,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-010",
       "episode_id": "G3-EXP-010",
-      "episode_core_sha256": "38d0342c0c9cae4e63b7d911d109598836e96ceef58d57466dd669ae2bf77994",
+      "episode_core_sha256": "986ae321370be77a3c365be19270f582bb3da7cf8bfbf4d298fa06799c4eaa37",
       "world_id": "WORLD-RETENTION-OUTREACH-010",
-      "stage_profiles": {
-        "gate3": {
-          "status": "authoring",
-          "required_artifacts": [
-            "evaluation_episode_core",
-            "agent_world_view",
-            "evaluator_oracle_view"
-          ]
-        },
-        "gate4": {
-          "status": "pending",
-          "required_artifacts": [
-            "semantic_contract_bundle",
-            "frozen_data_snapshot",
-            "capability_availability_profile",
-            "result_oracle"
-          ]
-        },
-        "gate5": {
-          "status": "pending",
-          "required_artifacts": [
-            "claim_publication_profile",
-            "evidence_strength_oracle"
-          ]
-        },
-        "gate6": {
-          "status": "pending",
-          "required_artifacts": [
-            "workbench_observation_contract",
-            "customer_safe_projection_oracle"
-          ]
-        },
-        "gate7": {
-          "status": "pending",
-          "required_artifacts": [
-            "release_profile",
-            "replay_manifest"
-          ]
-        }
-      }
-    },
-    {
-      "profile_id": "WORLD-PROFILE-G3-EXP-011",
-      "episode_id": "G3-EXP-011",
-      "episode_core_sha256": "a61b6e3cf63051846c57e3fc091855e499f93a076031e6635924bbb5f1496168",
-      "world_id": "WORLD-STOCKOUT-011",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -1064,7 +650,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-EXP-012",
       "episode_id": "G3-EXP-012",
-      "episode_core_sha256": "e64934995646ddf73324786f8da8e26538fc8436ebb6d4e5b6fae42198d4a128",
+      "episode_core_sha256": "16a2a15e34d948218c08972d8251880ce6e7de76d6ccd11bd20c4de25349bf52",
       "world_id": "WORLD-CHANNEL-ROAS-012",
       "stage_profiles": {
         "gate3": {
@@ -1110,7 +696,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-001",
       "episode_id": "G3-GF-001",
-      "episode_core_sha256": "6d8997040407e34d90311252b707553f48612e3806399101c0e3528572572500",
+      "episode_core_sha256": "fc1257191ead9027e4bf5e0ff2bd3f5c05ffc0b91e6d27fe9360f3340911a973",
       "world_id": "WORLD-G3-GF-001",
       "stage_profiles": {
         "gate3": {
@@ -1156,7 +742,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-002",
       "episode_id": "G3-GF-002",
-      "episode_core_sha256": "3089a3098def54e9a009fec2b28e07ac497002e318f138ae2c7043c5c4d3a25b",
+      "episode_core_sha256": "5fcc885686a6e1f107e048eeefe2ec490c57678fcc10a5d11ec7e181944a1f45",
       "world_id": "WORLD-G3-GF-002",
       "stage_profiles": {
         "gate3": {
@@ -1202,7 +788,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-003",
       "episode_id": "G3-GF-003",
-      "episode_core_sha256": "134d76324022d1f83d72b1bf53f74f29b51ce13d79f82cfc5197a3b77900c102",
+      "episode_core_sha256": "83b6aab27dd2e3842601609dec4cbf417e9a0baf6c0dee7405d6d850c0ae26a3",
       "world_id": "WORLD-G3-GF-003",
       "stage_profiles": {
         "gate3": {
@@ -1248,7 +834,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-004",
       "episode_id": "G3-GF-004",
-      "episode_core_sha256": "901fa2962b17894e3b26ed0c5e0f51ca0a6aaefca794ee1bcc637b2870ef061f",
+      "episode_core_sha256": "1150b61c584f86adeead8ea82266f69f71664a3c94acfcf9a04e480479b589e4",
       "world_id": "WORLD-G3-GF-004",
       "stage_profiles": {
         "gate3": {
@@ -1294,7 +880,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-005",
       "episode_id": "G3-GF-005",
-      "episode_core_sha256": "9b5c96c89444d59093bc647da9e9589a24b8610644c61106b0040835b8ca25dd",
+      "episode_core_sha256": "0d3832082e0be451ec4991b3694b839e85b1232ebfc4075404a66847f745ad9d",
       "world_id": "WORLD-G3-GF-005",
       "stage_profiles": {
         "gate3": {
@@ -1340,7 +926,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-006",
       "episode_id": "G3-GF-006",
-      "episode_core_sha256": "bfbe72d542a9126442bccf996ac754832f1993b504bf0f41517ca20f51e5c684",
+      "episode_core_sha256": "336548e734dee9accf5d6b395521d830cbd77011ad52d3d57c3d9c175aa4384f",
       "world_id": "WORLD-G3-GF-006",
       "stage_profiles": {
         "gate3": {
@@ -1386,7 +972,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-007",
       "episode_id": "G3-GF-007",
-      "episode_core_sha256": "190bb34bee4e4964d8ba0497b91ad5a6d9dd8c88e6e073b1b9fd9c064acaa288",
+      "episode_core_sha256": "8ae90f08450a42d955f4c685f05be6d4fc83c712f16aecb1af512bc4a0f5afbc",
       "world_id": "WORLD-G3-GF-007",
       "stage_profiles": {
         "gate3": {
@@ -1432,7 +1018,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-008",
       "episode_id": "G3-GF-008",
-      "episode_core_sha256": "3f08b71fed338e8c9be03667f05e5669dcea7f67789066a646fa85a197d00f7b",
+      "episode_core_sha256": "7a7d80a0cdd4da5a91ca8dcdd8dd76fe5a183b70c7c34763ae3065c9d4775039",
       "world_id": "WORLD-G3-GF-008",
       "stage_profiles": {
         "gate3": {
@@ -1478,7 +1064,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-009",
       "episode_id": "G3-GF-009",
-      "episode_core_sha256": "29d1499cdf8205b7da2b8c08c2f9b645f2475cfbe3114753e568366e6c5802c2",
+      "episode_core_sha256": "8b18b4bb5b3cba0f02eeaf266a8c4e462e8fa87d9e8ea6329f4e003ad224f39e",
       "world_id": "WORLD-G3-GF-009",
       "stage_profiles": {
         "gate3": {
@@ -1524,7 +1110,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-010",
       "episode_id": "G3-GF-010",
-      "episode_core_sha256": "1527f123e8f5cdef42aa9ad3c1dd0fa229922ab70f65a054dbbf8bfa767d3757",
+      "episode_core_sha256": "4a8e9a4e7be63cfe88b11c78e1866b0368f8ee34aa5999392d55ba22475da9d9",
       "world_id": "WORLD-G3-GF-010",
       "stage_profiles": {
         "gate3": {
@@ -1570,7 +1156,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-011",
       "episode_id": "G3-GF-011",
-      "episode_core_sha256": "0f169464d74a276647b71e5d3008850e79424151b76ec63b4fe23a56e21cdfa0",
+      "episode_core_sha256": "488f619970b974229740c6672510057245aa9db9c6e5842177b5de02e8ef5c22",
       "world_id": "WORLD-G3-GF-011",
       "stage_profiles": {
         "gate3": {
@@ -1616,7 +1202,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-GF-012",
       "episode_id": "G3-GF-012",
-      "episode_core_sha256": "d4e8b5f2ab2e3571846277f7f728ea4a9c46e6e639702f89370ac5b1cce2990b",
+      "episode_core_sha256": "cdbb21ad695532281ed89eeac978d9916cc13d997ca2927925a4a0b551050fb8",
       "world_id": "WORLD-G3-GF-012",
       "stage_profiles": {
         "gate3": {
@@ -1662,8 +1248,8 @@
     {
       "profile_id": "WORLD-PROFILE-G3-ROOT-001",
       "episode_id": "G3-ROOT-001",
-      "episode_core_sha256": "fa9eadf93ac1c5b4ed14aee70f23e442cd529a6aaf9c86a1aaef5f9311f8c811",
-      "world_id": "WORLD-ACTIVE-ENTERPRISE-DEFINITION",
+      "episode_core_sha256": "5bd39cac6adaa3b80a00e2abc35c1ba3697a90f61d442fdd598eb94db36dc028",
+      "world_id": "WORLD-ACTIVE-PLAYER-DEFINITION",
       "stage_profiles": {
         "gate3": {
           "status": "authoring",
@@ -1708,7 +1294,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-001",
       "episode_id": "G3-USER-001",
-      "episode_core_sha256": "56a8591b3d51c09950a8e742f1dd4574c72e873bed23b5ec5976e0b6e63e62df",
+      "episode_core_sha256": "bf4863158d7c0a2d3a87458dc0722fd1b198db92ad1a75825a98875bf3355709",
       "world_id": "WORLD-PAID-AMOUNT-CHANGE-001",
       "stage_profiles": {
         "gate3": {
@@ -1754,7 +1340,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-002",
       "episode_id": "G3-USER-002",
-      "episode_core_sha256": "b887fd793f5f2b11e899dc6c42c21edc404ac6ae39e9c148032f4f3d36635b01",
+      "episode_core_sha256": "c1e092ce7d6922e61524115beb145a18a6ad869662a79c3d7c9190fd67486164",
       "world_id": "WORLD-PAID-PATTERN-002",
       "stage_profiles": {
         "gate3": {
@@ -1800,7 +1386,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-003",
       "episode_id": "G3-USER-003",
-      "episode_core_sha256": "0c8f62c773e29909ca2dfdfa947f6350bc282027d5921d9dd5580a2807947cef",
+      "episode_core_sha256": "77458b1f5efebd3f4600356af0e9eab7dda532a68132b9473d9aef77e6b94a19",
       "world_id": "WORLD-PAID-EVENT-003",
       "stage_profiles": {
         "gate3": {
@@ -1846,7 +1432,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-004",
       "episode_id": "G3-USER-004",
-      "episode_core_sha256": "bd8f065c1bcce685a33e6365175e8dd034b2bfe922f2c0fded0adf8eb19ecaba",
+      "episode_core_sha256": "59b59d0bbacd23c7730e440542da3132fa68ff4ffbd71e4e2d928169e5f872d3",
       "world_id": "WORLD-REVENUE-HEALTH-004",
       "stage_profiles": {
         "gate3": {
@@ -1892,7 +1478,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-005",
       "episode_id": "G3-USER-005",
-      "episode_core_sha256": "dff23dbcd3b2cdd4846654ebdd91f72505fc7ff0ab6078a106e2f31bd7e72a5f",
+      "episode_core_sha256": "caec89c03dbc079a25eaa8745fdcc9bdbe67e6a2d1a882531f3890d6686ffaf8",
       "world_id": "WORLD-REVENUE-ATTRIBUTION-005",
       "stage_profiles": {
         "gate3": {
@@ -1938,7 +1524,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-006",
       "episode_id": "G3-USER-006",
-      "episode_core_sha256": "db5effa99e95c680e452f4b99ec411768d9c599af71d4047415a46bddf8c9b20",
+      "episode_core_sha256": "756e8252dde87ef4484c4ecbe29ce7aa562fc2ad0807ec7fbd8baf17fab62e10",
       "world_id": "WORLD-REVENUE-ANOMALY-006",
       "stage_profiles": {
         "gate3": {
@@ -1984,7 +1570,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-007",
       "episode_id": "G3-USER-007",
-      "episode_core_sha256": "6dcdf4fbb8f1eea4fcfa350c91b7b714677d0ad3888afa6e18b81d9936c5d875",
+      "episode_core_sha256": "9095e2e792a8e7de2d0ff578de90ba5f3a6c6cbeb56378fbbddf3a75a31e1f7c",
       "world_id": "WORLD-REVENUE-BASELINES-007",
       "stage_profiles": {
         "gate3": {
@@ -2030,7 +1616,7 @@
     {
       "profile_id": "WORLD-PROFILE-G3-USER-008",
       "episode_id": "G3-USER-008",
-      "episode_core_sha256": "bb85e12808173956747a40ec484135b36b4af1cc8135cf1a0010e6683a24dfae",
+      "episode_core_sha256": "2831b52761505d73c51cea181518fdeb94b4f319c68571c3bb49d621437ab617",
       "world_id": "WORLD-REVENUE-EVIDENCE-008",
       "stage_profiles": {
         "gate3": {

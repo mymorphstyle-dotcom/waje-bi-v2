@@ -1,0 +1,53 @@
+{
+  "artifact_type": "gate3_real_snapshot_materialization",
+  "artifact_version": "gate3.real-snapshot-materialization.v1",
+  "authority_id": "REAL-WAJE-AUTHORITY-STRESS-20260704",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-05T09:00:00+01:00",
+    "target_business_date": "2026-07-04",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "projection": "Public-safe immutable metadata receipt derived from accepted paid-order and final-outcome releases; no raw rows or identifiers.",
+  "sources": [
+    {
+      "source_ref": "paid_order_success",
+      "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.4",
+      "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+      "physical_revision": "waje_bi.paid_order_success_clean_20240101_20260704_v2",
+      "schema_fingerprint": "3cf04abb2aae3d3dab023aeba72a3e0b80494dcc706961d814fa3166d6945feb",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-07-04",
+        "evaluation_cutoff_business_date": "2026-07-04",
+        "physical_rows": 41234677,
+        "eligible_rows_through_cutoff": 41234677
+      },
+      "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2026-07-04",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-AUTHORITY-STRESS-20260704/paid_order_success/v1"
+    },
+    {
+      "source_ref": "payment_final_outcome",
+      "contract_ref": "contracts/sources/payment-final-outcome.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:610c0c0b714199619b5f8b50c6a1718e4a3e9df6dfa354250764688d055ca43f#dataset-snapshot:sha256:1ea81b42ae17e7fab0c3474b541a977dfdbcf834ffb34390ce7f72e4179f27c1",
+      "physical_revision": "waje_bi.payment_final_outcome_daily__5e3c35ad02c33644",
+      "schema_fingerprint": "5e3c35ad02c33644fea599ae9043cca3d67828de51f676c1bbf5c12e100bf177",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-07-04",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 83431,
+        "eligible_rows_through_cutoff": 76060
+      },
+      "coverage_watermark_ref": "watermark://payment_final_outcome/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-AUTHORITY-STRESS-20260704/payment_final_outcome/v1",
+      "evidence_boundary": "payment_final_outcome is accepted complete only through 2026-06-02; later periods are excluded from comparable claims."
+    }
+  ],
+  "verification": {
+    "query_class": "read_only_metadata_and_coverage",
+    "verified_against_clickhouse": true,
+    "verified_against_dataset_release_store": true,
+    "verified_at": "2026-07-31T00:00:00+08:00"
+  }
+}

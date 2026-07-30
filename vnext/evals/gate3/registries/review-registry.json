@@ -1,7 +1,8 @@
 {
   "artifact_type": "review_registry",
-  "artifact_version": "gate3.review-registry.v1",
+  "artifact_version": "gate3.review-registry.v2",
   "registry_epoch": 1,
   "principals": [],
-  "records": []
+  "records": [],
+  "calibration_records": []
 }

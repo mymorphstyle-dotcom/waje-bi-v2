@@ -1,0 +1,103 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-007-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-007-base-v1/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-007",
+    "episode_id": "G3-EXP-007",
+    "binding_id": "fixture_g3_exp_007_base",
+    "authority_slot_id": "exp_007_payment_failure_release",
+    "scope_claim_target_ids": [
+      "payment_success_rate_drop_claim",
+      "pre_release_failure_diagnosis_boundary_claim",
+      "post_release_failure_reason_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/payment-final-outcome/v1",
+      "state": "available",
+      "description": "最终成功与截至 snapshot 未成功的订单计数、金额和支付方式可用。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/payment-failure-diagnostic/v1",
+      "state": "missing",
+      "description": "失败阶段、失败原因和 retry chain 仅在 contract-release 事件后成为已接受合同。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-PAYMENT-SUCCESS-RATE-DROP",
+      "description": "昨日最终支付成功率显著下降，集中在一个支付方式。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYMENT-FAILURE-CONTRACT-PENDING",
+      "description": "首轮调查时失败阶段与失败原因没有已接受数据合同。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYMENT-FAILURE-RELEASE-COMPLETE",
+      "description": "第三轮后的 release 覆盖完整业务日，可用于失败原因分布。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    }
+  ],
+  "query_result_surfaces": [
+    {
+      "available_from_turn": 1,
+      "metric": "final_payment_success_rate",
+      "comparison": "yesterday_vs_prior_comparable_day",
+      "direction": "down",
+      "largest_payment_method": "method_A"
+    },
+    {
+      "available_from_turn": 3,
+      "metric": "failure_reason_distribution",
+      "largest_payment_method": "method_A",
+      "largest_failure_reason": "provider_timeout",
+      "release_identity": "post_contract_release"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-007-01",
+        "statement": "合同发布前只能证明支付成功率下降及其支付方式分布，不能识别失败阶段与原因。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-007-02",
+        "statement": "合同发布后，失败主要集中在一个支付方式的 provider timeout；新证据必须绑定新 release，旧 boundary 不能伪装成技术重试。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "observable_contracts",
+      "observable_conditions",
+      "query_result_surfaces"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

@@ -17,10 +17,16 @@
     "current_release_epoch",
     "approved_admission_authority_sha256",
     "gh_executable_sha256",
+    "trusted_root_sha256",
     "minimum_trust_policy_epoch",
     "previous_admission_sha256",
     "previous_provider_state_sha256",
-    "state_version"
+    "state_version",
+    "valid_from",
+    "valid_until",
+    "maximum_request_age_seconds",
+    "maximum_attestation_delay_seconds",
+    "clock_skew_seconds"
   ],
   "properties": {
     "artifact_type": {
@@ -63,6 +69,9 @@
     "gh_executable_sha256": {
       "$ref": "#/$defs/sha256"
     },
+    "trusted_root_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
     "minimum_trust_policy_epoch": {
       "type": "integer",
       "minimum": 1
@@ -90,6 +99,29 @@
     "state_version": {
       "type": "integer",
       "minimum": 1
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "maximum_request_age_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2592000
+    },
+    "maximum_attestation_delay_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 604800
+    },
+    "clock_skew_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600
     }
   },
   "$defs": {

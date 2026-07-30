@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-episode.v2.schema.json",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-episode.v4.schema.json",
   "title": "WAJE Gate 3 Behavior Evaluation Catalog",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "catalog_version": {
-      "const": "gate3.behavior-eval.v2"
+      "const": "gate3.behavior-eval.v4"
     },
     "episodes": {
       "type": "array",
@@ -41,6 +41,8 @@
         "title",
         "source_pool",
         "provenance",
+        "suite_binding",
+        "data_source_bindings",
         "user_episode",
         "business_world",
         "decision_stakes",
@@ -69,6 +71,16 @@
         },
         "provenance": {
           "$ref": "#/$defs/provenance"
+        },
+        "suite_binding": {
+          "$ref": "#/$defs/suiteBinding"
+        },
+        "data_source_bindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dataSourceBinding"
+          }
         },
         "user_episode": {
           "$ref": "#/$defs/userEpisode"
@@ -136,6 +148,228 @@
           "pattern": "^BATCH-[A-Z0-9-]+$"
         }
       }
+    },
+    "suiteBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_domain",
+        "coverage_group",
+        "factor_group_refs",
+        "question_family_refs"
+      ],
+      "properties": {
+        "business_domain": {
+          "const": "wajegame"
+        },
+        "coverage_group": {
+          "enum": [
+            "launch_question",
+            "business_chain",
+            "measurement_regression",
+            "authority_stress"
+          ]
+        },
+        "factor_group_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "paid_amount_metric_source",
+              "payment_order_metric_chain",
+              "user_acquisition_and_first_payment",
+              "payment_channel_and_method",
+              "amount_tier_and_user_value",
+              "marketing_channel_and_growth_ops",
+              "geo_device_environment",
+              "calendar_time_and_payday",
+              "product_operation_events",
+              "external_context_events",
+              "gameplay_engagement_and_arpu",
+              "gameplay_ggr_and_betting",
+              "payment_status_latency_and_quality",
+              "sensitive_identity_and_dedup_fields"
+            ]
+          }
+        },
+        "question_family_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "paid_amount_change_explanation",
+              "pattern_explanation",
+              "business_object_impact_review",
+              "revenue_health_review",
+              "segment_or_factor_attribution",
+              "anomaly_or_black_swan_review",
+              "custom_baseline_comparison",
+              "data_quality_or_evidence_review"
+            ]
+          }
+        }
+      }
+    },
+    "dataSourceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_id",
+        "source_mode",
+        "source_ref",
+        "authority_ref",
+        "roles",
+        "agent_access",
+        "required_identity_fields",
+        "materialization_status"
+      ],
+      "properties": {
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "source_mode": {
+          "enum": [
+            "frozen_real_snapshot",
+            "controlled_synthetic_fixture",
+            "known_contract_gap"
+          ]
+        },
+        "source_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "outcome",
+              "numerator",
+              "denominator",
+              "exposure",
+              "dimension",
+              "event",
+              "quality",
+              "authority_lineage"
+            ]
+          }
+        },
+        "agent_access": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "surface",
+            "available_from_turn"
+          ],
+          "properties": {
+            "surface": {
+              "enum": [
+                "injected",
+                "semantic_inspection",
+                "data_probe",
+                "authority_lookup"
+              ]
+            },
+            "available_from_turn": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "required_identity_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "snapshot_release_ref",
+              "coverage_watermark_ref",
+              "query_result_ref",
+              "fixture_version_ref",
+              "fixture_content_sha256",
+              "authority_version_ref"
+            ]
+          }
+        },
+        "materialization_status": {
+          "enum": [
+            "verified",
+            "planned",
+            "missing_by_design"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_mode": {
+                "const": "frozen_real_snapshot"
+              }
+            },
+            "required": [
+              "source_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "materialization_status": {
+                "enum": [
+                  "verified",
+                  "planned"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_mode": {
+                "const": "controlled_synthetic_fixture"
+              }
+            },
+            "required": [
+              "source_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "materialization_status": {
+                "enum": [
+                  "verified",
+                  "planned"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_mode": {
+                "const": "known_contract_gap"
+              }
+            },
+            "required": [
+              "source_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "materialization_status": {
+                "const": "missing_by_design"
+              }
+            }
+          }
+        }
+      ]
     },
     "userEpisode": {
       "type": "object",
@@ -261,6 +495,56 @@
           "items": {
             "$ref": "#/$defs/truthFact"
           }
+        },
+        "scheduled_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scheduledWorldEvent"
+          }
+        }
+      }
+    },
+    "scheduledWorldEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "after_user_turn",
+        "event_type",
+        "public_payload",
+        "authority_expectation"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^EVT-[A-Z0-9-]+$"
+        },
+        "after_user_turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_type": {
+          "enum": [
+            "reviewer_objection",
+            "effect_completed",
+            "contract_release",
+            "worker_restart",
+            "duplicate_delivery"
+          ]
+        },
+        "public_payload": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "affected_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_expectation": {
+          "enum": [
+            "reenter_loop",
+            "reject_stale_result",
+            "resume_case",
+            "idempotent_noop"
+          ]
         }
       }
     },
@@ -436,51 +720,221 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "baseline_support_state",
-        "contract_supported",
-        "required_disposition",
-        "support_evidence_refs",
-        "boundary_authorizations"
+        "authoring_status",
+        "claim_cases",
+        "boundary_cases",
+        "completion_policy"
       ],
       "properties": {
-        "baseline_support_state": {
+        "authoring_status": {
           "enum": [
-            "supported",
-            "clarification_blocked",
-            "contract_blocked",
-            "identification_blocked",
-            "privacy_blocked"
+            "claim_cases_complete",
+            "pending_claim_cases"
           ]
         },
-        "contract_supported": {
-          "type": "boolean"
+        "claim_cases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/claimCase"
+          }
         },
-        "required_disposition": {
-          "enum": [
-            "executable_design",
-            "clarification_required",
-            "typed_boundary"
-          ]
-        },
-        "support_evidence_refs": {
-          "$ref": "#/$defs/nonEmptyStringArray"
-        },
-        "boundary_authorizations": {
+        "boundary_cases": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/boundaryAuthorization"
+            "$ref": "#/$defs/boundaryCase"
+          }
+        },
+        "completion_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "local_boundary_cannot_cancel_unaffected_claims",
+            "episode_state_is_derived"
+          ],
+          "properties": {
+            "mode": {
+              "const": "claim_scoped"
+            },
+            "local_boundary_cannot_cancel_unaffected_claims": {
+              "const": true
+            },
+            "episode_state_is_derived": {
+              "const": true
+            }
           }
         }
       }
     },
-    "boundaryAuthorization": {
+    "claimCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_target_id",
+        "evaluation_turn",
+        "source_uses",
+        "support_state",
+        "disposition",
+        "applicability",
+        "effective_claim_ceiling",
+        "required_observation_refs",
+        "oracle_truth_refs",
+        "boundary_codes",
+        "reversal_conditions"
+      ],
+      "properties": {
+        "claim_target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "evaluation_turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_uses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "binding_id",
+              "requirement"
+            ],
+            "properties": {
+              "binding_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]+$"
+              },
+              "requirement": {
+                "enum": [
+                  "required",
+                  "optional",
+                  "boundary_probe"
+                ]
+              }
+            }
+          }
+        },
+        "support_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "data_contract_state",
+            "business_evidence_state"
+          ],
+          "properties": {
+            "data_contract_state": {
+              "enum": [
+                "supported",
+                "partial",
+                "missing",
+                "conflicting",
+                "stale",
+                "permission_blocked"
+              ]
+            },
+            "business_evidence_state": {
+              "enum": [
+                "supported",
+                "partial",
+                "insufficient",
+                "unidentifiable",
+                "not_evaluated"
+              ]
+            }
+          }
+        },
+        "disposition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "resolution",
+            "verifier",
+            "settlement_precondition"
+          ],
+          "properties": {
+            "resolution": {
+              "enum": [
+                "resolved_instance",
+                "typed_resolution_boundary",
+                "clarification_required",
+                "omitted"
+              ]
+            },
+            "verifier": {
+              "enum": [
+                "accepted",
+                "boundary_only",
+                "rejected",
+                "not_run"
+              ]
+            },
+            "settlement_precondition": {
+              "enum": [
+                "eligible_for_future_settlement",
+                "blocked"
+              ]
+            }
+          }
+        },
+        "applicability": {
+          "enum": [
+            "real_snapshot_scope",
+            "fixture_only_scope",
+            "mixed_scope",
+            "contract_boundary_scope"
+          ]
+        },
+        "effective_claim_ceiling": {
+          "enum": [
+            "definition_only",
+            "data_quality_only",
+            "descriptive",
+            "associational",
+            "accounting_attribution",
+            "causal"
+          ]
+        },
+        "required_observation_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "oracle_truth_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "boundary_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]+$"
+          }
+        },
+        "reversal_conditions": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "boundaryCase": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "boundary_code",
+        "activation",
         "allowed_when_refs",
         "required_observation_refs",
-        "maximum_claim_ceiling"
+        "maximum_claim_ceiling",
+        "recovery_conditions"
       ],
       "properties": {
         "boundary_code": {
@@ -496,6 +950,12 @@
         "claim_target_ids": {
           "$ref": "#/$defs/nonEmptyStringArray"
         },
+        "activation": {
+          "enum": [
+            "required_in_base_world",
+            "allowed_if_observed"
+          ]
+        },
         "maximum_claim_ceiling": {
           "enum": [
             "definition_only",
@@ -505,6 +965,9 @@
             "accounting_attribution",
             "causal"
           ]
+        },
+        "recovery_conditions": {
+          "$ref": "#/$defs/nonEmptyStringArray"
         }
       }
     },
@@ -515,8 +978,9 @@
         "must_preserve",
         "valid_design_space",
         "must_investigate",
-        "allowed_dispositions",
-        "claim_ceiling",
+        "permitted_resolution_kinds",
+        "claim_targets",
+        "estimands",
         "clarification_policy"
       ],
       "properties": {
@@ -533,15 +997,16 @@
         "must_investigate": {
           "$ref": "#/$defs/nonEmptyStringArray"
         },
-        "allowed_dispositions": {
+        "permitted_resolution_kinds": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": {
             "enum": [
-              "executable_design",
+              "resolved_instance",
               "clarification_required",
-              "typed_boundary"
+              "typed_resolution_boundary",
+              "omitted"
             ]
           }
         },
@@ -551,16 +1016,6 @@
           "items": {
             "$ref": "#/$defs/nonEmptyString"
           }
-        },
-        "claim_ceiling": {
-          "enum": [
-            "definition_only",
-            "data_quality_only",
-            "descriptive",
-            "associational",
-            "accounting_attribution",
-            "causal"
-          ]
         },
         "claim_targets": {
           "type": "array",
@@ -588,7 +1043,7 @@
         "claim_target_id",
         "estimand_id",
         "target_description",
-        "claim_ceiling"
+        "design_claim_ceiling"
       ],
       "properties": {
         "claim_target_id": {
@@ -602,7 +1057,7 @@
         "target_description": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "claim_ceiling": {
+        "design_claim_ceiling": {
           "enum": [
             "definition_only",
             "data_quality_only",
@@ -702,7 +1157,9 @@
         "sibling_id",
         "expected_relation",
         "mutation_dimension",
+        "affected_claim_target_ids",
         "mutation_operation",
+        "expected_authority_effects",
         "expected_invariants",
         "expected_changes"
       ],
@@ -737,8 +1194,67 @@
             "claim_strength_request"
           ]
         },
+        "affected_claim_target_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]+$"
+          }
+        },
         "mutation_operation": {
           "$ref": "#/$defs/mutationOperation"
+        },
+        "expected_authority_effects": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "measurement_identity",
+            "prior_evidence",
+            "claim_case_disposition"
+          ],
+          "properties": {
+            "measurement_identity": {
+              "enum": [
+                "preserve",
+                "revise"
+              ]
+            },
+            "prior_evidence": {
+              "enum": [
+                "reusable",
+                "revalidate",
+                "reject",
+                "mixed"
+              ]
+            },
+            "claim_case_disposition": {
+              "enum": [
+                "preserve",
+                "recompute",
+                "degrade_or_omit",
+                "mixed"
+              ]
+            }
+          }
+        },
+        "claim_effects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/counterfactualClaimEffect"
+          }
+        },
+        "replacement_expectation": {
+          "$ref": "#/$defs/replacementExpectation"
+        },
+        "unaffected_claim_target_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]+$"
+          }
         },
         "expected_invariants": {
           "$ref": "#/$defs/nonEmptyStringArray"
@@ -748,48 +1264,208 @@
         }
       }
     },
+    "replacementExpectation": {
+      "description": "Claim obligations that answer the materially revised user goal. Existing claims are hash-bound projections of reviewed base gold; genuinely new claims require separately authored variant gold.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "derivation",
+        "source_intervention_sha256",
+        "base_claim_refs",
+        "variant_estimands",
+        "variant_claim_targets",
+        "variant_claim_cases",
+        "variant_boundary_cases",
+        "content_sha256"
+      ],
+      "properties": {
+        "derivation": {
+          "enum": [
+            "base_claim_effect_projection",
+            "variant_authored_gold"
+          ]
+        },
+        "source_intervention_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "base_claim_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/replacementBaseClaimRef"
+          }
+        },
+        "variant_estimands": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/estimandExpectation"
+          }
+        },
+        "variant_claim_targets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/claimTargetExpectation"
+          }
+        },
+        "variant_claim_cases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/claimCase"
+          }
+        },
+        "variant_boundary_cases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/boundaryCase"
+          }
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "replacementBaseClaimRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_target_id",
+        "estimand_id",
+        "base_claim_case_sha256",
+        "claim_effect_sha256"
+      ],
+      "properties": {
+        "claim_target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "estimand_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "base_claim_case_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "claim_effect_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "counterfactualClaimEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_target_id",
+        "base_claim_case_sha256",
+        "measurement_identity",
+        "prior_evidence",
+        "support_state",
+        "claim_case_disposition",
+        "claim_ceiling",
+        "boundary_codes"
+      ],
+      "properties": {
+        "claim_target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "base_claim_case_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "measurement_identity": {
+          "enum": [
+            "preserve",
+            "revise"
+          ]
+        },
+        "prior_evidence": {
+          "enum": [
+            "reusable",
+            "revalidate",
+            "reject"
+          ]
+        },
+        "support_state": {
+          "enum": [
+            "preserve",
+            "recompute",
+            "degrade_or_recompute",
+            "not_applicable"
+          ]
+        },
+        "claim_case_disposition": {
+          "enum": [
+            "preserve",
+            "recompute",
+            "degrade_or_omit",
+            "supersede_or_omit"
+          ]
+        },
+        "claim_ceiling": {
+          "enum": [
+            "preserve",
+            "recompute",
+            "lower_or_preserve",
+            "not_applicable"
+          ]
+        },
+        "boundary_codes": {
+          "enum": [
+            "preserve",
+            "recompute",
+            "expand_or_preserve",
+            "clear"
+          ]
+        }
+      }
+    },
     "mutationOperation": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "path",
-        "operation",
-        "value_description"
+        "patches",
+        "value_description",
+        "authority_surface",
+        "execution_status"
       ],
       "properties": {
-        "path": {
-          "type": "string",
-          "pattern": "^/"
-        },
-        "operation": {
-          "enum": [
-            "add",
-            "remove",
-            "replace"
-          ]
+        "patches": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mutationPatch"
+          }
         },
         "value_description": {
           "$ref": "#/$defs/nonEmptyString"
         },
+        "authority_surface": {
+          "enum": [
+            "user_message",
+            "world_fixture",
+            "semantic_contract",
+            "composite_authority"
+          ]
+        },
         "semantic_intervention_id": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]+$"
-        },
-        "before": {
-          "not": {
-            "type": "null"
-          }
-        },
-        "after": {
-          "not": {
-            "type": "null"
-          }
         },
         "materialized_sibling_sha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
         "execution_status": {
+          "description": "executable_verified proves exact mutation replay, schema validity and digest identity. Independent business and measurement review is still required before the sibling becomes evaluation gold.",
           "enum": [
             "draft_unexecutable",
             "executable_verified"
@@ -813,50 +1489,97 @@
               "semantic_intervention_id",
               "materialized_sibling_sha256"
             ],
-            "oneOf": [
-              {
-                "properties": {
-                  "operation": {
-                    "const": "replace"
-                  }
-                },
-                "required": [
-                  "before",
-                  "after"
-                ]
-              },
-              {
-                "properties": {
-                  "operation": {
-                    "const": "remove"
-                  }
-                },
-                "required": [
-                  "before"
-                ],
-                "not": {
-                  "required": [
-                    "after"
-                  ]
-                }
-              },
-              {
-                "properties": {
-                  "operation": {
-                    "const": "add"
-                  }
-                },
-                "required": [
-                  "after"
-                ],
-                "not": {
-                  "required": [
-                    "before"
-                  ]
+            "properties": {
+              "patches": {
+                "items": {
+                  "$ref": "#/$defs/executableMutationPatch"
                 }
               }
-            ]
+            }
           }
+        }
+      ]
+    },
+    "mutationPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "operation"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "operation": {
+          "enum": [
+            "add",
+            "remove",
+            "replace"
+          ]
+        },
+        "before": {
+          "not": {
+            "type": "null"
+          }
+        },
+        "after": {
+          "not": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "executableMutationPatch": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutationPatch"
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "operation": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "before",
+                "after"
+              ]
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "remove"
+                }
+              },
+              "required": [
+                "before"
+              ],
+              "not": {
+                "required": [
+                  "after"
+                ]
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "add"
+                }
+              },
+              "required": [
+                "after"
+              ],
+              "not": {
+                "required": [
+                  "before"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

@@ -1,6 +1,6 @@
 {
   "artifact_type": "grader_registry",
-  "artifact_version": "gate3.grader-registry.v1",
+  "artifact_version": "gate3.grader-registry.v2",
   "registry_epoch": 1,
   "profiles": [
     {
@@ -36,6 +36,59 @@
         "required_artifacts_complete",
         "schedule_conformance_passed"
       ]
+    }
+  ],
+  "evaluator_profiles": [
+    {
+      "profile_id": "PRIMARY-DEEPSEEK-PRO-THINK-V1",
+      "role": "primary_business_analysis_agent",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "thinking": "enabled",
+      "lifecycle_status": "quality_probe_only",
+      "prompt_bundle_ref": "vnext/evals/gate3/grader-rubric.json",
+      "prompt_contract_id": "primary_business_analysis_agent_v1",
+      "prompt_sha256": "3598d5acea079421691b72e9282e8913e28ad4ca18c095b20bb80ca2e45f93af",
+      "rubric_ref": "vnext/evals/gate3/grader-rubric.json",
+      "rubric_sha256": "8983c0b7546709e9097d9cda02275f06951c78f317ba7e15ca87acb7af31d02a",
+      "input_contract_sha256": "d609da515e10927539a54e4517d624c05064f42cefb444cf44fdc9bd83fe9a37",
+      "output_contract_sha256": "b6d1501e122e976e39c730917b36c3ddf73123df5bc1f7fdd501288777bcd4a8",
+      "runner_ref": "vnext/tools/probe_gate3_deepseek_role_profiles.py",
+      "runner_sha256": "ac59ee70153a20dc8d22a1a0c19dfc9810620bfee486c39776d6ccf94069329c"
+    },
+    {
+      "profile_id": "RUNTIME-REVIEWER-DEEPSEEK-PRO-NOTHINK-V1",
+      "role": "runtime_reviewer",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "thinking": "disabled",
+      "lifecycle_status": "quality_probe_only",
+      "prompt_bundle_ref": "vnext/evals/gate3/grader-rubric.json",
+      "prompt_contract_id": "runtime_reviewer_v1",
+      "prompt_sha256": "409f22ef88ef8b603a729d83a96fa2c9b4327736012fe3de773044b58dd0d145",
+      "rubric_ref": "vnext/evals/gate3/grader-rubric.json",
+      "rubric_sha256": "8983c0b7546709e9097d9cda02275f06951c78f317ba7e15ca87acb7af31d02a",
+      "input_contract_sha256": "217a02a0f236009e091db9602f3ede0093ba9540081e4ae571b4dd3dab10ea92",
+      "output_contract_sha256": "fc58ff7a3f2cb477b60e1499a19197e0ff205ca67e9ddce5a3a1398386f3f004",
+      "runner_ref": "vnext/tools/probe_gate3_deepseek_role_profiles.py",
+      "runner_sha256": "ac59ee70153a20dc8d22a1a0c19dfc9810620bfee486c39776d6ccf94069329c"
+    },
+    {
+      "profile_id": "EVALUATOR-DEEPSEEK-FLASH-THINK-V1",
+      "role": "evaluation_reviewer",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "thinking": "enabled",
+      "lifecycle_status": "quality_probe_only",
+      "prompt_bundle_ref": "vnext/evals/gate3/grader-rubric.json",
+      "prompt_contract_id": "evaluation_reviewer_v1",
+      "prompt_sha256": "c223370e2f83a3d9c058dd99c4efe3499cbcf5c31ac571cbbcef8925dae6a410",
+      "rubric_ref": "vnext/evals/gate3/grader-rubric.json",
+      "rubric_sha256": "8983c0b7546709e9097d9cda02275f06951c78f317ba7e15ca87acb7af31d02a",
+      "input_contract_sha256": "217a02a0f236009e091db9602f3ede0093ba9540081e4ae571b4dd3dab10ea92",
+      "output_contract_sha256": "f4ff4623a71968f0cfae93e37b77f1f336ef1512bc8324bd3479e2135b205259",
+      "runner_ref": "vnext/tools/probe_gate3_deepseek_role_profiles.py",
+      "runner_sha256": "ac59ee70153a20dc8d22a1a0c19dfc9810620bfee486c39776d6ccf94069329c"
     }
   ],
   "predicates": [

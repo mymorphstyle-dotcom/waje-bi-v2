@@ -34,13 +34,15 @@ Gate 3 不以某道比较题作为产品边界。“目标月月初 vs 前月月
 同时覆盖定义、估计、趋势、构成、分解、cohort、funnel、分布、关联、因果挑战、数据质量
 和开放诊断。
 
-每个评测样本必须预先声明：
+每个评测样本必须按 claim target 预先声明：
 
-- `required_disposition`；
-- `allowed_dispositions`；
-- 允许的 boundary code；
-- 支持该 disposition 的 contract 或 expectation evidence；
-- 该样本是否被标记为 `contract_supported`。
+- 该 claim 使用的 real snapshot、controlled fixture 或 known gap；
+- data-contract state 与 business-evidence state；
+- permitted resolution、verifier outcome 与 settlement precondition；
+- applicability、effective claim ceiling 和允许的 boundary code；
+- Agent 在具体 evaluation turn 可观察的前提、oracle truth、reversal condition；
+- counterfactual 对受影响 claim 的 measurement、evidence、support、disposition、
+  ceiling 与 boundary 变化，以及明确保持的未受影响 claim。
 
 系统最终只能产生 expectation package 允许的结果：
 
@@ -48,8 +50,9 @@ Gate 3 不以某道比较题作为产品边界。“目标月月初 vs 前月月
 2. 会改变业务含义的一次一个澄清问题，带推荐解释与影响；
 3. 可审计的 data contract、identification、privacy 或 evidence boundary。
 
-`contract_supported=true` 的样本必须形成 executable design。boundary 无权掩盖 binding、
-provider、compiler、runtime 或 trace failure。
+具备可执行数据合同与证据条件的 claim 必须形成 executable design。局部 gap 只能降低或
+省略受影响 claim；它无权掩盖其他 claim 的 binding、provider、compiler、runtime 或
+trace failure。
 
 ## 2. 旧 Gate 3 的撤销边界
 
@@ -1086,16 +1089,20 @@ Exit：
 本工作包先于任何 G3.1 生产实现。它以业务决策和真实交互为起点，不能从 runtime 类、
 action、工具或 SQL 反推测试。
 
-当前状态：**E0 trust foundation 已实现，promotion 仍 Blocked**。45 个 authoring
-candidates 已形成，其中 8 个保留用户提供的真实付费金额问题措辞。2026-07-30 已完成
-Episode v2、外部 Source/Review/Corpus/Grader authority、双视图 compiler、三层 verdict、
-跨 Gate profile、review package 与 derived readiness manifest；详见
+当前状态：**E0 机器 authoring 与 materialization 已完成，promotion 仍 Blocked**。36 个
+WAJEgame Required candidates 已形成，其中 8 个保留用户提供的真实付费金额问题措辞；
+120 个 counterfactual 已全部可重放，41 个 case-file authority 已全部物化；4 个跨域
+transfer probe 位于不参与门禁的 research lane。Episode v4、claim-scoped mixed case files、外部
+Source/Review/Corpus/Grader authority、双视图 compiler、三层 verdict、
+跨 Gate profile、review package、USER008 append-only authority repair package 与
+derived readiness manifest；详见
 `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-e0-trust-implementation.md`。
 
 交付：
 
 - versioned `EvaluationEpisode` schema、Gate3EvalPolicy 与 grader rubric；
-- 五类来源池：真实用户原话、专家经营案例、历史失败重建、受控业务世界、对抗式会话；
+- 来源池只记录真实用户原话、专家经营案例、历史失败重建、受控业务世界和对抗式会话的
+  provenance，不承担数量配额；
 - 每例包含 business world、decision stakes、acceptable outcome envelope、forbidden
   outcomes 和 evaluator-only truth；
 - 每例至少三个最小反事实关系：meaning-preserving、measurement-changing、
@@ -1106,33 +1113,40 @@ Episode v2、外部 Source/Review/Corpus/Grader authority、双视图 compiler�
 
 Authoring checkpoint：
 
-- [x] 45 个 schema-valid candidate Episode；
-- [x] coverage dimensions 无空白，21 个多轮 Episode、41 个 high/critical Episode；
+- [x] 36 个 schema-valid WAJEgame Required candidate Episode；
+- [x] coverage dimensions 无空白，18 个多轮 Episode、12 个 critical Episode；
 - [x] 每个 Episode 的三类反事实关系齐备；
 - [x] 8 个 `real_user_language` Episode 绑定 durable source trace；拟合 business world 与
   expectation 仍明确标成 candidate；
 - [x] catalog readiness gaps 由 validator 机器生成并 checked in。
 - [x] Episode 无权自报 review status、partition 或 grader；
-- [x] 45 个 Episode 具备 support expectation、observable message trigger、contract
+- [x] 36 个 Episode 具备 suite binding、support expectation、observable message/event
+  trigger、contract
   discoverability、structured truth 与 typed counterfactual mutation；
 - [x] Source/Review/Corpus/Grader registries 与 canonical coverage taxonomy；
-- [x] 45 组 hash-bound AgentWorldView/EvaluatorOracleView 和 authority/world profile；
-- [x] 45 份待独立双审 review package；
+- [x] 36 组 hash-bound AgentWorldView/EvaluatorOracleView 和 authority/world profile；
+- [x] 36 份待独立双审 review package；
+- [x] Required generator 采用四文件 allowlist；4 个 transfer probe 无法进入 catalog、
+  review、promotion、run 或 readiness；
 - [x] EvaluationRunResult 三层 strict-AND contract；
 - [x] read-only readiness verifier 从固定 artifact set 派生 `deny_g3_1`。
 
 进入 G3.1 的 hard precondition：
 
-- [ ] 每个来源池达到 verified Source Registry floor；expert 8 例与 historical 6 例仍缺
-  外部来源证明；
+- [ ] 每个 Required Episode 绑定 verified Source Registry record，且全局独立来源达到
+  policy floor；source pool 计数只作为 provenance 报告；
 - [ ] 进入 development/calibration/held-out 分区的全部 base Episode 完成 business owner 与
   measurement reviewer 双审，reviewed base 总量达到 policy floor；
-- [ ] 84 个 truth fact 完成 identifiability/support review；
-- [ ] 45 个 Episode 建立显式 estimand 列表，并由 claim target 双向完整覆盖；multi-estimand
+- [ ] 54 个 truth fact 完成 identifiability/support review；
+- [x] 36 个 Episode 建立显式 estimand 列表，并由 claim target 双向完整覆盖；multi-estimand
   只能由列表长度派生；每个 boundary authorization 显式绑定适用 claim targets 并逐
   target 执行 ceiling lattice；
-- [ ] 147 个 counterfactual 形成可执行单一语义干预、before/after 与 materialized sibling
-  hash；validator 必须实际重放 JSON Pointer mutation 并重算 digest；
+- [x] 120 个 counterfactual 形成可执行单一语义干预、原子 JSON Pointer patch set、逐 claim authority
+  effect 与 materialized sibling hash；validator 实际重放 JSON Pointer mutation、重算 digest，并要求
+  frozen run manifest 为每个 promoted Episode 枚举 base 与全部 sibling；
+- [ ] 41 个 case-file authority 已完成实际 snapshot/fixture/result identity 与 artifact
+  digest；仍需两位独立 reviewer 的 content-bound approval。仅由 counterfactual variant
+  引用的 authority 进入相同 readiness，全部 authority 当前保持 `authoring`；
 - [x] public GitHub remote、numeric repository/owner identity、Sigstore admission request、
   provider state、exact commit/ref/workflow/run attempt、release/trust epoch、predecessor、
   policy/root/verifier/artifact set、Python executable/dependency/import/source-tree binding 与
@@ -1157,6 +1171,9 @@ Authoring checkpoint：
 - [ ] 每个 manifest 状态转换绑定同一 authority root、前一 epoch、canonical predecessor
   hash 和递归授权历史；
 - [ ] semantic/model grader 完成人工标注校准；
+- [ ] 每个 calibration label 绑定专用 human calibration review、同一
+  Episode/core、不可变 grader result 与 runner artifact index；全部 verdict 与 typed
+  critical veto 均通过冻结 manifest/grader registry/check/artifact 交叉校验；
 - [ ] PromotionManifest approved，protected held-out manifest sealed；
 - [ ] development、calibration、held-out 分区和 hash 已冻结；
 - [ ] run manifest 无权降低 Episode expectation 或 policy floor。
@@ -1242,7 +1259,7 @@ Exit：
 
 - [ ] 所有支持的 ClaimTargetKind 形成 executable design；
 - [ ] unsupported case 返回 expectation package 允许的 typed boundary；
-- [ ] contract-supported case 不能用 boundary 逃逸；
+- [ ] source-backed claim 不能用局部 boundary 逃逸，known gap 不能充当量化证据；
 - [ ] calendar/exposure property tests 通过；
 - [ ] resolver outcome 无 accepted head，boundary 不伪造 instance；
 - [ ] obligation definition immutable，无 fulfillment state。
@@ -1345,6 +1362,7 @@ checked-in run manifest 枚举：
 
 - catalog、policy、rubric、schema 与内容 hash；
 - episode IDs、dataset partition 和 source provenance；
+- 每个 promoted Episode 的 base case，以及每个 sibling 的 ID 与 materialized digest；
 - provider/model/prompt versions；
 - paraphrases、repeats、seeds；
 - allowed skip reasons、denominator 与 pass policy；
@@ -1362,8 +1380,8 @@ manifest 必须满足独立、versioned、checked-in `Gate3EvalPolicy` 的最低
 - 每个 high-risk authority-continuity case 在 Lane B 至少 2 个 paraphrases × 2 次 repeats；
 - 每类 Reviewer trigger 至少 2 个 base cases × 3 次 repeats；
 - silent authority drift、scripted provenance 与 incomplete trace 允许数量为 0；
-- `contract_supported`、required disposition 与 allowed boundary codes 由 expectation catalog/
-  policy 固定，run manifest 无权改写。
+- 每个 claim 的 source/support/disposition/applicability/ceiling/boundary，以及 sibling 的
+  claim-scoped authority effect 由 expectation catalog/policy 固定，run manifest 无权改写。
 
 validator 在运行前冻结 policy、expectation catalog、TraceProfile 与 manifest hash。运行后
 减少 case、repeat、paraphrase、critical combination 或 denominator 会使验收失败。
@@ -1398,8 +1416,9 @@ owner 与 measurement reviewer 双审；grader 标注分歧保留并进入 calib
 | 多基准比较 | 前日、rolling、上周同日独立 contrast 与 release maturity |
 | 数据质量/证据 | claim-scoped validity、局部降级、新旧 Evidence lineage |
 
-八例只承担一个真实用户 slice。Gate 3 仍需完整覆盖其他行业、指标、definition、cohort、
-funnel、distribution、association、causal challenge 和无时间问题。
+八例承担 launch 用户语言入口。Required suite 继续覆盖 WAJEgame 的指标定义、cohort、
+funnel、distribution、association、causal challenge、无时间问题、证据缺口与异步
+authority stress。跨行业泛化由独立 transfer research lane 观察，不参与 launch verdict。
 
 ### 21.3 Coverage 维度
 
@@ -1538,7 +1557,7 @@ production registry；production EvidenceStore 做二次 realm 验证。
 
 - deterministic schema/domain/property/mutation/replay：100%；
 - critical historical regressions：100%，silent authority drift 为 0；
-- contract-supported critical cases：100% executable design；
+- source-backed critical claims：100% executable design；known gap 量化证据为 0；
 - material ambiguity：100% 符合 required/allowed disposition；
 - trace completeness：100% required spans；
 - pairwise coverage 达到 Gate3EvalPolicy floor；
@@ -1546,7 +1565,8 @@ production registry；production EvidenceStore 做二次 realm 验证。
 - automated semantic grader 经过人工抽样校准；
 - grader disagreement 进入 review；
 - eval failure 不自动升级为 runtime guardrail。
-- 五个 source pool 分别达到最低数量，candidate 不计入 reviewed denominator；
+- 每个 Required Episode 都有可核验 source binding，全局独立来源达到 policy floor；
+  source pool 不设数量配额，candidate 不计入 reviewed denominator；
 - `real_user_language` 的来源可核验，生成措辞冒充真实样本的数量为 0；
 - 每个 Episode 的 meaning-preserving、measurement-changing 与 boundary/interaction-changing
   sibling 齐备；
@@ -1582,7 +1602,7 @@ revision，旧结果保留以供比较。
 - [ ] Workflow 使用 execution/obligation/publication/delivery 四轴。
 - [ ] journal、authority mutation 与 outbox enqueue 原子提交；projection 可从 cursor 重建。
 - [ ] real-provider 两条 lane 和独立 Reviewer lane 有完整 trace。
-- [ ] contract-supported eval 无 boundary escape。
+- [ ] source-backed claim 无 boundary escape，局部 gap 不取消无关 claim。
 - [ ] old Gate 3 代码、fixture、artifact 不进入当前依赖。
 - [ ] clean-copy build/test/run 通过。
 - [ ] 对抗式审查 blocking findings 为 0。

@@ -15,6 +15,7 @@
     "authority_profile_ref",
     "authority_profile_sha256",
     "product_grader_profile_ref",
+    "case_variant",
     "layer_results",
     "critical_vetoes",
     "artifact_completeness",
@@ -57,6 +58,9 @@
       "type": "string",
       "minLength": 1
     },
+    "case_variant": {
+      "$ref": "#/$defs/caseVariant"
+    },
     "layer_results": {
       "type": "object",
       "additionalProperties": false,
@@ -79,11 +83,10 @@
     },
     "critical_vetoes": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "uniqueItems": true
+        "$ref": "#/$defs/criticalVeto"
+      }
     },
     "artifact_completeness": {
       "type": "boolean"
@@ -96,6 +99,78 @@
     }
   },
   "$defs": {
+    "criticalVeto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "veto_id",
+        "layer",
+        "check_id",
+        "artifact_sha256",
+        "reason_code"
+      ],
+      "properties": {
+        "veto_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "layer": {
+          "enum": [
+            "product_behavior",
+            "authority_conformance",
+            "implementation"
+          ]
+        },
+        "check_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        }
+      }
+    },
+    "caseVariant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sibling_id",
+            "materialized_sibling_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "counterfactual"
+            },
+            "sibling_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "materialized_sibling_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
     "sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"

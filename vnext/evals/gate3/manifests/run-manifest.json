@@ -1,9 +1,9 @@
 {
   "artifact_type": "run_manifest",
   "artifact_version": "gate3.run-manifest.v1",
-  "registry_epoch": 1,
+  "registry_epoch": 2,
   "status": "draft",
-  "policy_sha256": "6dfb4d9e2bdcf0d29f515ec4fbcad568362e492b64b60e2bcb5e5bf9955b730b",
+  "policy_sha256": "b94d6ede5aaa8ae7cf6c2e090b8ee69803ebbe87bfe19397b45219d9187fa807",
   "taxonomy_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
   "grader_registry_sha256": "c619cc2deebaa8ceb91dc4989005f8eec6f1718cef65013a2fdd51d5a9403bb6",
   "promotion_manifest_sha256": "53ca35e034b90770b5e975df8edbf85fc64c552ade4043c7289c274d403f0fa8",

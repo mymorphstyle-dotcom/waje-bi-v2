@@ -14,12 +14,24 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from jsonschema import Draft202012Validator, FormatChecker
+
+from validate_gate3_eval_catalog import (
+    _format_error,
+    _validate_episode_semantics,
+    _validate_required_suite,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 EVAL_ROOT = ROOT / "evals" / "gate3"
 CANDIDATE_ROOT = EVAL_ROOT / "candidates"
+EPISODE_SCHEMA_PATH = EVAL_ROOT / "evaluation-episode.schema.json"
+POLICY_PATH = EVAL_ROOT / "gate3-eval-policy.json"
+TAXONOMY_PATH = EVAL_ROOT / "taxonomy" / "coverage-taxonomy.json"
 CATALOG_PATH = EVAL_ROOT / "catalog" / "gate3-authoring-candidates.json"
 CORPUS_REGISTRY_PATH = EVAL_ROOT / "registries" / "corpus-registry.json"
+SOURCE_REGISTRY_PATH = EVAL_ROOT / "registries" / "source-registry.json"
 WORLD_PROFILES_PATH = (
     EVAL_ROOT / "profiles" / "cross-gate-world-profiles.json"
 )
@@ -27,6 +39,28 @@ REVIEW_PACKAGES_PATH = EVAL_ROOT / "promotion" / "review-packages.json"
 AUTHORITY_PROFILES_PATH = (
     EVAL_ROOT / "profiles" / "authority-conformance-profiles.json"
 )
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: {!r}".format(key))
+        result[key] = value
+    return result
+
+
+def _load_json_strict(path: Path) -> Any:
+    try:
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except ValueError as exc:
+        raise ValueError("{}: {}".format(path.name, exc)) from exc
+
 
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(
@@ -48,6 +82,8 @@ def _episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
             "episode_id",
             "title",
             "source_pool",
+            "suite_binding",
+            "data_source_bindings",
             "user_episode",
             "business_world",
             "decision_stakes",
@@ -66,10 +102,66 @@ def _episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _load_candidates() -> list[dict[str, Any]]:
+    policy = _load_json_strict(POLICY_PATH)
+    schema = _load_json_strict(EPISODE_SCHEMA_PATH)
+    taxonomy = _load_json_strict(TAXONOMY_PATH)
+    required_paths = [
+        CANDIDATE_ROOT / name
+        for name in policy["required_suite"]["required_candidate_files"]
+    ]
+    observed_paths = set(CANDIDATE_ROOT.glob("*.json"))
+    if observed_paths != set(required_paths):
+        raise ValueError(
+            "candidate input set differs from v4 allowlist: missing={}, "
+            "unexpected={}".format(
+                sorted(str(path) for path in set(required_paths) - observed_paths),
+                sorted(str(path) for path in observed_paths - set(required_paths)),
+            )
+        )
     episodes: list[dict[str, Any]] = []
-    for path in sorted(CANDIDATE_ROOT.glob("*.json")):
-        catalog = json.loads(path.read_text(encoding="utf-8"))
+    findings: list[str] = []
+    for path in required_paths:
+        catalog = _load_json_strict(path)
+        findings.extend(
+            "{} {}".format(path.name, _format_error(error))
+            for error in Draft202012Validator(
+                schema,
+                format_checker=FormatChecker(),
+            ).iter_errors(catalog)
+        )
         episodes.extend(catalog["episodes"])
+    if not findings:
+        for episode in episodes:
+            findings.extend(
+                _validate_episode_semantics(episode, taxonomy)
+            )
+        findings.extend(
+            _validate_required_suite(
+                episodes,
+                taxonomy=taxonomy,
+                policy=policy,
+            )
+        )
+    duplicate_ids = [
+        episode_id
+        for episode_id in {
+            episode["episode_id"] for episode in episodes
+        }
+        if sum(
+            episode["episode_id"] == episode_id for episode in episodes
+        )
+        > 1
+    ]
+    if duplicate_ids:
+        findings.append(
+            "duplicate Episode IDs: {}".format(sorted(duplicate_ids))
+        )
+    if findings:
+        raise ValueError(
+            "candidate validation failed:\n- {}".format(
+                "\n- ".join(findings)
+            )
+        )
     return episodes
 
 
@@ -217,6 +309,10 @@ def _authority_profiles(episodes: list[dict[str, Any]]) -> dict[str, Any]:
 def _review_packages(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     from compile_gate3_eval_views import compile_views
 
+    source_status_by_id = {
+        record["source_record_id"]: record["verification_status"]
+        for record in _load_json_strict(SOURCE_REGISTRY_PATH)["records"]
+    }
     entries = {
         entry["episode_id"]: entry
         for entry in _corpus_registry(episodes)["entries"]
@@ -234,6 +330,11 @@ def _review_packages(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             open_findings.append("estimand_contract_missing")
         if not episode["acceptable_outcome"].get("claim_targets"):
             open_findings.append("per_claim_ceiling_review_required")
+        if (
+            episode["support_expectation"]["authoring_status"]
+            != "claim_cases_complete"
+        ):
+            open_findings.append("claim_case_authoring_pending")
         open_findings.extend(
             "counterfactual_not_executable:{}".format(
                 sibling["sibling_id"]
@@ -242,8 +343,19 @@ def _review_packages(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             if sibling["mutation_operation"].get("execution_status")
             != "executable_verified"
         )
-        source_pool = episode["source_pool"]
-        if source_pool in {"expert_business_case", "historical_failure"}:
+        open_findings.extend(
+            "replacement_expectation_pending:{}".format(
+                sibling["sibling_id"]
+            )
+            for sibling in episode["counterfactual_siblings"]
+            if sibling["mutation_dimension"]
+            in {"decision_goal", "metric_definition", "scope"}
+            and "replacement_expectation" not in sibling
+        )
+        if (
+            source_status_by_id.get(entry["source_record_ref"])
+            != "verified"
+        ):
             open_findings.append("source_provenance_pending")
         packages.append(
             {
@@ -257,6 +369,10 @@ def _review_packages(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                     "#{}".format(episode["episode_id"])
                 ),
                 "source_record_ref": entry["source_record_ref"],
+                "suite_binding": episode["suite_binding"],
+                "data_source_bindings": episode[
+                    "data_source_bindings"
+                ],
                 "evaluation_clock": episode["business_world"][
                     "evaluation_clock"
                 ],
@@ -268,18 +384,24 @@ def _review_packages(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                 ]["view_sha256"],
                 "business_review_scopes": [
                     "user wording and decision target",
+                    "title, user, world, outcome and counterfactual semantic coherence",
                     "decision stakes and forbidden harms",
                     "business-world realism",
                     "required disposition and boundary usefulness",
-                    "source pool and coverage classification",
+                    "WAJEgame domain, factor and question-family binding",
+                    "claim case source and contract boundary",
+                    "source provenance",
                 ],
                 "measurement_review_scopes": [
                     "truth identifiability and support",
+                    "estimand coherence across question, world, outcome and counterfactuals",
                     "valid design families",
                     "calendar and business-day semantics",
                     "counterfactual atomicity and relation",
                     "claim ceiling by estimand and claim target",
-                    "source pool and coverage classification",
+                    "WAJEgame domain, factor and question-family binding",
+                    "claim case source and contract boundary",
+                    "source provenance",
                 ],
                 "open_machine_findings": sorted(set(open_findings)),
                 "required_independent_roles": [
@@ -299,7 +421,7 @@ def _expected_artifacts() -> dict[Path, dict[str, Any]]:
     episodes = _load_candidates()
     artifacts = {
         CATALOG_PATH: {
-            "catalog_version": "gate3.behavior-eval.v2",
+            "catalog_version": "gate3.behavior-eval.v4",
             "episodes": episodes,
         }
     }

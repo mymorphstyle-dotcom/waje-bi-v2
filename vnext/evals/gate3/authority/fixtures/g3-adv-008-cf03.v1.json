@@ -1,0 +1,145 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-ADV-008-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-008-cf03-v1/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-05T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-ADV-008:G3-ADV-008-CF03",
+    "episode_id": "G3-ADV-008",
+    "binding_id": "gap_exposure_control_contracts",
+    "authority_slot_id": "adv_008_recall_assignment",
+    "scope_claim_target_ids": [
+      "observed_reactivation_difference_claim",
+      "incremental_reactivated_users_claim",
+      "recall_scale_decision_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-ADV-008-01",
+      "state": "available",
+      "description": "沉默用户定义为过去 28 天无付费或有效玩法行为",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-008-02",
+      "state": "available",
+      "description": "召回消息发送、送达、打开与重新付费事件可用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-008-03",
+      "state": "available",
+      "description": "运营选择分数、可触达状态和历史行为特征有记录",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-008-04",
+      "state": "available",
+      "description": "重新付费定义为发送后七天内至少一次付费或有效玩法行为",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-008-05",
+      "state": "available",
+      "description": "全部合格用户有 10% 随机 holdout，其他渠道污染可验证",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+      "state": "missing",
+      "description": "Gate 3 SSOT records exposure_control_contracts as a missing governed contract; it can support a boundary only.",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-ADV-008-01",
+      "description": "收到召回消息用户的七日重新付费率高于未收到者",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-008-02",
+      "description": "发送用户在历史活跃度和可触达性上明显更高",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-008-03",
+      "description": "选择分数模型使用了一部分不可导出的内部特征",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-008-04",
+      "description": "其他渠道触达记录覆盖不完整",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-008-05",
+      "description": "发送时段与自然重新付费高峰重合",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-008-SOURCE-CLOCK",
+      "description": "冻结 paid_order_success 的最后完整业务日为 2026-07-04，所有相对窗口和 cohort eligibility 必须以该 watermark 截止。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    }
+  ],
+  "query_result_surfaces": [
+    {
+      "assignment": "random_eligible_user_holdout",
+      "arm": "message",
+      "eligible_users": 90000,
+      "seven_day_reactivated_users": 11250
+    },
+    {
+      "assignment": "random_eligible_user_holdout",
+      "arm": "holdout",
+      "eligible_users": 10000,
+      "seven_day_reactivated_users": 1000
+    },
+    {
+      "checks": "other_channel_contamination",
+      "status": "measured_and_bounded"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-ADV-008-01",
+        "statement": "观测差异受到强选择偏差与渠道污染影响，无法识别可靠增量用户数；可以描述暴露后重新付费和建立未来实验建议。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "observable_contracts",
+      "observable_conditions",
+      "query_result_surfaces"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

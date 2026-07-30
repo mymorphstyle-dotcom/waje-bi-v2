@@ -28,9 +28,12 @@ FORBIDDEN_AGENT_FIELD_NAMES = {
     "forbidden_outcomes",
     "counterfactual_siblings",
     "coverage_tags",
+    "suite_binding",
+    "data_source_bindings",
     "source_record_ref",
     "product_grader_profile_ref",
     "authority_profile_ref",
+    "authority_expectation",
 }
 
 
@@ -64,6 +67,60 @@ def _message_projection(message: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _contract_observation(contract: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "ref": contract["contract_ref"],
+        "fact_kind": "contract_status",
+        "summary": contract["description"],
+        "state": contract["state"],
+        "access_state": contract["access_state"],
+    }
+
+
+def _condition_observation(condition: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "ref": condition["condition_id"],
+        "fact_kind": "data_condition",
+        "summary": condition["description"],
+    }
+
+
+def _source_observation(binding: Mapping[str, Any]) -> dict[str, Any]:
+    materialization_status = binding["materialization_status"]
+    if binding["source_mode"] == "known_contract_gap":
+        state = "missing"
+        summary = (
+            "This governed source is an explicit contract gap and cannot "
+            "supply quantified evidence."
+        )
+    elif materialization_status == "verified":
+        state = "available"
+        summary = (
+            "This governed evaluation source has a verified materialization "
+            "on this inspection surface."
+        )
+    else:
+        state = "missing"
+        summary = (
+            "This governed evaluation source is planned and has no admitted "
+            "materialization yet."
+        )
+    return {
+        "ref": binding["source_ref"],
+        "fact_kind": "source_binding",
+        "summary": summary,
+        "state": state,
+        "source_mode": binding["source_mode"],
+        "materialization_status": materialization_status,
+    }
+
+
+def _sorted_observations(
+    observations: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    return sorted(observations, key=lambda item: item["ref"])
+
+
 def _find_forbidden_field_names(value: Any) -> set[str]:
     findings: set[str] = set()
     if isinstance(value, Mapping):
@@ -80,15 +137,51 @@ def _find_forbidden_field_names(value: Any) -> set[str]:
 
 
 def agent_accessible_world_refs(
-    world: Mapping[str, Any],
+    episode_or_world: Mapping[str, Any],
+    *,
+    visible_turn: int | None = None,
 ) -> set[str]:
-    """Return facts reachable through the exact AgentWorldView surfaces."""
+    """Return refs inspectable through the exact AgentWorldView surfaces.
 
+    A planned or missing source binding is inspectable as an availability fact.
+    Presence here never authorizes it as materialized evidence.
+    """
+
+    if "business_world" in episode_or_world:
+        episode = episode_or_world
+        world = episode["business_world"]
+        source_bindings = episode.get("data_source_bindings", [])
+    else:
+        world = episode_or_world
+        source_bindings = []
+    released_contract_refs = {
+        event["affected_ref"]
+        for event in world.get("scheduled_events", [])
+        if event["event_type"] == "contract_release"
+        and event.get("affected_ref")
+        and (
+            visible_turn is None
+            or event["after_user_turn"] <= visible_turn
+        )
+    }
+    future_release_refs = {
+        event["affected_ref"]
+        for event in world.get("scheduled_events", [])
+        if event["event_type"] == "contract_release"
+        and event.get("affected_ref")
+        and visible_turn is not None
+        and event["after_user_turn"] > visible_turn
+    }
     return {
         condition["condition_id"]
         for condition in world["data_conditions"]
         if condition["discoverability"]
-        in {"provided_to_agent", "discoverable_by_data_probe"}
+        in {
+            "provided_to_agent",
+            "discoverable_by_semantic_inspection",
+            "discoverable_by_data_probe",
+        }
+        and condition["condition_id"] not in future_release_refs
     } | {
         contract["contract_ref"]
         for contract in world["available_contracts"]
@@ -97,8 +190,50 @@ def agent_accessible_world_refs(
             "provided_to_agent",
             "discoverable_by_semantic_inspection",
         }
-        and contract["state"] == "available"
-        and contract["access_state"] == "accessible"
+        and contract["contract_ref"] not in future_release_refs
+    } | released_contract_refs | {
+        binding["source_ref"]
+        for binding in source_bindings
+        if (
+            visible_turn is None
+            or binding["agent_access"]["available_from_turn"] <= visible_turn
+        )
+    }
+
+
+def _future_release_refs(
+    world: Mapping[str, Any], *, visible_turn: int
+) -> set[str]:
+    return {
+        event["affected_ref"]
+        for event in world.get("scheduled_events", [])
+        if event["event_type"] == "contract_release"
+        and event.get("affected_ref")
+        and event["after_user_turn"] > visible_turn
+    }
+
+
+def _binding_visible(
+    binding: Mapping[str, Any], *, visible_turn: int
+) -> bool:
+    return binding["agent_access"]["available_from_turn"] <= visible_turn
+
+
+def agent_materialized_source_refs(
+    episode: Mapping[str, Any],
+    *,
+    visible_turn: int | None = None,
+) -> set[str]:
+    """Return source refs whose evidence artifacts are admitted and visible."""
+
+    return {
+        binding["source_ref"]
+        for binding in episode.get("data_source_bindings", [])
+        if binding["materialization_status"] == "verified"
+        and (
+            visible_turn is None
+            or binding["agent_access"]["available_from_turn"] <= visible_turn
+        )
     }
 
 
@@ -117,6 +252,14 @@ def compile_views(
     if not injected_messages:
         raise ValueError("AgentWorldView requires at least one injected message")
 
+    visible_events = [
+        event
+        for event in world.get("scheduled_events", [])
+        if event["after_user_turn"] <= visible_turn
+    ]
+    future_release_refs = _future_release_refs(
+        world, visible_turn=visible_turn
+    )
     public_context = [
         {
             "ref": condition["condition_id"],
@@ -124,6 +267,7 @@ def compile_views(
         }
         for condition in world["data_conditions"]
         if condition["discoverability"] == "provided_to_agent"
+        and condition["condition_id"] not in future_release_refs
     ] + [
         {
             "ref": contract["contract_ref"],
@@ -132,48 +276,155 @@ def compile_views(
         for contract in world["available_contracts"]
         if contract["discoverability"] == "provided_to_agent"
         and contract["access_state"] == "accessible"
+        and contract["contract_ref"] not in future_release_refs
     ]
-    accessible_world_refs = agent_accessible_world_refs(world)
+    semantic_contracts = [
+        contract
+        for contract in world["available_contracts"]
+        if contract["contract_ref"] not in future_release_refs
+        and contract["discoverability"]
+        == "discoverable_by_semantic_inspection"
+    ]
+    semantic_conditions = [
+        condition
+        for condition in world["data_conditions"]
+        if condition["condition_id"] not in future_release_refs
+        and condition["discoverability"]
+        == "discoverable_by_semantic_inspection"
+    ]
+    semantic_bindings = [
+        binding
+        for binding in episode["data_source_bindings"]
+        if _binding_visible(binding, visible_turn=visible_turn)
+        and binding["agent_access"]["surface"] == "semantic_inspection"
+    ]
+    probe_conditions = [
+        condition
+        for condition in world["data_conditions"]
+        if condition["condition_id"] not in future_release_refs
+        and condition["discoverability"]
+        == "discoverable_by_data_probe"
+    ]
+    probe_bindings = [
+        binding
+        for binding in episode["data_source_bindings"]
+        if _binding_visible(binding, visible_turn=visible_turn)
+        and binding["agent_access"]["surface"] == "data_probe"
+    ]
+    authority_bindings = [
+        binding
+        for binding in episode["data_source_bindings"]
+        if _binding_visible(binding, visible_turn=visible_turn)
+        and binding["agent_access"]["surface"] == "authority_lookup"
+    ]
     inspection_surfaces = [
         {
             "surface_id": "semantic-contracts",
             "kind": "semantic_contract",
             "discoverable_refs": sorted(
-                contract["contract_ref"]
-                for contract in world["available_contracts"]
-                if contract["contract_ref"] in accessible_world_refs
-                and contract["discoverability"]
-                == "discoverable_by_semantic_inspection"
+                {
+                    contract["contract_ref"]
+                    for contract in semantic_contracts
+                }
+                | {
+                    condition["condition_id"]
+                    for condition in semantic_conditions
+                }
+                | {
+                    binding["source_ref"]
+                    for binding in semantic_bindings
+                }
+            ),
+            "observations": _sorted_observations(
+                [
+                    *(
+                        _contract_observation(contract)
+                        for contract in semantic_contracts
+                    ),
+                    *(
+                        _condition_observation(condition)
+                        for condition in semantic_conditions
+                    ),
+                    *(
+                        _source_observation(binding)
+                        for binding in semantic_bindings
+                    ),
+                ]
             ),
         },
         {
             "surface_id": "data-probes",
             "kind": "data_probe",
             "discoverable_refs": sorted(
-                condition["condition_id"]
-                for condition in world["data_conditions"]
-                if condition["condition_id"] in accessible_world_refs
-                and condition["discoverability"]
-                == "discoverable_by_data_probe"
+                {
+                    condition["condition_id"]
+                    for condition in probe_conditions
+                }
+                | {
+                    binding["source_ref"]
+                    for binding in probe_bindings
+                }
+            ),
+            "observations": _sorted_observations(
+                [
+                    *(
+                        _condition_observation(condition)
+                        for condition in probe_conditions
+                    ),
+                    *(
+                        _source_observation(binding)
+                        for binding in probe_bindings
+                    ),
+                ]
+            ),
+        },
+        {
+            "surface_id": "authority-records",
+            "kind": "authority_lookup",
+            "discoverable_refs": sorted(
+                binding["source_ref"]
+                for binding in authority_bindings
+            ),
+            "observations": _sorted_observations(
+                [
+                    _source_observation(binding)
+                    for binding in authority_bindings
+                ]
             ),
         },
     ]
     agent_world_view: dict[str, Any] = {
-        "view_version": "gate3.agent-world-view.v1",
+        "view_version": "gate3.agent-world-view.v2",
         "evaluation_clock": world["evaluation_clock"],
         "injected_messages": injected_messages,
+        "injected_events": [
+            {
+                "event_id": event["event_id"],
+                "event_type": event["event_type"],
+                "public_payload": event["public_payload"],
+                **(
+                    {"affected_ref": event["affected_ref"]}
+                    if event.get("affected_ref")
+                    else {}
+                ),
+            }
+            for event in visible_events
+        ],
         "public_context": public_context,
         "inspection_surfaces": inspection_surfaces,
     }
     agent_world_view["view_sha256"] = _hash_view(agent_world_view)
 
     evaluator_oracle_view: dict[str, Any] = {
-        "view_version": "gate3.evaluator-oracle-view.v1",
+        "view_version": "gate3.evaluator-oracle-view.v2",
         "episode_id": episode["episode_id"],
         "episode_core_sha256": corpus_entry["episode_core_sha256"],
         "complete_message_plan": episode["user_episode"]["messages"],
         "truth_facts": world["truth_facts"],
+        "scheduled_events": world.get("scheduled_events", []),
         "decision_stakes": episode["decision_stakes"],
+        "suite_binding": episode["suite_binding"],
+        "data_source_bindings": episode["data_source_bindings"],
         "support_expectation": episode["support_expectation"],
         "acceptable_outcome": episode["acceptable_outcome"],
         "forbidden_outcomes": episode["forbidden_outcomes"],

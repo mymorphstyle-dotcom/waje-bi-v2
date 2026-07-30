@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-views.v1.schema.json",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-views.v2.schema.json",
   "title": "WAJE Gate 3 Evaluation View Bundle",
   "type": "object",
   "additionalProperties": false,
@@ -57,13 +57,14 @@
         "view_version",
         "evaluation_clock",
         "injected_messages",
+        "injected_events",
         "public_context",
         "inspection_surfaces",
         "view_sha256"
       ],
       "properties": {
         "view_version": {
-          "const": "gate3.agent-world-view.v1"
+          "const": "gate3.agent-world-view.v2"
         },
         "evaluation_clock": {
           "type": "object"
@@ -73,6 +74,32 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/message"
+          }
+        },
+        "injected_events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event_id",
+              "event_type",
+              "public_payload"
+            ],
+            "properties": {
+              "event_id": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "event_type": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "public_payload": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "affected_ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
           }
         },
         "public_context": {
@@ -102,7 +129,8 @@
             "required": [
               "surface_id",
               "kind",
-              "discoverable_refs"
+              "discoverable_refs",
+              "observations"
             ],
             "properties": {
               "surface_id": {
@@ -111,7 +139,8 @@
               "kind": {
                 "enum": [
                   "semantic_contract",
-                  "data_probe"
+                  "data_probe",
+                  "authority_lookup"
                 ]
               },
               "discoverable_refs": {
@@ -120,12 +149,72 @@
                   "$ref": "#/$defs/nonEmptyString"
                 },
                 "uniqueItems": true
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/inspectionObservation"
+                }
               }
             }
           }
         },
         "view_sha256": {
           "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "inspectionObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "fact_kind",
+        "summary"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fact_kind": {
+          "enum": [
+            "contract_status",
+            "data_condition",
+            "source_binding"
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "partial",
+            "missing",
+            "conflicting",
+            "stale"
+          ]
+        },
+        "access_state": {
+          "enum": [
+            "accessible",
+            "permission_required",
+            "denied"
+          ]
+        },
+        "source_mode": {
+          "enum": [
+            "frozen_real_snapshot",
+            "controlled_synthetic_fixture",
+            "known_contract_gap"
+          ]
+        },
+        "materialization_status": {
+          "enum": [
+            "verified",
+            "planned",
+            "missing_by_design"
+          ]
         }
       }
     },
@@ -138,7 +227,10 @@
         "episode_core_sha256",
         "complete_message_plan",
         "truth_facts",
+        "scheduled_events",
         "decision_stakes",
+        "suite_binding",
+        "data_source_bindings",
         "support_expectation",
         "acceptable_outcome",
         "forbidden_outcomes",
@@ -150,7 +242,7 @@
       ],
       "properties": {
         "view_version": {
-          "const": "gate3.evaluator-oracle-view.v1"
+          "const": "gate3.evaluator-oracle-view.v2"
         },
         "episode_id": {
           "type": "string",
@@ -167,8 +259,24 @@
           "type": "array",
           "minItems": 1
         },
+        "scheduled_events": {
+          "type": "array"
+        },
         "decision_stakes": {
           "type": "object"
+        },
+        "suite_binding": {
+          "type": "object",
+          "required": [
+            "business_domain",
+            "coverage_group",
+            "factor_group_refs",
+            "question_family_refs"
+          ]
+        },
+        "data_source_bindings": {
+          "type": "array",
+          "minItems": 1
         },
         "support_expectation": {
           "type": "object"

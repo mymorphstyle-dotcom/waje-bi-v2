@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,11 +28,14 @@ from build_gate3_github_admission_request import (  # noqa: E402
 )
 from gate3_admission_authority import (  # noqa: E402
     AdmissionExpectation,
+    VerifiedAdmissionAuthority,
 )
 from github_gate3_admission import (  # noqa: E402
+    CanonicalGitHubAdmissionConnector,
     GITHUB_REPOSITORY,
     GITHUB_REPOSITORY_ID,
     GITHUB_REPOSITORY_OWNER_ID,
+    InMemoryAdmissionStateCAS,
     TRUSTED_ENVIRONMENT,
     TRUSTED_SOURCE_REF,
     TRUSTED_WORKFLOW_PATH,
@@ -83,11 +87,42 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+class _EchoAdmissionConnector:
+    def __init__(
+        self,
+        issuer_id: str = "github-actions-sigstore",
+    ) -> None:
+        self.issuer_id = issuer_id
+
+    def current_authority(
+        self,
+        expected: AdmissionExpectation,
+    ):
+        return (
+            VerifiedAdmissionAuthority.create(
+                issuer_id=self.issuer_id,
+                authority_key_id="a" * 40,
+                receipt_sha256="1" * 64,
+                authority_state_sha256="2" * 64,
+                authority_state_version=1,
+                predecessor_receipt_sha256=None,
+                expectation=expected,
+                authorized_attestation_sha256s=frozenset(),
+                authorized_manifest_sha256s=frozenset(),
+            ),
+            [],
+        )
+
+
 class Gate3GitHubProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.request_schema = _load_json(REQUEST_SCHEMA_PATH)
         self.state_schema = _load_json(STATE_SCHEMA_PATH)
         self.source_revision = "a" * 40
+        self.verification_time = datetime(
+            2026, 7, 30, 12, 5, tzinfo=timezone.utc
+        )
+        self.trusted_root_bytes = b'{"trustedRoot":"test"}\n'
         self.request = {
             "artifact_type": "gate3_github_admission_request",
             "artifact_version": "gate3.github-admission-request.v1",
@@ -158,10 +193,18 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                 "admission_authority_sha256"
             ],
             "gh_executable_sha256": "e" * 64,
+            "trusted_root_sha256": hashlib.sha256(
+                self.trusted_root_bytes
+            ).hexdigest(),
             "minimum_trust_policy_epoch": 7,
             "previous_admission_sha256": "d" * 64,
             "previous_provider_state_sha256": "f" * 64,
             "state_version": 11,
+            "valid_from": "2026-07-30T11:00:00Z",
+            "valid_until": "2026-07-31T12:00:00Z",
+            "maximum_request_age_seconds": 86400,
+            "maximum_attestation_delay_seconds": 3600,
+            "clock_skew_seconds": 60,
         }
 
     def _validate(
@@ -174,6 +217,60 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             state or self.state,
             request_schema=self.request_schema,
             provider_state_schema=self.state_schema,
+            verification_time=self.verification_time,
+        )
+
+    def _expectation(self, request: dict | None = None) -> AdmissionExpectation:
+        release = (request or self.request)["release_authority"]
+        return AdmissionExpectation(
+            policy_sha256=release["policy_sha256"],
+            authority_root_bundle_sha256=release[
+                "authority_root_bundle_sha256"
+            ],
+            verifier_release_sha256=release["verifier_release_sha256"],
+            evaluated_artifact_hashes=release["evaluated_artifact_hashes"],
+        )
+
+    def _verification_output(
+        self,
+        request_sha256: str,
+        *,
+        timestamp: str = "2026-07-30T12:01:00Z",
+    ) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "attestation": {},
+                        "verificationResult": {
+                            "statement": {
+                                "subject": [
+                                    {
+                                        "digest": {
+                                            "sha256": request_sha256
+                                        }
+                                    }
+                                ]
+                            },
+                            "signature": {
+                                "certificate": {
+                                    "runnerEnvironment": "github-hosted"
+                                }
+                            },
+                            "verifiedTimestamps": [
+                                {
+                                    "type": "Tlog",
+                                    "uri": "https://rekor.sigstore.dev",
+                                    "timestamp": timestamp,
+                                }
+                            ],
+                        },
+                    }
+                ]
+            ),
+            stderr="",
         )
 
     def test_exact_provider_state_is_accepted(self) -> None:
@@ -184,6 +281,236 @@ class Gate3GitHubProviderTest(unittest.TestCase):
         self.assertEqual(
             "f" * 64,
             provider_state.previous_provider_state_sha256,
+        )
+
+    def test_canonical_connector_commits_once_and_rejects_replay(
+        self,
+    ) -> None:
+        request = copy.deepcopy(self.request)
+        request["previous_admission_sha256"] = None
+        request["admission_authority_sha256"] = (
+            admission_authority_sha256(request)
+        )
+        state = copy.deepcopy(self.state)
+        state["state_version"] = 1
+        state["previous_admission_sha256"] = None
+        state["previous_provider_state_sha256"] = None
+        state["approved_admission_authority_sha256"] = request[
+            "admission_authority_sha256"
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request_path = root / "request.json"
+            bundle_path = root / "bundle.jsonl"
+            trusted_root_path = root / "trusted-root.jsonl"
+            gh_path = root / "gh"
+            request_path.write_text(
+                json.dumps(request, sort_keys=True),
+                encoding="utf-8",
+            )
+            bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
+            gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            gh_path.chmod(0o755)
+            state["gh_executable_sha256"] = _sha256(gh_path)
+            cas = InMemoryAdmissionStateCAS(state)
+            connector = CanonicalGitHubAdmissionConnector(
+                control_plane=cas,
+                request_schema=self.request_schema,
+                provider_state_schema=self.state_schema,
+                gh_executable=gh_path,
+                trusted_root_path=trusted_root_path,
+                verification_clock=lambda: self.verification_time,
+            )
+            completed = self._verification_output(_sha256(request_path))
+            with patch(
+                "github_gate3_admission.subprocess.run",
+                return_value=completed,
+            ) as run:
+                authority, findings = connector.admit(
+                    request_path,
+                    bundle_path,
+                    self._expectation(request),
+                )
+                replayed, replay_findings = connector.admit(
+                    request_path,
+                    bundle_path,
+                    self._expectation(request),
+                )
+            self.assertEqual([], findings)
+            self.assertIsNotNone(authority)
+            self.assertIsNone(replayed)
+            self.assertTrue(
+                any("monotonic" in item for item in replay_findings)
+            )
+            self.assertEqual(1, run.call_count)
+            current_snapshot = cas.read_snapshot()
+            head = current_snapshot.admission_head
+            self.assertIsNotNone(head)
+            stale_snapshot = copy.copy(current_snapshot)
+            cas.replace_provider_state({**state, "state_version": 2})
+            stale_authority, stale_findings = (
+                connector.current_authority(
+                    self._expectation(request)
+                )
+            )
+            self.assertIsNone(stale_authority)
+            self.assertIn(
+                "canonical GitHub admission head is stale for provider state",
+                stale_findings,
+            )
+            self.assertFalse(
+                cas.compare_and_swap(stale_snapshot, head)
+            )
+            cas.replace_provider_state(state)
+            current, current_findings = connector.current_authority(
+                self._expectation(request)
+            )
+            self.assertEqual([], current_findings)
+            self.assertEqual(authority, current)
+            expired_connector = CanonicalGitHubAdmissionConnector(
+                control_plane=cas,
+                request_schema=self.request_schema,
+                provider_state_schema=self.state_schema,
+                gh_executable=gh_path,
+                trusted_root_path=trusted_root_path,
+                verification_clock=lambda: datetime(
+                    2026, 8, 2, tzinfo=timezone.utc
+                ),
+            )
+            expired, expired_findings = (
+                expired_connector.current_authority(
+                    self._expectation(request)
+                )
+            )
+            self.assertIsNone(expired)
+            self.assertIn(
+                "canonical GitHub admission head has expired",
+                expired_findings,
+            )
+
+    def test_trusted_root_digest_mismatch_fails_before_sigstore(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request_path = root / "request.json"
+            bundle_path = root / "bundle.jsonl"
+            trusted_root_path = root / "trusted-root.jsonl"
+            gh_path = root / "gh"
+            request_path.write_text(
+                json.dumps(self.request, sort_keys=True),
+                encoding="utf-8",
+            )
+            bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(b"unapproved root\n")
+            gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            gh_path.chmod(0o755)
+            self.state["gh_executable_sha256"] = _sha256(gh_path)
+            with patch("github_gate3_admission.subprocess.run") as run:
+                verified, findings = verify_github_attestation(
+                    request_path,
+                    bundle_path,
+                    self.state,
+                    request_schema=self.request_schema,
+                    provider_state_schema=self.state_schema,
+                    gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=self.verification_time,
+                )
+            self.assertIsNone(verified)
+            self.assertIn(
+                "Sigstore trusted root digest is not approved",
+                findings,
+            )
+            run.assert_not_called()
+
+    def test_stale_request_and_late_verified_timestamp_are_rejected(
+        self,
+    ) -> None:
+        stale_state = copy.deepcopy(self.state)
+        stale_state["maximum_request_age_seconds"] = 60
+        provider_state, stale_findings = (
+            validate_request_against_provider_state(
+                self.request,
+                stale_state,
+                request_schema=self.request_schema,
+                provider_state_schema=self.state_schema,
+                verification_time=datetime(
+                    2026, 7, 30, 13, 5, tzinfo=timezone.utc
+                ),
+            )
+        )
+        self.assertIsNone(provider_state)
+        self.assertIn("admission request is stale", stale_findings)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request_path = root / "request.json"
+            bundle_path = root / "bundle.jsonl"
+            trusted_root_path = root / "trusted-root.jsonl"
+            gh_path = root / "gh"
+            request_path.write_text(
+                json.dumps(self.request, sort_keys=True),
+                encoding="utf-8",
+            )
+            bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
+            gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            gh_path.chmod(0o755)
+            self.state["gh_executable_sha256"] = _sha256(gh_path)
+            completed = self._verification_output(
+                _sha256(request_path),
+                timestamp="2026-07-30T14:00:00Z",
+            )
+            with patch(
+                "github_gate3_admission.subprocess.run",
+                return_value=completed,
+            ):
+                verified, findings = verify_github_attestation(
+                    request_path,
+                    bundle_path,
+                    self.state,
+                    request_schema=self.request_schema,
+                    provider_state_schema=self.state_schema,
+                    gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=datetime(
+                        2026, 7, 30, 14, 1, tzinfo=timezone.utc
+                    ),
+                )
+            self.assertIsNone(verified)
+            self.assertIn(
+                "GitHub Sigstore timestamp is outside the approved freshness window",
+                findings,
+            )
+
+    def test_readiness_consumes_only_connector_authority(self) -> None:
+        readiness, _ = compute_readiness(
+            admission_connector=_EchoAdmissionConnector()
+        )
+        condition = next(
+            item
+            for item in readiness["condition_verdicts"]
+            if item["condition_id"] == "external_admission_verified"
+        )
+        self.assertEqual("pass", condition["verdict"])
+        rejected, _ = compute_readiness(
+            admission_connector=_EchoAdmissionConnector(
+                issuer_id="caller-local"
+            )
+        )
+        rejected_condition = next(
+            item
+            for item in rejected["condition_verdicts"]
+            if item["condition_id"] == "external_admission_verified"
+        )
+        self.assertEqual("blocked", rejected_condition["verdict"])
+        self.assertTrue(
+            any(
+                "selected provider" in evidence
+                for evidence in rejected_condition["evidence"]
+            )
         )
 
     def test_identity_and_authority_drift_is_rejected(self) -> None:
@@ -270,6 +597,7 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             gh_executable=Path("/opt/waje/bin/gh"),
             request_path=Path("/input/request.json"),
             bundle_path=Path("/input/bundle.jsonl"),
+            trusted_root_path=Path("/input/trusted-root.jsonl"),
             source_revision=self.source_revision,
             workflow_revision=self.source_revision,
         )
@@ -282,6 +610,7 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             "--deny-self-hosted-runners",
             "--cert-oidc-issuer https://token.actions.githubusercontent.com",
             "--predicate-type https://slsa.dev/provenance/v1",
+            "--custom-trusted-root /input/trusted-root.jsonl",
         ):
             self.assertIn(required, rendered)
         self.assertNotIn("--owner ", rendered)
@@ -292,11 +621,13 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             request_path = root / "request.json"
             bundle_path = root / "bundle.jsonl"
             gh_path = root / "gh"
+            trusted_root_path = root / "trusted-root.jsonl"
             request_path.write_text(
                 json.dumps(self.request, sort_keys=True),
                 encoding="utf-8",
             )
             bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
             gh_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             gh_path.chmod(
                 gh_path.stat().st_mode
@@ -323,6 +654,13 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                                 "runnerEnvironment": "github-hosted"
                             }
                         },
+                        "verifiedTimestamps": [
+                            {
+                                "type": "Tlog",
+                                "uri": "https://rekor.sigstore.dev",
+                                "timestamp": "2026-07-30T12:01:00Z",
+                            }
+                        ],
                     },
                 }
             ]
@@ -343,6 +681,8 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                     request_schema=self.request_schema,
                     provider_state_schema=self.state_schema,
                     gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=self.verification_time,
                 )
             self.assertEqual([], findings)
             self.assertIsNotNone(verified)
@@ -414,6 +754,7 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             self.assertTrue(command[0].endswith("/gh"))
             self.assertNotIn(str(request_path), command)
             self.assertNotIn(str(bundle_path), command)
+            self.assertNotIn(str(trusted_root_path), command)
             self.assertIn("--limit", command)
             self.assertIn("1", command)
 
@@ -423,11 +764,13 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             request_path = root / "request.json"
             bundle_path = root / "bundle.jsonl"
             gh_path = root / "gh"
+            trusted_root_path = root / "trusted-root.jsonl"
             request_path.write_text(
                 json.dumps(self.request, sort_keys=True),
                 encoding="utf-8",
             )
             bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
             gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
             gh_path.chmod(0o755)
             request_hash = _sha256(request_path)
@@ -470,6 +813,8 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                     request_schema=self.request_schema,
                     provider_state_schema=self.state_schema,
                     gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=self.verification_time,
                 )
             self.assertIsNone(verified)
             self.assertIn(
@@ -483,11 +828,13 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             request_path = root / "request.json"
             bundle_path = root / "bundle.jsonl"
             gh_path = root / "gh"
+            trusted_root_path = root / "trusted-root.jsonl"
             request_path.write_text(
                 json.dumps(self.request, sort_keys=True),
                 encoding="utf-8",
             )
             bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
             gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
             gh_path.chmod(0o755)
             self.state["gh_executable_sha256"] = _sha256(gh_path)
@@ -520,6 +867,8 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                     request_schema=self.request_schema,
                     provider_state_schema=self.state_schema,
                     gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=self.verification_time,
                 )
             self.assertIsNone(verified)
             self.assertIn(
@@ -533,11 +882,13 @@ class Gate3GitHubProviderTest(unittest.TestCase):
             request_path = root / "request.json"
             bundle_path = root / "bundle.jsonl"
             gh_path = root / "gh"
+            trusted_root_path = root / "trusted-root.jsonl"
             request_path.write_text(
                 '{"artifact_type":"a","artifact_type":"b"}',
                 encoding="utf-8",
             )
             bundle_path.write_text("{}\n", encoding="utf-8")
+            trusted_root_path.write_bytes(self.trusted_root_bytes)
             gh_path.write_text("#!/bin/sh\n", encoding="utf-8")
             gh_path.chmod(0o755)
             self.state["gh_executable_sha256"] = _sha256(gh_path)
@@ -551,6 +902,8 @@ class Gate3GitHubProviderTest(unittest.TestCase):
                     request_schema=self.request_schema,
                     provider_state_schema=self.state_schema,
                     gh_executable=gh_path,
+                    trusted_root_path=trusted_root_path,
+                    verification_time=self.verification_time,
                 )
             self.assertIsNone(verified)
             self.assertTrue(

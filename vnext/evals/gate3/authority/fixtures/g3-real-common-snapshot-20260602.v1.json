@@ -1,0 +1,152 @@
+{
+  "artifact_type": "gate3_real_snapshot_materialization",
+  "artifact_version": "gate3.real-snapshot-materialization.v1",
+  "authority_id": "REAL-WAJE-COMMON-20260602",
+  "evaluation_clock": {
+    "as_of_instant": "2026-06-03T10:00:00+01:00",
+    "target_business_date": "2026-06-02",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "projection": "Public-safe immutable metadata receipt. It contains source identities, coverage, row counts and result handles; it contains no raw rows, user identifiers or business metric values.",
+  "sources": [
+    {
+      "source_ref": "paid_order_success",
+      "contract_ref": "contracts/sources/paid-order-detail.source.yaml@0.4",
+      "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+      "physical_revision": "waje_bi.paid_order_success_clean_20240101_20260704_v2",
+      "schema_fingerprint": "3cf04abb2aae3d3dab023aeba72a3e0b80494dcc706961d814fa3166d6945feb",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-07-04",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 41234677,
+        "eligible_rows_through_cutoff": 36389899
+      },
+      "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/paid_order_success/v1"
+    },
+    {
+      "source_ref": "payment_final_outcome",
+      "contract_ref": "contracts/sources/payment-final-outcome.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:610c0c0b714199619b5f8b50c6a1718e4a3e9df6dfa354250764688d055ca43f#dataset-snapshot:sha256:1ea81b42ae17e7fab0c3474b541a977dfdbcf834ffb34390ce7f72e4179f27c1",
+      "physical_revision": "waje_bi.payment_final_outcome_daily__5e3c35ad02c33644",
+      "schema_fingerprint": "5e3c35ad02c33644fea599ae9043cca3d67828de51f676c1bbf5c12e100bf177",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-07-04",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 83431,
+        "eligible_rows_through_cutoff": 76060
+      },
+      "coverage_watermark_ref": "watermark://payment_final_outcome/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/payment_final_outcome/v1"
+    },
+    {
+      "source_ref": "market_dashboard",
+      "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:2b21a49da3aa15a25b8a485830ea6274d8e4cc07d6c2800df36147368dd8cdec",
+      "physical_revision": "waje_bi.market_dashboard_daily__d71d0bb2a682b3c7",
+      "schema_fingerprint": "d71d0bb2a682b3c7029ea176e499c5ee33ba50bd688e5d7ac776579f61981977",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-06-02",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 884,
+        "eligible_rows_through_cutoff": 884
+      },
+      "coverage_watermark_ref": "watermark://market_dashboard/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/market_dashboard/v1",
+      "evidence_boundary": "Paid amount and payer count are reconciliation context on 2026-06-02 because the dashboard release does not match the paid-order authority."
+    },
+    {
+      "source_ref": "market_dashboard_channel",
+      "contract_ref": "contracts/sources/market-dashboard.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:8db87003c1286a6617ad4d77e0975c6108662658f7a3d200a23d8f347ed3988f",
+      "physical_revision": "waje_bi.market_dashboard_channel_daily__394c197b1901b6fd",
+      "schema_fingerprint": "394c197b1901b6fdfd2989e412c706528864ef473116ebab3fa5ac220b75205f",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-06-02",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 13408,
+        "eligible_rows_through_cutoff": 13408
+      },
+      "coverage_watermark_ref": "watermark://market_dashboard_channel/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/market_dashboard_channel/v1",
+      "evidence_boundary": "Channel rows are context-only and cannot replace paid-order channel authority."
+    },
+    {
+      "source_ref": "gameplay",
+      "contract_ref": "contracts/sources/gameplay.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:a38cfaa37d37f3f60ba5de8b7775d4bc32b67b517200d8c8c1ff3bbd37aeee44#dataset-snapshot:sha256:0418478c590258e2e0a40b57e4587ff1bd43b5568e4782c548b5fa604157b651",
+      "physical_revision": "waje_bi.gameplay_daily__a01757713e0248ea",
+      "schema_fingerprint": "a01757713e0248eaf85cd967152c41758e2a5e42ec22fbb034c63f2edb2cfc35",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-06-02",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 193751,
+        "eligible_rows_through_cutoff": 193751
+      },
+      "coverage_watermark_ref": "watermark://gameplay/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/gameplay/v1"
+    },
+    {
+      "source_ref": "gameplay_channel",
+      "contract_ref": "contracts/sources/gameplay.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:a38cfaa37d37f3f60ba5de8b7775d4bc32b67b517200d8c8c1ff3bbd37aeee44#dataset-snapshot:sha256:492db67904bdc38e6644d9670472a39880d731753d70b657ef7cf604a02a6df7",
+      "physical_revision": "waje_bi.gameplay_channel_daily__abd99af8e96bba60",
+      "schema_fingerprint": "abd99af8e96bba6034fbb14ad560cd546add70fb4ad0f54e69255dc85a0b1153",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-06-02",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 737221,
+        "eligible_rows_through_cutoff": 737221
+      },
+      "coverage_watermark_ref": "watermark://gameplay_channel/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/gameplay_channel/v1"
+    },
+    {
+      "source_ref": "payment_order_bet_link",
+      "contract_ref": "contracts/sources/payment-order-bet-link.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:82bfae9efb981f4735ebdaf793c14d8d67ce52e27cb4c78bc3d0db10dab31c12#dataset-snapshot:sha256:6079ac0d36bb79a7dc178841eb3c86e58d61f2c030a5047b7862d05553bcf0a0",
+      "physical_revision": "waje_bi.payment_order_bet_link__96dda1b77c8ea55d",
+      "schema_fingerprint": "96dda1b77c8ea55d40ee4180f7786ad28419b07bd4f9036fb844d2a16182c3e8",
+      "coverage": {
+        "start_business_date": "2026-06-01",
+        "physical_end_business_date": "2026-06-02",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 299530,
+        "eligible_rows_through_cutoff": 299530
+      },
+      "coverage_watermark_ref": "watermark://payment_order_bet_link/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/payment_order_bet_link/v1",
+      "evidence_boundary": "The link is complete only for 2026-06-01 and 2026-06-02."
+    },
+    {
+      "source_ref": "external_event",
+      "contract_ref": "contracts/sources/external-events.source.yaml@0.1",
+      "snapshot_release_ref": "dataset-release:sha256:6da4c000e3a18485f62435dfa90fd568be484ed4689f7dff7ec1f238d5485c86#dataset-snapshot:sha256:1a0ad0df647eb0431cc56a90ba042f7196ce11346ae8f706c15d76110337c269",
+      "physical_revision": "waje_bi.business_events__5aa0c324c82748a8",
+      "schema_fingerprint": "5aa0c324c82748a8f16b1b412667f351fb30a272807a7c73b1f8f59a96c82b74",
+      "coverage": {
+        "start_business_date": "2024-01-01",
+        "physical_end_business_date": "2026-06-08",
+        "evaluation_cutoff_business_date": "2026-06-02",
+        "physical_rows": 324,
+        "eligible_rows_through_cutoff": 323
+      },
+      "coverage_watermark_ref": "watermark://external_event/Africa-Lagos/2026-06-02",
+      "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/external_event/v1",
+      "evidence_boundary": "External events are contextual candidate mechanisms and cannot support causal attribution."
+    }
+  ],
+  "verification": {
+    "query_class": "read_only_metadata_and_coverage",
+    "verified_against_clickhouse": true,
+    "verified_against_dataset_release_store": true,
+    "verified_at": "2026-07-31T00:00:00+08:00"
+  }
+}

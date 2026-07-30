@@ -1,7 +1,7 @@
 {
   "artifact_type": "source_registry",
   "artifact_version": "gate3.source-registry.v1",
-  "registry_epoch": 1,
+  "registry_epoch": 2,
   "records": [
     {
       "source_record_id": "SRC-REAL-USER-PAID-AMOUNT-20260730",
@@ -10,7 +10,7 @@
       "verification_status": "verified",
       "source_artifacts": [
         {
-        "ref": "vnext/evals/gate3/sources/real-user-paid-amount-question-seed.md",
+          "ref": "vnext/evals/gate3/sources/real-user-paid-amount-question-seed.md",
           "content_sha256": "3d6ed9cef7d8ac78ae34dfd9bfb677a5671b9ae5efd8916fef3ee3d68e661820"
         }
       ],
@@ -21,35 +21,14 @@
       "privacy_status": "approved_redacted"
     },
     {
-      "source_record_id": "SRC-EXPERT-CLAIM-PENDING-20260730",
-      "source_pool": "expert_business_case",
-      "provenance_kind": "expert_authorship",
-      "verification_status": "pending_external_evidence",
-      "source_artifacts": [
-        {
-          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
-          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
-        },
-        {
-          "ref": "vnext/evals/gate3/candidates/root_counterfactual_anchor_episodes.json",
-          "content_sha256": "3ba88b0577ac9255e6840f2a84d3d6363fae61e4de2c02c3c838864df3718b04"
-        }
-      ],
-      "attested_scope": [
-        "authoring_method"
-      ],
-      "independent_source_key": "pending:expert-author-identities",
-      "privacy_status": "not_applicable"
-    },
-    {
       "source_record_id": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "source_pool": "historical_failure",
       "provenance_kind": "incident_reconstruction",
       "verification_status": "pending_external_evidence",
       "source_artifacts": [
-      {
-          "ref": "vnext/evals/gate3/candidates/generated_failure_episodes.json",
-          "content_sha256": "6e146982c0d64525bca5bf9c7d315d185a5cb3e54e21577f09cf0148cc05e511"
+        {
+          "ref": "vnext/evals/gate3/candidates/wajegame_measurement_regression_episodes.json",
+          "content_sha256": "2621fbdfb0091e2ad032492d763375d14e1eac0f56c69ff12ef673378c777743"
         }
       ],
       "attested_scope": [
@@ -65,12 +44,12 @@
       "verification_status": "verified",
       "source_artifacts": [
         {
-          "ref": "vnext/evals/gate3/candidates/generated_failure_episodes.json",
-          "content_sha256": "6e146982c0d64525bca5bf9c7d315d185a5cb3e54e21577f09cf0148cc05e511"
+          "ref": "vnext/evals/gate3/candidates/wajegame_business_chain_episodes.json",
+          "content_sha256": "743ca6331d4d6bd82e9db19b1287c77ae79565658b46900fde0a571d0a359758"
         },
         {
-          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
-          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
+          "ref": "vnext/evals/gate3/candidates/wajegame_measurement_regression_episodes.json",
+          "content_sha256": "2621fbdfb0091e2ad032492d763375d14e1eac0f56c69ff12ef673378c777743"
         }
       ],
       "attested_scope": [
@@ -86,18 +65,35 @@
       "verification_status": "verified",
       "source_artifacts": [
         {
-          "ref": "vnext/evals/gate3/candidates/adversarial_conversation_episodes.json",
-          "content_sha256": "9ae79992cc64153885c97625f6c10130c7ae35b87e13cc0897f0dd114cf27e73"
+          "ref": "vnext/evals/gate3/candidates/wajegame_authority_stress_episodes.json",
+          "content_sha256": "18475237e06110776014200ef37d7d61b20a342fe7985d1f8039f99aee3ce28a"
         },
         {
-          "ref": "vnext/evals/gate3/candidates/real_expert_episodes.json",
-          "content_sha256": "9fa2933eaa9ed6ef7e4910d86f21b9a9a353be3ee04bd18c3da5de3ac78b3c72"
+          "ref": "vnext/evals/gate3/candidates/wajegame_business_chain_episodes.json",
+          "content_sha256": "743ca6331d4d6bd82e9db19b1287c77ae79565658b46900fde0a571d0a359758"
         }
       ],
       "attested_scope": [
         "authoring_method"
       ],
       "independent_source_key": "authoring-batch:adversarial-20260730",
+      "privacy_status": "not_applicable"
+    },
+    {
+      "source_record_id": "SRC-WAJEGAME-SUITE-REBASE-20260731",
+      "source_pool": "generated_business_world",
+      "provenance_kind": "controlled_generation",
+      "verification_status": "pending_external_evidence",
+      "source_artifacts": [
+        {
+          "ref": "vnext/evals/gate3/candidates/wajegame_business_chain_episodes.json",
+          "content_sha256": "743ca6331d4d6bd82e9db19b1287c77ae79565658b46900fde0a571d0a359758"
+        }
+      ],
+      "attested_scope": [
+        "authoring_method"
+      ],
+      "independent_source_key": "pending:wajegame-suite-business-review",
       "privacy_status": "not_applicable"
     }
   ]

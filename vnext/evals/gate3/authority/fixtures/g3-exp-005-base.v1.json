@@ -1,0 +1,271 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-005-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-005-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-005",
+    "episode_id": "G3-EXP-005",
+    "binding_id": "fixture_g3_exp_005_base",
+    "authority_slot_id": "exp_005_base",
+    "scope_claim_target_ids": [
+      "aligned_ggr_growth_claim",
+      "gameplay_contribution_ranking_claim",
+      "ggr_factor_contribution_claim",
+      "ggr_residual_claim",
+      "q2_gameplay_composition_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/gameplay-ggr/v4",
+      "state": "conflicting",
+      "description": "玩法利润/GGR 提供含活动赠送筹码下注和不含活动赠送筹码下注版本；看板在 4 月改变默认定义。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/gameplay-round-settlement/v3",
+      "state": "available",
+      "description": "下注局定义支付、取消、派奖结算和跨玩法分摊。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/gameplay-active-user/v2",
+      "state": "available",
+      "description": "玩法用户合同支持活跃玩法用户、频次和新老客。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/gameplay-dimension-history/v2",
+      "state": "available",
+      "description": "玩法维度映射按结算事件发生时点版本化。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-GGR-DEFINITION-BREAK",
+      "description": "4 月前后的活动赠送筹码下注纳入口径不同。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-GGR-MULTI-CATEGORY",
+      "description": "一个下注局可包含多个玩法。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-GGR-LATE-REFUND",
+      "description": "派奖结算可在后续季度发生。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-GGR-PROMO-MIX",
+      "description": "大型赛事活动带来大量新客和低价玩法。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-005-01",
+        "statement": "统一为不含活动赠送筹码下注净 玩法利润/GGR 后，约一半增长来自活跃玩法用户增加。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-005-02",
+        "statement": "频次小幅上升，单次下注金额下降；低门槛高频玩法贡献最多。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-005-03",
+        "statement": "跨玩法 interaction 和延迟派奖结算形成不可忽略 residual。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "aligned_ggr_growth_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-005-BASE-V1",
+          "contract://wajegame/gameplay-ggr/v4",
+          "DC-GGR-DEFINITION-BREAK"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-005-01",
+          "TRUTH-G3-EXP-005-02",
+          "TRUTH-G3-EXP-005-03"
+        ],
+        "boundary_codes": [
+          "conflicting_ggr_definition"
+        ],
+        "reversal_conditions": [
+          "选择另一 GGR 定义后总增长方向改变。"
+        ]
+      },
+      {
+        "claim_target_id": "ggr_factor_contribution_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-005-BASE-V1",
+          "contract://wajegame/gameplay-ggr/v4",
+          "DC-GGR-MULTI-CATEGORY"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-005-01",
+          "TRUTH-G3-EXP-005-02",
+          "TRUTH-G3-EXP-005-03"
+        ],
+        "boundary_codes": [
+          "conflicting_ggr_definition",
+          "unreconciled_residual"
+        ],
+        "reversal_conditions": [
+          "替代分解顺序或派奖 maturity 改变主导因素。"
+        ]
+      },
+      {
+        "claim_target_id": "gameplay_contribution_ranking_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-005-BASE-V1",
+          "contract://wajegame/gameplay-ggr/v4",
+          "DC-GGR-MULTI-CATEGORY"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-005-01",
+          "TRUTH-G3-EXP-005-02",
+          "TRUTH-G3-EXP-005-03"
+        ],
+        "boundary_codes": [
+          "conflicting_ggr_definition"
+        ],
+        "reversal_conditions": [
+          "跨玩法下注局的归属规则改变第一名。"
+        ]
+      },
+      {
+        "claim_target_id": "ggr_residual_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_005_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-005-BASE-V1",
+          "contract://wajegame/gameplay-ggr/v4",
+          "DC-GGR-LATE-REFUND"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-005-01",
+          "TRUTH-G3-EXP-005-02",
+          "TRUTH-G3-EXP-005-03"
+        ],
+        "boundary_codes": [
+          "unreconciled_residual"
+        ],
+        "reversal_conditions": [
+          "成熟派奖到齐后 residual 低于 tolerance 或来源改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

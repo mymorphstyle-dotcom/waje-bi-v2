@@ -31,6 +31,9 @@
       "$ref": "#/$defs/heldOutManifest"
     },
     {
+      "$ref": "#/$defs/heldOutPromotionReceipt"
+    },
+    {
       "$ref": "#/$defs/calibrationPackage"
     },
     {
@@ -242,14 +245,15 @@
         "artifact_version",
         "registry_epoch",
         "principals",
-        "records"
+        "records",
+        "calibration_records"
       ],
       "properties": {
         "artifact_type": {
           "const": "review_registry"
         },
         "artifact_version": {
-          "const": "gate3.review-registry.v1"
+          "const": "gate3.review-registry.v2"
         },
         "registry_epoch": {
           "type": "integer",
@@ -265,6 +269,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/reviewRecord"
+          }
+        },
+        "calibration_records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/calibrationReviewRecord"
           }
         }
       }
@@ -290,7 +300,8 @@
           "items": {
             "enum": [
               "business_owner",
-              "measurement_reviewer"
+              "measurement_reviewer",
+              "calibration_reviewer"
             ]
           }
         },
@@ -299,6 +310,9 @@
             "active",
             "revoked"
           ]
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
         }
       }
     },
@@ -349,6 +363,66 @@
         },
         "review_package_sha256": {
           "$ref": "#/$defs/sha256"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "calibrationReviewRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibration_review_record_id",
+        "episode_id",
+        "episode_core_sha256",
+        "principal_id",
+        "run_cell_id",
+        "case_variant",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
+        "grader_result_sha256",
+        "human_verdict"
+      ],
+      "properties": {
+        "calibration_review_record_id": {
+          "type": "string",
+          "pattern": "^CAL-REVIEW-[A-Z0-9-]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "run_cell_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "grader_result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "human_verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked",
+            "invalid"
+          ]
         },
         "recorded_at": {
           "type": "string",
@@ -440,6 +514,7 @@
         "artifact_version",
         "registry_epoch",
         "profiles",
+        "evaluator_profiles",
         "predicates",
         "authority_invariants",
         "implementation_checks"
@@ -449,7 +524,7 @@
           "const": "grader_registry"
         },
         "artifact_version": {
-          "const": "gate3.grader-registry.v1"
+          "const": "gate3.grader-registry.v2"
         },
         "registry_epoch": {
           "type": "integer",
@@ -460,6 +535,13 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/graderProfile"
+          }
+        },
+        "evaluator_profiles": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/evaluatorProfile"
           }
         },
         "predicates": {
@@ -506,6 +588,90 @@
         },
         "required_predicate_ids": {
           "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "evaluatorProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "role",
+        "provider",
+        "model",
+        "thinking",
+        "lifecycle_status",
+        "prompt_bundle_ref",
+        "prompt_contract_id",
+        "prompt_sha256",
+        "rubric_ref",
+        "rubric_sha256",
+        "input_contract_sha256",
+        "output_contract_sha256",
+        "runner_ref",
+        "runner_sha256"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "primary_business_analysis_agent",
+            "runtime_reviewer",
+            "evaluation_reviewer"
+          ]
+        },
+        "provider": {
+          "const": "deepseek"
+        },
+        "model": {
+          "enum": [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+          ]
+        },
+        "thinking": {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "lifecycle_status": {
+          "enum": [
+            "quality_probe_only",
+            "selected_unprovisioned",
+            "calibration_eligible",
+            "revoked"
+          ]
+        },
+        "prompt_bundle_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "prompt_contract_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rubric_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rubric_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "input_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runner_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/sha256"
         }
       }
     },
@@ -905,6 +1071,8 @@
               "encrypted_object_ref",
               "ciphertext_sha256",
               "promotion_ref",
+              "promotion_receipt_ref",
+              "promotion_receipt_sha256",
               "access_realm",
               "object_receipt_ref",
               "object_receipt_sha256"
@@ -921,6 +1089,12 @@
               },
               "promotion_ref": {
                 "$ref": "#/$defs/id"
+              },
+              "promotion_receipt_ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "promotion_receipt_sha256": {
+                "$ref": "#/$defs/sha256"
               },
               "access_realm": {
                 "const": "held_out_runner_only"
@@ -942,6 +1116,79 @@
         }
       }
     },
+    "heldOutPromotionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "promotion_ref",
+        "opaque_episode_id",
+        "episode_core_sha256",
+        "source_record_ref",
+        "source_attestation_sha256",
+        "independent_source_key",
+        "business_review_ref",
+        "business_review_attestation_sha256",
+        "business_reviewer_principal_id",
+        "measurement_review_ref",
+        "measurement_review_attestation_sha256",
+        "measurement_reviewer_principal_id",
+        "decision"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "held_out_promotion_receipt"
+        },
+        "artifact_version": {
+          "const": "gate3.held-out-promotion-receipt.v1"
+        },
+        "promotion_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "opaque_episode_id": {
+          "$ref": "#/$defs/id"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_record_ref": {
+          "type": "string",
+          "pattern": "^SRC-[A-Z0-9-]+$"
+        },
+        "source_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "independent_source_key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "business_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "business_review_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "business_reviewer_principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "measurement_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "measurement_review_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "measurement_reviewer_principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "decision": {
+          "const": "approved"
+        }
+      }
+    },
     "calibrationPackage": {
       "type": "object",
       "additionalProperties": false,
@@ -951,6 +1198,8 @@
         "registry_epoch",
         "status",
         "grader_registry_sha256",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
         "labeled_episode_refs",
         "label_records",
         "agreement",
@@ -961,7 +1210,7 @@
           "const": "grader_calibration_package"
         },
         "artifact_version": {
-          "const": "gate3.grader-calibration.v1"
+          "const": "gate3.grader-calibration.v2"
         },
         "registry_epoch": {
           "type": "integer",
@@ -974,6 +1223,12 @@
           ]
         },
         "grader_registry_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
           "$ref": "#/$defs/sha256"
         },
         "labeled_episode_refs": {
@@ -1013,16 +1268,27 @@
       "additionalProperties": false,
       "required": [
         "episode_id",
+        "episode_core_sha256",
         "human_verdict",
         "grader_verdict",
         "human_review_ref",
+        "run_cell_id",
+        "case_variant",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
+        "grader_result_ref",
         "grader_result_sha256",
+        "runner_artifact_index_ref",
+        "runner_artifact_index_sha256",
         "critical"
       ],
       "properties": {
         "episode_id": {
           "type": "string",
           "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
         },
         "human_verdict": {
           "enum": [
@@ -1042,9 +1308,30 @@
         },
         "human_review_ref": {
           "type": "string",
-          "pattern": "^REVIEW-[A-Z0-9-]+$"
+          "pattern": "^CAL-REVIEW-[A-Z0-9-]+$"
+        },
+        "run_cell_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "grader_result_ref": {
+          "$ref": "#/$defs/nonEmptyString"
         },
         "grader_result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runner_artifact_index_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "runner_artifact_index_sha256": {
           "$ref": "#/$defs/sha256"
         },
         "critical": {
@@ -1140,7 +1427,8 @@
         "world_profile_sha256",
         "authority_profile_ref",
         "authority_profile_sha256",
-        "product_grader_profile_ref"
+        "product_grader_profile_ref",
+        "case_variant"
       ],
       "properties": {
         "run_cell_id": {
@@ -1167,8 +1455,47 @@
         },
         "product_grader_profile_ref": {
           "$ref": "#/$defs/id"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
         }
       }
+    },
+    "runCaseVariant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sibling_id",
+            "materialized_sibling_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "counterfactual"
+            },
+            "sibling_id": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "materialized_sibling_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
     },
     "authorityHistory": {
       "type": "object",
