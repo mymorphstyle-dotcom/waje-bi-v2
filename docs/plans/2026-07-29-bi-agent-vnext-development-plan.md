@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；G3.1–G3.4 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.5+ pending |
+| 当前 Gate | Gate 2 complete；G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6+ pending |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -564,7 +564,14 @@ Exit evidence：
   obligation closure、唯一 resolution adoption、immutable QueryBindingEnvelope、
   conformance logical execution、canonical system ID、technical retry/persisted prior
   continuity、InMemory/PostgreSQL parity 与 migration atomicity。三路对抗审查
-  Blocking=0、Major=0；G3.5 尚未开始。
+  Blocking=0、Major=0。
+- G3.5 local implementation：
+  `docs/plans/2026-07-31-bi-agent-vnext-gate-3-5-evidence-answer-projection-continuity.md`；
+  已完成 capability result T1/T2、immutable Evidence admission/validity/use/satisfaction、
+  provisional Answer claim precheck、system-derived settlement precondition、journal-driven
+  Workflow 四轴投影、migration 006 与 InMemory/PostgreSQL parity。该实现仍拒绝 production
+  Evidence、settled publication 和 delivered Workflow；G3.6 real-provider behavior eval
+  尚未进入。
 
 **交付物**
 
@@ -895,7 +902,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.1–G3.4 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.5+ pending | G3.2–G3.4 本 Gate 无需用户决策；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、真实来源与独立双审待关闭 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-4-implementation.md` |
+| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6+ pending | G3.2–G3.5 本 Gate 无需用户决策；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、真实来源与独立双审待关闭 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-5-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -931,4 +938,5 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-31 | Gate 3 eval authority 升级为 claim-scoped mixed case files | 用户确认 + launch Episode 对抗审查 | Episode v4 允许每个 claim 独立绑定 frozen real、controlled fixture 或 known gap；`data_source_bindings` 纳入 core hash，局部缺口不得取消无关 claim，formal admission 增加 case-file readiness |
 | 2026-07-31 | launch counterfactual 与 authority case file 进入可执行合同 | 用户确认 + 多智能体对抗审查 | 24 个 launch sibling 逐 claim 绑定、32-cell run matrix、result variant 强绑定；范围变化支持逐 claim 重算与 supersede 混合处置；跨 world/contract/source 的单一语义干预使用 composite authority；同一 authority slot 的替代来源必须互斥；counterfactual-only authority 同样进入 readiness；USER008 物化 prior-authority fixture 和 19-milestone repair package；formal admission 继续等待 9 个 authority 双审、41 个 base-or-counterfactual binding 物化、28 个 non-launch claim case 与 96 个 non-launch sibling |
 | 2026-07-31 | Gate 3 eval 投影、结果与 calibration 统一收紧时序和不可变绑定 | 多智能体对抗审查 | 每类投影对象按自身 turn 可见；claim 不得使用未来 truth support；全部 verdict 绑定 frozen manifest、grader registry 与 runner artifact index；typed veto 绑定 failed check；calibration label 绑定专用 human review、Episode/core、result 和 artifact index |
+| 2026-07-31 | G3.5 关闭 Evidence、provisional Answer、settlement precondition 与 Workflow 连续性 | 本 Gate 无需用户决策；实现与对抗审查 | capability result 采用 T1/T2 durable admission；claim 只消费 accepted EvidenceUseBinding；settlement exact replay persisted trace/reviewer/evidence heads；Workflow 从 journal 重建并在 Gate 3 硬拒绝 settled/delivered/completed |
 | 2026-07-31 | G3.E0 机器 authoring/materialization 收口 | 多智能体实现 + 全量对抗复核 | 36 个 Episode、120 个 sibling、41 个 authority、52 个 materialization 全部通过结构、重放、hash 与 clean-copy 验证；formal admission 仅保留真人双审、truth/source/calibration/held-out/promotion/run 与 protected GitHub/Sigstore authority |

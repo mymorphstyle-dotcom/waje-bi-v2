@@ -2882,7 +2882,8 @@
           "type": "string"
         },
         "objection_content_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "changed_node_ids": {
           "type": "array",
@@ -3128,7 +3129,8 @@
         "active_frame_candidate_sha256": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             {
               "type": "null"
@@ -3219,7 +3221,8 @@
         "result_sha256": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             {
               "type": "null"

@@ -84,15 +84,28 @@ def record_plan_bundle(
         created_at=created_at,
         revision_reason=revision_reason,
     )
+    plan_event_id = content_sha256(
+        {
+            "kind": "test-plan-event",
+            "plan_revision_id": plan_revision_id,
+        }
+    )
+    if operation is None and correlation_id is not None:
+        operation = OperationIdentity(
+            operation_id=f"{plan_event_id}:operation",
+            idempotency_key=f"{plan_event_id}:key",
+            causation_id=frame.frame_revision_id,
+            correlation_id=correlation_id,
+            authority_revision=(
+                store.get_authority_snapshot(case.case_id)
+                .mailbox_authority_epoch
+            ),
+            payload_sha256=content_sha256(bundle),
+        )
     case = store.accept_plan_bundle(
         bundle,
         expected_head_version=case.head_version,
-        event_id=content_sha256(
-            {
-                "kind": "test-plan-event",
-                "plan_revision_id": plan_revision_id,
-            }
-        ),
+        event_id=plan_event_id,
         recorded_at=created_at,
         operation=operation,
     )

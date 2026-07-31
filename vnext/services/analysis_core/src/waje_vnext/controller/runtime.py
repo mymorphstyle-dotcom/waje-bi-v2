@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -32,14 +32,16 @@ from waje_vnext.domain.async_runtime import (
     OperationIdentity,
 )
 from waje_vnext.domain.authority import (
-    AnswerClaim,
-    AnswerStatus,
-    AnswerVersion,
     CaseLifecycle,
-    ClaimVerifierStatus,
     DecisionRecord,
     InterpretationRecord,
     WorkPlanRevision,
+)
+from waje_vnext.domain.answering import (
+    AnswerCandidateStatus,
+    AnswerStatus,
+    AnswerVersion,
+    build_provisional_answer_candidate,
 )
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
 from waje_vnext.domain.identity import build_analysis_frame_revision
@@ -65,6 +67,11 @@ from waje_vnext.domain.controller import (
     UserDecisionRequest,
 )
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.evidence import (
+    CapabilityResultEnvelope,
+    EvidenceAdmissionStatus,
+    EvidenceValidityStatus,
+)
 from waje_vnext.domain.measurement import (
     MessageRole,
     QuestionRevision,
@@ -78,9 +85,15 @@ from waje_vnext.domain.planning import (
     same_business_authority,
 )
 from waje_vnext.domain.runtime_state import (
+    ANSWER_REVIEW_JOB_CONTRACT_REF,
     ActionReceipt,
     CheckpointRecord,
     OutboxMessage,
+)
+from waje_vnext.domain.obligation_scheduler import (
+    OBLIGATION_JOB_CONTRACT_REF,
+    build_obligation_schedule_id,
+    same_obligation_business_authority,
 )
 from waje_vnext.domain.runtime_amendment import (
     FrameAdmissionProof,
@@ -126,9 +139,16 @@ from waje_vnext.providers.base import (
     ProviderError,
     ProviderTransientError,
 )
-from waje_vnext.storage.codec import decode_controller_state, encode_record
+from waje_vnext.storage.codec import (
+    decode_capability_result_envelope,
+    decode_controller_state,
+    encode_record,
+)
 from waje_vnext.storage.ports import (
+    AuthorityConflict,
+    AuthorityNotFound,
     AuthorityStore,
+    InvalidAuthorityTransition,
     LeaseConflict,
     LeaseFenceLost,
 )
@@ -139,6 +159,8 @@ from .effects import (
     EffectPermanentError,
     EffectTransientError,
 )
+from .evidence_runtime import EvidenceRuntime
+from .obligation_runtime import DurableObligationCoordinator
 from .supervision import JobHeartbeatSupervisor
 
 
@@ -167,10 +189,11 @@ MESSAGE_BINDING_JOB_CONTRACT_REF = (
     "waje-vnext://runtime/message-binding-job.v1"
 )
 CONTROLLER_WAKE_CONTRACT_REF = "waje-vnext://runtime/controller-wake.v1"
-ANSWER_VERIFIER_POLICY = "answer-verifier.v1"
 _EFFECT_ACTIONS = {
     ActionKind.INSPECT_SEMANTICS,
     ActionKind.RUN_PROBE,
+}
+_EVIDENCE_ACTIONS = {
     ActionKind.CALL_CAPABILITY,
     ActionKind.RUN_SENSITIVITY,
 }
@@ -352,6 +375,11 @@ class WAJEController:
         self._owner_id = owner_id
         self._clock = clock or (lambda: datetime.now(tz=UTC))
         self._lease_duration = lease_duration
+        self._obligation_coordinator = DurableObligationCoordinator(
+            store=store,
+            owner_id=owner_id,
+            lease_duration=lease_duration,
+        )
 
     def start(
         self,
@@ -873,9 +901,10 @@ class WAJEController:
                 message.outbox_message_id
             )
         )
-        evidence_ids = _event_authority_refs(
-            events,
-            JournalEventType.EVIDENCE_RECORDED,
+        evidence_ids = tuple(
+            item.evidence_record_id
+            for item in self._store.list_evidence(case_id)
+            if item.run_id == state.run_id
         )
         event_operation_lineage = tuple(
             RunTraceEventLink(
@@ -2121,6 +2150,16 @@ class WAJEController:
         job_id: str | None = None,
     ) -> ControllerState:
         snapshot = self.resume(case_id)
+        if snapshot.phase is ControllerPhase.WAITING_FOR_EVIDENCE_ADMISSION:
+            selected_job_id = job_id or snapshot.pending_job_ids[0]
+            if selected_job_id not in snapshot.pending_job_ids:
+                raise ControllerConflict(
+                    "evidence job is not pending for this case"
+                )
+            return self._admit_pending_evidence(
+                snapshot,
+                outbox_message_id=selected_job_id,
+            )
         if snapshot.phase is not ControllerPhase.WAITING_FOR_EFFECT:
             raise ControllerConflict("case has no pending effect")
         selected_job_id = job_id or snapshot.pending_job_ids[0]
@@ -2129,6 +2168,22 @@ class WAJEController:
         message = self._store.get_outbox_message(selected_job_id)
         job_lease = self._acquire_job(message)
         try:
+            if (
+                message.contract_ref == OBLIGATION_JOB_CONTRACT_REF
+                and self._store.find_capability_result_receipt_by_outbox(
+                    message.outbox_message_id
+                )
+                is not None
+            ):
+                self._release_job_lease(job_lease)
+                job_lease = None
+                recovered = self._admit_pending_evidence(
+                    snapshot,
+                    outbox_message_id=message.outbox_message_id,
+                )
+                if self._job_is_stale(message):
+                    return self._reconcile_mailbox(recovered)
+                return recovered
             if self._job_is_stale(message):
                 return self._supersede_job(
                     snapshot,
@@ -2188,18 +2243,57 @@ class WAJEController:
             except LeaseFenceLost:
                 job_lease = heartbeat.current_lease
                 raise
-            return self._commit_effect_attempt(
-                snapshot=snapshot,
-                message=message,
-                status=EffectAttemptStatus.SUCCEEDED,
-                result=result,
-                error_code=None,
-                error_message=None,
-                started_at=started_at,
-                job_lease=job_lease,
-            )
-        finally:
+            try:
+                committed = self._commit_effect_attempt(
+                    snapshot=snapshot,
+                    message=message,
+                    status=EffectAttemptStatus.SUCCEEDED,
+                    result=result,
+                    error_code=None,
+                    error_message=None,
+                    started_at=started_at,
+                    job_lease=job_lease,
+                )
+            except (
+                AuthorityConflict,
+                ControllerConflict,
+                InvalidAuthorityTransition,
+                TypeError,
+                ValueError,
+            ) as error:
+                if message.contract_ref != OBLIGATION_JOB_CONTRACT_REF:
+                    raise
+                committed = self._commit_effect_attempt(
+                    snapshot=snapshot,
+                    message=message,
+                    status=EffectAttemptStatus.TERMINAL_FAILURE,
+                    result=None,
+                    error_code="invalid_evidence_result_contract",
+                    error_message=str(error),
+                    started_at=started_at,
+                    job_lease=job_lease,
+                )
             self._release_job_lease(job_lease)
+            job_lease = None
+            if (
+                message.contract_ref == OBLIGATION_JOB_CONTRACT_REF
+                and committed.phase
+                is not ControllerPhase.WAITING_FOR_EVIDENCE_ADMISSION
+                and self._store.get_job_disposition(
+                    message.outbox_message_id
+                )
+                is None
+            ):
+                self._recover_landed_evidence(
+                    outbox_message_id=message.outbox_message_id,
+                    admitted_at=self._now(),
+                )
+                if self._job_is_stale(message):
+                    return self._reconcile_mailbox(committed)
+            return committed
+        finally:
+            if job_lease is not None:
+                self._release_job_lease(job_lease)
 
     def deliver_pending_frame_review(
         self,
@@ -2765,6 +2859,14 @@ class WAJEController:
                         )
                     ),
                 )
+                if action.kind is ActionKind.RUN_SENSITIVITY:
+                    admission = replace(
+                        admission,
+                        accepted=False,
+                        reason_code=(
+                            "sensitivity_dispatch_identity_unsealed"
+                        ),
+                    )
                 admission_event = self._append_action_event(
                     action=action,
                     accepted=admission.accepted,
@@ -2833,6 +2935,8 @@ class WAJEController:
         pending_decision_id: str | None = None
         outcome_cursor = admission_cursor
         deferred_effect_outbox: OutboxMessage | None = None
+        action_result_code = "accepted"
+        next_consecutive_rejections = 0
 
         if action.kind is ActionKind.REVISE_FRAME:
             assert isinstance(payload, ReviseFramePayload)
@@ -3148,6 +3252,43 @@ class WAJEController:
             outcome_cursor = self._last_cursor(case.case_id)
         elif action.kind is ActionKind.RECORD_INTERPRETATION:
             assert isinstance(payload, RecordInterpretationPayload)
+            admissions = (
+                self._store.list_evidence_admissions(
+                    case_id=case.case_id
+                )
+            )
+            admission_by_evidence_id = {}
+            for evidence_record_id in payload.evidence_record_ids:
+                accepted = tuple(
+                    item
+                    for item in admissions
+                    if item.evidence_record_id == evidence_record_id
+                    and item.status is EvidenceAdmissionStatus.ACCEPTED
+                )
+                if len(accepted) != 1:
+                    raise ControllerConflict(
+                        "interpretation requires one accepted Evidence "
+                        "admission per record"
+                    )
+                admission_by_evidence_id[
+                    evidence_record_id
+                ] = accepted[0]
+            validity_by_evidence_id = {
+                evidence_record_id: (
+                    self._store.latest_evidence_validity(
+                        evidence_record_id
+                    )
+                )
+                for evidence_record_id in payload.evidence_record_ids
+            }
+            if any(
+                item.status
+                is not EvidenceValidityStatus.ADMITTED_VALID
+                for item in validity_by_evidence_id.values()
+            ):
+                raise ControllerConflict(
+                    "interpretation requires current admitted-valid Evidence"
+                )
             interpretation = InterpretationRecord(
                 interpretation_id=_stable_id(
                     "interpretation",
@@ -3156,6 +3297,20 @@ class WAJEController:
                 case_id=case.case_id,
                 frame_revision_id=case.accepted_frame_revision_id or "",
                 evidence_record_ids=payload.evidence_record_ids,
+                evidence_admission_ids=tuple(
+                    admission_by_evidence_id[
+                        evidence_record_id
+                    ].evidence_admission_id
+                    for evidence_record_id
+                    in payload.evidence_record_ids
+                ),
+                evidence_validity_ids=tuple(
+                    validity_by_evidence_id[
+                        evidence_record_id
+                    ].evidence_validity_id
+                    for evidence_record_id
+                    in payload.evidence_record_ids
+                ),
                 interpretation=payload.interpretation,
                 created_by_action_id=action.action_id,
                 created_at=now,
@@ -3218,48 +3373,138 @@ class WAJEController:
             pending_decision_id = request.decision_request_id
         elif action.kind is ActionKind.PROPOSE_ANSWER:
             assert isinstance(payload, ProposeAnswerPayload)
-            prior = self._latest_answer(case.case_id)
-            answer = AnswerVersion(
-                answer_version_id=_stable_id("answer", action.action_id),
+            current_authority = self._store.get_authority_snapshot(
+                case.case_id
+            )
+            plan_revision_id = case.accepted_plan_revision_id
+            if plan_revision_id is None:
+                raise ControllerConflict(
+                    "answer proposal requires an accepted Plan"
+                )
+            adoption = self._store.get_plan_adoption(plan_revision_id)
+            prior = self._store.latest_answer(case.case_id)
+            candidate = build_provisional_answer_candidate(
                 case_id=case.case_id,
-                frame_revision_id=case.accepted_frame_revision_id or "",
-                plan_revision_id=case.accepted_plan_revision_id or "",
+                current_authority=current_authority,
+                plan_adoption=adoption,
                 version_number=(
                     1 if prior is None else prior.version_number + 1
                 ),
                 prior_answer_version_id=(
                     None if prior is None else prior.answer_version_id
                 ),
-                status=AnswerStatus.PROVISIONAL,
-                claims=tuple(
-                    AnswerClaim(
-                        claim_id=claim.claim_id,
-                        statement=claim.statement,
-                        applicability=claim.applicability,
-                        evidence_record_ids=claim.evidence_record_ids,
-                        boundary_ref=claim.boundary_ref,
-                        limitations=claim.limitations,
-                        verifier_status=ClaimVerifierStatus.PENDING,
-                        reviewer_objection_ids=(),
-                    )
-                    for claim in payload.claims
-                ),
-                narrative_markdown=payload.narrative_markdown,
-                verifier_policy_version=ANSWER_VERIFIER_POLICY,
-                unresolved_blocking_objection_ids=(),
-                settlement_fingerprint=None,
+                claims=payload.claims,
+                narrative_blocks=payload.narrative_blocks,
                 created_by_action_id=action.action_id,
                 created_at=now,
             )
-            case = self._store.accept_answer(
-                answer,
-                expected_head_version=case.head_version,
-                event_id=_stable_id("event", answer.answer_version_id, "accepted"),
-                recorded_at=now,
-                operation=action.operation,
+            bundle, case = (
+                self._store.accept_provisional_answer_candidate(
+                    candidate=candidate,
+                    expected_head_version=case.head_version,
+                    event_id=_stable_id(
+                        "event",
+                        candidate.answer_candidate_id,
+                        "accepted",
+                    ),
+                    recorded_at=now,
+                    operation=action.operation,
+                )
             )
             outcome_cursor = self._last_cursor(case.case_id)
-            phase = ControllerPhase.COMPLETED
+            if bundle.status is AnswerCandidateStatus.REJECTED:
+                phase = ControllerPhase.READY_FOR_AGENT
+                next_consecutive_rejections = (
+                    current.consecutive_rejections + 1
+                )
+                action_result_code = "answer_precheck_rejected"
+            else:
+                answer = bundle.answer
+                if answer is None:
+                    raise ControllerConflict(
+                        "accepted answer candidate lacks provisional Answer"
+                    )
+                review_job_id = _stable_id(
+                    "outbox",
+                    answer.answer_version_id,
+                    "provisional-answer-review",
+                )
+                review_payload = {
+                    "answer_candidate_id": (
+                        candidate.answer_candidate_id
+                    ),
+                    "answer_candidate_content_sha256": (
+                        candidate.content_sha256
+                    ),
+                    "answer_version_id": answer.answer_version_id,
+                    "answer_version_content_sha256": (
+                        answer.content_sha256
+                    ),
+                    "claim_precheck_ids": tuple(
+                        item.claim_precheck_id
+                        for item in bundle.prechecks
+                    ),
+                    "claim_precheck_content_sha256s": tuple(
+                        item.content_sha256 for item in bundle.prechecks
+                    ),
+                }
+                review_event = self._append_event(
+                    case_id=case.case_id,
+                    event_id=_stable_id(
+                        "event",
+                        review_job_id,
+                        "enqueued",
+                    ),
+                    event_type=JournalEventType.REVIEWER_JOB_ENQUEUED,
+                    action_id=action.action_id,
+                    authority_ref=answer.answer_version_id,
+                    payload=review_payload,
+                    customer_projection={
+                        "state": "reviewing_provisional_answer",
+                    },
+                    causal_operation=action.operation,
+                    now=now,
+                )
+                review_operation = OperationIdentity(
+                    operation_id=_stable_id(
+                        "operation",
+                        review_job_id,
+                    ),
+                    idempotency_key=_stable_id(
+                        "answer-review-job-key",
+                        answer.answer_version_id,
+                    ),
+                    causation_id=action.operation.operation_id,
+                    correlation_id=action.operation.correlation_id,
+                    authority_revision=current.authority_epoch,
+                    payload_sha256=content_sha256(review_payload),
+                )
+                authority_snapshot = (
+                    self._store.get_authority_snapshot(case.case_id)
+                )
+                deferred_effect_outbox = OutboxMessage(
+                    outbox_message_id=review_job_id,
+                    case_id=case.case_id,
+                    source_event_cursor=review_event.cursor,
+                    action_id=action.action_id,
+                    job_kind=AsyncJobKind.REVIEWER,
+                    operation=review_operation,
+                    expected_head_version=case.head_version,
+                    expected_authority_epoch=current.authority_epoch,
+                    authority_snapshot=authority_snapshot,
+                    authority_snapshot_sha256=(
+                        authority_snapshot.content_sha256
+                    ),
+                    idempotency_key=review_operation.idempotency_key,
+                    destination="provisional-answer-reviewer-provider",
+                    contract_ref=ANSWER_REVIEW_JOB_CONTRACT_REF,
+                    payload=review_payload,
+                    payload_sha256=content_sha256(review_payload),
+                    created_at=now,
+                )
+                outcome_cursor = review_event.cursor
+                phase = ControllerPhase.WAITING_FOR_REVIEW
+                pending_job_ids = (review_job_id,)
         elif action.kind is ActionKind.STOP:
             assert isinstance(payload, StopPayload)
             lifecycle = CaseLifecycle(payload.terminal_state)
@@ -3282,6 +3527,50 @@ class WAJEController:
                 if lifecycle is CaseLifecycle.STOPPED
                 else ControllerPhase.COMPLETED
             )
+        elif action.kind in _EVIDENCE_ACTIONS:
+            evidence_outbox = self._resolve_evidence_dispatch(
+                action,
+                now=now,
+            )
+            evidence_disposition = self._store.get_job_disposition(
+                evidence_outbox.outbox_message_id
+            )
+            if evidence_disposition is None:
+                phase = ControllerPhase.WAITING_FOR_EFFECT
+                pending_job_ids = (evidence_outbox.outbox_message_id,)
+            elif evidence_disposition.disposition is JobDisposition.COMPLETED:
+                receipt = (
+                    self._store.find_capability_result_receipt_by_outbox(
+                        evidence_outbox.outbox_message_id
+                    )
+                )
+                admissions = (
+                    ()
+                    if receipt is None
+                    else tuple(
+                        item
+                        for item in self._store.list_evidence_admissions(
+                            case_id=action.case_id
+                        )
+                        if item.capability_result_receipt_id
+                        == receipt.capability_result_receipt_id
+                    )
+                )
+                if receipt is None or not admissions:
+                    raise ControllerConflict(
+                        "completed evidence dispatch lacks its canonical "
+                        "receipt and admission"
+                    )
+                phase = ControllerPhase.READY_FOR_AGENT
+                action_result_code = "canonical_evidence_reused"
+            else:
+                phase = ControllerPhase.READY_FOR_AGENT
+                action_result_code = (
+                    "evidence_dispatch_terminal_requires_plan_revision"
+                )
+                next_consecutive_rejections = (
+                    current.consecutive_rejections + 1
+                )
         elif action.kind in _EFFECT_ACTIONS:
             outbox = self._make_outbox(action, now=now)
             event = self._append_event(
@@ -3326,24 +3615,97 @@ class WAJEController:
                     ControllerPhase.WAITING_FOR_USER,
                     ControllerPhase.WAITING_FOR_EFFECT,
                     ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
+                    ControllerPhase.WAITING_FOR_REVIEW,
                 }
                 else None
             ),
             pending_job_ids=pending_job_ids,
             pending_decision_request_id=pending_decision_id,
-            consecutive_rejections=0,
+            consecutive_rejections=next_consecutive_rejections,
             now=now,
         )
         self._record_receipt(
             action=action,
             event_cursor=outcome_cursor,
             state=next_state,
-            result_code="accepted",
+            result_code=action_result_code,
             now=now,
         )
         if deferred_effect_outbox is not None:
             self._store.enqueue_outbox(deferred_effect_outbox)
         return next_state, outcome_cursor
+
+    def _resolve_evidence_dispatch(
+        self,
+        action: ActionEnvelope,
+        *,
+        now: datetime,
+    ) -> OutboxMessage:
+        payload = action.payload
+        if not isinstance(
+            payload,
+            CallCapabilityPayload | RunSensitivityPayload,
+        ):
+            raise ControllerConflict(
+                "evidence action requires a typed capability payload"
+            )
+        if isinstance(payload, RunSensitivityPayload):
+            raise ControllerConflict(
+                "sensitivity execution requires a sealed sensitivity "
+                "identity in the obligation dispatch contract"
+            )
+        authority = self._store.get_authority_snapshot(action.case_id)
+        plan_revision_id = authority.accepted_plan_revision_id
+        frame_revision_id = authority.accepted_frame_revision_id
+        if plan_revision_id is None or frame_revision_id is None:
+            raise ControllerConflict(
+                "evidence dispatch requires accepted Frame and Plan"
+            )
+        adoption = self._store.get_plan_adoption(plan_revision_id)
+        schedule_id = build_obligation_schedule_id(
+            case_id=action.case_id,
+            correlation_id=action.operation.correlation_id,
+            frame_revision_id=frame_revision_id,
+            plan_revision_id=plan_revision_id,
+            plan_adoption_id=adoption.plan_adoption_id,
+            plan_adoption_content_sha256=adoption.content_sha256,
+            authority=authority,
+        )
+        try:
+            schedule = self._store.get_obligation_schedule(schedule_id)
+        except AuthorityNotFound:
+            schedule = self._obligation_coordinator.create_schedule(
+                case_id=action.case_id,
+                causation_id=action.operation.operation_id,
+                created_at=now,
+            )
+        else:
+            self._obligation_coordinator.resume(
+                schedule_id=schedule.schedule_id,
+                resumed_at=now,
+            )
+        matches = tuple(
+            record
+            for record in self._store.list_obligation_dispatches(
+                schedule.schedule_id
+            )
+            if record.dispatch.task_id == payload.task_id
+            and record.dispatch.query_binding_id
+            == payload.query_binding_id
+        )
+        if len(matches) != 1:
+            raise ControllerConflict(
+                "evidence action must resolve to one runnable obligation "
+                "dispatch"
+            )
+        message = self._store.get_outbox_message(
+            matches[0].outbox_message_id
+        )
+        if message.contract_ref != OBLIGATION_JOB_CONTRACT_REF:
+            raise ControllerConflict(
+                "evidence action resolved outside the obligation runtime"
+            )
+        return message
 
     def _commit_effect_attempt(
         self,
@@ -3366,7 +3728,12 @@ class WAJEController:
                     checked_at=completed_at,
                 )
                 current = self.resume(snapshot.case_id)
-                _require_same_checkpoint(snapshot, current)
+                evidence_success = (
+                    status is EffectAttemptStatus.SUCCEEDED
+                    and message.contract_ref == OBLIGATION_JOB_CONTRACT_REF
+                )
+                if not evidence_success:
+                    _require_same_checkpoint(snapshot, current)
                 attempts = self._store.list_effect_attempts(
                     message.outbox_message_id
                 )
@@ -3402,6 +3769,51 @@ class WAJEController:
                     completed_at=completed_at,
                 )
                 self._store.record_effect_attempt(attempt)
+                if evidence_success:
+                    assert result is not None
+                    envelope = _decode_evidence_effect_result(result)
+                    if (
+                        envelope.outbox_message_id
+                        != message.outbox_message_id
+                    ):
+                        raise ControllerConflict(
+                            "capability result envelope changes the sealed "
+                            "obligation outbox"
+                        )
+                    evidence_runtime = EvidenceRuntime(
+                        store=self._store,
+                        owner_id=self._owner_id,
+                        profile=envelope.evidence_record.profile,
+                        lease_duration=self._lease_duration,
+                        obligation_coordinator=(
+                            self._obligation_coordinator
+                        ),
+                    )
+                    evidence_runtime.land_result(
+                        envelope=envelope,
+                        job_lease=job_lease,
+                        received_at=completed_at,
+                    )
+                    if self._job_is_stale(message):
+                        return current
+                    if current.content_sha256 != snapshot.content_sha256:
+                        return current
+                    return self._checkpoint(
+                        run_id=current.run_id,
+                        case_id=current.case_id,
+                        phase=(
+                            ControllerPhase.WAITING_FOR_EVIDENCE_ADMISSION
+                        ),
+                        step_number=current.step_number,
+                        latest_user_message=current.latest_user_message,
+                        pending_action_id=current.pending_action_id,
+                        pending_job_ids=current.pending_job_ids,
+                        pending_decision_request_id=None,
+                        consecutive_rejections=(
+                            current.consecutive_rejections
+                        ),
+                        now=completed_at,
+                    )
                 if self._job_is_stale(message):
                     return self._supersede_job_locked(
                         current,
@@ -3513,6 +3925,95 @@ class WAJEController:
                 )
         finally:
             self._store.release_lease(lease)
+
+    def _admit_pending_evidence(
+        self,
+        snapshot: ControllerState,
+        *,
+        outbox_message_id: str,
+    ) -> ControllerState:
+        admitted_at = self._now()
+        receipt = self._store.find_capability_result_receipt_by_outbox(
+            outbox_message_id
+        )
+        if receipt is None:
+            raise ControllerConflict(
+                "evidence admission is waiting for a durable T1 receipt"
+            )
+        envelope = self._store.get_capability_result_envelope(
+            receipt.capability_result_envelope_id
+        )
+        runtime = EvidenceRuntime(
+            store=self._store,
+            owner_id=self._owner_id,
+            profile=envelope.evidence_record.profile,
+            lease_duration=self._lease_duration,
+            obligation_coordinator=self._obligation_coordinator,
+        )
+        runtime.admit_result(
+            receipt_id=receipt.capability_result_receipt_id,
+            admitted_at=admitted_at,
+        )
+        lease = self._acquire(snapshot)
+        try:
+            with self._store.atomic():
+                current = self.resume(snapshot.case_id)
+                _require_same_checkpoint(snapshot, current)
+                remaining_job_ids = tuple(
+                    item
+                    for item in current.pending_job_ids
+                    if item != outbox_message_id
+                )
+                phase = (
+                    ControllerPhase.WAITING_FOR_EVIDENCE_ADMISSION
+                    if remaining_job_ids
+                    else ControllerPhase.READY_FOR_AGENT
+                )
+                return self._checkpoint(
+                    run_id=current.run_id,
+                    case_id=current.case_id,
+                    phase=phase,
+                    step_number=current.step_number,
+                    latest_user_message=current.latest_user_message,
+                    pending_action_id=(
+                        current.pending_action_id
+                        if remaining_job_ids
+                        else None
+                    ),
+                    pending_job_ids=remaining_job_ids,
+                    pending_decision_request_id=None,
+                    consecutive_rejections=current.consecutive_rejections,
+                    now=admitted_at,
+                )
+        finally:
+            self._store.release_lease(lease)
+
+    def _recover_landed_evidence(
+        self,
+        *,
+        outbox_message_id: str,
+        admitted_at: datetime,
+    ) -> None:
+        receipt = self._store.find_capability_result_receipt_by_outbox(
+            outbox_message_id
+        )
+        if receipt is None:
+            raise ControllerConflict(
+                "typed evidence effect completed without a T1 receipt"
+            )
+        envelope = self._store.get_capability_result_envelope(
+            receipt.capability_result_envelope_id
+        )
+        EvidenceRuntime(
+            store=self._store,
+            owner_id=self._owner_id,
+            profile=envelope.evidence_record.profile,
+            lease_duration=self._lease_duration,
+            obligation_coordinator=self._obligation_coordinator,
+        ).admit_result(
+            receipt_id=receipt.capability_result_receipt_id,
+            admitted_at=admitted_at,
+        )
 
     def _checkpoint(
         self,
@@ -3700,7 +4201,9 @@ class WAJEController:
         answer = (
             None
             if case.accepted_answer_version_id is None
-            else self._store.get_answer(case.accepted_answer_version_id)
+            else self._store.get_answer(
+                case.accepted_answer_version_id
+            )
         )
         binding = (
             None
@@ -3726,7 +4229,23 @@ class WAJEController:
             if event.cursor >= event_start
             and event.customer_projection is not None
         )
-        evidence = self._store.list_evidence(case_id)[-MAX_CONTEXT_EVIDENCE:]
+        admissions = self._store.list_evidence_admissions(
+            case_id=case_id
+        )
+        admitted_evidence_ids = {
+            item.evidence_record_id
+            for item in admissions
+            if item.status is EvidenceAdmissionStatus.ACCEPTED
+        }
+        evidence = tuple(
+            item
+            for item in self._store.list_evidence(case_id)
+            if item.evidence_record_id in admitted_evidence_ids
+            and self._store.latest_evidence_validity(
+                item.evidence_record_id
+            ).status
+            is EvidenceValidityStatus.ADMITTED_VALID
+        )[-MAX_CONTEXT_EVIDENCE:]
         decisions = self._store.list_decisions(case_id)[-MAX_CONTEXT_DECISIONS:]
         objections = self._store.list_reviewer_objections(case_id)[
             -MAX_CONTEXT_OBJECTIONS:
@@ -3758,7 +4277,19 @@ class WAJEController:
             accepted_query_bindings=query_bindings,
             recent_events=business_events,
             evidence_index=tuple(
-                ContextEvidenceItem.from_record(record)
+                ContextEvidenceItem(
+                    evidence_record_id=record.evidence_record_id,
+                    evidence_type=record.evidence_type_ref,
+                    strength=record.evidence_strength.value,
+                    business_summary=record.business_summary,
+                    limitation_count=len(record.limitation_refs),
+                    frame_revision_id=record.frame_revision_id,
+                    plan_revision_id=record.plan_revision_id,
+                    task_id=record.task_id,
+                    snapshot_release_ref=(
+                        record.data_context.snapshot_release_ref
+                    ),
+                )
                 for record in evidence
             ),
             decision_index=tuple(
@@ -4473,6 +5004,11 @@ class WAJEController:
 
     def _job_is_stale(self, message: OutboxMessage) -> bool:
         current = self._store.get_authority_snapshot(message.case_id)
+        if message.contract_ref == OBLIGATION_JOB_CONTRACT_REF:
+            return not same_obligation_business_authority(
+                message.authority_snapshot,
+                current,
+            )
         if message.job_kind in {
             AsyncJobKind.SEMANTIC_INSPECTION,
             AsyncJobKind.DATA_PROBE,
@@ -4769,10 +5305,7 @@ class WAJEController:
         return None
 
     def _latest_answer(self, case_id: str) -> AnswerVersion | None:
-        for event in reversed(self._store.list_events(case_id)):
-            if event.event_type is JournalEventType.ANSWER_ACCEPTED:
-                return self._store.get_answer(event.authority_ref or "")
-        return None
+        return self._store.latest_answer(case_id)
 
     def _acquire(self, state: ControllerState):
         now = self._now()
@@ -4897,6 +5430,23 @@ def _require_same_checkpoint(
 def _stable_id(prefix: str, *parts: str) -> str:
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return "{}-{}".format(prefix, digest[:24])
+
+
+def _decode_evidence_effect_result(
+    result: EffectExecutionResult,
+) -> CapabilityResultEnvelope:
+    payload = result.payload.get("capability_result_envelope")
+    if not isinstance(payload, Mapping):
+        raise ControllerConflict(
+            "evidence-producing effect must return a typed "
+            "CapabilityResultEnvelope"
+        )
+    try:
+        return decode_capability_result_envelope(payload)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ControllerConflict(
+            "evidence-producing effect returned an invalid typed envelope"
+        ) from error
 
 
 def _event_authority_refs(

@@ -14,21 +14,20 @@ from waje_vnext.domain.async_runtime import (
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
-    AnswerClaim,
-    AnswerStatus,
-    AnswerVersion,
-    ClaimVerifierStatus,
     DecisionOption,
     DecisionRecord,
-    EvidenceRecord,
-    EvidenceStrength,
-    EvidenceType,
     InterpretationRecord,
-    ResultHandle,
     ReviewerObjection,
     ReviewerObjectionStatus,
     ReviewerSeverity,
     WorkPlanRevision,
+)
+from waje_vnext.domain.answering import (
+    AnalysisCheckDisposition,
+    AnswerVersion,
+    ClaimPrecheckRecord,
+    ProvisionalAnswerCandidate,
+    SettlementPreconditionReport,
 )
 from waje_vnext.domain.canonical import to_jsonable
 from waje_vnext.domain.context import (
@@ -46,6 +45,15 @@ from waje_vnext.domain.controller import (
     EffectAttemptStatus,
     PersistedAction,
     UserDecisionRequest,
+)
+from waje_vnext.domain.evidence import (
+    CapabilityResultEnvelope,
+    CapabilityResultReceipt,
+    EvidenceAdmissionRecord,
+    EvidenceRecord,
+    EvidenceUseBinding,
+    EvidenceValidityRecord,
+    ObligationSatisfactionRecord,
 )
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
@@ -69,12 +77,9 @@ from waje_vnext.domain.runtime_amendment import (
     RunTraceManifest,
 )
 from waje_vnext.domain.measurement import (
-    EvidenceValidityRecord,
     MeasurementResolutionOutcome,
-    ObligationSatisfactionRecord,
     QuestionRevision,
     ResolvedEvidenceObligation,
-    SettlementPreconditionReport,
 )
 from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletionRecord,
@@ -92,6 +97,11 @@ from waje_vnext.domain.planning import (
     QueryBindingEnvelope,
 )
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
+from waje_vnext.domain.workflow import (
+    WorkflowApplicationReceipt,
+    WorkflowProjectionHead,
+    WorkflowSnapshot,
+)
 
 
 def encode_record(record: object) -> dict[str, Any]:
@@ -124,24 +134,6 @@ def decode_evidence_obligation(
     payload: Mapping[str, Any],
 ) -> ResolvedEvidenceObligation:
     return decode_typed_dataclass(ResolvedEvidenceObligation, payload)
-
-
-def decode_evidence_validity(
-    payload: Mapping[str, Any],
-) -> EvidenceValidityRecord:
-    return decode_typed_dataclass(EvidenceValidityRecord, payload)
-
-
-def decode_obligation_satisfaction(
-    payload: Mapping[str, Any],
-) -> ObligationSatisfactionRecord:
-    return decode_typed_dataclass(ObligationSatisfactionRecord, payload)
-
-
-def decode_settlement_precondition(
-    payload: Mapping[str, Any],
-) -> SettlementPreconditionReport:
-    return decode_typed_dataclass(SettlementPreconditionReport, payload)
 
 
 def decode_frame(payload: Mapping[str, Any]) -> AnalysisFrameRevision:
@@ -299,73 +291,100 @@ def decode_logical_execution_attempt(
     )
 
 
-def decode_evidence(payload: Mapping[str, Any]) -> EvidenceRecord:
-    handle_payload = payload["result_handle"]
-    handle = (
-        None
-        if handle_payload is None
-        else ResultHandle(
-            handle_id=handle_payload["handle_id"],
-            content_sha256=handle_payload["content_sha256"],
-            schema_ref=handle_payload["schema_ref"],
-            row_count=handle_payload["row_count"],
-            storage_ref=handle_payload["storage_ref"],
-        )
-    )
-    return EvidenceRecord(
-        evidence_record_id=payload["evidence_record_id"],
-        case_id=payload["case_id"],
-        frame_revision_id=payload["frame_revision_id"],
-        plan_revision_id=payload["plan_revision_id"],
-        task_id=payload["task_id"],
-        capability_name=payload["capability_name"],
-        query_spec_ref=payload["query_spec_ref"],
-        semantic_contract_refs=tuple(payload["semantic_contract_refs"]),
-        snapshot_release_ref=payload["snapshot_release_ref"],
-        grain=payload["grain"],
-        evidence_type=EvidenceType(payload["evidence_type"]),
-        strength=EvidenceStrength(payload["strength"]),
-        business_summary=payload["business_summary"],
-        limitations=tuple(payload["limitations"]),
-        provenance=payload["provenance"],
-        payload_sha256=payload["payload_sha256"],
-        inline_payload=payload["inline_payload"],
-        result_handle=handle,
-        created_at=_datetime(payload["created_at"]),
+def decode_evidence(
+    payload: Mapping[str, Any],
+) -> EvidenceRecord:
+    return decode_typed_dataclass(EvidenceRecord, payload)
+
+
+def decode_capability_result_envelope(
+    payload: Mapping[str, Any],
+) -> CapabilityResultEnvelope:
+    return decode_typed_dataclass(CapabilityResultEnvelope, payload)
+
+
+def decode_capability_result_receipt(
+    payload: Mapping[str, Any],
+) -> CapabilityResultReceipt:
+    return decode_typed_dataclass(CapabilityResultReceipt, payload)
+
+
+def decode_evidence_admission(
+    payload: Mapping[str, Any],
+) -> EvidenceAdmissionRecord:
+    return decode_typed_dataclass(EvidenceAdmissionRecord, payload)
+
+
+def decode_evidence_validity(
+    payload: Mapping[str, Any],
+) -> EvidenceValidityRecord:
+    return decode_typed_dataclass(EvidenceValidityRecord, payload)
+
+
+def decode_evidence_use_binding(
+    payload: Mapping[str, Any],
+) -> EvidenceUseBinding:
+    return decode_typed_dataclass(EvidenceUseBinding, payload)
+
+
+def decode_obligation_satisfaction(
+    payload: Mapping[str, Any],
+) -> ObligationSatisfactionRecord:
+    return decode_typed_dataclass(
+        ObligationSatisfactionRecord,
+        payload,
     )
 
 
-def decode_answer(payload: Mapping[str, Any]) -> AnswerVersion:
-    return AnswerVersion(
-        answer_version_id=payload["answer_version_id"],
-        case_id=payload["case_id"],
-        frame_revision_id=payload["frame_revision_id"],
-        plan_revision_id=payload["plan_revision_id"],
-        version_number=payload["version_number"],
-        prior_answer_version_id=payload["prior_answer_version_id"],
-        status=AnswerStatus(payload["status"]),
-        claims=tuple(
-            AnswerClaim(
-                claim_id=claim["claim_id"],
-                statement=claim["statement"],
-                applicability=claim["applicability"],
-                evidence_record_ids=tuple(claim["evidence_record_ids"]),
-                boundary_ref=claim["boundary_ref"],
-                limitations=tuple(claim["limitations"]),
-                verifier_status=ClaimVerifierStatus(claim["verifier_status"]),
-                reviewer_objection_ids=tuple(claim["reviewer_objection_ids"]),
-            )
-            for claim in payload["claims"]
-        ),
-        narrative_markdown=payload["narrative_markdown"],
-        verifier_policy_version=payload["verifier_policy_version"],
-        unresolved_blocking_objection_ids=tuple(
-            payload["unresolved_blocking_objection_ids"]
-        ),
-        settlement_fingerprint=payload["settlement_fingerprint"],
-        created_by_action_id=payload["created_by_action_id"],
-        created_at=_datetime(payload["created_at"]),
+def decode_provisional_answer_candidate(
+    payload: Mapping[str, Any],
+) -> ProvisionalAnswerCandidate:
+    return decode_typed_dataclass(ProvisionalAnswerCandidate, payload)
+
+
+def decode_analysis_check_disposition(
+    payload: Mapping[str, Any],
+) -> AnalysisCheckDisposition:
+    return decode_typed_dataclass(AnalysisCheckDisposition, payload)
+
+
+def decode_claim_precheck(
+    payload: Mapping[str, Any],
+) -> ClaimPrecheckRecord:
+    return decode_typed_dataclass(ClaimPrecheckRecord, payload)
+
+
+def decode_answer(
+    payload: Mapping[str, Any],
+) -> AnswerVersion:
+    return decode_typed_dataclass(AnswerVersion, payload)
+
+
+def decode_settlement_precondition(
+    payload: Mapping[str, Any],
+) -> SettlementPreconditionReport:
+    return decode_typed_dataclass(
+        SettlementPreconditionReport,
+        payload,
     )
+
+
+def decode_workflow_snapshot(
+    payload: Mapping[str, Any],
+) -> WorkflowSnapshot:
+    return decode_typed_dataclass(WorkflowSnapshot, payload)
+
+
+def decode_workflow_application_receipt(
+    payload: Mapping[str, Any],
+) -> WorkflowApplicationReceipt:
+    return decode_typed_dataclass(WorkflowApplicationReceipt, payload)
+
+
+def decode_workflow_projection_head(
+    payload: Mapping[str, Any],
+) -> WorkflowProjectionHead:
+    return decode_typed_dataclass(WorkflowProjectionHead, payload)
 
 
 def decode_interpretation(payload: Mapping[str, Any]) -> InterpretationRecord:
@@ -374,6 +393,12 @@ def decode_interpretation(payload: Mapping[str, Any]) -> InterpretationRecord:
         case_id=payload["case_id"],
         frame_revision_id=payload["frame_revision_id"],
         evidence_record_ids=tuple(payload["evidence_record_ids"]),
+        evidence_admission_ids=tuple(
+            payload["evidence_admission_ids"]
+        ),
+        evidence_validity_ids=tuple(
+            payload["evidence_validity_ids"]
+        ),
         interpretation=payload["interpretation"],
         created_by_action_id=payload["created_by_action_id"],
         created_at=_datetime(payload["created_at"]),

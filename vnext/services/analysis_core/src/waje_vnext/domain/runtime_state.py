@@ -20,6 +20,10 @@ from .canonical import (
     require_sha256,
 )
 
+ANSWER_REVIEW_JOB_CONTRACT_REF = (
+    "waje-vnext://runtime/provisional-answer-review-job.v1"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ActionReceipt:

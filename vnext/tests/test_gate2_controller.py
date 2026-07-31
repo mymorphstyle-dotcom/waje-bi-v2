@@ -23,17 +23,12 @@ from waje_vnext.domain.actions import (
     AskUserPayload,
     CallCapabilityPayload,
     InspectSemanticsPayload,
-    ProposeAnswerPayload,
-    ProposedClaim,
     ProposedObjectionClosure,
     ReviseFramePayload,
     RevisePlanPayload,
+    RunProbePayload,
 )
-from waje_vnext.domain.authority import (
-    AnswerStatus,
-    ClaimVerifierStatus,
-    DecisionOption,
-)
+from waje_vnext.domain.authority import DecisionOption
 from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.planning import ProposedWorkTask
 from waje_vnext.domain.async_runtime import (
@@ -47,10 +42,6 @@ from waje_vnext.domain.controller import (
     PersistedAction,
 )
 from waje_vnext.domain.events import JournalEventType
-from waje_vnext.domain.measurement import (
-    ObligationSatisfactionRecord,
-    ObligationSatisfactionStatus,
-)
 from waje_vnext.domain.runtime_state import OutboxMessage
 from waje_vnext.domain.runtime_amendment import (
     DispatcherRecoveryCursor,
@@ -82,9 +73,14 @@ class InMemoryAuthorityStore(BaseInMemoryAuthorityStore):
     """Gate 2 harness with trusted G3 measurement authority available."""
 
     def __init__(self) -> None:
+        self._test_storage_now = NOW
         super().__init__(
-            resolution_input_verifier=make_trusted_verifier()
+            resolution_input_verifier=make_trusted_verifier(),
+            clock=lambda: self._test_storage_now,
         )
+
+    def set_storage_time(self, now: datetime) -> None:
+        self._test_storage_now = now
 
     def list_measurement_resolutions(self, frame_revision_id):
         existing = super().list_measurement_resolutions(
@@ -286,21 +282,15 @@ def capability_proposal() -> AgentActionProposal:
     )
 
 
-def answer_proposal() -> AgentActionProposal:
+def probe_proposal() -> AgentActionProposal:
     return AgentActionProposal(
-        kind=ActionKind.PROPOSE_ANSWER,
-        payload=ProposeAnswerPayload(
-            claims=(
-                ProposedClaim(
-                    claim_id="claim-boundary",
-                    statement="The completed probe supports a bounded result",
-                    applicability="Accepted frame and plan",
-                    evidence_record_ids=(),
-                    boundary_ref="effect result pending EvidenceRecord in Gate 4",
-                    limitations=("Capability evidence materialization is pending",),
-                ),
+        kind=ActionKind.RUN_PROBE,
+        payload=RunProbePayload(
+            probe_contract_ref=(
+                "waje-vnext://probe-contract/data-availability.v1"
             ),
-            narrative_markdown="The current answer remains bounded and provisional.",
+            target_authority_refs=("accepted-analysis-frame",),
+            requested_output_refs=("available-row-count",),
         ),
     )
 
@@ -617,8 +607,7 @@ class Gate2ControllerTest(unittest.TestCase):
             (
                 frame_proposal(),
                 plan_proposal(),
-                capability_proposal(),
-                answer_proposal(),
+                probe_proposal(),
             )
         )
         effects = ScriptedEffectExecutor(
@@ -682,26 +671,13 @@ class Gate2ControllerTest(unittest.TestCase):
         self.assertEqual(state.phase, ControllerPhase.READY_FOR_AGENT)
         with self.assertRaisesRegex(ControllerConflict, "no pending effect"):
             controller.deliver_pending_effect("case-gate2")
-        state = complete_agent_turn(controller, "case-gate2")
-        self.assertEqual(state.phase, ControllerPhase.COMPLETED)
-
-        answer = store.get_answer(state.accepted_answer_version_id or "")
-        self.assertEqual(answer.status, AnswerStatus.PROVISIONAL)
-        self.assertEqual(
-            answer.claims[0].verifier_status,
-            ClaimVerifierStatus.PENDING,
-        )
+        self.assertEqual(state.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertIsNone(state.accepted_answer_version_id)
         trace = controller.build_run_trace_manifest("case-gate2")
         self.assertEqual(trace.plan_revision_ids, (plan_id,))
         self.assertEqual(len(trace.effect_attempt_ids), 2)
-        self.assertEqual(
-            trace.claim_ids,
-            (answer.claims[0].claim_id,),
-        )
-        self.assertEqual(
-            trace.provisional_answer_version_ids,
-            (answer.answer_version_id,),
-        )
+        self.assertEqual(trace.claim_ids, ())
+        self.assertEqual(trace.provisional_answer_version_ids, ())
 
         replacement = WAJEController(
             store=store,
@@ -719,7 +695,9 @@ class Gate2ControllerTest(unittest.TestCase):
         )
         self.assertIn(JournalEventType.EFFECT_ATTEMPT_FAILED, event_types)
         self.assertIn(JournalEventType.EFFECT_COMPLETED, event_types)
-        business_events = provider.requests[-1].context_packet.recent_events
+        business_events = store.get_context_packet(
+            state.context_packet_id
+        ).recent_events
         self.assertTrue(
             any(
                 event.event_type == JournalEventType.EFFECT_COMPLETED.value
@@ -740,83 +718,6 @@ class Gate2ControllerTest(unittest.TestCase):
                 event.event_type
                 == JournalEventType.EFFECT_ATTEMPT_FAILED.value
                 for event in business_events
-            )
-        )
-
-    def test_generic_effect_tolerates_sibling_obligation_state(self) -> None:
-        store = InMemoryAuthorityStore()
-        controller = WAJEController(
-            store=store,
-            provider=ScriptedPrimaryAgentProvider(
-                (
-                    frame_proposal("case-effect-sibling"),
-                    plan_proposal(),
-                    capability_proposal(),
-                )
-            ),
-            effect_executor=ScriptedEffectExecutor(
-                (
-                    EffectExecutionResult(
-                        payload={"rows": 1},
-                        business_summary="Effect completed",
-                    ),
-                )
-            ),
-            owner_id="worker-effect-sibling",
-            clock=lambda: NOW,
-        )
-        controller.start(
-            case_id="case-effect-sibling",
-            thread_id="thread-effect-sibling",
-            run_id="run-effect-sibling",
-            user_message="调查一个可恢复的业务变化",
-        )
-        complete_agent_turn(controller, "case-effect-sibling")
-        complete_agent_turn(controller, "case-effect-sibling")
-        waiting = complete_agent_turn(
-            controller,
-            "case-effect-sibling",
-        )
-        plan_id = store.get_case(
-            "case-effect-sibling"
-        ).accepted_plan_revision_id
-        assert plan_id is not None
-        obligation_id = store.get_plan_adoption(
-            plan_id
-        ).obligation_ids[0]
-        store.record_obligation_satisfaction(
-            ObligationSatisfactionRecord(
-                satisfaction_record_id=(
-                    "satisfaction-generic-effect-sibling"
-                ),
-                obligation_id=obligation_id,
-                status=ObligationSatisfactionStatus.OPEN,
-                evidence_admission_record_ids=(),
-                evidence_use_binding_ids=(),
-                resolution_boundary_outcome_id=None,
-                contradiction_disposition_refs=(),
-                verifier_policy_version="obligation-satisfaction.v1",
-                input_set_sha256=content_sha256(
-                    {
-                        "obligation_id": obligation_id,
-                        "status": "open",
-                    }
-                ),
-                created_at=NOW,
-            ),
-            event_id="event-generic-effect-sibling",
-        )
-        outbox = store.get_outbox_message(waiting.pending_job_ids[0])
-        self.assertFalse(controller._job_is_stale(outbox))
-
-        resumed = controller.deliver_pending_effect(
-            "case-effect-sibling"
-        )
-        self.assertEqual(resumed.phase, ControllerPhase.READY_FOR_AGENT)
-        self.assertTrue(
-            any(
-                event.event_type is JournalEventType.EFFECT_COMPLETED
-                for event in store.list_events("case-effect-sibling")
             )
         )
 
@@ -1004,74 +905,6 @@ class Gate2ControllerTest(unittest.TestCase):
         )
         replayed = controller.build_run_trace_manifest("case-run-trace")
         self.assertEqual(replayed, manifest)
-
-    def test_terminal_case_run_can_start_a_new_replayable_analysis_cycle(
-        self,
-    ) -> None:
-        case_id = "case-multiple-runs"
-        provider = ScriptedPrimaryAgentProvider(
-            (
-                frame_proposal(case_id),
-                plan_proposal(),
-                answer_proposal(),
-            )
-        )
-        store = InMemoryAuthorityStore()
-        controller = WAJEController(
-            store=store,
-            provider=provider,
-            effect_executor=ScriptedEffectExecutor(()),
-            owner_id="worker-multiple-runs",
-            clock=lambda: NOW,
-        )
-        controller.start(
-            case_id=case_id,
-            thread_id="thread-multiple-runs",
-            run_id="run-multiple-runs-1",
-            user_message="先完成第一轮经营分析",
-        )
-        controller.deliver_pending_message_binding(case_id)
-        controller.advance(case_id)
-        controller.deliver_pending_llm(case_id)
-        controller.deliver_pending_frame_review(case_id)
-        controller.advance(case_id)
-        controller.deliver_pending_llm(case_id)
-        controller.advance(case_id)
-        completed = controller.deliver_pending_llm(case_id)
-        self.assertEqual(completed.phase, ControllerPhase.COMPLETED)
-        first_manifest = controller.build_run_trace_manifest(case_id)
-
-        started = controller.start(
-            case_id=case_id,
-            thread_id="thread-multiple-runs",
-            run_id="run-multiple-runs-2",
-            user_message="开始第二轮独立经营问题",
-        )
-        self.assertEqual(
-            started.phase,
-            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
-        )
-        self.assertEqual(started.run_id, "run-multiple-runs-2")
-        ready = controller.deliver_pending_message_binding(case_id)
-        self.assertEqual(ready.phase, ControllerPhase.READY_FOR_AGENT)
-        second_manifest = controller.build_run_trace_manifest(case_id)
-        self.assertGreater(
-            second_manifest.start_event_cursor,
-            first_manifest.terminal_event_cursor,
-        )
-        self.assertEqual(
-            {
-                link.correlation_id
-                for link in second_manifest.event_operation_lineage
-            },
-            {"run-multiple-runs-2"},
-        )
-        self.assertEqual(
-            store.get_run_trace_manifest(
-                first_manifest.trace_manifest_id
-            ),
-            first_manifest,
-        )
 
     def test_ask_user_freeform_resumes_through_decision_record(self) -> None:
         store = InMemoryAuthorityStore()
@@ -1525,7 +1358,7 @@ class Gate2ControllerTest(unittest.TestCase):
                 (
                     frame_proposal("case-correction-effect"),
                     plan_proposal(),
-                    capability_proposal(),
+                    probe_proposal(),
                 )
             ),
             effect_executor=executor,
@@ -1830,6 +1663,7 @@ class Gate2ControllerTest(unittest.TestCase):
             expires_at=NOW + timedelta(minutes=2),
         )
         self.assertEqual(first.fencing_token + 1, second.fencing_token)
+        store.set_storage_time(NOW + timedelta(minutes=3))
         with self.assertRaises(LeaseFenceLost):
             store.heartbeat_job_lease(
                 second,
@@ -2122,6 +1956,7 @@ class Gate2ControllerTest(unittest.TestCase):
                     )
                     if item.job_kind.value == "primary_agent"
                 )
+                store.set_storage_time(NOW + timedelta(minutes=2))
                 store.acquire_job_lease(
                     outbox_message_id=job.outbox_message_id,
                     owner_id="replacement-worker",

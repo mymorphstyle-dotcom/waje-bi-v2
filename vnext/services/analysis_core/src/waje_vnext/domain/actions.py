@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from .async_runtime import OperationIdentity
+from .answering import NarrativeBlockProposal, ProposedClaim
 from .authority import DecisionOption
 from .canonical import (
     content_sha256,
@@ -203,43 +204,26 @@ class AskUserPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class ProposedClaim:
-    claim_id: str
-    statement: str
-    applicability: str
-    evidence_record_ids: tuple[str, ...]
-    boundary_ref: str | None
-    limitations: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        for name in ("claim_id", "statement", "applicability"):
-            require_nonempty(getattr(self, name), name)
-        _validate_string_tuple(
-            self.evidence_record_ids,
-            "evidence_record_ids",
-        )
-        _validate_string_tuple(self.limitations, "limitations")
-        if self.boundary_ref is not None:
-            require_nonempty(self.boundary_ref, "boundary_ref")
-        if not self.evidence_record_ids and not self.boundary_ref:
-            raise ValueError(
-                "proposed claim requires evidence or an explicit boundary"
-            )
-
-
-@dataclass(frozen=True, slots=True)
 class ProposeAnswerPayload:
     claims: tuple[ProposedClaim, ...]
-    narrative_markdown: str
+    narrative_blocks: tuple[NarrativeBlockProposal, ...]
 
     def __post_init__(self) -> None:
-        require_nonempty(self.narrative_markdown, "narrative_markdown")
         _validate_typed_tuple(self.claims, ProposedClaim, "claims")
         if not self.claims:
             raise ValueError("propose_answer requires at least one claim")
-        claim_ids = tuple(claim.claim_id for claim in self.claims)
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("proposed claim IDs must be unique")
+        claim_keys = tuple(
+            claim.proposal_claim_key for claim in self.claims
+        )
+        if len(claim_keys) != len(set(claim_keys)):
+            raise ValueError("proposed claim keys must be unique")
+        _validate_typed_tuple(
+            self.narrative_blocks,
+            NarrativeBlockProposal,
+            "narrative_blocks",
+        )
+        if not self.narrative_blocks:
+            raise ValueError("propose_answer requires narrative blocks")
 
 
 @dataclass(frozen=True, slots=True)

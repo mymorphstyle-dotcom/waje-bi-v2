@@ -2481,7 +2481,7 @@
       "additionalProperties": false,
       "required": [
         "claims",
-        "narrative_markdown"
+        "narrative_blocks"
       ],
       "properties": {
         "claims": {
@@ -2490,8 +2490,11 @@
             "$ref": "#/$defs/ProposedClaim"
           }
         },
-        "narrative_markdown": {
-          "type": "string"
+        "narrative_blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NarrativeBlockProposal"
+          }
         }
       }
     },
@@ -2499,40 +2502,125 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "claim_id",
+        "proposal_claim_key",
         "statement",
-        "applicability",
-        "evidence_record_ids",
-        "boundary_ref",
-        "limitations"
+        "target_estimand_id",
+        "obligation_ids",
+        "evidence_selections",
+        "applicability_scope",
+        "requested_strength",
+        "boundary_satisfaction_record_ids",
+        "limitation_refs",
+        "contradiction_refs",
+        "falsification_refs",
+        "reversal_refs",
+        "depends_on_proposal_claim_keys"
       ],
       "properties": {
-        "claim_id": {
+        "proposal_claim_key": {
           "type": "string"
         },
         "statement": {
           "type": "string"
         },
-        "applicability": {
+        "target_estimand_id": {
           "type": "string"
         },
-        "evidence_record_ids": {
+        "obligation_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "boundary_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+        "evidence_selections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceSelection"
+          }
+        },
+        "applicability_scope": {
+          "$ref": "#/$defs/ScopeExpression"
+        },
+        "requested_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
           ]
         },
-        "limitations": {
+        "boundary_satisfaction_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limitation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contradiction_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "falsification_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reversal_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_on_proposal_claim_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "EvidenceSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_record_id",
+        "role_ref"
+      ],
+      "properties": {
+        "evidence_record_id": {
+          "type": "string"
+        },
+        "role_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "NarrativeBlockProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_key",
+        "markdown",
+        "proposal_claim_keys"
+      ],
+      "properties": {
+        "block_key": {
+          "type": "string"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "proposal_claim_keys": {
           "type": "array",
           "items": {
             "type": "string"

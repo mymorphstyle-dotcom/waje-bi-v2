@@ -56,6 +56,70 @@ def same_obligation_business_authority(
     )
 
 
+def obligation_business_authority_sha256(
+    authority: AuthoritySnapshot,
+) -> str:
+    """Hash only authority fields that can change obligation semantics."""
+
+    return content_sha256(
+        {
+            field_name: getattr(authority, field_name)
+            for field_name in (
+                "case_id",
+                "mailbox_authority_epoch",
+                "accepted_question_revision_id",
+                "accepted_frame_revision_id",
+                "accepted_plan_revision_id",
+                "active_frame_candidate_generation",
+                "active_frame_candidate_sha256",
+            )
+        }
+    )
+
+
+def build_obligation_schedule_id(
+    *,
+    case_id: str,
+    correlation_id: str,
+    frame_revision_id: str,
+    plan_revision_id: str,
+    plan_adoption_id: str,
+    plan_adoption_content_sha256: str,
+    authority: AuthoritySnapshot,
+) -> str:
+    """Build the canonical identity for one run-bound business schedule."""
+
+    for field_name, value in (
+        ("case_id", case_id),
+        ("correlation_id", correlation_id),
+        ("frame_revision_id", frame_revision_id),
+        ("plan_revision_id", plan_revision_id),
+    ):
+        require_nonempty(value, field_name)
+    require_sha256(plan_adoption_id, "plan_adoption_id")
+    require_sha256(
+        plan_adoption_content_sha256,
+        "plan_adoption_content_sha256",
+    )
+    digest = content_sha256(
+        {
+            "identity_version": "obligation-schedule.v1",
+            "case_id": case_id,
+            "correlation_id": correlation_id,
+            "frame_revision_id": frame_revision_id,
+            "plan_revision_id": plan_revision_id,
+            "plan_adoption_id": plan_adoption_id,
+            "plan_adoption_content_sha256": (
+                plan_adoption_content_sha256
+            ),
+            "business_authority_sha256": (
+                obligation_business_authority_sha256(authority)
+            ),
+        }
+    )
+    return "obligation-schedule-{}".format(digest[:24])
+
+
 @dataclass(frozen=True, slots=True)
 class ObligationDependency:
     obligation_id: str
@@ -416,6 +480,21 @@ def validate_schedule_plan_binding(
 ) -> None:
     """Replay the schedule from the accepted Plan adoption."""
 
+    expected_schedule_id = build_obligation_schedule_id(
+        case_id=schedule.case_id,
+        correlation_id=schedule.correlation_id,
+        frame_revision_id=schedule.frame_revision_id,
+        plan_revision_id=schedule.plan_revision_id,
+        plan_adoption_id=schedule.plan_adoption_id,
+        plan_adoption_content_sha256=(
+            schedule.plan_adoption_content_sha256
+        ),
+        authority=schedule.authority_snapshot,
+    )
+    if schedule.schedule_id != expected_schedule_id:
+        raise ValueError(
+            "schedule ID is not canonical for its run and business authority"
+        )
     if (
         schedule.plan_revision_id != plan.plan_revision_id
         or schedule.frame_revision_id != plan.frame_revision_id

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from waje_vnext.domain.authority import AnswerStatus
+from waje_vnext.domain.answering import AnswerStatus
 from waje_vnext.domain.events import JournalEventType
 from waje_vnext.domain.runtime_amendment import (
     RunTraceEventLink,

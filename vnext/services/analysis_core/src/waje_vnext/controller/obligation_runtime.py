@@ -28,6 +28,7 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationScheduleRecord,
     ObligationTerminalStatus,
     admit_obligation_completion,
+    build_obligation_schedule_id,
     build_obligation_dispatch,
     propagate_dependency_terminals,
     same_obligation_business_authority,
@@ -138,13 +139,14 @@ class DurableObligationCoordinator:
             )
             for obligation in obligations
         )
-        schedule_id = _stable_id(
-            "obligation-schedule",
-            case_id,
-            frame_revision_id,
-            plan_revision_id,
-            adoption.content_sha256,
-            authority.content_sha256,
+        schedule_id = build_obligation_schedule_id(
+            case_id=case_id,
+            correlation_id=correlation_id,
+            frame_revision_id=frame_revision_id,
+            plan_revision_id=plan_revision_id,
+            plan_adoption_id=adoption.plan_adoption_id,
+            plan_adoption_content_sha256=adoption.content_sha256,
+            authority=authority,
         )
         schedule = ObligationScheduleRecord(
             schedule_id=schedule_id,
@@ -723,6 +725,11 @@ class DurableObligationCoordinator:
             schedule.schedule_id,
             dispatch.dispatch_id,
         )
+        dispatch_record_id = _stable_id(
+            "obligation-dispatch-record",
+            schedule.schedule_id,
+            dispatch.dispatch_id,
+        )
         payload = {
             "schedule_id": schedule.schedule_id,
             "obligation_id": obligation.obligation_id,
@@ -754,7 +761,7 @@ class DurableObligationCoordinator:
             event_type=JournalEventType.OBLIGATION_DISPATCH_ENQUEUED,
             recorded_at=recorded_at,
             action_id=None,
-            authority_ref=dispatch.dispatch_id,
+            authority_ref=dispatch_record_id,
             payload=event_payload,
             customer_projection={
                 "state": "evidence_obligation_dispatched",
@@ -820,11 +827,7 @@ class DurableObligationCoordinator:
             created_at=recorded_at,
         )
         record = ObligationDispatchRecord(
-            dispatch_record_id=_stable_id(
-                "obligation-dispatch-record",
-                schedule.schedule_id,
-                dispatch.dispatch_id,
-            ),
+            dispatch_record_id=dispatch_record_id,
             schedule_id=schedule.schedule_id,
             outbox_message_id=outbox_message_id,
             dispatch=dispatch,

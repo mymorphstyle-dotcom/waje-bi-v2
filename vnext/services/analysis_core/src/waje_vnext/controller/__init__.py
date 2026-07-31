@@ -9,10 +9,13 @@ from .effects import (
 )
 from .runtime import ControllerConflict, WAJEController
 from .obligation_runtime import DurableObligationCoordinator
+from .evidence_runtime import EvidenceAdmissionOutcome, EvidenceRuntime
 
 __all__ = [
     "ControllerConflict",
     "DurableObligationCoordinator",
+    "EvidenceAdmissionOutcome",
+    "EvidenceRuntime",
     "EffectExecutionResult",
     "EffectExecutor",
     "EffectPermanentError",

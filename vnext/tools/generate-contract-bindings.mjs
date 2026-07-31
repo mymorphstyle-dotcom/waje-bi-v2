@@ -18,6 +18,9 @@ const contracts = [
   ["contracts/domain/async-runtime.v1.schema.json", "async-runtime.v1.ts"],
   ["contracts/domain/runtime-amendment.v1.schema.json", "runtime-amendment.v1.ts"],
   ["contracts/domain/planning.v1.schema.json", "planning.v1.ts"],
+  ["contracts/domain/evidence.v1.schema.json", "evidence.v1.ts"],
+  ["contracts/domain/answering.v1.schema.json", "answering.v1.ts"],
+  ["contracts/domain/workflow.v1.schema.json", "workflow.v1.ts"],
   ["contracts/events/journal-entry.v1.schema.json", "journal-entry.v1.ts"],
 ];
 const bannerComment = [

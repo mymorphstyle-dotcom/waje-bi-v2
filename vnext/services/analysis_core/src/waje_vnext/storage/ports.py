@@ -15,14 +15,19 @@ from waje_vnext.domain.async_runtime import (
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
-    AnswerVersion,
     CaseLifecycle,
     DecisionRecord,
-    EvidenceRecord,
     InvestigationCase,
     InterpretationRecord,
     ReviewerObjection,
     WorkPlanRevision,
+)
+from waje_vnext.domain.answering import (
+    AnswerVersion,
+    ClaimPrecheckRecord,
+    ProvisionalAnswerBundle,
+    ProvisionalAnswerCandidate,
+    SettlementPreconditionReport,
 )
 from waje_vnext.domain.context import ContextPacket
 from waje_vnext.domain.controller import (
@@ -32,13 +37,21 @@ from waje_vnext.domain.controller import (
     UserDecisionRequest,
 )
 from waje_vnext.domain.events import EventJournalEntry, JournalEventType
-from waje_vnext.domain.measurement import (
+from waje_vnext.domain.evidence import (
+    CapabilityResultEnvelope,
+    CapabilityResultReceipt,
+    EvidenceAdmissionProfile,
+    EvidenceAdmissionRecord,
+    EvidenceRecord,
+    EvidenceUseBinding,
     EvidenceValidityRecord,
-    MeasurementResolutionOutcome,
+    EvidenceValidityStatus,
     ObligationSatisfactionRecord,
+)
+from waje_vnext.domain.measurement import (
+    MeasurementResolutionOutcome,
     QuestionRevision,
     ResolvedEvidenceObligation,
-    SettlementPreconditionReport,
 )
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
@@ -56,6 +69,7 @@ from waje_vnext.domain.measurement_resolver import (
 )
 from waje_vnext.domain.planning import (
     ConformanceExecutionSpec,
+    ExecutionRealm,
     LogicalExecutionAttempt,
     PlanAdoptionRecord,
     PlanBundle,
@@ -78,6 +92,8 @@ from waje_vnext.domain.runtime_amendment import (
     ProviderAttemptRequest,
     RunTraceManifest,
 )
+from waje_vnext.domain.workflow import WorkflowReadModel
+from waje_vnext.domain.workflow_adapter import WorkflowEventAuthority
 
 
 class AuthorityStoreError(RuntimeError):
@@ -132,11 +148,92 @@ class AuthorityStore(Protocol):
 
     def get_plan(self, plan_revision_id: str) -> WorkPlanRevision: ...
 
-    def get_evidence(self, evidence_record_id: str) -> EvidenceRecord: ...
+    def get_evidence(
+        self,
+        evidence_record_id: str,
+    ) -> EvidenceRecord: ...
 
-    def get_answer(self, answer_version_id: str) -> AnswerVersion: ...
+    def get_capability_result_envelope(
+        self,
+        capability_result_envelope_id: str,
+    ) -> CapabilityResultEnvelope: ...
 
-    def list_evidence(self, case_id: str) -> tuple[EvidenceRecord, ...]: ...
+    def get_capability_result_receipt(
+        self,
+        capability_result_receipt_id: str,
+    ) -> CapabilityResultReceipt: ...
+
+    def find_capability_result_receipt_by_outbox(
+        self,
+        outbox_message_id: str,
+    ) -> CapabilityResultReceipt | None: ...
+
+    def list_evidence(
+        self,
+        case_id: str,
+    ) -> tuple[EvidenceRecord, ...]: ...
+
+    def get_evidence_admission(
+        self,
+        evidence_admission_id: str,
+    ) -> EvidenceAdmissionRecord: ...
+
+    def list_evidence_admissions(
+        self,
+        *,
+        case_id: str,
+        profile: EvidenceAdmissionProfile | None = None,
+    ) -> tuple[EvidenceAdmissionRecord, ...]: ...
+
+    def get_evidence_validity(
+        self,
+        evidence_validity_id: str,
+    ) -> EvidenceValidityRecord: ...
+
+    def latest_evidence_validity(
+        self,
+        evidence_record_id: str,
+    ) -> EvidenceValidityRecord: ...
+
+    def get_evidence_use_binding(
+        self,
+        evidence_use_binding_id: str,
+    ) -> EvidenceUseBinding: ...
+
+    def get_obligation_satisfaction(
+        self,
+        obligation_satisfaction_id: str,
+    ) -> ObligationSatisfactionRecord: ...
+
+    def latest_obligation_satisfaction(
+        self,
+        obligation_id: str,
+    ) -> ObligationSatisfactionRecord: ...
+
+    def get_answer_candidate(
+        self,
+        answer_candidate_id: str,
+    ) -> ProvisionalAnswerCandidate: ...
+
+    def get_claim_precheck(
+        self,
+        claim_precheck_id: str,
+    ) -> ClaimPrecheckRecord: ...
+
+    def get_answer(
+        self,
+        answer_version_id: str,
+    ) -> AnswerVersion: ...
+
+    def latest_answer(
+        self,
+        case_id: str,
+    ) -> AnswerVersion | None: ...
+
+    def get_settlement_precondition(
+        self,
+        settlement_precondition_report_id: str,
+    ) -> SettlementPreconditionReport: ...
 
     def list_decisions(self, case_id: str) -> tuple[DecisionRecord, ...]: ...
 
@@ -415,24 +512,96 @@ class AuthorityStore(Protocol):
         logical_execution_id: str,
     ) -> tuple[LogicalExecutionAttempt, ...]: ...
 
-    def record_evidence(
+    def land_capability_result(
         self,
-        evidence: EvidenceRecord,
         *,
-        expected_head_version: int,
+        envelope: CapabilityResultEnvelope,
+        receipt: CapabilityResultReceipt,
+        job_lease: JobLease,
         event_id: str,
         recorded_at: datetime,
-    ) -> EvidenceRecord: ...
+    ) -> CapabilityResultReceipt: ...
 
-    def accept_answer(
+    def admit_landed_result(
         self,
-        answer: AnswerVersion,
         *,
+        receipt_id: str,
+        profile: EvidenceAdmissionProfile,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> tuple[
+        EvidenceAdmissionRecord,
+        EvidenceValidityRecord,
+        ObligationSatisfactionRecord,
+    ]: ...
+
+    def transition_evidence_validity(
+        self,
+        *,
+        evidence_record_id: str,
+        status: EvidenceValidityStatus,
+        reason_code: str,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> tuple[
+        EvidenceValidityRecord,
+        ObligationSatisfactionRecord,
+    ]: ...
+
+    def accept_provisional_answer_candidate(
+        self,
+        *,
+        candidate: ProvisionalAnswerCandidate,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
         operation: OperationIdentity | None = None,
-    ) -> InvestigationCase: ...
+    ) -> tuple[ProvisionalAnswerBundle, InvestigationCase]: ...
+
+    def derive_settlement_precondition(
+        self,
+        *,
+        case_id: str,
+        expected_head_version: int,
+        answer_version_id: str,
+        objection_disposition_refs: tuple[str, ...],
+        unresolved_blocking_objection_refs: tuple[str, ...],
+        trace_manifest_id: str,
+        trace_manifest_content_sha256: str,
+        trace_complete: bool,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> SettlementPreconditionReport: ...
+
+    def get_workflow_read_model(
+        self,
+        case_id: str,
+        *,
+        realm: ExecutionRealm,
+        evidence_profile: EvidenceAdmissionProfile,
+    ) -> WorkflowReadModel: ...
+
+    def commit_workflow_read_model(
+        self,
+        model: WorkflowReadModel,
+        *,
+        expected_head_version: int,
+        applied_at: datetime,
+    ) -> WorkflowReadModel: ...
+
+    def resolve_workflow_event_authority(
+        self,
+        event: EventJournalEntry,
+    ) -> WorkflowEventAuthority: ...
+
+    def project_workflow_read_model(
+        self,
+        case_id: str,
+        *,
+        realm: ExecutionRealm,
+        evidence_profile: EvidenceAdmissionProfile,
+        applied_at: datetime,
+    ) -> WorkflowReadModel: ...
 
     def record_measurement_resolution(
         self,
@@ -477,28 +646,6 @@ class AuthorityStore(Protocol):
         self,
         frame_revision_id: str,
     ) -> tuple[ResolvedEvidenceObligation, ...]: ...
-
-    def record_evidence_validity(
-        self,
-        validity: EvidenceValidityRecord,
-        *,
-        event_id: str,
-    ) -> EvidenceValidityRecord: ...
-
-    def record_obligation_satisfaction(
-        self,
-        satisfaction: ObligationSatisfactionRecord,
-        *,
-        event_id: str,
-    ) -> ObligationSatisfactionRecord: ...
-
-    def record_settlement_precondition(
-        self,
-        report: SettlementPreconditionReport,
-        *,
-        expected_head_version: int,
-        event_id: str,
-    ) -> SettlementPreconditionReport: ...
 
     def transition_case_lifecycle(
         self,

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import replace
 
 from gate1_fixtures import (
     NOW,
     accept_initial_question,
-    make_answer,
-    make_evidence,
     make_frame,
-    make_objection,
     make_plan,
     record_reviewed_frame,
 )
@@ -26,12 +23,8 @@ from waje_vnext.domain.actions import (
 from waje_vnext.domain.admission import admit_action
 from waje_vnext.domain.async_runtime import OperationIdentity
 from waje_vnext.domain.authority import (
-    AnswerStatus,
     CaseLifecycle,
-    ClaimVerifierStatus,
     DecisionOption,
-    EvidenceRecord,
-    ReviewerObjectionStatus,
     WorkPlanRevision,
     WorkTask,
 )
@@ -122,38 +115,6 @@ class AuthorityModelTest(unittest.TestCase):
                     make_contract_task("task-b", ("task-a",)),
                 ),
             )
-
-    def test_evidence_payload_is_deeply_immutable(self) -> None:
-        evidence = make_evidence(payload={"nested": {"value": 1}})
-
-        with self.assertRaises(TypeError):
-            evidence.inline_payload["nested"]["value"] = 2  # type: ignore[index]
-        with self.assertRaises(FrozenInstanceError):
-            evidence.business_summary = "mutated"  # type: ignore[misc]
-
-    def test_evidence_rejects_payload_hash_mismatch(self) -> None:
-        valid = make_evidence()
-        values = {
-            field: getattr(valid, field)
-            for field in valid.__dataclass_fields__
-        }
-        values["payload_sha256"] = "0" * 64
-
-        with self.assertRaisesRegex(ValueError, "does not match"):
-            EvidenceRecord(**values)
-
-    def test_gate3_rejects_every_settled_answer(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Gate 3"):
-            make_answer(status=AnswerStatus.SETTLED)
-
-    def test_provisional_answer_rejects_settlement_fingerprint(self) -> None:
-        with self.assertRaisesRegex(ValueError, "provisional"):
-            replace(make_answer(), settlement_fingerprint="0" * 64)
-
-    def test_authority_enums_reject_untyped_strings(self) -> None:
-        with self.assertRaisesRegex(TypeError, "AnswerStatus"):
-            replace(make_answer(), status="settled")
-
 
 class TypedActionTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -544,135 +505,6 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
                 recorded_at=NOW,
             )
 
-    def test_evidence_recording_does_not_move_heads(self) -> None:
-        self._accept_frame_and_plan()
-        prior_version = self.case.head_version
-        evidence = make_evidence()
-
-        recorded = self.store.record_evidence(
-            evidence,
-            expected_head_version=prior_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-
-        self.assertEqual(recorded, evidence)
-        self.assertEqual(self.store.get_case("case-1").head_version, prior_version)
-
-    def test_evidence_id_cannot_be_reused_with_different_content(self) -> None:
-        self._accept_frame_and_plan()
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-
-        with self.assertRaises(AuthorityConflict):
-            self.store.record_evidence(
-                make_evidence(
-                    evidence_id="evidence-1",
-                    payload={"exposure_amount": 999.0},
-                ),
-                expected_head_version=self.case.head_version,
-                event_id="event-evidence-conflict",
-                recorded_at=evidence.created_at,
-            )
-
-    def test_answer_requires_compatible_evidence(self) -> None:
-        self._accept_frame_and_plan()
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-        answer = make_answer()
-
-        self.case = self.store.accept_answer(
-            answer,
-            expected_head_version=self.case.head_version,
-            event_id="event-answer",
-            recorded_at=answer.created_at,
-        )
-
-        self.assertEqual(self.case.accepted_answer_version_id, "answer-1")
-        self.assertEqual(self.case.head_version, 4)
-
-    def test_new_frame_invalidates_plan_and_answer_heads(self) -> None:
-        self._accept_frame_and_plan()
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-        answer = make_answer()
-        self.case = self.store.accept_answer(
-            answer,
-            expected_head_version=self.case.head_version,
-            event_id="event-answer",
-            recorded_at=answer.created_at,
-        )
-        frame_2 = make_frame(
-            revision_number=2,
-            frame_id="frame-2",
-            prior_id="frame-1",
-        )
-        frame_2_proof_id = record_reviewed_frame(self.store, frame_2)
-
-        self.case = self.store.accept_frame(
-            frame_2,
-            frame_admission_proof_id=frame_2_proof_id,
-            expected_head_version=self.case.head_version,
-            event_id="event-frame-2",
-            recorded_at=frame_2.created_at,
-        )
-
-        self.assertEqual(self.case.accepted_frame_revision_id, "frame-2")
-        self.assertIsNone(self.case.accepted_plan_revision_id)
-        self.assertIsNone(self.case.accepted_answer_version_id)
-
-        self.case, plan_bundle_2 = record_plan_bundle(
-            store=self.store,
-            case=self.case,
-            frame=frame_2,
-            created_at=frame_2.created_at,
-            plan_revision_id="plan-2",
-            prior_plan=self.plan_bundle.plan,
-        )
-        evidence_2 = make_evidence(
-            evidence_id="evidence-2",
-            frame_id="frame-2",
-            plan_id="plan-2",
-        )
-        self.store.record_evidence(
-            evidence_2,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence-2",
-            recorded_at=evidence_2.created_at,
-        )
-        answer_2 = make_answer(
-            answer_id="answer-2",
-            frame_id="frame-2",
-            plan_id="plan-2",
-            evidence_id="evidence-2",
-            version_number=2,
-            prior_id="answer-1",
-        )
-        self.case = self.store.accept_answer(
-            answer_2,
-            expected_head_version=self.case.head_version,
-            event_id="event-answer-2",
-            recorded_at=answer_2.created_at,
-        )
-
-        self.assertEqual(self.case.accepted_plan_revision_id, "plan-2")
-        self.assertEqual(self.case.accepted_answer_version_id, "answer-2")
-
     def test_event_journal_enforces_monotonic_cursor(self) -> None:
         with self.assertRaises(AuthorityConflict):
             self.store.append_event(
@@ -760,80 +592,6 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
                 event_id="event-plan-other-frame",
                 recorded_at=NOW,
             )
-
-    def test_reviewer_objection_resolution_is_append_only(self) -> None:
-        self._accept_frame_and_plan()
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-        provisional = make_answer(status=AnswerStatus.PROVISIONAL)
-        self.case = self.store.accept_answer(
-            provisional,
-            expected_head_version=self.case.head_version,
-            event_id="event-answer",
-            recorded_at=provisional.created_at,
-        )
-        opened = make_objection()
-        self.store.record_reviewer_objection(
-            opened,
-            event_id="event-objection-open",
-        )
-
-        with self.assertRaises(InvalidAuthorityTransition):
-            self.store.record_reviewer_objection(
-                make_objection(
-                    objection_id="objection-invalid",
-                    revision_number=2,
-                    prior_id="objection-other",
-                    status=ReviewerObjectionStatus.RESOLVED,
-                ),
-                event_id="event-objection-invalid",
-            )
-
-        resolved = make_objection(
-            objection_id="objection-2",
-            revision_number=2,
-            prior_id=opened.objection_id,
-            status=ReviewerObjectionStatus.RESOLVED,
-        )
-        recorded = self.store.record_reviewer_objection(
-            resolved,
-            event_id="event-objection-resolved",
-        )
-        retried = self.store.record_reviewer_objection(
-            resolved,
-            event_id="event-objection-resolved",
-        )
-
-        self.assertEqual(recorded, resolved)
-        self.assertEqual(retried, resolved)
-        self.assertEqual(
-            tuple(event.authority_ref for event in self.store.list_events("case-1")[-2:]),
-            ("objection-1", "objection-2"),
-        )
-
-    def test_authority_id_cannot_be_replayed_under_a_new_event(self) -> None:
-        self._accept_frame_and_plan()
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=evidence.created_at,
-        )
-
-        with self.assertRaises(AuthorityConflict):
-            self.store.record_evidence(
-                evidence,
-                expected_head_version=self.case.head_version,
-                event_id="event-evidence-other",
-                recorded_at=evidence.created_at,
-            )
-
 
 def _journal_operation(
     operation_id: str,

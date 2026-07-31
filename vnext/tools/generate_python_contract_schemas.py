@@ -26,21 +26,32 @@ from waje_vnext.domain.actions import (
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
-    AnswerVersion,
-    EvidenceRecord,
     InvestigationCase,
     WorkPlanRevision,
 )
+from waje_vnext.domain.answering import (
+    AnalysisCheckDisposition,
+    AnswerVersion,
+    ClaimPrecheckRecord,
+    ProvisionalAnswerCandidate,
+    SettlementPreconditionReport,
+)
 from waje_vnext.domain.canonical import FrozenJson
 from waje_vnext.domain.context import ContextPacket
+from waje_vnext.domain.evidence import (
+    CapabilityResultEnvelope,
+    CapabilityResultReceipt,
+    EvidenceAdmissionRecord,
+    EvidenceRecord,
+    EvidenceUseBinding,
+    EvidenceValidityRecord,
+    ObligationSatisfactionRecord,
+)
 from waje_vnext.domain.measurement import (
     AnalysisFrameRevision as Epoch3AnalysisFrameRevision,
-    EvidenceValidityRecord,
     MeasurementResolutionOutcome,
-    ObligationSatisfactionRecord,
     QuestionRevision,
     ResolvedEvidenceObligation,
-    SettlementPreconditionReport,
 )
 from waje_vnext.domain.planning import (
     ConformanceExecutionSpec,
@@ -65,6 +76,12 @@ from waje_vnext.domain.runtime_amendment import (
     ProviderAttemptRequest,
     RunTraceManifest,
 )
+from waje_vnext.domain.workflow import (
+    WorkflowApplicationReceipt,
+    WorkflowProjectionHead,
+    WorkflowReadModel,
+    WorkflowSnapshot,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +100,21 @@ EPOCH_3_RECORDS = {
     QueryBindingEnvelope,
     ConformanceExecutionSpec,
     LogicalExecutionAttempt,
+    CapabilityResultEnvelope,
+    CapabilityResultReceipt,
+    EvidenceRecord,
+    EvidenceAdmissionRecord,
+    EvidenceValidityRecord,
+    EvidenceUseBinding,
+    ObligationSatisfactionRecord,
+    AnalysisCheckDisposition,
+    ProvisionalAnswerCandidate,
+    ClaimPrecheckRecord,
+    AnswerVersion,
+    SettlementPreconditionReport,
+    WorkflowSnapshot,
+    WorkflowApplicationReceipt,
+    WorkflowProjectionHead,
 }
 SHA256_FIELDS = {
     "authority_binding_id",
@@ -278,11 +310,9 @@ class SchemaBuilder:
             elif record_type is AnswerVersion and field.name == "status":
                 schema = {"const": "provisional"}
             elif (
-                record_type is AnswerVersion
-                and field.name == "settlement_fingerprint"
+                field.name in SHA256_FIELDS
+                or field.name.endswith("_sha256")
             ):
-                schema = {"type": "null"}
-            elif field.name in SHA256_FIELDS:
                 schema = _with_string_pattern(schema, SHA256_PATTERN)
             elif field.name in SHA256_ARRAY_FIELDS:
                 schema = {
@@ -454,6 +484,40 @@ def main() -> None:
                 QueryBindingEnvelope,
                 ConformanceExecutionSpec,
                 LogicalExecutionAttempt,
+            ),
+        ),
+        DOMAIN / "evidence.v1.schema.json": _document(
+            schema_id="urn:waje-vnext:domain:evidence:v1",
+            title="WAJE vNext Gate 3.5 evidence authority",
+            roots=(
+                CapabilityResultEnvelope,
+                CapabilityResultReceipt,
+                EvidenceRecord,
+                EvidenceAdmissionRecord,
+                EvidenceValidityRecord,
+                EvidenceUseBinding,
+                ObligationSatisfactionRecord,
+            ),
+        ),
+        DOMAIN / "answering.v1.schema.json": _document(
+            schema_id="urn:waje-vnext:domain:answering:v1",
+            title="WAJE vNext Gate 3.5 provisional answer authority",
+            roots=(
+                AnalysisCheckDisposition,
+                ProvisionalAnswerCandidate,
+                ClaimPrecheckRecord,
+                AnswerVersion,
+                SettlementPreconditionReport,
+            ),
+        ),
+        DOMAIN / "workflow.v1.schema.json": _document(
+            schema_id="urn:waje-vnext:domain:workflow:v1",
+            title="WAJE vNext Gate 3.5 workflow projection",
+            roots=(
+                WorkflowSnapshot,
+                WorkflowApplicationReceipt,
+                WorkflowProjectionHead,
+                WorkflowReadModel,
             ),
         ),
     }

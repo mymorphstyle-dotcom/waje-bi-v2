@@ -1,0 +1,1067 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:answering:v1",
+  "title": "WAJE vNext Gate 3.5 provisional answer authority",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/AnalysisCheckDisposition"
+    },
+    {
+      "$ref": "#/$defs/ProvisionalAnswerCandidate"
+    },
+    {
+      "$ref": "#/$defs/ClaimPrecheckRecord"
+    },
+    {
+      "$ref": "#/$defs/AnswerVersion"
+    },
+    {
+      "$ref": "#/$defs/SettlementPreconditionReport"
+    }
+  ],
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "AnalysisCheckDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_disposition_id",
+        "check_id",
+        "kind",
+        "status",
+        "source_authority_ref",
+        "source_authority_content_sha256",
+        "limitation_ref",
+        "policy_version"
+      ],
+      "properties": {
+        "check_disposition_id": {
+          "type": "string"
+        },
+        "check_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "contradiction",
+            "falsification",
+            "reversal"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "satisfied",
+            "triggered",
+            "resolved_with_limitation",
+            "unresolved"
+          ]
+        },
+        "source_authority_ref": {
+          "type": "string"
+        },
+        "source_authority_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "limitation_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_version": {
+          "type": "string"
+        }
+      }
+    },
+    "ProvisionalAnswerCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer_candidate_id",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "plan_adoption_id",
+        "plan_adoption_content_sha256",
+        "authority_snapshot",
+        "authority_snapshot_content_sha256",
+        "accepted_head_version",
+        "version_number",
+        "prior_answer_version_id",
+        "claims",
+        "narrative_blocks",
+        "created_by_action_id",
+        "created_at",
+        "identity_version",
+        "schema_epoch"
+      ],
+      "properties": {
+        "answer_candidate_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "plan_adoption_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plan_adoption_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_snapshot": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "authority_snapshot_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "accepted_head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prior_answer_version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposedClaim"
+          }
+        },
+        "narrative_blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NarrativeBlockProposal"
+          }
+        },
+        "created_by_action_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "identity_version": {
+          "type": "string"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "AuthoritySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "head_version",
+        "mailbox_authority_epoch",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id",
+        "accepted_plan_revision_id",
+        "active_frame_candidate_generation",
+        "active_frame_candidate_sha256",
+        "obligation_state_version",
+        "evidence_admission_state_version",
+        "contradiction_state_version"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "head_version": {
+          "type": "integer"
+        },
+        "mailbox_authority_epoch": {
+          "type": "integer"
+        },
+        "accepted_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_frame_candidate_generation": {
+          "type": "integer"
+        },
+        "active_frame_candidate_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "obligation_state_version": {
+          "type": "integer"
+        },
+        "evidence_admission_state_version": {
+          "type": "integer"
+        },
+        "contradiction_state_version": {
+          "type": "integer"
+        }
+      }
+    },
+    "ProposedClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_claim_key",
+        "statement",
+        "target_estimand_id",
+        "obligation_ids",
+        "evidence_selections",
+        "applicability_scope",
+        "requested_strength",
+        "boundary_satisfaction_record_ids",
+        "limitation_refs",
+        "contradiction_refs",
+        "falsification_refs",
+        "reversal_refs",
+        "depends_on_proposal_claim_keys"
+      ],
+      "properties": {
+        "proposal_claim_key": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "target_estimand_id": {
+          "type": "string"
+        },
+        "obligation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_selections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceSelection"
+          }
+        },
+        "applicability_scope": {
+          "$ref": "#/$defs/ScopeExpression"
+        },
+        "requested_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        },
+        "boundary_satisfaction_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limitation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contradiction_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "falsification_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reversal_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_on_proposal_claim_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "EvidenceSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_record_id",
+        "role_ref"
+      ],
+      "properties": {
+        "evidence_record_id": {
+          "type": "string"
+        },
+        "role_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "ScopeExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id",
+        "entity_universe_ref",
+        "dimension_domain_refs",
+        "time_window_rule_ids",
+        "predicate_ref",
+        "grain_ref",
+        "unit_ref",
+        "aggregation_path_ref",
+        "population_or_risk_set_ref",
+        "data_version_boundary_ref"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string"
+        },
+        "entity_universe_ref": {
+          "type": "string"
+        },
+        "dimension_domain_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_window_rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "predicate_ref": {
+          "type": "string"
+        },
+        "grain_ref": {
+          "type": "string"
+        },
+        "unit_ref": {
+          "type": "string"
+        },
+        "aggregation_path_ref": {
+          "type": "string"
+        },
+        "population_or_risk_set_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_version_boundary_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "NarrativeBlockProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_key",
+        "markdown",
+        "proposal_claim_keys"
+      ],
+      "properties": {
+        "block_key": {
+          "type": "string"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "proposal_claim_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ClaimPrecheckRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_precheck_id",
+        "claim_id",
+        "answer_candidate_id",
+        "answer_candidate_content_sha256",
+        "proposal_claim_key",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "plan_adoption_id",
+        "authority_snapshot",
+        "authority_snapshot_content_sha256",
+        "target_estimand_id",
+        "obligation_ids",
+        "evidence_use_binding_ids",
+        "evidence_use_binding_content_sha256s",
+        "latest_evidence_validity_ids",
+        "latest_evidence_validity_content_sha256s",
+        "obligation_satisfaction_record_ids",
+        "obligation_satisfaction_content_sha256s",
+        "scope_proof_ids",
+        "window_exposure_proof_sha256s",
+        "data_version_proof_sha256s",
+        "analysis_check_disposition_ids",
+        "analysis_check_disposition_content_sha256s",
+        "dependency_claim_ids",
+        "applicability_scope",
+        "requested_strength",
+        "effective_strength",
+        "status",
+        "reason_codes",
+        "required_limitation_refs",
+        "derived_input_sha256",
+        "policy_version",
+        "checked_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "claim_precheck_id": {
+          "type": "string"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "answer_candidate_id": {
+          "type": "string"
+        },
+        "answer_candidate_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "proposal_claim_key": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "plan_adoption_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_snapshot": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "authority_snapshot_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "target_estimand_id": {
+          "type": "string"
+        },
+        "obligation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_use_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_use_binding_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "latest_evidence_validity_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "latest_evidence_validity_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "obligation_satisfaction_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "obligation_satisfaction_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_proof_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "window_exposure_proof_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_version_proof_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "analysis_check_disposition_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "analysis_check_disposition_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependency_claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "applicability_scope": {
+          "$ref": "#/$defs/ScopeExpression"
+        },
+        "requested_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        },
+        "effective_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "admissible_supported",
+            "admissible_bounded",
+            "admissible_boundary",
+            "rejected"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_limitation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "derived_input_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_version": {
+          "type": "string"
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "AnswerVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer_version_id",
+        "answer_candidate_id",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "plan_adoption_id",
+        "accepted_head_version",
+        "version_number",
+        "prior_answer_version_id",
+        "status",
+        "claims",
+        "claim_precheck_ids",
+        "claim_precheck_content_sha256s",
+        "narrative_blocks",
+        "created_by_action_id",
+        "created_at",
+        "identity_version",
+        "schema_epoch"
+      ],
+      "properties": {
+        "answer_version_id": {
+          "type": "string"
+        },
+        "answer_candidate_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "plan_adoption_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "accepted_head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prior_answer_version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "const": "provisional"
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AnswerClaim"
+          }
+        },
+        "claim_precheck_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claim_precheck_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "narrative_blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AnswerNarrativeBlock"
+          }
+        },
+        "created_by_action_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "identity_version": {
+          "type": "string"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "AnswerClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "proposal_claim_key",
+        "statement",
+        "target_estimand_id",
+        "obligation_ids",
+        "evidence_use_binding_ids",
+        "boundary_satisfaction_record_ids",
+        "applicability_scope",
+        "claim_strength",
+        "limitation_refs",
+        "analysis_check_disposition_ids",
+        "dependency_claim_ids",
+        "claim_precheck_id",
+        "claim_precheck_content_sha256"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "proposal_claim_key": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "target_estimand_id": {
+          "type": "string"
+        },
+        "obligation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_use_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boundary_satisfaction_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "applicability_scope": {
+          "$ref": "#/$defs/ScopeExpression"
+        },
+        "claim_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        },
+        "limitation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "analysis_check_disposition_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependency_claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claim_precheck_id": {
+          "type": "string"
+        },
+        "claim_precheck_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "AnswerNarrativeBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_id",
+        "block_key",
+        "markdown",
+        "claim_ids"
+      ],
+      "properties": {
+        "block_id": {
+          "type": "string"
+        },
+        "block_key": {
+          "type": "string"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "SettlementPreconditionReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settlement_precondition_report_id",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "plan_adoption_id",
+        "plan_adoption_content_sha256",
+        "accepted_head_version",
+        "answer_version_id",
+        "answer_version_content_sha256",
+        "claim_ids",
+        "claim_precheck_ids",
+        "evidence_use_binding_ids",
+        "evidence_validity_ids",
+        "obligation_satisfaction_record_ids",
+        "objection_disposition_refs",
+        "trace_manifest_id",
+        "trace_manifest_content_sha256",
+        "status",
+        "fail_reason_codes",
+        "derived_input_sha256",
+        "policy_version",
+        "created_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "settlement_precondition_report_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "plan_adoption_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plan_adoption_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "accepted_head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "answer_version_id": {
+          "type": "string"
+        },
+        "answer_version_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claim_precheck_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_use_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_validity_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "obligation_satisfaction_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "objection_disposition_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "trace_manifest_id": {
+          "type": "string"
+        },
+        "trace_manifest_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "eligible_for_future_settlement",
+            "blocked"
+          ]
+        },
+        "fail_reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "derived_input_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_version": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    }
+  }
+}
