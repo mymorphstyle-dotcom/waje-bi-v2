@@ -16,6 +16,8 @@ from typing import (
     get_type_hints,
 )
 
+from .canonical import FrozenJson, JsonScalar, freeze_json
+
 
 class TypedDecodeError(ValueError):
     """Raised when JSON-like input cannot satisfy a typed domain contract."""
@@ -38,6 +40,25 @@ def _decode_value(
     value: object,
     path: str,
 ) -> object:
+    if expected_type is FrozenJson:
+        try:
+            return freeze_json(value)
+        except (TypeError, ValueError) as error:
+            raise TypedDecodeError(
+                f"{path} must be JSON-compatible"
+            ) from error
+    if expected_type is JsonScalar:
+        if (
+            value is None
+            or isinstance(value, (str, bool, int, float))
+        ):
+            try:
+                return freeze_json(value)
+            except (TypeError, ValueError) as error:
+                raise TypedDecodeError(
+                    f"{path} must be a finite JSON scalar"
+                ) from error
+        raise TypedDecodeError(f"{path} must be a JSON scalar")
     if isinstance(expected_type, TypeAliasType):
         return _decode_value(expected_type.__value__, value, path)
     origin = get_origin(expected_type)

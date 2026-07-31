@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | G3.1–G3.4 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.5+ 尚未进入 |
+| 状态 | G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6+ 尚未进入 |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 已确认 public GitHub Actions + Artifact Attestations/Sigstore |
@@ -15,6 +15,7 @@
 | 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md` |
 | Durable async 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md` |
 | G3.2/G3.3 实施审查 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-2-3-implementation.md` |
+| G3.5 实施计划与证据 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-5-evidence-answer-projection-continuity.md` |
 
 Gate 1 与 Gate 2 的历史验收事实继续成立。G3.1、G3.2 是进入 Gate 3 业务闭环实现前的
 强制修订包；在这两个包完成前，不创建新的生产 EvidenceRecord、AnswerVersion 或 Workflow
@@ -1339,13 +1340,23 @@ Exit：
 
 Exit：
 
-- [ ] effect success 后 crash 可恢复 Evidence disposition；
-- [ ] conformance/production provenance 按 realm fail closed；
-- [ ] drifted Evidence 被拒绝；
-- [ ] claim scope/strength 超界被拒绝；
-- [ ] replay 产生相同 projection；
-- [ ] conformance/test realm 无法写 production Evidence。
-- [ ] provisional Answer 无法触发 settled/delivered。
+- [x] effect success 后 crash 可恢复 Evidence disposition；
+- [x] conformance/production provenance 按 realm fail closed；
+- [x] drifted Evidence 被拒绝；
+- [x] claim scope/strength 超界被拒绝；
+- [x] replay 产生相同 projection；
+- [x] conformance/test realm 无法写 production Evidence；
+- [x] provisional Answer 无法触发 settled/delivered。
+
+Local closeout evidence：
+
+- 113 个 G3.5 tests；
+- disposable PostgreSQL 9 个 migration/constraint、7 个 storage/replay、10 个
+  fault/race tests；
+- 24 个 executable business worlds；
+- authority/security、async/PostgreSQL、tests/docs/CI 三路终审均为
+  Blocking 0、Major 0；
+- formal G3.E0 状态保持 `deny_g3_1`。
 
 ### G3.6 Universal measurement eval
 
@@ -1638,11 +1649,11 @@ revision，旧结果保留以供比较。
 - [ ] resolution outcome 无 accepted head，Plan 是唯一 adoption point；boundary 留在权威链。
 - [ ] QueryBindingEnvelope 无平行业务口径入口。
 - [ ] conformance/production execution provenance 使用封闭 variant，无 future QuerySpec 占位。
-- [ ] capability result 与 Evidence admission 原子可恢复。
+- [x] capability result 与 Evidence admission 原子可恢复。
 - [ ] technical retry、FrameRevision、PlanRevision 边界通过 mutation tests。
-- [ ] SettlementPreconditionReport system-derived，Gate 3 settlement 全层 fail closed。
-- [ ] Workflow 使用 execution/obligation/publication/delivery 四轴。
-- [ ] journal、authority mutation 与 outbox enqueue 原子提交；projection 可从 cursor 重建。
+- [x] SettlementPreconditionReport system-derived，Gate 3 settlement 全层 fail closed。
+- [x] Workflow 使用 execution/obligation/publication/delivery 四轴。
+- [x] journal、authority mutation 与 outbox enqueue 原子提交；projection 可从 cursor 重建。
 - [ ] real-provider 两条 lane 和独立 Reviewer lane 有完整 trace。
 - [ ] source-backed claim 无 boundary escape，局部 gap 不取消无关 claim。
 - [ ] old Gate 3 代码、fixture、artifact 不进入当前依赖。

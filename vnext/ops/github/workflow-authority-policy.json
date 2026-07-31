@@ -9,7 +9,7 @@
   "deployment_files": {
     ".github/CODEOWNERS": "0342128e5c38d65600a8129e49e39d73b3146b7fed28d04769fcacbb958a5377",
     ".github/workflows/gate3-protected-admission.yml": "84389f073bc88132b508219b62bbbed1f54d49af630798fc9b1d63b2e91e016c",
-    ".github/workflows/vnext-ci.yml": "d8ecf1cf2731c45484a8da4147c19b42587943111415768eb89abafd402ddd33"
+    ".github/workflows/vnext-ci.yml": "5f9cd05b1f3ea8576f82e014963755e39fa8836601a949a85797735d0b17e43b"
   },
   "approved_actions": {
     "actions/attest": "508db95dd578ae2727ebd6217d5ba78e4fbda05d",

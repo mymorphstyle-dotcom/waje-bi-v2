@@ -15,15 +15,6 @@ export type WAJEVNextEpoch3AuthorityAndTrustRecords =
   | EvidenceValidityRecord
   | ObligationSatisfactionRecord
   | SettlementPreconditionReport;
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | {
-      [k: string]: JsonValue;
-    };
 
 export interface InvestigationCase {
   case_id: string;
@@ -541,68 +532,177 @@ export interface WorkTask {
 }
 export interface EvidenceRecord {
   evidence_record_id: string;
+  run_id: string;
+  profile: "conformance" | "production";
   case_id: string;
+  question_revision_id: string;
   frame_revision_id: string;
   plan_revision_id: string;
   task_id: string;
-  capability_name: string;
-  query_spec_ref: string | null;
-  semantic_contract_refs: string[];
-  snapshot_release_ref: string;
-  grain: string;
-  evidence_type:
-    | "accounting"
-    | "descriptive"
-    | "association"
-    | "candidate_mechanism"
-    | "causal"
-    | "data_quality"
-    | "boundary";
-  strength: "none" | "contextual" | "directional" | "quantified" | "causal";
+  estimand_id: string;
+  evidence_requirement_id: string;
+  obligation_id: string;
+  resolution_outcome_id: string;
+  resolution_outcome_content_sha256: string;
+  resolution_id: string;
+  semantic_measurement_id: string;
+  authority_binding_id: string;
+  query_binding_id: string;
+  query_binding_content_sha256: string;
+  logical_execution_id: string;
+  execution_provenance: ConformanceExecutionProvenance | PhysicalQueryExecutionProvenance;
+  data_context: EvidenceDataContext;
+  evidence_type_ref: string;
+  evidence_strength: "boundary_only" | "descriptive" | "accounting" | "associational" | "causal";
+  actual_scope: ScopeExpression;
+  actual_windows: ResolvedWindow[];
+  actual_exposure_facts: ResolvedExposureFact[];
+  actual_grain_ref: string;
+  actual_unit_ref: string;
+  actual_aggregation_path_ref: string;
+  estimate: EstimatePayload;
+  result_material: InlineResultMaterial | StableResultHandle;
   business_summary: string;
-  limitations: string[];
-  provenance: {
-    [k: string]: JsonValue;
-  };
-  payload_sha256: string;
-  inline_payload: {
-    [k: string]: JsonValue;
-  } | null;
-  result_handle: ResultHandle | null;
-  created_at: string;
+  limitation_refs: string[];
+  produced_at: string;
+  identity_version: string;
+  schema_epoch: 3;
 }
-export interface ResultHandle {
-  handle_id: string;
-  content_sha256: string;
+export interface ConformanceExecutionProvenance {
+  kind: "conformance" | "physical_query";
+  logical_execution_id: string;
+  query_binding_id: string;
+  query_binding_content_sha256: string;
+  execution_spec_id: string;
+  execution_spec_content_sha256: string;
+  logical_execution_attempt_id: string;
+  logical_execution_attempt_content_sha256: string;
+  fixture_ref: string;
+  fixture_content_sha256: string;
+  result_contract_ref: string;
+  execution_policy_ref: string;
+}
+export interface PhysicalQueryExecutionProvenance {
+  kind: "conformance" | "physical_query";
+  logical_execution_id: string;
+  query_binding_id: string;
+  query_binding_content_sha256: string;
+  query_spec_id: string;
+  query_spec_content_sha256: string;
+  capability_invocation_id: string;
+  capability_invocation_content_sha256: string;
+  provider_receipt_id: string;
+  provider_receipt_content_sha256: string;
+  compiler_contract_ref: string;
+}
+export interface EvidenceDataContext {
+  resolution_context_content_sha256: string;
+  data_contract_version_ref: string;
+  snapshot_release_ref: string;
+  coverage_watermark_ref: string;
+  late_arrival_policy_ref: string;
+  timezone: string;
+  business_day_cutoff: string;
+  calendar_version_ref: string;
+  holiday_version_ref: string | null;
+  fiscal_version_ref: string | null;
+}
+export interface ResolvedWindow {
+  operand_id: string;
+  window_rule_id: string;
+  anchor_date: string;
+  period_offset: number;
+  actual_start: string;
+  actual_end: string;
+  start_instant: string;
+  end_instant: string;
+  elapsed_seconds: number;
+  actual_calendar_days: number;
+  selected_calendar_dates_count: number;
+  observed_calendar_dates_count: number;
+  valid_calendar_dates_count: number;
+  selected_calendar_dates_sha256: string;
+  calendar_coverage_receipt_sha256: string;
+  exposure_facts: ResolvedExposureFact[];
+}
+export interface ResolvedExposureFact {
+  exposure_id: string;
+  basis: "calendar" | "eligible" | "observed" | "valid" | "missing_invalid" | "at_risk";
+  unit_ref: string;
+  expected_exposure_decimal: string;
+  observed_exposure_decimal: string;
+  valid_exposure_decimal: string;
+  invalid_exposure_decimal: string;
+  missing_exposure_decimal: string;
+  coverage_ratio_decimal: string;
+  at_risk_exposure_decimal: string | null;
+  source_kind: "contract_catalog" | "snapshot_catalog" | "calendar_derivation";
+  source_receipt_sha256: string;
+}
+export interface EstimatePayload {
+  estimate_schema_ref: string;
+  estimate_content_sha256: string;
+  uncertainty_schema_ref: string | null;
+  uncertainty_content_sha256: string | null;
+}
+export interface InlineResultMaterial {
+  kind: "inline" | "stable_handle";
+  payload_content_sha256: string;
   schema_ref: string;
   row_count: number;
-  storage_ref: string;
+  byte_count: number;
+}
+export interface StableResultHandle {
+  kind: "inline" | "stable_handle";
+  result_handle_id: string;
+  result_content_sha256: string;
+  schema_ref: string;
+  row_count: number;
+  storage_contract_ref: string;
+  retention_class_ref: string;
 }
 export interface AnswerVersion {
   answer_version_id: string;
+  answer_candidate_id: string;
   case_id: string;
+  question_revision_id: string;
   frame_revision_id: string;
   plan_revision_id: string;
+  plan_adoption_id: string;
+  accepted_head_version: number;
   version_number: number;
   prior_answer_version_id: string | null;
   status: "provisional";
   claims: AnswerClaim[];
-  narrative_markdown: string;
-  verifier_policy_version: string;
-  unresolved_blocking_objection_ids: string[];
-  settlement_fingerprint: null;
+  claim_precheck_ids: string[];
+  claim_precheck_content_sha256s: string[];
+  narrative_blocks: AnswerNarrativeBlock[];
   created_by_action_id: string;
   created_at: string;
+  identity_version: string;
+  schema_epoch: 3;
 }
 export interface AnswerClaim {
   claim_id: string;
+  proposal_claim_key: string;
   statement: string;
-  applicability: string;
-  evidence_record_ids: string[];
-  boundary_ref: string | null;
-  limitations: string[];
-  verifier_status: "pending" | "accepted" | "boundary_only" | "rejected";
-  reviewer_objection_ids: string[];
+  target_estimand_id: string;
+  obligation_ids: string[];
+  evidence_use_binding_ids: string[];
+  boundary_satisfaction_record_ids: string[];
+  applicability_scope: ScopeExpression;
+  claim_strength: "boundary_only" | "descriptive" | "accounting" | "associational" | "causal";
+  limitation_refs: string[];
+  analysis_check_disposition_ids: string[];
+  dependency_claim_ids: string[];
+  claim_precheck_id: string;
+  claim_precheck_content_sha256: string;
+}
+export interface AnswerNarrativeBlock {
+  block_id: string;
+  block_key: string;
+  markdown: string;
+  claim_ids: string[];
 }
 export interface MeasurementResolutionOutcome {
   resolution_outcome_id: string;
@@ -657,38 +757,6 @@ export interface ResolutionContext {
   coverage_watermark_ref: string;
   late_arrival_policy_ref: string;
 }
-export interface ResolvedWindow {
-  operand_id: string;
-  window_rule_id: string;
-  anchor_date: string;
-  period_offset: number;
-  actual_start: string;
-  actual_end: string;
-  start_instant: string;
-  end_instant: string;
-  elapsed_seconds: number;
-  actual_calendar_days: number;
-  selected_calendar_dates_count: number;
-  observed_calendar_dates_count: number;
-  valid_calendar_dates_count: number;
-  selected_calendar_dates_sha256: string;
-  calendar_coverage_receipt_sha256: string;
-  exposure_facts: ResolvedExposureFact[];
-}
-export interface ResolvedExposureFact {
-  exposure_id: string;
-  basis: "calendar" | "eligible" | "observed" | "valid" | "missing_invalid" | "at_risk";
-  unit_ref: string;
-  expected_exposure_decimal: string;
-  observed_exposure_decimal: string;
-  valid_exposure_decimal: string;
-  invalid_exposure_decimal: string;
-  missing_exposure_decimal: string;
-  coverage_ratio_decimal: string;
-  at_risk_exposure_decimal: string | null;
-  source_kind: "contract_catalog" | "snapshot_catalog" | "calendar_derivation";
-  source_receipt_sha256: string;
-}
 export interface TypedResolutionBoundary {
   boundary_code: string;
   boundary_policy_ref: string;
@@ -727,28 +795,34 @@ export interface ResolvedEvidenceObligation {
   schema_epoch: 3;
 }
 export interface EvidenceValidityRecord {
-  evidence_validity_record_id: string;
+  evidence_validity_id: string;
   evidence_record_id: string;
-  prior_validity_record_id: string | null;
+  evidence_admission_id: string;
+  evidence_admission_content_sha256: string;
+  prior_evidence_validity_id: string | null;
+  prior_evidence_validity_content_sha256: string | null;
   status: "admitted_valid" | "never_admitted" | "superseded" | "revoked";
   reason_code: string;
-  source_authority_ref: string;
-  verifier_policy_version: string;
-  expected_prior_content_sha256: string | null;
-  created_at: string;
+  policy_version: string;
+  recorded_at: string;
   schema_epoch: 3;
 }
 export interface ObligationSatisfactionRecord {
-  satisfaction_record_id: string;
+  obligation_satisfaction_id: string;
   obligation_id: string;
+  obligation_content_sha256: string;
+  prior_obligation_satisfaction_id: string | null;
+  prior_obligation_satisfaction_content_sha256: string | null;
   status: "open" | "satisfied" | "boundary" | "blocked" | "superseded";
-  evidence_admission_record_ids: string[];
-  evidence_use_binding_ids: string[];
-  resolution_boundary_outcome_id: string | null;
-  contradiction_disposition_refs: string[];
-  verifier_policy_version: string;
+  evidence_admission_ids: string[];
+  evidence_admission_content_sha256s: string[];
+  evidence_validity_ids: string[];
+  evidence_validity_content_sha256s: string[];
+  boundary_resolution_outcome_id: string | null;
   input_set_sha256: string;
-  created_at: string;
+  reason_code: string;
+  policy_version: string;
+  recorded_at: string;
   schema_epoch: 3;
 }
 export interface SettlementPreconditionReport {
@@ -757,25 +831,23 @@ export interface SettlementPreconditionReport {
   question_revision_id: string;
   frame_revision_id: string;
   plan_revision_id: string;
+  plan_adoption_id: string;
+  plan_adoption_content_sha256: string;
   accepted_head_version: number;
-  /**
-   * @minItems 1
-   */
-  semantic_measurement_ids: [string, ...string[]];
-  /**
-   * @minItems 1
-   */
-  authority_binding_ids: [string, ...string[]];
-  resolution_outcome_ids: string[];
-  logical_execution_ids: string[];
+  answer_version_id: string;
+  answer_version_content_sha256: string;
+  claim_ids: string[];
+  claim_precheck_ids: string[];
+  evidence_use_binding_ids: string[];
+  evidence_validity_ids: string[];
   obligation_satisfaction_record_ids: string[];
-  evidence_compatibility_proof_ids: string[];
-  objection_disposition_ids: string[];
+  objection_disposition_refs: string[];
   trace_manifest_id: string;
-  verifier_policy_version: string;
+  trace_manifest_content_sha256: string;
   status: "eligible_for_future_settlement" | "blocked";
   fail_reason_codes: string[];
   derived_input_sha256: string;
+  policy_version: string;
   created_at: string;
   schema_epoch: 3;
 }

@@ -5,15 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Mapping
 
 from .canonical import (
-    FrozenJson,
     content_sha256,
-    freeze_json,
     require_aware_datetime,
     require_nonempty,
-    require_sha256,
 )
 from .measurement import AnalysisFrameRevision, QuestionRevision
 
@@ -23,36 +19,6 @@ class CaseLifecycle(StrEnum):
     WAITING_FOR_USER = "waiting_for_user"
     STOPPED = "stopped"
     CLOSED = "closed"
-
-
-class EvidenceType(StrEnum):
-    ACCOUNTING = "accounting"
-    DESCRIPTIVE = "descriptive"
-    ASSOCIATION = "association"
-    CANDIDATE_MECHANISM = "candidate_mechanism"
-    CAUSAL = "causal"
-    DATA_QUALITY = "data_quality"
-    BOUNDARY = "boundary"
-
-
-class EvidenceStrength(StrEnum):
-    NONE = "none"
-    CONTEXTUAL = "contextual"
-    DIRECTIONAL = "directional"
-    QUANTIFIED = "quantified"
-    CAUSAL = "causal"
-
-
-class AnswerStatus(StrEnum):
-    PROVISIONAL = "provisional"
-    SETTLED = "settled"
-
-
-class ClaimVerifierStatus(StrEnum):
-    PENDING = "pending"
-    ACCEPTED = "accepted"
-    BOUNDARY_ONLY = "boundary_only"
-    REJECTED = "rejected"
 
 
 class ReviewerSeverity(StrEnum):
@@ -248,182 +214,13 @@ class WorkPlanRevision:
 
 
 @dataclass(frozen=True, slots=True)
-class ResultHandle:
-    handle_id: str
-    content_sha256: str
-    schema_ref: str
-    row_count: int
-    storage_ref: str
-
-    def __post_init__(self) -> None:
-        require_nonempty(self.handle_id, "handle_id")
-        require_sha256(self.content_sha256, "content_sha256")
-        require_nonempty(self.schema_ref, "schema_ref")
-        require_nonempty(self.storage_ref, "storage_ref")
-        if self.row_count < 0:
-            raise ValueError("row_count must be non-negative")
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceRecord:
-    evidence_record_id: str
-    case_id: str
-    frame_revision_id: str
-    plan_revision_id: str
-    task_id: str
-    capability_name: str
-    query_spec_ref: str | None
-    semantic_contract_refs: tuple[str, ...]
-    snapshot_release_ref: str
-    grain: str
-    evidence_type: EvidenceType
-    strength: EvidenceStrength
-    business_summary: str
-    limitations: tuple[str, ...]
-    provenance: Mapping[str, FrozenJson]
-    payload_sha256: str
-    inline_payload: Mapping[str, FrozenJson] | None
-    result_handle: ResultHandle | None
-    created_at: datetime
-
-    def __post_init__(self) -> None:
-        for name in (
-            "evidence_record_id",
-            "case_id",
-            "frame_revision_id",
-            "plan_revision_id",
-            "task_id",
-            "capability_name",
-            "snapshot_release_ref",
-            "grain",
-            "business_summary",
-        ):
-            require_nonempty(getattr(self, name), name)
-        require_sha256(self.payload_sha256, "payload_sha256")
-        require_aware_datetime(self.created_at, "created_at")
-        _require_enum(self.evidence_type, EvidenceType, "evidence_type")
-        _require_enum(self.strength, EvidenceStrength, "strength")
-        if self.query_spec_ref is not None:
-            require_nonempty(self.query_spec_ref, "query_spec_ref")
-        _require_nonempty_members(self.semantic_contract_refs, "semantic_contract_refs")
-        _require_nonempty_members(self.limitations, "limitations")
-        frozen_provenance = freeze_json(self.provenance)
-        if not isinstance(frozen_provenance, Mapping):
-            raise TypeError("provenance must be a JSON object")
-        object.__setattr__(self, "provenance", frozen_provenance)
-        if (self.inline_payload is None) == (self.result_handle is None):
-            raise ValueError(
-                "evidence requires exactly one of inline_payload or result_handle"
-            )
-        if self.inline_payload is not None:
-            frozen_payload = freeze_json(self.inline_payload)
-            if not isinstance(frozen_payload, Mapping):
-                raise TypeError("inline_payload must be a JSON object")
-            if content_sha256(frozen_payload) != self.payload_sha256:
-                raise ValueError("inline_payload does not match payload_sha256")
-            object.__setattr__(self, "inline_payload", frozen_payload)
-        if (
-            self.result_handle is not None
-            and self.result_handle.content_sha256 != self.payload_sha256
-        ):
-            raise ValueError("result_handle does not match payload_sha256")
-
-
-@dataclass(frozen=True, slots=True)
-class AnswerClaim:
-    claim_id: str
-    statement: str
-    applicability: str
-    evidence_record_ids: tuple[str, ...]
-    boundary_ref: str | None
-    limitations: tuple[str, ...]
-    verifier_status: ClaimVerifierStatus
-    reviewer_objection_ids: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        require_nonempty(self.claim_id, "claim_id")
-        require_nonempty(self.statement, "statement")
-        require_nonempty(self.applicability, "applicability")
-        _require_enum(
-            self.verifier_status,
-            ClaimVerifierStatus,
-            "verifier_status",
-        )
-        if self.boundary_ref is not None:
-            require_nonempty(self.boundary_ref, "boundary_ref")
-        if not self.evidence_record_ids and not self.boundary_ref:
-            raise ValueError("claim requires evidence or an explicit boundary")
-        _require_nonempty_members(self.evidence_record_ids, "evidence_record_ids")
-        _require_nonempty_members(self.limitations, "limitations")
-        _require_nonempty_members(
-            self.reviewer_objection_ids, "reviewer_objection_ids"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class AnswerVersion:
-    answer_version_id: str
-    case_id: str
-    frame_revision_id: str
-    plan_revision_id: str
-    version_number: int
-    prior_answer_version_id: str | None
-    status: AnswerStatus
-    claims: tuple[AnswerClaim, ...]
-    narrative_markdown: str
-    verifier_policy_version: str
-    unresolved_blocking_objection_ids: tuple[str, ...]
-    settlement_fingerprint: str | None
-    created_by_action_id: str
-    created_at: datetime
-
-    def __post_init__(self) -> None:
-        for name in (
-            "answer_version_id",
-            "case_id",
-            "frame_revision_id",
-            "plan_revision_id",
-            "narrative_markdown",
-            "verifier_policy_version",
-            "created_by_action_id",
-        ):
-            require_nonempty(getattr(self, name), name)
-        if self.version_number < 1:
-            raise ValueError("version_number must be positive")
-        if self.version_number == 1 and self.prior_answer_version_id is not None:
-            raise ValueError("first answer version cannot have a prior version")
-        if self.version_number > 1 and not self.prior_answer_version_id:
-            raise ValueError("later answer versions require prior_answer_version_id")
-        if not self.claims:
-            raise ValueError("answer must contain at least one claim")
-        _require_enum(self.status, AnswerStatus, "status")
-        _require_tuple_of(self.claims, AnswerClaim, "claims")
-        _require_nonempty_members(
-            self.unresolved_blocking_objection_ids,
-            "unresolved_blocking_objection_ids",
-        )
-        claim_ids = tuple(claim.claim_id for claim in self.claims)
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("answer claim IDs must be unique")
-        require_aware_datetime(self.created_at, "created_at")
-        if self.status is AnswerStatus.SETTLED:
-            raise ValueError(
-                "Gate 3 cannot create settled answers; Gate 5 owns publication"
-            )
-        if self.settlement_fingerprint is not None:
-            raise ValueError("provisional answer cannot carry settlement_fingerprint")
-
-    @property
-    def content_sha256(self) -> str:
-        return content_sha256(self)
-
-
-@dataclass(frozen=True, slots=True)
 class InterpretationRecord:
     interpretation_id: str
     case_id: str
     frame_revision_id: str
     evidence_record_ids: tuple[str, ...]
+    evidence_admission_ids: tuple[str, ...]
+    evidence_validity_ids: tuple[str, ...]
     interpretation: str
     created_by_action_id: str
     created_at: datetime
@@ -442,6 +239,22 @@ class InterpretationRecord:
         _require_nonempty_members(
             self.evidence_record_ids, "evidence_record_ids"
         )
+        _require_nonempty_members(
+            self.evidence_admission_ids,
+            "evidence_admission_ids",
+        )
+        _require_nonempty_members(
+            self.evidence_validity_ids,
+            "evidence_validity_ids",
+        )
+        if not (
+            len(self.evidence_record_ids)
+            == len(self.evidence_admission_ids)
+            == len(self.evidence_validity_ids)
+        ):
+            raise ValueError(
+                "interpretation evidence authority tuples must align"
+            )
         require_aware_datetime(self.created_at, "created_at")
 
 
@@ -541,24 +354,6 @@ class ReviewerObjection:
             require_aware_datetime(self.resolved_at, "resolved_at")
             if self.resolved_at < self.created_at:
                 raise ValueError("resolved_at cannot precede created_at")
-
-
-def compute_answer_settlement_fingerprint(
-    *,
-    frame_revision_id: str,
-    plan_revision_id: str,
-    claims: tuple[AnswerClaim, ...],
-    verifier_policy_version: str,
-) -> str:
-    return content_sha256(
-        {
-            "frame_revision_id": frame_revision_id,
-            "plan_revision_id": plan_revision_id,
-            "claims": claims,
-            "verifier_policy_version": verifier_policy_version,
-        }
-    )
-
 
 def _require_nonempty_members(values: tuple[str, ...], field_name: str) -> None:
     if not isinstance(values, tuple):

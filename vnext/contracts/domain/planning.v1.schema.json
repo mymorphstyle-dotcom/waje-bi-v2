@@ -199,7 +199,8 @@
           "type": "string"
         },
         "capability_intent_registry_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "adoption_policy_version": {
           "type": "string"
@@ -279,7 +280,8 @@
         "active_frame_candidate_sha256": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             {
               "type": "null"
@@ -823,7 +825,8 @@
           "type": "string"
         },
         "resolver_input_bundle_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "field_derivation_proof_sha256": {
           "type": "string",
@@ -970,10 +973,12 @@
           "type": "integer"
         },
         "selected_calendar_dates_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "calendar_coverage_receipt_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "exposure_facts": {
           "type": "array",
@@ -1055,7 +1060,8 @@
           ]
         },
         "source_receipt_sha256": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },

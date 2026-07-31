@@ -63,6 +63,9 @@ jobs:
       - name: Run vNext tests
         run: npm run test:bootstrap
 
+      - name: Run Gate 3.5 PostgreSQL acceptance
+        run: npm run test:postgres:gate3.5
+
       - name: Validate Gate 3 evaluation authority
         run: npm run check:evals:gate3
 

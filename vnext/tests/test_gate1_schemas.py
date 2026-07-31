@@ -6,12 +6,12 @@ from pathlib import Path
 
 from gate1_fixtures import (
     NOW,
-    make_answer,
-    make_evidence,
     make_frame,
     make_plan,
     make_question,
 )
+import test_gate3_5_answer_contracts as answer_fixtures
+import test_gate3_5_evidence_contracts as evidence_fixtures
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from waje_vnext.domain.actions import (
     ActionEnvelope,
@@ -62,6 +62,9 @@ class JsonSchemaContractTest(unittest.TestCase):
             "contracts/domain/async-runtime.v1.schema.json",
             "contracts/domain/runtime-amendment.v1.schema.json",
             "contracts/domain/planning.v1.schema.json",
+            "contracts/domain/evidence.v1.schema.json",
+            "contracts/domain/answering.v1.schema.json",
+            "contracts/domain/workflow.v1.schema.json",
             "contracts/events/journal-entry.v1.schema.json",
         )
         for path in paths:
@@ -81,13 +84,19 @@ class JsonSchemaContractTest(unittest.TestCase):
             event_id="event-open",
             opened_at=NOW,
         )
+        evidence_fixture = evidence_fixtures.Gate35EvidenceContractsTest()
+        evidence_fixture.setUp()
+        answer_fixture = answer_fixtures.Gate35AnswerContractsTest()
+        answer_fixture.setUp()
+        answer = answer_fixture._compile().answer
+        assert answer is not None
         authorities = (
             case,
             make_question(),
             make_frame(),
             make_plan(),
-            make_evidence(),
-            make_answer(),
+            evidence_fixture.evidence,
+            answer,
         )
 
         for authority in authorities:
@@ -100,7 +109,11 @@ class JsonSchemaContractTest(unittest.TestCase):
             schema,
             format_checker=self.format_checker,
         )
-        settled = to_jsonable(make_answer())
+        answer_fixture = answer_fixtures.Gate35AnswerContractsTest()
+        answer_fixture.setUp()
+        answer = answer_fixture._compile().answer
+        assert answer is not None
+        settled = to_jsonable(answer)
         settled["status"] = "settled"
         frame_epoch_drift = to_jsonable(make_frame())
         frame_epoch_drift["schema_epoch"] = 2

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -31,15 +32,45 @@ from waje_vnext.domain.async_runtime import (
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
-    AnswerStatus,
-    AnswerVersion,
     CaseLifecycle,
     DecisionRecord,
-    EvidenceRecord,
     InvestigationCase,
     InterpretationRecord,
     ReviewerObjection,
     WorkPlanRevision,
+)
+from waje_vnext.domain.answering import (
+    AnswerCandidateStatus,
+    AnswerStatus,
+    AnswerVersion,
+    ClaimEvidenceSupport,
+    ClaimPrecheckRecord,
+    ProvisionalAnswerBundle,
+    ProvisionalAnswerCandidate,
+    SettlementPreconditionReport,
+    compile_provisional_answer_bundle,
+    derive_settlement_precondition_report,
+    validate_provisional_answer_candidate,
+)
+from waje_vnext.domain.evidence import (
+    CapabilityResultEnvelope,
+    CapabilityResultReceipt,
+    EvidenceAdmissionProfile,
+    EvidenceAdmissionRecord,
+    EvidenceRecord,
+    EvidenceUseBinding,
+    EvidenceValidityRecord,
+    EvidenceValidityStatus,
+    ObligationSatisfactionRecord,
+    build_conformance_execution_provenance,
+    build_evidence_admission,
+    build_evidence_use_binding,
+    build_evidence_validity_successor,
+    build_initial_evidence_validity,
+    build_obligation_satisfaction,
+    validate_capability_result_envelope,
+    validate_capability_result_receipt,
+    validate_evidence_record_authority,
 )
 from waje_vnext.domain.identity import (
     validate_frame_identities,
@@ -47,14 +78,10 @@ from waje_vnext.domain.identity import (
     validate_resolution_identities,
 )
 from waje_vnext.domain.measurement import (
-    EvidenceValidityRecord,
     MeasurementResolutionOutcome,
-    ObligationExecutionDisposition,
-    ObligationSatisfactionRecord,
     QuestionRevision,
     ResolvedEvidenceObligation,
     ResolutionOutcomeKind,
-    SettlementPreconditionReport,
 )
 from waje_vnext.domain.measurement_resolver import (
     MeasurementResolutionAdmission,
@@ -64,6 +91,7 @@ from waje_vnext.domain.measurement_resolver import (
 )
 from waje_vnext.domain.planning import (
     ConformanceExecutionSpec,
+    ExecutionRealm,
     LogicalExecutionAttempt,
     PlanAdoptionRecord,
     PlanBundle,
@@ -72,6 +100,23 @@ from waje_vnext.domain.planning import (
     validate_conformance_execution_spec_authority,
     validate_logical_execution_attempt_authority,
     validate_plan_bundle,
+)
+from waje_vnext.domain.workflow import (
+    apply_workflow_fact,
+    WorkflowProjectionHead,
+    WorkflowReadModel,
+    WorkflowSnapshot,
+    initial_workflow_read_model,
+)
+from waje_vnext.domain.workflow_adapter import (
+    AcceptedPlanAuthority,
+    AnswerAuthority,
+    CheckpointAuthority,
+    DispatchAuthority,
+    SatisfactionAuthority,
+    SupersedingAuthority,
+    WorkflowEventAuthority,
+    journal_event_to_workflow_fact,
 )
 from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletionRecord,
@@ -123,23 +168,29 @@ from waje_vnext.domain.runtime_amendment import (
 )
 
 from .codec import (
-    decode_answer,
     decode_action_receipt,
+    decode_capability_result_envelope,
+    decode_capability_result_receipt,
     decode_checkpoint,
+    decode_claim_precheck,
     decode_context_packet,
     decode_decision_request,
     decode_decision,
     decode_durable_model_result,
-    decode_evidence,
+    decode_evidence_admission,
     decode_evidence_obligation,
-    decode_evidence_validity,
+    decode_evidence_use_binding,
     decode_effect_attempt,
     decode_frame,
+    decode_answer,
+    decode_evidence,
+    decode_evidence_validity,
+    decode_obligation_satisfaction,
+    decode_settlement_precondition,
     decode_frame_admission_proof,
     decode_frame_candidate,
     decode_frame_candidate_supersession,
     decode_frame_review,
-    decode_interpretation,
     decode_job_disposition,
     decode_logical_model_job,
     decode_logical_execution_attempt,
@@ -153,10 +204,10 @@ from .codec import (
     decode_obligation_schedule_checkpoint,
     decode_pending_user_message,
     decode_plan_adoption,
+    decode_provisional_answer_candidate,
     decode_provider_attempt_receipt,
     decode_provider_attempt_request,
     decode_run_trace_manifest,
-    decode_obligation_satisfaction,
     decode_outbox_message,
     decode_persisted_action,
     decode_plan,
@@ -165,9 +216,15 @@ from .codec import (
     decode_conformance_execution_spec,
     decode_measurement_resolution,
     decode_measurement_resolution_admission,
-    decode_settlement_precondition,
+    decode_workflow_application_receipt,
+    decode_workflow_snapshot,
     encode_record,
 )
+from .answer_admission import (
+    accepted_answer_candidate_is_current,
+    validate_answer_candidate_action,
+)
+from .settlement_validation import validate_settlement_request
 from .ports import (
     AuthorityConflict,
     AuthorityNotFound,
@@ -267,6 +324,21 @@ def apply_gate3_4_migration(
         migration_path=migration_path,
         version=5,
         name="gate3_4_plan_query_continuity",
+    )
+
+
+def apply_gate3_5_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply the Gate 3.5 Evidence, Answer, and Workflow authority amendment."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=6,
+        name="gate3_5_evidence_answer_projection",
     )
 
 
@@ -1360,7 +1432,7 @@ class PostgresAuthorityStore:
                     source_event.event_type
                     is not JournalEventType.OBLIGATION_DISPATCH_ENQUEUED
                     or source_event.authority_ref
-                    != record.dispatch.dispatch_id
+                    != record.dispatch_record_id
                     or source_event.payload != expected_event_payload
                     or source_event.operation.causation_id
                     != schedule.schedule_id
@@ -1982,32 +2054,6 @@ class PostgresAuthorityStore:
             record_id=plan_revision_id,
             label="plan",
             decoder=decode_plan,
-        )
-
-    def get_evidence(self, evidence_record_id: str) -> EvidenceRecord:
-        return self._get_authority(
-            table="evidence_records",
-            id_column="evidence_record_id",
-            record_id=evidence_record_id,
-            label="evidence",
-            decoder=decode_evidence,
-        )
-
-    def get_answer(self, answer_version_id: str) -> AnswerVersion:
-        return self._get_authority(
-            table="answer_versions",
-            id_column="answer_version_id",
-            record_id=answer_version_id,
-            label="answer",
-            decoder=decode_answer,
-        )
-
-    def list_evidence(self, case_id: str) -> tuple[EvidenceRecord, ...]:
-        return self._list_payloads(
-            table="evidence_records",
-            case_id=case_id,
-            order_by=("created_at", "evidence_record_id"),
-            decoder=decode_evidence,
         )
 
     def list_decisions(self, case_id: str) -> tuple[DecisionRecord, ...]:
@@ -3681,181 +3727,1934 @@ class PostgresAuthorityStore:
                     for row in cursor.fetchall()
                 )
 
-    def record_evidence(
+    def get_evidence(
         self,
-        evidence: EvidenceRecord,
-        *,
-        expected_head_version: int,
-        event_id: str,
-        recorded_at: datetime,
+        evidence_record_id: str,
     ) -> EvidenceRecord:
+        return self._get_authority(
+            table="evidence_records",
+            id_column="evidence_record_id",
+            record_id=evidence_record_id,
+            label="Gate 3.5 evidence",
+            decoder=decode_evidence,
+        )
+
+    def get_capability_result_envelope(
+        self,
+        capability_result_envelope_id: str,
+    ) -> CapabilityResultEnvelope:
+        return self._get_authority(
+            table="capability_result_envelopes",
+            id_column="capability_result_envelope_id",
+            record_id=capability_result_envelope_id,
+            label="capability result envelope",
+            decoder=decode_capability_result_envelope,
+        )
+
+    def get_capability_result_receipt(
+        self,
+        capability_result_receipt_id: str,
+    ) -> CapabilityResultReceipt:
+        return self._get_authority(
+            table="capability_result_receipts",
+            id_column="capability_result_receipt_id",
+            record_id=capability_result_receipt_id,
+            label="capability result receipt",
+            decoder=decode_capability_result_receipt,
+        )
+
+    def find_capability_result_receipt_by_outbox(
+        self,
+        outbox_message_id: str,
+    ) -> CapabilityResultReceipt | None:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                existing = self._event_by_id(cursor, event_id)
-                if existing is not None:
-                    if (
-                        existing.event_type is JournalEventType.EVIDENCE_RECORDED
-                        and existing.authority_ref == evidence.evidence_record_id
-                    ):
-                        return self._get_evidence(
-                            cursor, evidence.evidence_record_id
-                        )
-                    raise AuthorityConflict(
-                        "event ID already has different content"
-                    )
-                case = self._lock_case(
-                    cursor, evidence.case_id, expected_head_version
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.capability_result_receipts
+                    WHERE outbox_message_id = %s
+                    """,
+                    (outbox_message_id,),
                 )
+                row = cursor.fetchone()
+                return (
+                    None
+                    if row is None
+                    else decode_capability_result_receipt(row["payload"])
+                )
+
+    def list_evidence(
+        self,
+        case_id: str,
+    ) -> tuple[EvidenceRecord, ...]:
+        return self._list_payloads(
+            table="evidence_records",
+            case_id=case_id,
+            order_by=("produced_at", "evidence_record_id"),
+            decoder=decode_evidence,
+        )
+
+    def get_evidence_admission(
+        self,
+        evidence_admission_id: str,
+    ) -> EvidenceAdmissionRecord:
+        return self._get_authority(
+            table="evidence_admission_records",
+            id_column="evidence_admission_id",
+            record_id=evidence_admission_id,
+            label="evidence admission",
+            decoder=decode_evidence_admission,
+        )
+
+    def list_evidence_admissions(
+        self,
+        *,
+        case_id: str,
+        profile: EvidenceAdmissionProfile | None = None,
+    ) -> tuple[EvidenceAdmissionRecord, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                query = """
+                    SELECT payload
+                    FROM waje_vnext.evidence_admission_records
+                    WHERE case_id = %s
+                """
+                params: tuple[object, ...] = (case_id,)
+                if profile is not None:
+                    query += " AND profile = %s"
+                    params += (profile.value,)
+                query += " ORDER BY admitted_at, evidence_admission_id"
+                cursor.execute(query, params)
+                return tuple(
+                    decode_evidence_admission(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def get_evidence_validity(
+        self,
+        evidence_validity_id: str,
+    ) -> EvidenceValidityRecord:
+        return self._get_authority(
+            table="evidence_validity_records",
+            id_column="evidence_validity_id",
+            record_id=evidence_validity_id,
+            label="Gate 3.5 evidence validity",
+            decoder=decode_evidence_validity,
+        )
+
+    def latest_evidence_validity(
+        self,
+        evidence_record_id: str,
+    ) -> EvidenceValidityRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                return self._latest_evidence_validity(
+                    cursor,
+                    evidence_record_id,
+                )
+
+    def get_evidence_use_binding(
+        self,
+        evidence_use_binding_id: str,
+    ) -> EvidenceUseBinding:
+        return self._get_authority(
+            table="evidence_use_bindings",
+            id_column="evidence_use_binding_id",
+            record_id=evidence_use_binding_id,
+            label="evidence use binding",
+            decoder=decode_evidence_use_binding,
+        )
+
+    def get_obligation_satisfaction(
+        self,
+        obligation_satisfaction_id: str,
+    ) -> ObligationSatisfactionRecord:
+        return self._get_authority(
+            table="obligation_satisfaction_records",
+            id_column="obligation_satisfaction_id",
+            record_id=obligation_satisfaction_id,
+            label="Gate 3.5 obligation satisfaction",
+            decoder=decode_obligation_satisfaction,
+        )
+
+    def latest_obligation_satisfaction(
+        self,
+        obligation_id: str,
+    ) -> ObligationSatisfactionRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                return self._latest_obligation_satisfaction(
+                    cursor,
+                    obligation_id,
+                )
+
+    def get_answer_candidate(
+        self,
+        answer_candidate_id: str,
+    ) -> ProvisionalAnswerCandidate:
+        return self._get_authority(
+            table="provisional_answer_candidates",
+            id_column="answer_candidate_id",
+            record_id=answer_candidate_id,
+            label="answer candidate",
+            decoder=decode_provisional_answer_candidate,
+        )
+
+    def get_claim_precheck(
+        self,
+        claim_precheck_id: str,
+    ) -> ClaimPrecheckRecord:
+        return self._get_authority(
+            table="claim_precheck_records",
+            id_column="claim_precheck_id",
+            record_id=claim_precheck_id,
+            label="claim precheck",
+            decoder=decode_claim_precheck,
+        )
+
+    def get_answer(
+        self,
+        answer_version_id: str,
+    ) -> AnswerVersion:
+        return self._get_authority(
+            table="answer_versions",
+            id_column="answer_version_id",
+            record_id=answer_version_id,
+            label="Gate 3.5 answer",
+            decoder=decode_answer,
+        )
+
+    def latest_answer(
+        self,
+        case_id: str,
+    ) -> AnswerVersion | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                return self._latest_answer_for_case(cursor, case_id)
+
+    def get_settlement_precondition(
+        self,
+        settlement_precondition_report_id: str,
+    ) -> SettlementPreconditionReport:
+        return self._get_authority(
+            table="settlement_precondition_reports",
+            id_column="settlement_precondition_report_id",
+            record_id=settlement_precondition_report_id,
+            label="Gate 3.5 settlement precondition",
+            decoder=decode_settlement_precondition,
+        )
+
+    def land_capability_result(
+        self,
+        *,
+        envelope: CapabilityResultEnvelope,
+        receipt: CapabilityResultReceipt,
+        job_lease: JobLease,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> CapabilityResultReceipt:
+        """Persist provider output without admitting it into business authority."""
+
+        try:
+            validate_capability_result_envelope(envelope)
+            validate_capability_result_receipt(
+                receipt=receipt,
+                envelope=envelope,
+            )
+        except ValueError as error:
+            raise InvalidAuthorityTransition(str(error)) from error
+        evidence = envelope.evidence_record
+        provenance = evidence.execution_provenance
+        result_material = evidence.result_material
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._acquire_transaction_lock(
+                    cursor,
+                    namespace="capability-result-landing",
+                    identity=envelope.outbox_message_id,
+                )
+                self.assert_job_lease(job_lease, checked_at=recorded_at)
+                if job_lease.outbox_message_id != envelope.outbox_message_id:
+                    raise InvalidAuthorityTransition(
+                        "result lease does not bind the capability outbox"
+                    )
                 if (
-                    evidence.frame_revision_id != case.accepted_frame_revision_id
-                    or evidence.plan_revision_id != case.accepted_plan_revision_id
+                    receipt.delivery_owner_id != job_lease.owner_id
+                    or receipt.delivery_fencing_token
+                    != job_lease.fencing_token
                 ):
                     raise InvalidAuthorityTransition(
-                        "evidence must bind the accepted frame and plan"
+                        "result receipt changes the delivery lease fence"
                     )
-                plan = self._get_plan(cursor, evidence.plan_revision_id)
-                if evidence.task_id not in {task.task_id for task in plan.tasks}:
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.capability_result_receipts
+                    WHERE outbox_message_id = %s
+                    """,
+                    (envelope.outbox_message_id,),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row is not None:
+                    existing = decode_capability_result_receipt(
+                        existing_row["payload"]
+                    )
+                    if replace(
+                        receipt,
+                        capability_result_receipt_id=(
+                            existing.capability_result_receipt_id
+                        ),
+                        received_at=existing.received_at,
+                        delivery_owner_id=existing.delivery_owner_id,
+                        delivery_fencing_token=(
+                            existing.delivery_fencing_token
+                        ),
+                    ) == existing:
+                        return existing
+                    raise AuthorityConflict(
+                        "capability outbox already landed different result"
+                    )
+                schedule = self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=envelope.schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                dispatch = self._get_payload(
+                    cursor,
+                    table="obligation_dispatch_records",
+                    id_column="dispatch_record_id",
+                    record_id=envelope.dispatch_record_id,
+                    label="obligation dispatch",
+                    decoder=decode_obligation_dispatch,
+                )
+                message = self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=envelope.outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                try:
+                    validate_obligation_dispatch_admission(
+                        schedule=schedule,
+                        record=dispatch,
+                        message=message,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                if (
+                    dispatch.schedule_id != envelope.schedule_id
+                    or dispatch.outbox_message_id
+                    != envelope.outbox_message_id
+                    or dispatch.dispatch.obligation_id
+                    != envelope.obligation_id
+                    or dispatch.dispatch.query_binding_id
+                    != envelope.query_binding_id
+                    or schedule.correlation_id != envelope.run_id
+                    or receipt.operation_identity.authority_revision
+                    != message.expected_authority_epoch
+                ):
                     raise InvalidAuthorityTransition(
-                        "evidence task is not in accepted plan"
+                        "capability result changes sealed dispatch"
                     )
-                payload = encode_record(evidence)
-                self._insert_immutable(
+                binding = self._get_payload(
+                    cursor,
+                    table="query_binding_envelopes",
+                    id_column="query_binding_id",
+                    record_id=envelope.query_binding_id,
+                    label="query binding",
+                    decoder=decode_query_binding,
+                )
+                obligation = self._get_payload(
+                    cursor,
+                    table="resolved_evidence_obligations",
+                    id_column="obligation_id",
+                    record_id=envelope.obligation_id,
+                    label="evidence obligation",
+                    decoder=decode_evidence_obligation,
+                )
+                outcome = self._get_payload(
+                    cursor,
+                    table="measurement_resolution_outcomes",
+                    id_column="resolution_outcome_id",
+                    record_id=binding.resolution_outcome_id,
+                    label="measurement resolution",
+                    decoder=decode_measurement_resolution,
+                )
+                attempt = self._get_payload(
+                    cursor,
+                    table="logical_execution_attempts",
+                    id_column="logical_execution_attempt_id",
+                    record_id=envelope.logical_execution_attempt_id,
+                    label="logical execution attempt",
+                    decoder=decode_logical_execution_attempt,
+                )
+                if (
+                    attempt.content_sha256
+                    != envelope.logical_execution_attempt_content_sha256
+                    or attempt.query_binding_id
+                    != envelope.query_binding_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "capability result changes logical attempt"
+                    )
+                spec = self._get_payload(
+                    cursor,
+                    table="conformance_execution_specs",
+                    id_column="conformance_execution_spec_id",
+                    record_id=attempt.conformance_execution_spec_id,
+                    label="conformance execution spec",
+                    decoder=decode_conformance_execution_spec,
+                )
+                prior_attempt = (
+                    None
+                    if attempt.prior_attempt_id is None
+                    else self._get_payload(
+                        cursor,
+                        table="logical_execution_attempts",
+                        id_column="logical_execution_attempt_id",
+                        record_id=attempt.prior_attempt_id,
+                        label="prior logical execution attempt",
+                        decoder=decode_logical_execution_attempt,
+                    )
+                )
+                try:
+                    expected_provenance = (
+                        build_conformance_execution_provenance(
+                            binding=binding,
+                            spec=spec,
+                            attempt=attempt,
+                            current_authority=(
+                                schedule.authority_snapshot
+                            ),
+                            prior_attempt=prior_attempt,
+                        )
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                if evidence.execution_provenance != expected_provenance:
+                    raise InvalidAuthorityTransition(
+                        "capability result changes sealed execution "
+                        "provenance"
+                    )
+                try:
+                    validate_evidence_record_authority(
+                        record=evidence,
+                        binding=binding,
+                        obligation=obligation,
+                        outcome=outcome,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+
+                evidence_payload = encode_record(evidence)
+                self._insert_idempotent_immutable(
                     cursor,
                     table="evidence_records",
                     id_column="evidence_record_id",
                     record_id=evidence.evidence_record_id,
                     columns=(
+                        "run_id",
+                        "profile",
+                        "case_id",
+                        "question_revision_id",
+                        "frame_revision_id",
+                        "plan_revision_id",
+                        "task_id",
+                        "estimand_id",
+                        "evidence_requirement_id",
+                        "obligation_id",
+                        "obligation_content_sha256",
+                        "resolution_outcome_id",
+                        "resolution_outcome_content_sha256",
+                        "resolution_id",
+                        "semantic_measurement_id",
+                        "authority_binding_id",
+                        "query_binding_id",
+                        "query_binding_content_sha256",
+                        "logical_execution_id",
+                        "provenance_kind",
+                        "conformance_execution_spec_id",
+                        "conformance_logical_execution_attempt_id",
+                        "physical_query_spec_id",
+                        "physical_provider_receipt_id",
+                        "result_material_kind",
+                        "result_material_content_sha256",
+                        "result_handle_id",
+                        "evidence_strength",
+                        "data_contract_version_ref",
+                        "snapshot_release_ref",
+                        "coverage_watermark_ref",
+                        "timezone",
+                        "business_day_cutoff",
+                        "identity_version",
+                        "content_sha256",
+                        "payload",
+                        "produced_at",
+                        "schema_epoch",
+                    ),
+                    values=(
+                        evidence.run_id,
+                        evidence.profile.value,
+                        evidence.case_id,
+                        evidence.question_revision_id,
+                        evidence.frame_revision_id,
+                        evidence.plan_revision_id,
+                        evidence.task_id,
+                        evidence.estimand_id,
+                        evidence.evidence_requirement_id,
+                        evidence.obligation_id,
+                        obligation.content_sha256,
+                        evidence.resolution_outcome_id,
+                        evidence.resolution_outcome_content_sha256,
+                        evidence.resolution_id,
+                        evidence.semantic_measurement_id,
+                        evidence.authority_binding_id,
+                        evidence.query_binding_id,
+                        evidence.query_binding_content_sha256,
+                        evidence.logical_execution_id,
+                        provenance.kind.value,
+                        getattr(provenance, "execution_spec_id", None),
+                        getattr(
+                            provenance,
+                            "logical_execution_attempt_id",
+                            None,
+                        ),
+                        getattr(provenance, "query_spec_id", None),
+                        getattr(provenance, "provider_receipt_id", None),
+                        result_material.kind.value,
+                        content_sha256(result_material),
+                        getattr(result_material, "result_handle_id", None),
+                        evidence.evidence_strength.value,
+                        evidence.data_context.data_contract_version_ref,
+                        evidence.data_context.snapshot_release_ref,
+                        evidence.data_context.coverage_watermark_ref,
+                        evidence.data_context.timezone,
+                        evidence.data_context.business_day_cutoff,
+                        evidence.identity_version,
+                        evidence.content_sha256,
+                        Jsonb(evidence_payload),
+                        evidence.produced_at,
+                        evidence.schema_epoch,
+                    ),
+                    payload=evidence_payload,
+                    label="Gate 3.5 evidence",
+                )
+                envelope_payload = encode_record(envelope)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="capability_result_envelopes",
+                    id_column="capability_result_envelope_id",
+                    record_id=envelope.capability_result_envelope_id,
+                    columns=(
+                        "profile",
+                        "provenance_kind",
+                        "result_material_kind",
+                        "run_id",
+                        "schedule_id",
+                        "dispatch_record_id",
+                        "outbox_message_id",
+                        "logical_execution_attempt_id",
+                        "logical_execution_attempt_content_sha256",
+                        "capability_invocation_id",
                         "case_id",
                         "frame_revision_id",
                         "plan_revision_id",
                         "task_id",
-                        "payload_sha256",
+                        "obligation_id",
+                        "query_binding_id",
+                        "query_binding_content_sha256",
+                        "evidence_record_id",
+                        "evidence_record_content_sha256",
+                        "execution_provenance_content_sha256",
+                        "result_material_content_sha256",
+                        "content_sha256",
                         "payload",
-                        "created_at",
+                        "produced_at",
+                        "schema_epoch",
                     ),
                     values=(
-                        evidence.case_id,
-                        evidence.frame_revision_id,
-                        evidence.plan_revision_id,
-                        evidence.task_id,
-                        evidence.payload_sha256,
-                        Jsonb(payload),
-                        evidence.created_at,
+                        evidence.profile.value,
+                        provenance.kind.value,
+                        result_material.kind.value,
+                        envelope.run_id,
+                        envelope.schedule_id,
+                        envelope.dispatch_record_id,
+                        envelope.outbox_message_id,
+                        envelope.logical_execution_attempt_id,
+                        envelope.logical_execution_attempt_content_sha256,
+                        envelope.capability_invocation_id,
+                        envelope.case_id,
+                        envelope.frame_revision_id,
+                        envelope.plan_revision_id,
+                        envelope.task_id,
+                        envelope.obligation_id,
+                        envelope.query_binding_id,
+                        envelope.query_binding_content_sha256,
+                        evidence.evidence_record_id,
+                        evidence.content_sha256,
+                        content_sha256(provenance),
+                        content_sha256(result_material),
+                        envelope.content_sha256,
+                        Jsonb(envelope_payload),
+                        envelope.produced_at,
+                        envelope.schema_epoch,
                     ),
-                    payload=payload,
-                    label="evidence",
+                    payload=envelope_payload,
+                    label="capability result envelope",
+                )
+                receipt_payload = encode_record(receipt)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="capability_result_receipts",
+                    id_column="capability_result_receipt_id",
+                    record_id=receipt.capability_result_receipt_id,
+                    columns=(
+                        "profile",
+                        "run_id",
+                        "schedule_id",
+                        "dispatch_record_id",
+                        "outbox_message_id",
+                        "delivery_owner_id",
+                        "delivery_fencing_token",
+                        "logical_execution_attempt_id",
+                        "logical_execution_attempt_content_sha256",
+                        "capability_result_envelope_id",
+                        "capability_result_envelope_content_sha256",
+                        "capability_invocation_id",
+                        "query_binding_id",
+                        "execution_provenance_content_sha256",
+                        "result_material_content_sha256",
+                        "operation_id",
+                        "idempotency_key",
+                        "causation_id",
+                        "correlation_id",
+                        "authority_revision",
+                        "content_sha256",
+                        "payload",
+                        "received_at",
+                        "schema_epoch",
+                    ),
+                    values=(
+                        evidence.profile.value,
+                        receipt.run_id,
+                        receipt.schedule_id,
+                        receipt.dispatch_record_id,
+                        receipt.outbox_message_id,
+                        receipt.delivery_owner_id,
+                        receipt.delivery_fencing_token,
+                        receipt.logical_execution_attempt_id,
+                        receipt.logical_execution_attempt_content_sha256,
+                        receipt.capability_result_envelope_id,
+                        receipt.capability_result_envelope_content_sha256,
+                        receipt.capability_invocation_id,
+                        receipt.query_binding_id,
+                        receipt.execution_provenance_content_sha256,
+                        receipt.result_material_content_sha256,
+                        receipt.operation_identity.operation_id,
+                        receipt.idempotency_key,
+                        receipt.operation_identity.causation_id,
+                        receipt.correlation_id,
+                        receipt.operation_identity.authority_revision,
+                        receipt.content_sha256,
+                        Jsonb(receipt_payload),
+                        receipt.received_at,
+                        receipt.schema_epoch,
+                    ),
+                    payload=receipt_payload,
+                    label="capability result receipt",
                 )
                 self._append_authority_event(
                     cursor,
-                    case_id=case.case_id,
+                    case_id=envelope.case_id,
                     event_id=event_id,
+                    event_type=JournalEventType.CAPABILITY_RESULT_LANDED,
+                    recorded_at=recorded_at,
+                    action_id=None,
+                    authority_ref=receipt.capability_result_receipt_id,
+                    payload={
+                        "receipt_id": receipt.capability_result_receipt_id,
+                        "envelope_id": envelope.capability_result_envelope_id,
+                        "evidence_record_id": evidence.evidence_record_id,
+                        "outbox_message_id": envelope.outbox_message_id,
+                    },
+                    operation=receipt.operation_identity,
+                )
+                self._append_authority_event(
+                    cursor,
+                    case_id=envelope.case_id,
+                    event_id=content_sha256(
+                        {
+                            "base_event_id": event_id,
+                            "event_type": (
+                                JournalEventType.EVIDENCE_RECORDED.value
+                            ),
+                            "authority_ref": (
+                                evidence.evidence_record_id
+                            ),
+                        }
+                    ),
                     event_type=JournalEventType.EVIDENCE_RECORDED,
                     recorded_at=recorded_at,
                     action_id=None,
                     authority_ref=evidence.evidence_record_id,
                     payload={
-                        "task_id": evidence.task_id,
-                        "payload_sha256": evidence.payload_sha256,
-                        "strength": evidence.strength.value,
+                        "content_sha256": evidence.content_sha256,
+                        "capability_result_receipt_id": (
+                            receipt.capability_result_receipt_id
+                        ),
                     },
+                    operation=receipt.operation_identity,
                 )
-                return evidence
+                return receipt
 
-    def accept_answer(
+    def admit_landed_result(
         self,
-        answer: AnswerVersion,
         *,
+        receipt_id: str,
+        profile: EvidenceAdmissionProfile,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> tuple[
+        EvidenceAdmissionRecord,
+        EvidenceValidityRecord,
+        ObligationSatisfactionRecord,
+    ]:
+        """Re-evaluate landed output under the current accepted authority."""
+
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._acquire_transaction_lock(
+                    cursor,
+                    namespace="evidence-result-admission",
+                    identity=receipt_id,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.evidence_admission_records
+                    WHERE capability_result_receipt_id = %s
+                      AND profile = %s
+                    """,
+                    (receipt_id, profile.value),
+                )
+                existing = cursor.fetchone()
+                if existing is not None:
+                    admission = decode_evidence_admission(
+                        existing["payload"]
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.evidence_validity_records
+                        WHERE evidence_admission_id = %s
+                          AND prior_evidence_validity_id IS NULL
+                        """,
+                        (admission.evidence_admission_id,),
+                    )
+                    validity_rows = cursor.fetchall()
+                    if len(validity_rows) != 1:
+                        raise InvalidAuthorityTransition(
+                            "evidence admission lacks one canonical initial "
+                            "validity"
+                        )
+                    validity = decode_evidence_validity(
+                        validity_rows[0]["payload"]
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.obligation_satisfaction_records
+                        WHERE obligation_id = %s
+                        ORDER BY revision_number
+                        """,
+                        (admission.obligation_id,),
+                    )
+                    satisfactions = tuple(
+                        decode_obligation_satisfaction(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    satisfaction_by_id = {
+                        item.obligation_satisfaction_id: item
+                        for item in satisfactions
+                    }
+                    canonical_satisfactions = tuple(
+                        item
+                        for item in satisfactions
+                        if admission.evidence_admission_id
+                        in item.evidence_admission_ids
+                        and validity.evidence_validity_id
+                        in item.evidence_validity_ids
+                        and (
+                            item.prior_obligation_satisfaction_id is None
+                            or admission.evidence_admission_id
+                            not in satisfaction_by_id[
+                                item.prior_obligation_satisfaction_id
+                            ].evidence_admission_ids
+                        )
+                    )
+                    if len(canonical_satisfactions) != 1:
+                        raise InvalidAuthorityTransition(
+                            "evidence admission lacks one canonical initial "
+                            "satisfaction"
+                        )
+                    return admission, validity, canonical_satisfactions[0]
+                receipt = self._get_payload(
+                    cursor,
+                    table="capability_result_receipts",
+                    id_column="capability_result_receipt_id",
+                    record_id=receipt_id,
+                    label="capability result receipt",
+                    decoder=decode_capability_result_receipt,
+                )
+                envelope = self._get_payload(
+                    cursor,
+                    table="capability_result_envelopes",
+                    id_column="capability_result_envelope_id",
+                    record_id=receipt.capability_result_envelope_id,
+                    label="capability result envelope",
+                    decoder=decode_capability_result_envelope,
+                )
+                binding = self._get_payload(
+                    cursor,
+                    table="query_binding_envelopes",
+                    id_column="query_binding_id",
+                    record_id=envelope.query_binding_id,
+                    label="query binding",
+                    decoder=decode_query_binding,
+                )
+                obligation = self._get_payload(
+                    cursor,
+                    table="resolved_evidence_obligations",
+                    id_column="obligation_id",
+                    record_id=envelope.obligation_id,
+                    label="evidence obligation",
+                    decoder=decode_evidence_obligation,
+                )
+                outcome = self._get_payload(
+                    cursor,
+                    table="measurement_resolution_outcomes",
+                    id_column="resolution_outcome_id",
+                    record_id=binding.resolution_outcome_id,
+                    label="measurement resolution",
+                    decoder=decode_measurement_resolution,
+                )
+                adoption = self._get_plan_adoption_for_plan(
+                    cursor,
+                    envelope.plan_revision_id,
+                )
+                frame = self._get_frame(
+                    cursor,
+                    envelope.frame_revision_id,
+                )
+                expected_scope = next(
+                    (
+                        item
+                        for item in frame.measurement_design.scopes
+                        if item.scope_id
+                        == binding.requirement_binding.scope_id
+                    ),
+                    None,
+                )
+                if expected_scope is None:
+                    raise InvalidAuthorityTransition(
+                        "query binding scope is absent from accepted Frame"
+                    )
+                self._get_case(cursor, envelope.case_id, for_update=True)
+                current = self._authority_snapshot_from_cursor(
+                    cursor,
+                    envelope.case_id,
+                )
+                admission = build_evidence_admission(
+                    binding=binding,
+                    obligation=obligation,
+                    outcome=outcome,
+                    envelope=envelope,
+                    receipt=receipt,
+                    plan_adoption=adoption,
+                    expected_scope=expected_scope,
+                    current_authority=current,
+                    profile=profile,
+                    admitted_at=recorded_at,
+                )
+                validity = build_initial_evidence_validity(
+                    admission=admission,
+                    recorded_at=recorded_at,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.evidence_admission_records
+                    WHERE obligation_id = %s
+                    ORDER BY evidence_admission_id
+                    """,
+                    (obligation.obligation_id,),
+                )
+                prior_admissions = tuple(
+                    decode_evidence_admission(row["payload"])
+                    for row in cursor.fetchall()
+                )
+                admissions = tuple(
+                    sorted(
+                        (*prior_admissions, admission),
+                        key=lambda item: item.evidence_admission_id,
+                    )
+                )
+                validities = tuple(
+                    (
+                        validity
+                        if item.evidence_record_id
+                        == admission.evidence_record_id
+                        else self._latest_evidence_validity(
+                            cursor,
+                            item.evidence_record_id,
+                        )
+                    )
+                    for item in admissions
+                )
+                try:
+                    prior_satisfaction = self._latest_obligation_satisfaction(
+                        cursor,
+                        obligation.obligation_id,
+                    )
+                except AuthorityNotFound:
+                    prior_satisfaction = None
+                satisfaction = build_obligation_satisfaction(
+                    obligation=obligation,
+                    admissions=admissions,
+                    validities=validities,
+                    boundary_outcome=None,
+                    prior=prior_satisfaction,
+                    recorded_at=recorded_at,
+                )
+                self._insert_evidence_admission(cursor, admission)
+                self._insert_evidence_validity(cursor, validity)
+                self._insert_obligation_satisfaction(
+                    cursor,
+                    satisfaction,
+                    revision_number=(
+                        1
+                        if prior_satisfaction is None
+                        else self._satisfaction_revision_number(
+                            cursor,
+                            prior_satisfaction.obligation_satisfaction_id,
+                        )
+                        + 1
+                    ),
+                )
+                for event_type, authority_ref, digest in (
+                    (
+                        JournalEventType.EVIDENCE_ADMISSION_RECORDED,
+                        admission.evidence_admission_id,
+                        admission.content_sha256,
+                    ),
+                    (
+                        JournalEventType.EVIDENCE_VALIDITY_RECORDED,
+                        validity.evidence_validity_id,
+                        validity.content_sha256,
+                    ),
+                    (
+                        JournalEventType.OBLIGATION_SATISFACTION_RECORDED,
+                        satisfaction.obligation_satisfaction_id,
+                        satisfaction.content_sha256,
+                    ),
+                ):
+                    derived_event_id = content_sha256(
+                        {
+                            "base_event_id": event_id,
+                            "event_type": event_type.value,
+                            "authority_ref": authority_ref,
+                        }
+                    )
+                    self._append_authority_event(
+                        cursor,
+                        case_id=envelope.case_id,
+                        event_id=derived_event_id,
+                        event_type=event_type,
+                        recorded_at=recorded_at,
+                        action_id=None,
+                        authority_ref=authority_ref,
+                        payload={"content_sha256": digest},
+                        operation=receipt.operation_identity,
+                    )
+                return admission, validity, satisfaction
+
+    def transition_evidence_validity(
+        self,
+        *,
+        evidence_record_id: str,
+        status: EvidenceValidityStatus,
+        reason_code: str,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> tuple[
+        EvidenceValidityRecord,
+        ObligationSatisfactionRecord,
+    ]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                prior = self._latest_evidence_validity(
+                    cursor,
+                    evidence_record_id,
+                    for_update=True,
+                )
+                validity_event_id = content_sha256(
+                    {
+                        "base_event_id": event_id,
+                        "event_type": (
+                            JournalEventType.EVIDENCE_VALIDITY_RECORDED.value
+                        ),
+                    }
+                )
+                satisfaction_event_id = content_sha256(
+                    {
+                        "base_event_id": event_id,
+                        "event_type": (
+                            JournalEventType.OBLIGATION_SATISFACTION_RECORDED.value
+                        ),
+                    }
+                )
+                validity_event = self._event_by_id(
+                    cursor,
+                    validity_event_id,
+                )
+                satisfaction_event = self._event_by_id(
+                    cursor,
+                    satisfaction_event_id,
+                )
+                if (
+                    validity_event is not None
+                    or satisfaction_event is not None
+                ):
+                    if (
+                        validity_event is None
+                        or satisfaction_event is None
+                        or validity_event.authority_ref is None
+                        or satisfaction_event.authority_ref is None
+                    ):
+                        raise AuthorityConflict(
+                            "validity transition replay is incomplete"
+                        )
+                    replay_validity = self._get_payload(
+                        cursor,
+                        table="evidence_validity_records",
+                        id_column="evidence_validity_id",
+                        record_id=validity_event.authority_ref,
+                        label="replayed evidence validity",
+                        decoder=decode_evidence_validity,
+                    )
+                    replay_satisfaction = self._get_payload(
+                        cursor,
+                        table="obligation_satisfaction_records",
+                        id_column="obligation_satisfaction_id",
+                        record_id=satisfaction_event.authority_ref,
+                        label="replayed obligation satisfaction",
+                        decoder=decode_obligation_satisfaction,
+                    )
+                    if (
+                        replay_validity.evidence_record_id
+                        != evidence_record_id
+                        or replay_validity.status is not status
+                        or replay_validity.reason_code != reason_code
+                    ):
+                        raise AuthorityConflict(
+                            "validity transition event already has different "
+                            "content"
+                        )
+                    return replay_validity, replay_satisfaction
+                try:
+                    successor = build_evidence_validity_successor(
+                        prior=prior,
+                        status=status,
+                        reason_code=reason_code,
+                        recorded_at=recorded_at,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                admission = self._get_payload(
+                    cursor,
+                    table="evidence_admission_records",
+                    id_column="evidence_admission_id",
+                    record_id=prior.evidence_admission_id,
+                    label="evidence admission",
+                    decoder=decode_evidence_admission,
+                )
+                obligation = self._get_payload(
+                    cursor,
+                    table="resolved_evidence_obligations",
+                    id_column="obligation_id",
+                    record_id=admission.obligation_id,
+                    label="evidence obligation",
+                    decoder=decode_evidence_obligation,
+                )
+                satisfaction_prior = self._latest_obligation_satisfaction(
+                    cursor,
+                    obligation.obligation_id,
+                    for_update=True,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.evidence_admission_records
+                    WHERE obligation_id = %s
+                    ORDER BY evidence_admission_id
+                    """,
+                    (obligation.obligation_id,),
+                )
+                admissions = tuple(
+                    decode_evidence_admission(row["payload"])
+                    for row in cursor.fetchall()
+                )
+                validities = tuple(
+                    (
+                        successor
+                        if item.evidence_record_id == evidence_record_id
+                        else self._latest_evidence_validity(
+                            cursor,
+                            item.evidence_record_id,
+                        )
+                    )
+                    for item in admissions
+                )
+                satisfaction = build_obligation_satisfaction(
+                    obligation=obligation,
+                    admissions=admissions,
+                    validities=validities,
+                    boundary_outcome=None,
+                    prior=satisfaction_prior,
+                    recorded_at=recorded_at,
+                )
+                self._insert_evidence_validity(cursor, successor)
+                self._insert_obligation_satisfaction(
+                    cursor,
+                    satisfaction,
+                    revision_number=(
+                        self._satisfaction_revision_number(
+                            cursor,
+                            satisfaction_prior.obligation_satisfaction_id,
+                        )
+                        + 1
+                    ),
+                )
+                for event_type, authority_ref, digest in (
+                    (
+                        JournalEventType.EVIDENCE_VALIDITY_RECORDED,
+                        successor.evidence_validity_id,
+                        successor.content_sha256,
+                    ),
+                    (
+                        JournalEventType.OBLIGATION_SATISFACTION_RECORDED,
+                        satisfaction.obligation_satisfaction_id,
+                        satisfaction.content_sha256,
+                    ),
+                ):
+                    self._append_authority_event(
+                        cursor,
+                        case_id=admission.authority_fence.case_id,
+                        event_id=content_sha256(
+                            {
+                                "base_event_id": event_id,
+                                "event_type": event_type.value,
+                            }
+                        ),
+                        event_type=event_type,
+                        recorded_at=recorded_at,
+                        action_id=None,
+                        authority_ref=authority_ref,
+                        payload={"content_sha256": digest},
+                    )
+                return successor, satisfaction
+
+    def get_workflow_read_model(
+        self,
+        case_id: str,
+        *,
+        realm: ExecutionRealm,
+        evidence_profile: EvidenceAdmissionProfile,
+    ) -> WorkflowReadModel:
+        """Load the durable projection, creating its cursor-zero head once."""
+
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(
+                        hashtextextended(%s, 3535)
+                    )
+                    """,
+                    (case_id,),
+                )
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.workflow_projection_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    model = initial_workflow_read_model(
+                        case_id,
+                        realm=realm,
+                        evidence_profile=evidence_profile,
+                    )
+                    cursor.execute("SELECT clock_timestamp() AS now")
+                    created_at = cursor.fetchone()["now"]
+                    self._insert_workflow_snapshot(
+                        cursor,
+                        model.snapshot,
+                        created_at=created_at,
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO waje_vnext.workflow_projection_heads (
+                            case_id,
+                            version,
+                            last_applied_cursor,
+                            snapshot_id,
+                            snapshot_sha256,
+                            last_receipt_id,
+                            realm,
+                            evidence_profile,
+                            updated_at
+                        ) VALUES (
+                            %s, 0, 0, %s, %s, NULL, %s, %s, %s
+                        )
+                        """,
+                        (
+                            case_id,
+                            model.head.snapshot_id,
+                            model.head.snapshot_sha256,
+                            realm.value,
+                            evidence_profile.value,
+                            created_at,
+                        ),
+                    )
+                    return model
+                if (
+                    row["realm"] != realm.value
+                    or row["evidence_profile"] != evidence_profile.value
+                ):
+                    raise InvalidAuthorityTransition(
+                        "workflow realm/profile differs from persisted head"
+                    )
+                return self._workflow_model_from_head_row(cursor, row)
+
+    def commit_workflow_read_model(
+        self,
+        model: WorkflowReadModel,
+        *,
+        expected_head_version: int,
+        applied_at: datetime,
+    ) -> WorkflowReadModel:
+        """Append one snapshot/receipt pair and CAS the mutable head."""
+
+        if model.head.version != expected_head_version + 1:
+            raise InvalidAuthorityTransition(
+                "workflow commit must advance exactly one cursor"
+            )
+        if len(model.application_receipts) != model.head.version:
+            raise InvalidAuthorityTransition(
+                "workflow model lacks a complete receipt chain"
+            )
+        receipt = model.application_receipts[-1]
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.workflow_projection_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (model.head.case_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise AuthorityNotFound(
+                        "workflow projection head does not exist"
+                    )
+                current = self._workflow_model_from_head_row(cursor, row)
+                if row["version"] == model.head.version:
+                    if current == model:
+                        return current
+                    raise AuthorityConflict(
+                        "workflow head version has different content"
+                    )
+                if row["version"] != expected_head_version:
+                    raise StaleHead(
+                        "workflow expected head version {}, current is {}".format(
+                            expected_head_version,
+                            row["version"],
+                        )
+                    )
+                if (
+                    len(model.application_receipts)
+                    != len(current.application_receipts) + 1
+                    or model.application_receipts[:-1]
+                    != current.application_receipts
+                ):
+                    raise InvalidAuthorityTransition(
+                        "workflow commit must append exactly one receipt"
+                    )
+                if (
+                    model.snapshot.realm.value != row["realm"]
+                    or model.snapshot.evidence_profile.value
+                    != row["evidence_profile"]
+                    or receipt.cursor != model.head.last_applied_cursor
+                    or receipt.prior_receipt_id != row["last_receipt_id"]
+                    or receipt.prior_snapshot_sha256
+                    != row["snapshot_sha256"]
+                ):
+                    raise InvalidAuthorityTransition(
+                        "workflow successor changes persisted projection chain"
+                    )
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.event_journal
+                    WHERE case_id = %s AND cursor = %s
+                    """,
+                    (receipt.case_id, receipt.cursor),
+                )
+                source_row = cursor.fetchone()
+                if source_row is None:
+                    raise InvalidAuthorityTransition(
+                        "workflow receipt source journal event is absent"
+                    )
+                source_event = self._event_from_row(source_row)
+                if (
+                    source_event.event_id != receipt.source_event_id
+                    or source_event.content_sha256
+                    != receipt.source_event_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "workflow receipt does not bind its source journal event"
+                    )
+                self._insert_workflow_snapshot(
+                    cursor,
+                    model.snapshot,
+                    created_at=applied_at,
+                )
+                receipt_payload = encode_record(receipt)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="workflow_application_receipts",
+                    id_column="receipt_id",
+                    record_id=receipt.receipt_id,
+                    columns=(
+                        "case_id",
+                        "cursor",
+                        "source_event_id",
+                        "source_event_sha256",
+                        "fact_id",
+                        "fact_sha256",
+                        "prior_receipt_id",
+                        "prior_snapshot_sha256",
+                        "resulting_snapshot_id",
+                        "resulting_snapshot_sha256",
+                        "content_sha256",
+                        "payload",
+                        "applied_at",
+                        "schema_epoch",
+                    ),
+                    values=(
+                        receipt.case_id,
+                        receipt.cursor,
+                        receipt.source_event_id,
+                        receipt.source_event_sha256,
+                        receipt.fact_id,
+                        receipt.fact_sha256,
+                        receipt.prior_receipt_id,
+                        receipt.prior_snapshot_sha256,
+                        receipt.resulting_snapshot_id,
+                        receipt.resulting_snapshot_sha256,
+                        content_sha256(receipt),
+                        Jsonb(receipt_payload),
+                        applied_at,
+                        3,
+                    ),
+                    payload=receipt_payload,
+                    label="workflow application receipt",
+                )
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.workflow_projection_heads
+                    SET version = %s,
+                        last_applied_cursor = %s,
+                        snapshot_id = %s,
+                        snapshot_sha256 = %s,
+                        last_receipt_id = %s,
+                        updated_at = %s
+                    WHERE case_id = %s
+                      AND version = %s
+                    """,
+                    (
+                        model.head.version,
+                        model.head.last_applied_cursor,
+                        model.head.snapshot_id,
+                        model.head.snapshot_sha256,
+                        model.head.last_receipt_id,
+                        applied_at,
+                        model.head.case_id,
+                        expected_head_version,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleHead("workflow projection CAS was lost")
+                return model
+
+    def resolve_workflow_event_authority(
+        self,
+        event: EventJournalEntry,
+    ) -> WorkflowEventAuthority:
+        """Resolve only immutable records declared by the journal adapter."""
+
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                persisted = self._event_by_id(cursor, event.event_id)
+                if persisted != event:
+                    raise InvalidAuthorityTransition(
+                        "workflow event is not the persisted journal fact"
+                    )
+                authority_ref = event.authority_ref or ""
+                if event.event_type is JournalEventType.PLAN_ACCEPTED:
+                    plan = self._get_plan(cursor, authority_ref)
+                    adoption = self._get_plan_adoption_for_plan(
+                        cursor,
+                        plan.plan_revision_id,
+                    )
+                    question = self._get_question(
+                        cursor,
+                        adoption.question_revision_id,
+                    )
+                    frame = self._get_frame(
+                        cursor,
+                        adoption.frame_revision_id,
+                    )
+                    obligations = tuple(
+                        self._get_payload(
+                            cursor,
+                            table="resolved_evidence_obligations",
+                            id_column="obligation_id",
+                            record_id=obligation_id,
+                            label="evidence obligation",
+                            decoder=decode_evidence_obligation,
+                        )
+                        for obligation_id in adoption.obligation_ids
+                    )
+                    return AcceptedPlanAuthority(
+                        plan=plan,
+                        adoption=adoption,
+                        question=question,
+                        frame=frame,
+                        obligations=obligations,
+                    )
+                if event.event_type is JournalEventType.QUESTION_ACCEPTED:
+                    return SupersedingAuthority(
+                        question=self._get_question(cursor, authority_ref)
+                    )
+                if event.event_type is JournalEventType.FRAME_ACCEPTED:
+                    return SupersedingAuthority(
+                        frame=self._get_frame(cursor, authority_ref)
+                    )
+                if (
+                    event.event_type
+                    is JournalEventType.OBLIGATION_DISPATCH_ENQUEUED
+                ):
+                    dispatch = self._get_payload(
+                        cursor,
+                        table="obligation_dispatch_records",
+                        id_column="dispatch_record_id",
+                        record_id=authority_ref,
+                        label="obligation dispatch",
+                        decoder=decode_obligation_dispatch,
+                    )
+                    schedule = self._get_payload(
+                        cursor,
+                        table="obligation_schedules",
+                        id_column="schedule_id",
+                        record_id=dispatch.schedule_id,
+                        label="obligation schedule",
+                        decoder=decode_obligation_schedule,
+                    )
+                    return DispatchAuthority(
+                        schedule=schedule,
+                        dispatch=dispatch,
+                    )
+                if (
+                    event.event_type
+                    is JournalEventType.OBLIGATION_SCHEDULE_CHECKPOINTED
+                ):
+                    checkpoint = self._get_payload(
+                        cursor,
+                        table="obligation_schedule_checkpoints",
+                        id_column="checkpoint_id",
+                        record_id=authority_ref,
+                        label="obligation schedule checkpoint",
+                        decoder=decode_obligation_schedule_checkpoint,
+                    )
+                    schedule = self._get_payload(
+                        cursor,
+                        table="obligation_schedules",
+                        id_column="schedule_id",
+                        record_id=checkpoint.schedule_id,
+                        label="obligation schedule",
+                        decoder=decode_obligation_schedule,
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.obligation_completion_records
+                        WHERE schedule_id = %s
+                        ORDER BY created_at, completion_record_id
+                        """,
+                        (checkpoint.schedule_id,),
+                    )
+                    completions = tuple(
+                        decode_obligation_completion_record(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    return CheckpointAuthority(
+                        schedule=schedule,
+                        checkpoint=checkpoint,
+                        completions=completions,
+                    )
+                if (
+                    event.event_type
+                    is JournalEventType.OBLIGATION_SATISFACTION_RECORDED
+                ):
+                    return SatisfactionAuthority(
+                        satisfaction=self._get_payload(
+                            cursor,
+                            table="obligation_satisfaction_records",
+                            id_column="obligation_satisfaction_id",
+                            record_id=authority_ref,
+                            label="Gate 3.5 obligation satisfaction",
+                            decoder=decode_obligation_satisfaction,
+                        )
+                    )
+                if event.event_type is JournalEventType.ANSWER_ACCEPTED:
+                    return AnswerAuthority(
+                        answer=self._get_payload(
+                            cursor,
+                            table="answer_versions",
+                            id_column="answer_version_id",
+                            record_id=authority_ref,
+                            label="Gate 3.5 answer",
+                            decoder=decode_answer,
+                        )
+                    )
+                return None
+
+    def project_workflow_read_model(
+        self,
+        case_id: str,
+        *,
+        realm: ExecutionRealm,
+        evidence_profile: EvidenceAdmissionProfile,
+        applied_at: datetime,
+    ) -> WorkflowReadModel:
+        """Project all unconsumed journal events under the store transaction."""
+
+        with self._lock, self._connection.transaction():
+            model = self.get_workflow_read_model(
+                case_id,
+                realm=realm,
+                evidence_profile=evidence_profile,
+            )
+            for event in self.list_events(
+                case_id,
+                after_cursor=model.head.last_applied_cursor,
+            ):
+                fact = journal_event_to_workflow_fact(
+                    event,
+                    current=model,
+                    authority_resolver=self,
+                )
+                proposed = apply_workflow_fact(model, fact)
+                model = self.commit_workflow_read_model(
+                    proposed,
+                    expected_head_version=model.head.version,
+                    applied_at=applied_at,
+                )
+            return model
+
+    def accept_provisional_answer_candidate(
+        self,
+        *,
+        candidate: ProvisionalAnswerCandidate,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
         operation: OperationIdentity | None = None,
-    ) -> InvestigationCase:
+    ) -> tuple[ProvisionalAnswerBundle, InvestigationCase]:
+        """Compile and atomically persist the system-owned provisional Answer."""
+
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                if answer.status is AnswerStatus.SETTLED:
-                    raise InvalidAuthorityTransition(
-                        "Gate 3 cannot publish settled answers"
+                try:
+                    persisted_action = self.get_action(
+                        candidate.created_by_action_id
                     )
-                idempotent = self._idempotent_head_event(
-                    cursor,
-                    event_id=event_id,
-                    event_type=JournalEventType.ANSWER_ACCEPTED,
-                    authority_ref=answer.answer_version_id,
-                    case_id=answer.case_id,
+                    validate_answer_candidate_action(
+                        candidate=candidate,
+                        persisted_action=persisted_action,
+                    )
+                except (AuthorityNotFound, ValueError) as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.provisional_answer_candidates
+                    WHERE answer_candidate_id = %s
+                    """,
+                    (candidate.answer_candidate_id,),
                 )
-                if idempotent is not None:
-                    return idempotent
-                case = self._lock_case(cursor, answer.case_id, expected_head_version)
-                if (
-                    answer.frame_revision_id != case.accepted_frame_revision_id
-                    or answer.plan_revision_id != case.accepted_plan_revision_id
-                ):
-                    raise InvalidAuthorityTransition(
-                        "answer must bind the accepted frame and plan"
+                existing_row = cursor.fetchone()
+                if existing_row is not None:
+                    existing = decode_provisional_answer_candidate(
+                        existing_row["payload"]
                     )
-                current = self._latest_answer_for_case(cursor, case.case_id)
+                    if existing != candidate:
+                        raise AuthorityConflict(
+                            "answer candidate ID has different content"
+                        )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.claim_precheck_records
+                        WHERE answer_candidate_id = %s
+                        ORDER BY proposal_claim_key
+                        """,
+                        (candidate.answer_candidate_id,),
+                    )
+                    by_key = {
+                        item.proposal_claim_key: item
+                        for item in (
+                            decode_claim_precheck(row["payload"])
+                            for row in cursor.fetchall()
+                        )
+                    }
+                    prechecks = tuple(
+                        by_key[item.proposal_claim_key]
+                        for item in candidate.claims
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.answer_versions
+                        WHERE answer_candidate_id = %s
+                        """,
+                        (candidate.answer_candidate_id,),
+                    )
+                    answer_row = cursor.fetchone()
+                    answer = (
+                        None
+                        if answer_row is None
+                        else decode_answer(answer_row["payload"])
+                    )
+                    current_case = self._get_case(
+                        cursor,
+                        candidate.case_id,
+                    )
+                    if answer is not None:
+                        if (
+                            current_case.accepted_answer_version_id
+                            != answer.answer_version_id
+                            or not accepted_answer_candidate_is_current(
+                                candidate=candidate,
+                                current_authority=(
+                                    self._authority_snapshot_from_cursor(
+                                        cursor,
+                                        candidate.case_id,
+                                    )
+                                ),
+                            )
+                        ):
+                            raise StaleHead(
+                                "answer candidate was superseded after "
+                                "acceptance"
+                            )
+                    elif (
+                        self._authority_snapshot_from_cursor(
+                            cursor,
+                            candidate.case_id,
+                        )
+                        != candidate.authority_snapshot
+                    ):
+                        raise StaleHead(
+                            "rejected answer candidate authority is stale"
+                        )
+                    return (
+                        ProvisionalAnswerBundle(
+                            candidate=candidate,
+                            prechecks=prechecks,
+                            status=(
+                                AnswerCandidateStatus.ACCEPTED_PROVISIONAL
+                                if answer is not None
+                                else AnswerCandidateStatus.REJECTED
+                            ),
+                            answer=answer,
+                        ),
+                        current_case,
+                    )
+                case = self._lock_case(
+                    cursor,
+                    candidate.case_id,
+                    expected_head_version,
+                )
+                current = self._authority_snapshot_from_cursor(
+                    cursor,
+                    candidate.case_id,
+                )
+                adoption = self._get_plan_adoption_for_plan(
+                    cursor,
+                    candidate.plan_revision_id,
+                )
+                try:
+                    validate_provisional_answer_candidate(
+                        candidate=candidate,
+                        current_authority=current,
+                        plan_adoption=adoption,
+                    )
+                except ValueError as error:
+                    raise StaleHead(str(error)) from error
+                supports_by_claim_key: dict[
+                    str, tuple[ClaimEvidenceSupport, ...]
+                ] = {}
+                satisfactions_by_claim_key: dict[
+                    str, tuple[ObligationSatisfactionRecord, ...]
+                ] = {}
+                created_uses: list[EvidenceUseBinding] = []
+                for proposal in candidate.claims:
+                    supports: list[ClaimEvidenceSupport] = []
+                    for selection in proposal.evidence_selections:
+                        try:
+                            evidence = self._get_payload(
+                                cursor,
+                                table="evidence_records",
+                                id_column="evidence_record_id",
+                                record_id=selection.evidence_record_id,
+                                label="Gate 3.5 evidence",
+                                decoder=decode_evidence,
+                            )
+                        except AuthorityNotFound:
+                            continue
+                        cursor.execute(
+                            """
+                            SELECT payload
+                            FROM waje_vnext.evidence_admission_records
+                            WHERE evidence_record_id = %s
+                              AND admission_status = 'accepted'
+                            """,
+                            (evidence.evidence_record_id,),
+                        )
+                        admission_rows = cursor.fetchall()
+                        if len(admission_rows) != 1:
+                            continue
+                        admission = decode_evidence_admission(
+                            admission_rows[0]["payload"]
+                        )
+                        try:
+                            validity = self._latest_evidence_validity(
+                                cursor,
+                                evidence.evidence_record_id,
+                            )
+                        except AuthorityNotFound:
+                            continue
+                        if (
+                            validity.status
+                            is not EvidenceValidityStatus.ADMITTED_VALID
+                        ):
+                            continue
+                        binding = self._get_payload(
+                            cursor,
+                            table="query_binding_envelopes",
+                            id_column="query_binding_id",
+                            record_id=evidence.query_binding_id,
+                            label="query binding",
+                            decoder=decode_query_binding,
+                        )
+                        try:
+                            use = build_evidence_use_binding(
+                                evidence=evidence,
+                                admission=admission,
+                                validity=validity,
+                                binding=binding,
+                                answer_candidate_id=(
+                                    candidate.answer_candidate_id
+                                ),
+                                proposal_claim_key=(
+                                    proposal.proposal_claim_key
+                                ),
+                                claim_scope=proposal.applicability_scope,
+                                requested_claim_strength=(
+                                    proposal.requested_strength
+                                ),
+                                bound_at=recorded_at,
+                            )
+                        except ValueError:
+                            continue
+                        created_uses.append(use)
+                        supports.append(
+                            ClaimEvidenceSupport(
+                                evidence=evidence,
+                                admission=admission,
+                                validity=validity,
+                                query_binding=binding,
+                                use_binding=use,
+                            )
+                        )
+                    supports_by_claim_key[
+                        proposal.proposal_claim_key
+                    ] = tuple(supports)
+                    satisfactions: list[
+                        ObligationSatisfactionRecord
+                    ] = []
+                    for obligation_id in proposal.obligation_ids:
+                        try:
+                            satisfactions.append(
+                                self._latest_obligation_satisfaction(
+                                    cursor,
+                                    obligation_id,
+                                )
+                            )
+                        except AuthorityNotFound:
+                            pass
+                    satisfactions_by_claim_key[
+                        proposal.proposal_claim_key
+                    ] = tuple(satisfactions)
+                bundle = compile_provisional_answer_bundle(
+                    candidate=candidate,
+                    current_authority=current,
+                    plan_adoption=adoption,
+                    supports_by_claim_key=supports_by_claim_key,
+                    satisfactions_by_claim_key=satisfactions_by_claim_key,
+                    check_dispositions_by_claim_key={},
+                    checked_at=recorded_at,
+                )
+                self._insert_answer_candidate(cursor, candidate)
+                for use in created_uses:
+                    self._insert_evidence_use(cursor, use)
+                for precheck in bundle.prechecks:
+                    self._insert_claim_precheck(cursor, precheck)
+                candidate_event_id = content_sha256(
+                    {
+                        "base_event_id": event_id,
+                        "kind": "answer-candidate",
+                    }
+                )
+                self._append_authority_event(
+                    cursor,
+                    case_id=candidate.case_id,
+                    event_id=candidate_event_id,
+                    event_type=JournalEventType.ANSWER_CANDIDATE_RECORDED,
+                    recorded_at=recorded_at,
+                    action_id=candidate.created_by_action_id,
+                    authority_ref=candidate.answer_candidate_id,
+                    payload={
+                        "content_sha256": candidate.content_sha256,
+                        "candidate_status": bundle.status.value,
+                    },
+                    operation=operation,
+                )
+                for precheck in bundle.prechecks:
+                    self._append_authority_event(
+                        cursor,
+                        case_id=candidate.case_id,
+                        event_id=content_sha256(
+                            {
+                                "base_event_id": event_id,
+                                "kind": "claim-precheck",
+                                "claim_precheck_id": (
+                                    precheck.claim_precheck_id
+                                ),
+                            }
+                        ),
+                        event_type=JournalEventType.CLAIM_PRECHECK_RECORDED,
+                        recorded_at=recorded_at,
+                        action_id=candidate.created_by_action_id,
+                        authority_ref=precheck.claim_precheck_id,
+                        payload={
+                            "claim_id": precheck.claim_id,
+                            "status": precheck.status.value,
+                            "content_sha256": precheck.content_sha256,
+                        },
+                        operation=operation,
+                    )
+                if bundle.answer is None:
+                    return bundle, case
+                answer = bundle.answer
+                if (
+                    self._authority_snapshot_from_cursor(
+                        cursor,
+                        case.case_id,
+                    )
+                    != current
+                ):
+                    raise StaleHead(
+                        "answer inputs changed during bundle admission"
+                    )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.answer_versions
+                    WHERE case_id = %s
+                    ORDER BY version_number DESC
+                    LIMIT 1
+                    """,
+                    (case.case_id,),
+                )
+                prior_row = cursor.fetchone()
+                prior = (
+                    None
+                    if prior_row is None
+                    else decode_answer(prior_row["payload"])
+                )
                 expected_version = (
-                    1 if current is None else current.version_number + 1
+                    1 if prior is None else prior.version_number + 1
                 )
                 expected_prior = (
-                    None if current is None else current.answer_version_id
+                    None if prior is None else prior.answer_version_id
                 )
                 if (
                     answer.version_number != expected_version
                     or answer.prior_answer_version_id != expected_prior
                 ):
                     raise InvalidAuthorityTransition(
-                        "answer version does not extend the accepted answer"
+                        "provisional Answer does not extend current Answer head"
                     )
-                for claim in answer.claims:
-                    for evidence_id in claim.evidence_record_ids:
-                        evidence = self._get_evidence(cursor, evidence_id)
-                        if (
-                            evidence.frame_revision_id != answer.frame_revision_id
-                            or evidence.plan_revision_id != answer.plan_revision_id
-                        ):
-                            raise InvalidAuthorityTransition(
-                                "claim evidence is incompatible with answer"
-                            )
-                payload = encode_record(answer)
-                self._insert_immutable(
-                    cursor,
-                    table="answer_versions",
-                    id_column="answer_version_id",
-                    record_id=answer.answer_version_id,
-                    columns=(
-                        "case_id",
-                        "frame_revision_id",
-                        "plan_revision_id",
-                        "version_number",
-                        "prior_answer_version_id",
-                        "status",
-                        "content_sha256",
-                        "payload",
-                        "created_at",
+                self._insert_answer(cursor, answer)
+                cursor.execute(
+                    """
+                    UPDATE waje_vnext.investigation_cases
+                    SET head_version = head_version + 1,
+                        accepted_answer_version_id = %s,
+                        updated_at = %s
+                    WHERE case_id = %s
+                      AND head_version = %s
+                    """,
+                    (
+                        answer.answer_version_id,
+                        recorded_at,
+                        case.case_id,
+                        expected_head_version,
                     ),
-                    values=(
-                        answer.case_id,
-                        answer.frame_revision_id,
-                        answer.plan_revision_id,
-                        answer.version_number,
-                        answer.prior_answer_version_id,
-                        answer.status.value,
-                        answer.content_sha256,
-                        Jsonb(payload),
-                        answer.created_at,
-                    ),
-                    payload=payload,
-                    label="answer",
                 )
-                updated = self._move_heads(
-                    cursor,
-                    case=case,
-                    recorded_at=recorded_at,
-                    frame_id=case.accepted_frame_revision_id,
-                    plan_id=case.accepted_plan_revision_id,
-                    answer_id=answer.answer_version_id,
-                )
+                if cursor.rowcount != 1:
+                    raise StaleHead("answer authority head CAS was lost")
+                updated = self._get_case(cursor, case.case_id)
                 self._append_authority_event(
                     cursor,
                     case_id=case.case_id,
@@ -3872,7 +5671,226 @@ class PostgresAuthorityStore:
                     },
                     operation=operation,
                 )
-                return updated
+                return bundle, updated
+
+    def derive_settlement_precondition(
+        self,
+        *,
+        case_id: str,
+        expected_head_version: int,
+        answer_version_id: str,
+        objection_disposition_refs: tuple[str, ...],
+        unresolved_blocking_objection_refs: tuple[str, ...],
+        trace_manifest_id: str,
+        trace_manifest_content_sha256: str,
+        trace_complete: bool,
+        event_id: str,
+        recorded_at: datetime,
+    ) -> SettlementPreconditionReport:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                case = self._lock_case(
+                    cursor,
+                    case_id,
+                    expected_head_version,
+                )
+                existing_event = self._event_by_id(cursor, event_id)
+                existing_report = None
+                if existing_event is not None:
+                    if (
+                        existing_event.case_id != case_id
+                        or existing_event.event_type
+                        is not JournalEventType.SETTLEMENT_PRECONDITION_RECORDED
+                        or existing_event.authority_ref is None
+                    ):
+                        raise AuthorityConflict(
+                            "settlement retry event identity is already in use"
+                        )
+                    existing_report = self._get_payload(
+                        cursor,
+                        table="settlement_precondition_reports",
+                        id_column="settlement_precondition_report_id",
+                        record_id=existing_event.authority_ref,
+                        label="Gate 3.5 settlement precondition",
+                        decoder=decode_settlement_precondition,
+                    )
+                if case.accepted_answer_version_id != answer_version_id:
+                    raise InvalidAuthorityTransition(
+                        "settlement derive request does not target current Answer"
+                    )
+                answer = self._get_payload(
+                    cursor,
+                    table="answer_versions",
+                    id_column="answer_version_id",
+                    record_id=answer_version_id,
+                    label="Gate 3.5 answer",
+                    decoder=decode_answer,
+                )
+                candidate = self._get_payload(
+                    cursor,
+                    table="provisional_answer_candidates",
+                    id_column="answer_candidate_id",
+                    record_id=answer.answer_candidate_id,
+                    label="answer candidate",
+                    decoder=decode_provisional_answer_candidate,
+                )
+                prechecks = tuple(
+                    self._get_payload(
+                        cursor,
+                        table="claim_precheck_records",
+                        id_column="claim_precheck_id",
+                        record_id=precheck_id,
+                        label="claim precheck",
+                        decoder=decode_claim_precheck,
+                    )
+                    for precheck_id in answer.claim_precheck_ids
+                )
+                supports: list[ClaimEvidenceSupport] = []
+                for claim in answer.claims:
+                    for use_id in claim.evidence_use_binding_ids:
+                        use = self._get_payload(
+                            cursor,
+                            table="evidence_use_bindings",
+                            id_column="evidence_use_binding_id",
+                            record_id=use_id,
+                            label="evidence use binding",
+                            decoder=decode_evidence_use_binding,
+                        )
+                        evidence = self._get_payload(
+                            cursor,
+                            table="evidence_records",
+                            id_column="evidence_record_id",
+                            record_id=use.evidence_record_id,
+                            label="Gate 3.5 evidence",
+                            decoder=decode_evidence,
+                        )
+                        admission = self._get_payload(
+                            cursor,
+                            table="evidence_admission_records",
+                            id_column="evidence_admission_id",
+                            record_id=use.evidence_admission_id,
+                            label="evidence admission",
+                            decoder=decode_evidence_admission,
+                        )
+                        validity = self._latest_evidence_validity(
+                            cursor,
+                            evidence.evidence_record_id,
+                        )
+                        binding = self._get_payload(
+                            cursor,
+                            table="query_binding_envelopes",
+                            id_column="query_binding_id",
+                            record_id=evidence.query_binding_id,
+                            label="query binding",
+                            decoder=decode_query_binding,
+                        )
+                        supports.append(
+                            ClaimEvidenceSupport(
+                                evidence=evidence,
+                                admission=admission,
+                                validity=validity,
+                                query_binding=binding,
+                                use_binding=use,
+                            )
+                        )
+                obligation_ids = {
+                    obligation_id
+                    for claim in answer.claims
+                    for obligation_id in claim.obligation_ids
+                }
+                satisfactions = tuple(
+                    self._latest_obligation_satisfaction(
+                        cursor,
+                        obligation_id,
+                    )
+                    for obligation_id in sorted(obligation_ids)
+                )
+                current = self._authority_snapshot_from_cursor(
+                    cursor,
+                    case_id,
+                )
+                adoption = self._get_plan_adoption_for_plan(
+                    cursor,
+                    answer.plan_revision_id,
+                )
+                trace_manifest = self._get_payload(
+                    cursor,
+                    table="run_trace_manifests",
+                    id_column="trace_manifest_id",
+                    record_id=trace_manifest_id,
+                    label="run trace manifest",
+                    decoder=decode_run_trace_manifest,
+                )
+                try:
+                    trace_complete = validate_settlement_request(
+                        answer=answer,
+                        supports=tuple(supports),
+                        trace_manifest=trace_manifest,
+                        trace_manifest_content_sha256=(
+                            trace_manifest_content_sha256
+                        ),
+                        trace_complete=trace_complete,
+                        objections=self.list_reviewer_objections(
+                            case_id
+                        ),
+                        objection_disposition_refs=(
+                            objection_disposition_refs
+                        ),
+                        unresolved_blocking_objection_refs=(
+                            unresolved_blocking_objection_refs
+                        ),
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                report = derive_settlement_precondition_report(
+                    answer=answer,
+                    candidate=candidate,
+                    prechecks=prechecks,
+                    supports=tuple(supports),
+                    satisfactions=satisfactions,
+                    current_authority=current,
+                    plan_adoption=adoption,
+                    objection_disposition_refs=objection_disposition_refs,
+                    unresolved_blocking_objection_refs=(
+                        unresolved_blocking_objection_refs
+                    ),
+                    trace_manifest_id=trace_manifest_id,
+                    trace_manifest_content_sha256=(
+                        trace_manifest_content_sha256
+                    ),
+                    trace_complete=trace_complete,
+                    created_at=(
+                        existing_report.created_at
+                        if existing_report is not None
+                        else recorded_at
+                    ),
+                )
+                if existing_report is not None:
+                    if report != existing_report:
+                        raise AuthorityConflict(
+                            "settlement retry changed canonical inputs"
+                        )
+                    return existing_report
+                self._insert_settlement_precondition(cursor, report)
+                self._append_authority_event(
+                    cursor,
+                    case_id=case_id,
+                    event_id=event_id,
+                    event_type=(
+                        JournalEventType.SETTLEMENT_PRECONDITION_RECORDED
+                    ),
+                    recorded_at=recorded_at,
+                    action_id=None,
+                    authority_ref=(
+                        report.settlement_precondition_report_id
+                    ),
+                    payload={
+                        "answer_version_id": answer_version_id,
+                        "status": report.status.value,
+                        "content_sha256": report.content_sha256,
+                    },
+                )
+                return report
 
     def record_measurement_resolution(
         self,
@@ -4142,233 +6160,6 @@ class PostgresAuthorityStore:
             operation=operation,
         )
 
-    def record_evidence_validity(
-        self,
-        validity: EvidenceValidityRecord,
-        *,
-        event_id: str,
-    ) -> EvidenceValidityRecord:
-        def validate(
-            cursor: Cursor[Mapping[str, Any]],
-            record: EvidenceValidityRecord,
-        ) -> None:
-            self._get_evidence(cursor, record.evidence_record_id)
-            cursor.execute(
-                """
-                SELECT current.payload
-                FROM waje_vnext.evidence_validity_records AS current
-                WHERE current.evidence_record_id = %s
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM waje_vnext.evidence_validity_records AS successor
-                    WHERE successor.prior_validity_record_id
-                        = current.evidence_validity_record_id
-                  )
-                FOR UPDATE
-                """,
-                (record.evidence_record_id,),
-            )
-            rows = cursor.fetchall()
-            if len(rows) > 1:
-                raise AuthorityConflict(
-                    "evidence validity chain has multiple heads"
-                )
-            current = (
-                None
-                if not rows
-                else decode_evidence_validity(rows[0]["payload"])
-            )
-            if current is None:
-                if record.prior_validity_record_id is not None:
-                    raise InvalidAuthorityTransition(
-                        "first validity record cannot have a prior"
-                    )
-            elif (
-                record.prior_validity_record_id
-                != current.evidence_validity_record_id
-                or record.expected_prior_content_sha256
-                != current.content_sha256
-            ):
-                raise InvalidAuthorityTransition(
-                    "validity record does not extend current disposition"
-                )
-
-        evidence = self.get_evidence(validity.evidence_record_id)
-        return self._record_subordinate(
-            record=validity,
-            record_id=validity.evidence_validity_record_id,
-            case_id=evidence.case_id,
-            table="evidence_validity_records",
-            id_column="evidence_validity_record_id",
-            columns=(
-                "evidence_record_id",
-                "prior_validity_record_id",
-                "disposition_status",
-                "content_sha256",
-                "payload",
-                "created_at",
-                "schema_epoch",
-            ),
-            values=(
-                validity.evidence_record_id,
-                validity.prior_validity_record_id,
-                validity.status.value,
-                validity.content_sha256,
-                Jsonb(encode_record(validity)),
-                validity.created_at,
-                validity.schema_epoch,
-            ),
-            event_id=event_id,
-            event_type=JournalEventType.EVIDENCE_VALIDITY_RECORDED,
-            action_id=None,
-            recorded_at=validity.created_at,
-            validator=validate,
-            label="evidence validity",
-        )
-
-    def record_obligation_satisfaction(
-        self,
-        satisfaction: ObligationSatisfactionRecord,
-        *,
-        event_id: str,
-    ) -> ObligationSatisfactionRecord:
-        with self._lock, self._connection.transaction():
-            with self._cursor() as cursor:
-                obligation = self._get_payload(
-                    cursor,
-                    table="resolved_evidence_obligations",
-                    id_column="obligation_id",
-                    record_id=satisfaction.obligation_id,
-                    label="evidence obligation",
-                    decoder=decode_evidence_obligation,
-                )
-        return self._record_subordinate(
-            record=satisfaction,
-            record_id=satisfaction.satisfaction_record_id,
-            case_id=obligation.case_id,
-            table="obligation_satisfaction_records",
-            id_column="satisfaction_record_id",
-            columns=(
-                "obligation_id",
-                "satisfaction_status",
-                "content_sha256",
-                "payload",
-                "created_at",
-                "schema_epoch",
-            ),
-            values=(
-                satisfaction.obligation_id,
-                satisfaction.status.value,
-                satisfaction.content_sha256,
-                Jsonb(encode_record(satisfaction)),
-                satisfaction.created_at,
-                satisfaction.schema_epoch,
-            ),
-            event_id=event_id,
-            event_type=(
-                JournalEventType.OBLIGATION_SATISFACTION_RECORDED
-            ),
-            action_id=None,
-            recorded_at=satisfaction.created_at,
-            validator=lambda cursor, record: self._get_payload(
-                cursor,
-                table="resolved_evidence_obligations",
-                id_column="obligation_id",
-                record_id=record.obligation_id,
-                label="evidence obligation",
-                decoder=decode_evidence_obligation,
-            ),
-            label="obligation satisfaction",
-        )
-
-    def record_settlement_precondition(
-        self,
-        report: SettlementPreconditionReport,
-        *,
-        expected_head_version: int,
-        event_id: str,
-    ) -> SettlementPreconditionReport:
-        def validate(
-            cursor: Cursor[Mapping[str, Any]],
-            record: SettlementPreconditionReport,
-        ) -> None:
-            case = self._lock_case(
-                cursor,
-                record.case_id,
-                expected_head_version,
-            )
-            if (
-                record.accepted_head_version != case.head_version
-                or record.question_revision_id
-                != case.accepted_question_revision_id
-                or record.frame_revision_id
-                != case.accepted_frame_revision_id
-                or record.plan_revision_id
-                != case.accepted_plan_revision_id
-            ):
-                raise InvalidAuthorityTransition(
-                    "settlement precondition is stale"
-                )
-            frame = self._get_frame(cursor, record.frame_revision_id)
-            if (
-                record.semantic_measurement_ids
-                != frame.semantic_measurement_ids
-                or record.authority_binding_ids
-                != frame.authority_binding_ids
-            ):
-                raise InvalidAuthorityTransition(
-                    "settlement precondition changes frame identity"
-                )
-            for outcome_id in record.resolution_outcome_ids:
-                outcome = self._get_payload(
-                    cursor,
-                    table="measurement_resolution_outcomes",
-                    id_column="resolution_outcome_id",
-                    record_id=outcome_id,
-                    label="measurement resolution",
-                    decoder=decode_measurement_resolution,
-                )
-                if outcome.frame_revision_id != record.frame_revision_id:
-                    raise InvalidAuthorityTransition(
-                        "settlement resolution belongs to another frame"
-                    )
-
-        return self._record_subordinate(
-            record=report,
-            record_id=report.settlement_precondition_report_id,
-            case_id=report.case_id,
-            table="settlement_precondition_reports",
-            id_column="settlement_precondition_report_id",
-            columns=(
-                "case_id",
-                "question_revision_id",
-                "frame_revision_id",
-                "plan_revision_id",
-                "precondition_status",
-                "content_sha256",
-                "payload",
-                "created_at",
-                "schema_epoch",
-            ),
-            values=(
-                report.case_id,
-                report.question_revision_id,
-                report.frame_revision_id,
-                report.plan_revision_id,
-                report.status.value,
-                report.content_sha256,
-                Jsonb(encode_record(report)),
-                report.created_at,
-                report.schema_epoch,
-            ),
-            event_id=event_id,
-            event_type=JournalEventType.SETTLEMENT_PRECONDITION_RECORDED,
-            action_id=None,
-            recorded_at=report.created_at,
-            validator=validate,
-            label="settlement precondition",
-        )
-
     def record_interpretation(
         self,
         interpretation: InterpretationRecord,
@@ -4445,8 +6236,10 @@ class PostgresAuthorityStore:
                 "claim_id",
                 "severity",
                 "status",
+                "content_sha256",
                 "payload",
                 "created_at",
+                "schema_epoch",
             ),
             values=(
                 objection.objection_key,
@@ -4457,8 +6250,10 @@ class PostgresAuthorityStore:
                 objection.claim_id,
                 objection.severity.value,
                 objection.status.value,
+                objection.content_sha256,
                 Jsonb(encode_record(objection)),
                 objection.created_at,
+                3,
             ),
             event_id=event_id,
             event_type=JournalEventType.REVIEWER_OBJECTION_RECORDED,
@@ -5159,7 +6954,7 @@ class PostgresAuthorityStore:
                             )
                 if disposition.fencing_token is not None:
                     cursor.execute(
-                        "SELECT clock_timestamp() AS database_now"
+                        "SELECT CURRENT_TIMESTAMP AS database_now"
                     )
                     database_now = cursor.fetchone()["database_now"]
                     cursor.execute(
@@ -5392,7 +7187,7 @@ class PostgresAuthorityStore:
                         "terminally disposed job cannot be claimed"
                     )
                 cursor.execute(
-                    "SELECT clock_timestamp() AS database_now"
+                    "SELECT CURRENT_TIMESTAMP AS database_now"
                 )
                 database_now = cursor.fetchone()["database_now"]
                 cursor.execute(
@@ -5475,7 +7270,7 @@ class PostgresAuthorityStore:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
                 cursor.execute(
-                    "SELECT clock_timestamp() AS database_now"
+                    "SELECT CURRENT_TIMESTAMP AS database_now"
                 )
                 database_now = cursor.fetchone()["database_now"]
                 renewed = JobLease(
@@ -5552,7 +7347,7 @@ class PostgresAuthorityStore:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
                 cursor.execute(
-                    "SELECT clock_timestamp() AS database_now"
+                    "SELECT CURRENT_TIMESTAMP AS database_now"
                 )
                 database_now = cursor.fetchone()["database_now"]
                 cursor.execute(
@@ -5801,7 +7596,7 @@ class PostgresAuthorityStore:
             with self._cursor() as cursor:
                 self._get_case(cursor, case_id, for_update=True)
                 cursor.execute(
-                    "SELECT clock_timestamp() AS database_now"
+                    "SELECT CURRENT_TIMESTAMP AS database_now"
                 )
                 database_now = cursor.fetchone()["database_now"]
                 cursor.execute(
@@ -5949,6 +7744,24 @@ class PostgresAuthorityStore:
 
     def _cursor(self) -> Cursor[Mapping[str, Any]]:
         return self._connection.cursor(row_factory=dict_row)
+
+    @staticmethod
+    def _acquire_transaction_lock(
+        cursor: Cursor[Mapping[str, Any]],
+        *,
+        namespace: str,
+        identity: str,
+    ) -> None:
+        """Serialize one immutable authority identity across DB connections."""
+
+        cursor.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(%s, 3536)
+            )
+            """,
+            ("{}:{}".format(namespace, identity),),
+        )
 
     def _get_case(
         self,
@@ -6292,6 +8105,754 @@ class PostgresAuthorityStore:
         return tuple(
             decode_query_binding(row["payload"])
             for row in cursor.fetchall()
+        )
+
+    def _latest_evidence_validity(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        evidence_record_id: str,
+        *,
+        for_update: bool = False,
+    ) -> EvidenceValidityRecord:
+        lock = sql.SQL(" FOR UPDATE OF v") if for_update else sql.SQL("")
+        cursor.execute(
+            sql.SQL(
+                """
+                SELECT v.payload
+                FROM waje_vnext.evidence_validity_records v
+                LEFT JOIN waje_vnext.evidence_validity_records successor
+                  ON successor.prior_evidence_validity_id
+                     = v.evidence_validity_id
+                WHERE v.evidence_record_id = %s
+                  AND successor.evidence_validity_id IS NULL
+                """
+            )
+            + lock,
+            (evidence_record_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise AuthorityNotFound(
+                "evidence validity head for {!r} does not exist".format(
+                    evidence_record_id
+                )
+            )
+        return decode_evidence_validity(row["payload"])
+
+    def _latest_obligation_satisfaction(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        obligation_id: str,
+        *,
+        for_update: bool = False,
+    ) -> ObligationSatisfactionRecord:
+        lock = sql.SQL(" FOR UPDATE") if for_update else sql.SQL("")
+        cursor.execute(
+            sql.SQL(
+                """
+                SELECT payload
+                FROM waje_vnext.obligation_satisfaction_records
+                WHERE obligation_id = %s
+                ORDER BY revision_number DESC
+                LIMIT 1
+                """
+            )
+            + lock,
+            (obligation_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise AuthorityNotFound(
+                "obligation satisfaction head for {!r} does not exist".format(
+                    obligation_id
+                )
+            )
+        return decode_obligation_satisfaction(row["payload"])
+
+    def _satisfaction_revision_number(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        satisfaction_id: str,
+    ) -> int:
+        cursor.execute(
+            """
+            SELECT revision_number
+            FROM waje_vnext.obligation_satisfaction_records
+            WHERE obligation_satisfaction_id = %s
+            """,
+            (satisfaction_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise AuthorityNotFound(
+                "obligation satisfaction {!r} does not exist".format(
+                    satisfaction_id
+                )
+            )
+        return row["revision_number"]
+
+    def _insert_evidence_admission(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        admission: EvidenceAdmissionRecord,
+    ) -> None:
+        payload = encode_record(admission)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="evidence_admission_records",
+            id_column="evidence_admission_id",
+            record_id=admission.evidence_admission_id,
+            columns=(
+                "profile",
+                "admission_status",
+                "evidence_record_id",
+                "evidence_record_content_sha256",
+                "capability_result_envelope_id",
+                "capability_result_envelope_content_sha256",
+                "capability_result_receipt_id",
+                "capability_result_receipt_content_sha256",
+                "obligation_id",
+                "obligation_content_sha256",
+                "query_binding_id",
+                "query_binding_content_sha256",
+                "plan_adoption_id",
+                "plan_adoption_content_sha256",
+                "authority_snapshot_content_sha256",
+                "case_id",
+                "accepted_question_revision_id",
+                "accepted_frame_revision_id",
+                "accepted_plan_revision_id",
+                "accepted_head_version",
+                "mailbox_authority_epoch",
+                "authority_fence_content_sha256",
+                "scope_relation",
+                "window_proof_sha256",
+                "exposure_proof_sha256",
+                "unit_proof_sha256",
+                "grain_proof_sha256",
+                "data_version_proof_sha256",
+                "effective_strength",
+                "policy_version",
+                "derived_input_sha256",
+                "content_sha256",
+                "payload",
+                "admitted_at",
+                "schema_epoch",
+            ),
+            values=(
+                admission.profile.value,
+                admission.status.value,
+                admission.evidence_record_id,
+                admission.evidence_record_content_sha256,
+                admission.capability_result_envelope_id,
+                admission.capability_result_envelope_content_sha256,
+                admission.capability_result_receipt_id,
+                admission.capability_result_receipt_content_sha256,
+                admission.obligation_id,
+                admission.obligation_content_sha256,
+                admission.query_binding_id,
+                admission.query_binding_content_sha256,
+                admission.plan_adoption_id,
+                admission.plan_adoption_content_sha256,
+                admission.authority_snapshot_content_sha256,
+                admission.authority_fence.case_id,
+                admission.authority_fence.accepted_question_revision_id,
+                admission.authority_fence.accepted_frame_revision_id,
+                admission.authority_fence.accepted_plan_revision_id,
+                admission.authority_snapshot.head_version,
+                admission.authority_fence.mailbox_authority_epoch,
+                admission.authority_fence_content_sha256,
+                admission.scope_relation_proof.relation.value,
+                admission.window_proof_sha256,
+                admission.exposure_proof_sha256,
+                admission.unit_proof_sha256,
+                admission.grain_proof_sha256,
+                admission.data_version_proof_sha256,
+                admission.effective_strength.value,
+                admission.policy_version,
+                admission.derived_input_sha256,
+                admission.content_sha256,
+                Jsonb(payload),
+                admission.admitted_at,
+                admission.schema_epoch,
+            ),
+            payload=payload,
+            label="evidence admission",
+        )
+
+    def _insert_evidence_validity(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        validity: EvidenceValidityRecord,
+    ) -> None:
+        payload = encode_record(validity)
+        try:
+            self._insert_idempotent_immutable(
+                cursor,
+                table="evidence_validity_records",
+                id_column="evidence_validity_id",
+                record_id=validity.evidence_validity_id,
+                columns=(
+                    "evidence_record_id",
+                    "evidence_admission_id",
+                    "evidence_admission_content_sha256",
+                    "prior_evidence_validity_id",
+                    "prior_evidence_validity_content_sha256",
+                    "validity_status",
+                    "reason_code",
+                    "policy_version",
+                    "content_sha256",
+                    "payload",
+                    "recorded_at",
+                    "schema_epoch",
+                ),
+                values=(
+                    validity.evidence_record_id,
+                    validity.evidence_admission_id,
+                    validity.evidence_admission_content_sha256,
+                    validity.prior_evidence_validity_id,
+                    validity.prior_evidence_validity_content_sha256,
+                    validity.status.value,
+                    validity.reason_code,
+                    validity.policy_version,
+                    validity.content_sha256,
+                    Jsonb(payload),
+                    validity.recorded_at,
+                    validity.schema_epoch,
+                ),
+                payload=payload,
+                label="Gate 3.5 evidence validity",
+            )
+        except errors.UniqueViolation as error:
+            raise AuthorityConflict(
+                "evidence validity chain already has a conflicting successor"
+            ) from error
+
+    def _insert_obligation_satisfaction(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        satisfaction: ObligationSatisfactionRecord,
+        *,
+        revision_number: int,
+    ) -> None:
+        payload = encode_record(satisfaction)
+        try:
+            self._insert_idempotent_immutable(
+                cursor,
+                table="obligation_satisfaction_records",
+                id_column="obligation_satisfaction_id",
+                record_id=satisfaction.obligation_satisfaction_id,
+                columns=(
+                    "obligation_id",
+                    "obligation_content_sha256",
+                    "revision_number",
+                    "prior_obligation_satisfaction_id",
+                    "prior_obligation_satisfaction_content_sha256",
+                    "satisfaction_status",
+                    "boundary_resolution_outcome_id",
+                    "input_set_sha256",
+                    "reason_code",
+                    "policy_version",
+                    "content_sha256",
+                    "payload",
+                    "recorded_at",
+                    "schema_epoch",
+                ),
+                values=(
+                    satisfaction.obligation_id,
+                    satisfaction.obligation_content_sha256,
+                    revision_number,
+                    satisfaction.prior_obligation_satisfaction_id,
+                    satisfaction.prior_obligation_satisfaction_content_sha256,
+                    satisfaction.status.value,
+                    satisfaction.boundary_resolution_outcome_id,
+                    satisfaction.input_set_sha256,
+                    satisfaction.reason_code,
+                    satisfaction.policy_version,
+                    satisfaction.content_sha256,
+                    Jsonb(payload),
+                    satisfaction.recorded_at,
+                    satisfaction.schema_epoch,
+                ),
+                payload=payload,
+                label="Gate 3.5 obligation satisfaction",
+            )
+        except errors.UniqueViolation as error:
+            raise AuthorityConflict(
+                "obligation satisfaction chain already has a conflicting successor"
+            ) from error
+
+    def _insert_workflow_snapshot(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        snapshot: WorkflowSnapshot,
+        *,
+        created_at: datetime,
+    ) -> None:
+        payload = encode_record(snapshot)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="workflow_projection_snapshots",
+            id_column="snapshot_id",
+            record_id=snapshot.snapshot_id,
+            columns=(
+                "case_id",
+                "applied_cursor",
+                "realm",
+                "evidence_profile",
+                "accepted_question_revision_id",
+                "accepted_question_content_sha256",
+                "accepted_frame_revision_id",
+                "accepted_frame_content_sha256",
+                "accepted_plan_revision_id",
+                "accepted_plan_content_sha256",
+                "accepted_plan_adoption_id",
+                "accepted_plan_adoption_sha256",
+                "publication_state",
+                "accepted_answer_version_id",
+                "delivery_state",
+                "projection_policy_version",
+                "projection_policy_sha256",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                snapshot.case.case_id,
+                snapshot.applied_cursor,
+                snapshot.realm.value,
+                snapshot.evidence_profile.value,
+                snapshot.accepted_question_revision_id,
+                snapshot.accepted_question_content_sha256,
+                snapshot.accepted_frame_revision_id,
+                snapshot.accepted_frame_content_sha256,
+                snapshot.accepted_plan_revision_id,
+                snapshot.accepted_plan_content_sha256,
+                snapshot.accepted_plan_adoption_id,
+                snapshot.accepted_plan_adoption_sha256,
+                snapshot.case.publication_state.value,
+                snapshot.case.accepted_answer_version_id,
+                snapshot.case.delivery_state.value,
+                snapshot.projection_policy_version,
+                snapshot.projection_policy_sha256,
+                snapshot.content_sha256,
+                Jsonb(payload),
+                created_at,
+                3,
+            ),
+            payload=payload,
+            label="workflow projection snapshot",
+        )
+
+    def _insert_answer_candidate(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        candidate: ProvisionalAnswerCandidate,
+    ) -> None:
+        payload = encode_record(candidate)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="provisional_answer_candidates",
+            id_column="answer_candidate_id",
+            record_id=candidate.answer_candidate_id,
+            columns=(
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "plan_adoption_id",
+                "plan_adoption_content_sha256",
+                "authority_snapshot_content_sha256",
+                "accepted_head_version",
+                "version_number",
+                "prior_answer_version_id",
+                "created_by_action_id",
+                "identity_version",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                candidate.case_id,
+                candidate.question_revision_id,
+                candidate.frame_revision_id,
+                candidate.plan_revision_id,
+                candidate.plan_adoption_id,
+                candidate.plan_adoption_content_sha256,
+                candidate.authority_snapshot_content_sha256,
+                candidate.accepted_head_version,
+                candidate.version_number,
+                candidate.prior_answer_version_id,
+                candidate.created_by_action_id,
+                candidate.identity_version,
+                candidate.content_sha256,
+                Jsonb(payload),
+                candidate.created_at,
+                candidate.schema_epoch,
+            ),
+            payload=payload,
+            label="provisional answer candidate",
+        )
+
+    def _insert_evidence_use(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        use: EvidenceUseBinding,
+    ) -> None:
+        payload = encode_record(use)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="evidence_use_bindings",
+            id_column="evidence_use_binding_id",
+            record_id=use.evidence_use_binding_id,
+            columns=(
+                "evidence_record_id",
+                "evidence_record_content_sha256",
+                "evidence_admission_id",
+                "evidence_admission_content_sha256",
+                "evidence_validity_id",
+                "evidence_validity_content_sha256",
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "estimand_id",
+                "evidence_requirement_id",
+                "obligation_id",
+                "resolution_outcome_id",
+                "answer_candidate_id",
+                "proposal_claim_key",
+                "scope_relation",
+                "requested_claim_strength",
+                "effective_claim_strength",
+                "policy_version",
+                "content_sha256",
+                "payload",
+                "bound_at",
+                "schema_epoch",
+            ),
+            values=(
+                use.evidence_record_id,
+                use.evidence_record_content_sha256,
+                use.evidence_admission_id,
+                use.evidence_admission_content_sha256,
+                use.evidence_validity_id,
+                use.evidence_validity_content_sha256,
+                use.case_id,
+                use.question_revision_id,
+                use.frame_revision_id,
+                use.plan_revision_id,
+                use.estimand_id,
+                use.evidence_requirement_id,
+                use.obligation_id,
+                use.resolution_outcome_id,
+                use.answer_candidate_id,
+                use.proposal_claim_key,
+                use.scope_relation_proof.relation.value,
+                use.requested_claim_strength.value,
+                use.effective_claim_strength.value,
+                use.policy_version,
+                use.content_sha256,
+                Jsonb(payload),
+                use.bound_at,
+                use.schema_epoch,
+            ),
+            payload=payload,
+            label="evidence use binding",
+        )
+
+    def _insert_claim_precheck(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        precheck: ClaimPrecheckRecord,
+    ) -> None:
+        payload = encode_record(precheck)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="claim_precheck_records",
+            id_column="claim_precheck_id",
+            record_id=precheck.claim_precheck_id,
+            columns=(
+                "answer_candidate_id",
+                "proposal_claim_key",
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "plan_adoption_id",
+                "authority_snapshot_content_sha256",
+                "target_estimand_id",
+                "requested_strength",
+                "effective_strength",
+                "precheck_status",
+                "policy_version",
+                "derived_input_sha256",
+                "content_sha256",
+                "payload",
+                "checked_at",
+                "schema_epoch",
+            ),
+            values=(
+                precheck.answer_candidate_id,
+                precheck.proposal_claim_key,
+                precheck.case_id,
+                precheck.question_revision_id,
+                precheck.frame_revision_id,
+                precheck.plan_revision_id,
+                precheck.plan_adoption_id,
+                precheck.authority_snapshot_content_sha256,
+                precheck.target_estimand_id,
+                precheck.requested_strength.value,
+                precheck.effective_strength.value,
+                precheck.status.value,
+                precheck.policy_version,
+                precheck.derived_input_sha256,
+                precheck.content_sha256,
+                Jsonb(payload),
+                precheck.checked_at,
+                precheck.schema_epoch,
+            ),
+            payload=payload,
+            label="claim precheck",
+        )
+
+    def _insert_answer(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        answer: AnswerVersion,
+    ) -> None:
+        payload = encode_record(answer)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="answer_versions",
+            id_column="answer_version_id",
+            record_id=answer.answer_version_id,
+            columns=(
+                "answer_candidate_id",
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "plan_adoption_id",
+                "accepted_head_version",
+                "version_number",
+                "prior_answer_version_id",
+                "status",
+                "identity_version",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                answer.answer_candidate_id,
+                answer.case_id,
+                answer.question_revision_id,
+                answer.frame_revision_id,
+                answer.plan_revision_id,
+                answer.plan_adoption_id,
+                answer.accepted_head_version,
+                answer.version_number,
+                answer.prior_answer_version_id,
+                answer.status.value,
+                answer.identity_version,
+                answer.content_sha256,
+                Jsonb(payload),
+                answer.created_at,
+                answer.schema_epoch,
+            ),
+            payload=payload,
+            label="Gate 3.5 answer",
+        )
+        prechecks = {
+            item.claim_precheck_id: item
+            for item in (
+                self._get_payload(
+                    cursor,
+                    table="claim_precheck_records",
+                    id_column="claim_precheck_id",
+                    record_id=precheck_id,
+                    label="claim precheck",
+                    decoder=decode_claim_precheck,
+                )
+                for precheck_id in answer.claim_precheck_ids
+            )
+        }
+        for claim_ordinal, claim in enumerate(answer.claims, start=1):
+            claim_payload = encode_record(claim)
+            precheck = prechecks[claim.claim_precheck_id]
+            self._insert_idempotent_immutable(
+                cursor,
+                table="answer_claim_records",
+                id_column="claim_id",
+                record_id=claim.claim_id,
+                columns=(
+                    "answer_version_id",
+                    "answer_candidate_id",
+                    "proposal_claim_key",
+                    "claim_ordinal",
+                    "claim_precheck_id",
+                    "claim_precheck_content_sha256",
+                    "target_estimand_id",
+                    "authority_path",
+                    "claim_strength",
+                    "content_sha256",
+                    "payload",
+                    "schema_epoch",
+                ),
+                values=(
+                    answer.answer_version_id,
+                    answer.answer_candidate_id,
+                    claim.proposal_claim_key,
+                    claim_ordinal,
+                    claim.claim_precheck_id,
+                    claim.claim_precheck_content_sha256,
+                    claim.target_estimand_id,
+                    (
+                        "evidence_use"
+                        if claim.evidence_use_binding_ids
+                        else "boundary"
+                    ),
+                    claim.claim_strength.value,
+                    claim.content_sha256,
+                    Jsonb(claim_payload),
+                    answer.schema_epoch,
+                ),
+                payload=claim_payload,
+                label="answer claim",
+            )
+            for ordinal, use_id in enumerate(
+                claim.evidence_use_binding_ids,
+                start=1,
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO
+                        waje_vnext.answer_claim_evidence_use_bindings (
+                            claim_id,
+                            evidence_use_binding_id,
+                            binding_ordinal
+                        ) VALUES (%s, %s, %s)
+                    ON CONFLICT (claim_id, evidence_use_binding_id)
+                    DO NOTHING
+                    """,
+                    (claim.claim_id, use_id, ordinal),
+                )
+            for ordinal, satisfaction_id in enumerate(
+                claim.boundary_satisfaction_record_ids,
+                start=1,
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO
+                        waje_vnext.answer_claim_boundary_satisfactions (
+                            claim_id,
+                            obligation_satisfaction_id,
+                            binding_ordinal
+                        ) VALUES (%s, %s, %s)
+                    ON CONFLICT (claim_id, obligation_satisfaction_id)
+                    DO NOTHING
+                    """,
+                    (claim.claim_id, satisfaction_id, ordinal),
+                )
+
+    def _insert_settlement_precondition(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        report: SettlementPreconditionReport,
+    ) -> None:
+        payload = encode_record(report)
+        self._insert_idempotent_immutable(
+            cursor,
+            table="settlement_precondition_reports",
+            id_column="settlement_precondition_report_id",
+            record_id=report.settlement_precondition_report_id,
+            columns=(
+                "profile",
+                "case_id",
+                "question_revision_id",
+                "frame_revision_id",
+                "plan_revision_id",
+                "plan_adoption_id",
+                "plan_adoption_content_sha256",
+                "accepted_head_version",
+                "answer_version_id",
+                "answer_version_content_sha256",
+                "trace_manifest_id",
+                "trace_manifest_content_sha256",
+                "precondition_status",
+                "derived_input_sha256",
+                "policy_version",
+                "content_sha256",
+                "payload",
+                "created_at",
+                "schema_epoch",
+            ),
+            values=(
+                EvidenceAdmissionProfile.CONFORMANCE.value,
+                report.case_id,
+                report.question_revision_id,
+                report.frame_revision_id,
+                report.plan_revision_id,
+                report.plan_adoption_id,
+                report.plan_adoption_content_sha256,
+                report.accepted_head_version,
+                report.answer_version_id,
+                report.answer_version_content_sha256,
+                report.trace_manifest_id,
+                report.trace_manifest_content_sha256,
+                report.status.value,
+                report.derived_input_sha256,
+                report.policy_version,
+                report.content_sha256,
+                Jsonb(payload),
+                report.created_at,
+                report.schema_epoch,
+            ),
+            payload=payload,
+            label="Gate 3.5 settlement precondition",
+        )
+
+    def _workflow_model_from_head_row(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        row: Mapping[str, Any],
+    ) -> WorkflowReadModel:
+        snapshot = self._get_payload(
+            cursor,
+            table="workflow_projection_snapshots",
+            id_column="snapshot_id",
+            record_id=row["snapshot_id"],
+            label="workflow projection snapshot",
+            decoder=decode_workflow_snapshot,
+        )
+        cursor.execute(
+            """
+            SELECT payload
+            FROM waje_vnext.workflow_application_receipts
+            WHERE case_id = %s
+              AND cursor <= %s
+            ORDER BY cursor
+            """,
+            (row["case_id"], row["last_applied_cursor"]),
+        )
+        receipts = tuple(
+            decode_workflow_application_receipt(item["payload"])
+            for item in cursor.fetchall()
+        )
+        return WorkflowReadModel(
+            head=WorkflowProjectionHead(
+                case_id=row["case_id"],
+                version=row["version"],
+                last_applied_cursor=row["last_applied_cursor"],
+                snapshot_id=row["snapshot_id"],
+                snapshot_sha256=row["snapshot_sha256"],
+                last_receipt_id=row["last_receipt_id"],
+            ),
+            snapshot=snapshot,
+            application_receipts=receipts,
         )
 
     def _get_evidence(

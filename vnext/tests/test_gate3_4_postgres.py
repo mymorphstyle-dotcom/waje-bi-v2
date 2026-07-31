@@ -13,8 +13,6 @@ import psycopg
 from gate1_fixtures import (
     NOW,
     accept_initial_question,
-    make_answer,
-    make_evidence,
     make_frame,
     make_measurement_design,
     record_reviewed_frame,
@@ -41,8 +39,6 @@ from waje_vnext.domain.events import JournalEventType
 from waje_vnext.domain.measurement import (
     MeasurementDerivationAuthority,
     ObligationExecutionDisposition,
-    ObligationSatisfactionRecord,
-    ObligationSatisfactionStatus,
 )
 from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletion,
@@ -52,6 +48,7 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationPlanBinding,
     ObligationScheduleRecord,
     ObligationTerminalStatus,
+    build_obligation_schedule_id,
     build_obligation_dispatch,
 )
 from waje_vnext.domain.planning import (
@@ -271,67 +268,6 @@ class Gate34PostgresStoreTest(unittest.TestCase):
         self.assertEqual(
             self.store.record_logical_execution_attempt(initial),
             initial,
-        )
-        evidence = replace(
-            make_evidence(
-                evidence_id=f"{self.case_id}:evidence:head-advance",
-                frame_id=bundle.plan.frame_revision_id,
-                plan_id=bundle.plan.plan_revision_id,
-                case_id=self.case_id,
-            ),
-            task_id=binding.task_id,
-        )
-        current_case = self.store.get_case(self.case_id)
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=current_case.head_version,
-            event_id=f"{self.case_id}:event:evidence:head-advance",
-            recorded_at=evidence.created_at,
-        )
-        answer = make_answer(
-            answer_id=f"{self.case_id}:answer:head-advance",
-            frame_id=bundle.plan.frame_revision_id,
-            plan_id=bundle.plan.plan_revision_id,
-            evidence_id=evidence.evidence_record_id,
-            case_id=self.case_id,
-        )
-        current_case = self.store.get_case(self.case_id)
-        self.store.accept_answer(
-            answer,
-            expected_head_version=current_case.head_version,
-            event_id=f"{self.case_id}:event:answer:head-advance",
-            recorded_at=answer.created_at,
-        )
-        satisfaction = ObligationSatisfactionRecord(
-            satisfaction_record_id=(
-                f"{self.case_id}:satisfaction:retry-sibling"
-            ),
-            obligation_id=spec.obligation_id,
-            status=ObligationSatisfactionStatus.OPEN,
-            evidence_admission_record_ids=(),
-            evidence_use_binding_ids=(),
-            resolution_boundary_outcome_id=None,
-            contradiction_disposition_refs=(),
-            verifier_policy_version="obligation-satisfaction.v1",
-            input_set_sha256=content_sha256(
-                {"obligation_id": spec.obligation_id, "status": "open"}
-            ),
-            created_at=NOW,
-        )
-        self.store.record_obligation_satisfaction(
-            satisfaction,
-            event_id=f"{self.case_id}:event:satisfaction:retry-sibling",
-        )
-        changed_snapshot = self.store.get_authority_snapshot(
-            self.case_id
-        )
-        self.assertGreater(
-            changed_snapshot.head_version,
-            accepted_snapshot.head_version,
-        )
-        self.assertGreater(
-            changed_snapshot.obligation_state_version,
-            accepted_snapshot.obligation_state_version,
         )
         retry = build_logical_execution_attempt(
             spec=spec,
@@ -924,9 +860,16 @@ class Gate34PostgresStoreTest(unittest.TestCase):
             schedule,
         )
 
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "schedule ID is not canonical",
+        ):
+            self.store.record_obligation_schedule(
+                replace(schedule, schedule_id="forged-schedule-id")
+            )
+
         forged_schedule = replace(
             schedule,
-            schedule_id=f"{schedule.schedule_id}:forged",
             plan_bindings=(
                 replace(
                     schedule.plan_bindings[0],
@@ -1214,10 +1157,21 @@ class Gate34PostgresStoreTest(unittest.TestCase):
             )
             for obligation in obligations
         )
+        correlation_id = f"{self.case_id}:run:1"
         return ObligationScheduleRecord(
-            schedule_id=f"{self.case_id}:schedule:1",
+            schedule_id=build_obligation_schedule_id(
+                case_id=self.case_id,
+                correlation_id=correlation_id,
+                frame_revision_id=bundle.plan.frame_revision_id,
+                plan_revision_id=bundle.plan.plan_revision_id,
+                plan_adoption_id=bundle.adoption.plan_adoption_id,
+                plan_adoption_content_sha256=(
+                    bundle.adoption.content_sha256
+                ),
+                authority=authority,
+            ),
             case_id=self.case_id,
-            correlation_id=f"{self.case_id}:run:1",
+            correlation_id=correlation_id,
             frame_revision_id=bundle.plan.frame_revision_id,
             plan_revision_id=bundle.plan.plan_revision_id,
             plan_adoption_id=bundle.adoption.plan_adoption_id,
@@ -1260,6 +1214,12 @@ class Gate34PostgresStoreTest(unittest.TestCase):
         outbox_message_id = (
             f"{self.case_id}:outbox:dispatch:{suffix}"
         )
+        dispatch_record_id = content_sha256(
+            {
+                "dispatch": dispatch.dispatch_id,
+                "outbox": outbox_message_id,
+            }
+        )
         event_payload = {
             key: value
             for key, value in payload.items()
@@ -1291,7 +1251,7 @@ class Gate34PostgresStoreTest(unittest.TestCase):
             ),
             recorded_at=NOW,
             action_id=None,
-            authority_ref=dispatch.dispatch_id,
+            authority_ref=dispatch_record_id,
             payload=event_payload,
             customer_projection=None,
             operation=event_operation,

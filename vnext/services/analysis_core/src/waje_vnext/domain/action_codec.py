@@ -22,6 +22,7 @@ from waje_vnext.domain.actions import (
     StopPayload,
 )
 from waje_vnext.domain.authority import DecisionOption
+from waje_vnext.domain.answering import NarrativeBlockProposal
 from waje_vnext.domain.measurement import MeasurementDesign
 from waje_vnext.domain.planning import ProposedWorkTask
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
@@ -238,7 +239,7 @@ def _decode_propose_answer(
 ) -> ProposeAnswerPayload:
     _require_exact_keys(
         value,
-        {"claims", "narrative_markdown"},
+        {"claims", "narrative_blocks"},
         "propose_answer payload",
     )
     return ProposeAnswerPayload(
@@ -246,37 +247,18 @@ def _decode_propose_answer(
             _decode_proposed_claim(_mapping(item, "proposed claim"))
             for item in _array(value, "claims")
         ),
-        narrative_markdown=_string(value, "narrative_markdown"),
+        narrative_blocks=tuple(
+            decode_typed_dataclass(
+                NarrativeBlockProposal,
+                _mapping(item, "narrative block"),
+            )
+            for item in _array(value, "narrative_blocks")
+        ),
     )
 
 
 def _decode_proposed_claim(value: Mapping[str, Any]) -> ProposedClaim:
-    _require_exact_keys(
-        value,
-        {
-            "claim_id",
-            "statement",
-            "applicability",
-            "evidence_record_ids",
-            "boundary_ref",
-            "limitations",
-        },
-        "proposed claim",
-    )
-    boundary_ref = value["boundary_ref"]
-    if boundary_ref is not None and not isinstance(boundary_ref, str):
-        raise TypeError("boundary_ref must be string or null")
-    return ProposedClaim(
-        claim_id=_string(value, "claim_id"),
-        statement=_string(value, "statement"),
-        applicability=_string(value, "applicability"),
-        evidence_record_ids=_string_tuple(
-            value,
-            "evidence_record_ids",
-        ),
-        boundary_ref=boundary_ref,
-        limitations=_string_tuple(value, "limitations"),
-    )
+    return decode_typed_dataclass(ProposedClaim, value)
 
 
 def _decode_stop(value: Mapping[str, Any]) -> StopPayload:

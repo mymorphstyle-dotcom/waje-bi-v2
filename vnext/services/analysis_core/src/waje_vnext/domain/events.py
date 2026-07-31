@@ -26,10 +26,13 @@ class JournalEventType(StrEnum):
     QUESTION_ACCEPTED = "question_accepted"
     FRAME_ACCEPTED = "frame_accepted"
     PLAN_ACCEPTED = "plan_accepted"
+    CAPABILITY_RESULT_LANDED = "capability_result_landed"
     EVIDENCE_RECORDED = "evidence_recorded"
+    EVIDENCE_ADMISSION_RECORDED = "evidence_admission_recorded"
     MEASUREMENT_RESOLUTION_RECORDED = "measurement_resolution_recorded"
     EVIDENCE_OBLIGATION_RECORDED = "evidence_obligation_recorded"
     EVIDENCE_VALIDITY_RECORDED = "evidence_validity_recorded"
+    EVIDENCE_USE_BOUND = "evidence_use_bound"
     OBLIGATION_SATISFACTION_RECORDED = (
         "obligation_satisfaction_recorded"
     )
@@ -42,10 +45,13 @@ class JournalEventType(StrEnum):
     SETTLEMENT_PRECONDITION_RECORDED = (
         "settlement_precondition_recorded"
     )
+    ANSWER_CANDIDATE_RECORDED = "answer_candidate_recorded"
+    CLAIM_PRECHECK_RECORDED = "claim_precheck_recorded"
     INTERPRETATION_RECORDED = "interpretation_recorded"
     USER_DECISION_RECORDED = "user_decision_recorded"
     REVIEWER_OBJECTION_RECORDED = "reviewer_objection_recorded"
     ANSWER_ACCEPTED = "answer_accepted"
+    WORKFLOW_PROJECTION_APPLIED = "workflow_projection_applied"
     CHECKPOINT_RECORDED = "checkpoint_recorded"
     EFFECT_ENQUEUED = "effect_enqueued"
     EFFECT_ATTEMPT_FAILED = "effect_attempt_failed"
@@ -97,3 +103,15 @@ class EventJournalEntry:
             if not isinstance(frozen_projection, Mapping):
                 raise TypeError("customer_projection must be a JSON object")
             object.__setattr__(self, "customer_projection", frozen_projection)
+
+    @property
+    def content_sha256(self) -> str:
+        return content_sha256(self)
+
+
+def journal_event_sha256(entry: EventJournalEntry) -> str:
+    """Return the immutable source identity consumed by read projections."""
+
+    if not isinstance(entry, EventJournalEntry):
+        raise TypeError("entry must be EventJournalEntry")
+    return entry.content_sha256

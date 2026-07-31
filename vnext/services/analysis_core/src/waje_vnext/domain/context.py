@@ -9,14 +9,13 @@ from typing import Mapping
 from .async_runtime import MailboxMessage
 from .authority import (
     AnalysisFrameRevision,
-    AnswerVersion,
     DecisionRecord,
-    EvidenceRecord,
     InvestigationCase,
     QuestionRevision,
     ReviewerObjection,
     WorkPlanRevision,
 )
+from .answering import AnswerVersion
 from .canonical import (
     FrozenJson,
     content_sha256,
@@ -27,6 +26,7 @@ from .canonical import (
     to_jsonable,
 )
 from .events import EventJournalEntry
+from .evidence import EvidenceRecord
 
 
 MAX_CONTEXT_EVENTS = 100
@@ -97,14 +97,14 @@ class ContextEvidenceItem:
     def from_record(cls, evidence: EvidenceRecord) -> "ContextEvidenceItem":
         return cls(
             evidence_record_id=evidence.evidence_record_id,
-            evidence_type=evidence.evidence_type.value,
-            strength=evidence.strength.value,
+            evidence_type=evidence.evidence_type_ref,
+            strength=evidence.evidence_strength.value,
             business_summary=evidence.business_summary,
-            limitation_count=len(evidence.limitations),
+            limitation_count=len(evidence.limitation_refs),
             frame_revision_id=evidence.frame_revision_id,
             plan_revision_id=evidence.plan_revision_id,
             task_id=evidence.task_id,
-            snapshot_release_ref=evidence.snapshot_release_ref,
+            snapshot_release_ref=evidence.data_context.snapshot_release_ref,
         )
 
 

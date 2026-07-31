@@ -20,7 +20,11 @@ from waje_vnext.domain.async_runtime import AsyncJobKind, AuthoritySnapshot
 from waje_vnext.domain.authority import CaseLifecycle
 from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.events import JournalEventType
-from waje_vnext.domain.measurement import ObligationExecutionDisposition
+from waje_vnext.domain.measurement import (
+    ClaimStrengthCeiling,
+    IdentificationLevel,
+    ObligationExecutionDisposition,
+)
 from waje_vnext.domain.measurement_resolver import (
     TrustedMeasurementResolver,
 )
@@ -158,17 +162,109 @@ def accepted_single_obligation_runtime(
     case_id: str,
     *,
     store: InMemoryAuthorityStore | None = None,
+    storage_clock=None,
     obligation_count: int = 1,
     typed_boundary: bool = False,
+    mixed_boundary: bool = False,
+    claim_strength_ceiling: ClaimStrengthCeiling = (
+        ClaimStrengthCeiling.DESCRIPTIVE
+    ),
 ):
+    if typed_boundary and mixed_boundary:
+        raise ValueError("typed_boundary and mixed_boundary are mutually exclusive")
     store = (
         InMemoryAuthorityStore(
-            resolution_input_verifier=make_trusted_verifier()
+            resolution_input_verifier=make_trusted_verifier(),
+            clock=storage_clock or (lambda: NOW),
         )
         if store is None
         else store
     )
     proposal = frame_proposal(case_id)
+    if claim_strength_ceiling is not ClaimStrengthCeiling.DESCRIPTIVE:
+        design = proposal.payload.measurement_design
+        identification = design.identifications[0]
+        identification_level = IdentificationLevel(
+            claim_strength_ceiling.value
+        )
+        if identification_level is IdentificationLevel.CAUSAL:
+            identification = replace(
+                identification,
+                level=identification_level,
+                counterfactual_ref="counterfactual:controlled-world:v1",
+                positivity_ref="positivity:controlled-world:v1",
+                consistency_ref="consistency:controlled-world:v1",
+                interference_ref="interference:controlled-world:v1",
+            )
+        else:
+            identification = replace(
+                identification,
+                level=identification_level,
+            )
+        proposal = replace(
+            proposal,
+            payload=replace(
+                proposal.payload,
+                measurement_design=replace(
+                    design,
+                    identifications=(identification,),
+                    estimands=tuple(
+                        replace(
+                            estimand,
+                            claim_strength_ceiling=(
+                                claim_strength_ceiling
+                            ),
+                        )
+                        for estimand in design.estimands
+                    ),
+                ),
+            ),
+        )
+    if mixed_boundary:
+        design = proposal.payload.measurement_design
+        base_requirement = design.evidence_requirements[0]
+        boundary_requirement = replace(
+            base_requirement,
+            evidence_requirement_id=f"requirement-{case_id}-boundary",
+            target_estimand_ids=(f"estimand-{case_id}-boundary",),
+            required_evidence_type_refs=(
+                f"evidence-type:{case_id}:boundary",
+            ),
+        )
+        base_estimand = design.estimands[0]
+        boundary_estimand = replace(
+            base_estimand,
+            estimand_id=f"estimand-{case_id}-boundary",
+            evidence_requirement_ids=(
+                boundary_requirement.evidence_requirement_id,
+            ),
+        )
+        completion = replace(
+            design.completion_specs[0],
+            target_estimand_ids=(
+                base_estimand.estimand_id,
+                boundary_estimand.estimand_id,
+            ),
+            required_evidence_requirement_ids=(
+                base_requirement.evidence_requirement_id,
+                boundary_requirement.evidence_requirement_id,
+            ),
+        )
+        proposal = replace(
+            proposal,
+            payload=replace(
+                proposal.payload,
+                measurement_design=replace(
+                    design,
+                    evidence_requirements=(
+                        base_requirement,
+                        boundary_requirement,
+                    ),
+                    estimands=(base_estimand, boundary_estimand),
+                    completion_specs=(completion,),
+                ),
+            ),
+        )
     if obligation_count > 1:
         design = proposal.payload.measurement_design
         requirement = design.evidence_requirements[0]
@@ -232,7 +328,24 @@ def accepted_single_obligation_runtime(
     frame = store.get_frame(frame_id)
     case = store.get_case(case_id)
     resolution_requests = None
-    if typed_boundary:
+    if mixed_boundary:
+        estimands = frame.measurement_design.estimands
+        resolution_requests = {
+            estimands[0].estimand_id: make_request(
+                frame,
+                anchor=date(2026, 7, 1),
+            ),
+            estimands[1].estimand_id: make_request(
+                frame,
+                anchor=date(2026, 7, 1),
+                expected="7",
+                observed="6",
+                valid="6",
+                invalid="0",
+                missing="1",
+            ),
+        }
+    elif typed_boundary:
         estimand_id = (
             frame.measurement_design.estimands[0].estimand_id
         )
@@ -316,6 +429,31 @@ def accepted_single_obligation_runtime(
 
 
 class ObligationSchedulerTest(unittest.TestCase):
+    def test_storage_rejects_noncanonical_schedule_identity(self) -> None:
+        (
+            _,
+            store,
+            scheduler,
+            _,
+            _,
+            _,
+        ) = accepted_single_obligation_runtime(
+            "case-obligation-canonical-schedule-id"
+        )
+        schedule = scheduler.create_schedule(
+            case_id="case-obligation-canonical-schedule-id",
+            causation_id="accepted-frame",
+            created_at=NOW,
+        )
+
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "schedule ID is not canonical",
+        ):
+            store.record_obligation_schedule(
+                replace(schedule, schedule_id="forged-schedule-id")
+            )
+
     def test_mixed_topology_only_selects_executable_obligations(self) -> None:
         frame, items = obligations()
         boundary = replace(
@@ -666,6 +804,16 @@ class ObligationSchedulerTest(unittest.TestCase):
         dispatch_record = store.list_obligation_dispatches(
             schedule.schedule_id
         )[0]
+        dispatch_event = next(
+            event
+            for event in store.list_events(schedule.case_id)
+            if event.event_type
+            is JournalEventType.OBLIGATION_DISPATCH_ENQUEUED
+        )
+        self.assertEqual(
+            dispatch_event.authority_ref,
+            dispatch_record.dispatch_record_id,
+        )
         forged_payload = dict(message.payload)
         forged_payload["obligation"] = {
             "forged": "different persisted obligation"

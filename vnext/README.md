@@ -25,7 +25,13 @@ npm ci
 npm run check
 npm run test:postgres
 npm run test:postgres:gate2
+npm run test:postgres:gate3.4
+npm run test:postgres:gate3.5
 ```
+
+`test:postgres:*` 使用一次性 PostgreSQL 17 容器验证 migration、事务回滚和
+PostgreSQL adapter；执行机器需要 Docker。G3.5 的标准入口为
+`npm run test:postgres:gate3.5`。
 
 verifier 会：
 
@@ -60,11 +66,16 @@ checkpoint/resume、authority epoch fence、job lease/outbox、effect retry 和 
 中断。command ingress 在短事务内持久化 mailbox + journal + controller wake，耗时 LLM
 与 effect 在事务外运行，authority admission 回到 case-scoped 串行提交通道。
 
-当前 worker 已具备 lease acquire/release、heartbeat storage API、expiry state 与
-stale-result fence。周期 heartbeat supervisor、expired-lease takeover 后的旧 fencing-token
-拒绝和通用 terminal job disposition 属于 Gate 3 G3.2 的 blocking work，不能据此宣称
-worker runtime 已生产完备。完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6
-完成产品验收。
+Gate 3 G3.1–G3.5 当前已实现 measurement authority、durable model/effect saga、
+obligation scheduler、Plan/QueryBinding 连续性、capability result T1/T2 Evidence
+admission、provisional Answer precheck、settlement precondition 与 journal-driven
+Workflow 四轴投影。该状态只代表 local implementation complete；G3.E0 formal admission
+继续派生 `deny_g3_1`。当前 conformance realm 可用于合同验收；production Evidence、
+settled publication 和 delivered Workflow 继续 fail closed，分别等待 Gate 4 与 Gate 5。
+`run_sensitivity` 在 selected sensitivity identity 进入 sealed dispatch/result 合同前也
+保持 fail closed。Workflow projector 直接消费 durable journal，通过 cursor receipt 与
+head CAS 恢复，不建立第二套 projection outbox authority。
+完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6 完成产品验收。
 
 真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：
 

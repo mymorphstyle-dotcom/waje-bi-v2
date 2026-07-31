@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:workflow:v1",
+  "title": "WAJE vNext Gate 3.5 workflow projection",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/WorkflowSnapshot"
+    },
+    {
+      "$ref": "#/$defs/WorkflowApplicationReceipt"
+    },
+    {
+      "$ref": "#/$defs/WorkflowProjectionHead"
+    },
+    {
+      "$ref": "#/$defs/WorkflowReadModel"
+    }
+  ],
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "WorkflowSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case",
+        "tasks",
+        "obligations",
+        "applied_cursor",
+        "realm",
+        "evidence_profile",
+        "accepted_plan_revision_id",
+        "accepted_question_revision_id",
+        "accepted_question_content_sha256",
+        "accepted_frame_revision_id",
+        "accepted_frame_content_sha256",
+        "accepted_plan_content_sha256",
+        "accepted_plan_adoption_id",
+        "accepted_plan_adoption_sha256",
+        "schema_version",
+        "projection_policy_version",
+        "projection_policy_sha256"
+      ],
+      "properties": {
+        "case": {
+          "$ref": "#/$defs/WorkflowCaseProjection"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowTaskProjection"
+          }
+        },
+        "obligations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowObligationProjection"
+          }
+        },
+        "applied_cursor": {
+          "type": "integer"
+        },
+        "realm": {
+          "type": "string",
+          "enum": [
+            "conformance"
+          ]
+        },
+        "evidence_profile": {
+          "type": "string",
+          "enum": [
+            "conformance",
+            "production"
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_question_content_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_content_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_content_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_adoption_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_adoption_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "projection_policy_version": {
+          "type": "string"
+        },
+        "projection_policy_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "WorkflowCaseProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "active_plan_revision_id",
+        "publication_state",
+        "accepted_answer_version_id",
+        "delivery_state"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "active_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publication_state": {
+          "type": "string",
+          "enum": [
+            "not_ready",
+            "provisional",
+            "settled",
+            "blocked"
+          ]
+        },
+        "accepted_answer_version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delivery_state": {
+          "type": "string",
+          "enum": [
+            "not_delivered",
+            "delivered",
+            "superseded"
+          ]
+        }
+      }
+    },
+    "WorkflowTaskProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "plan_revision_id",
+        "task_id",
+        "business_label",
+        "execution_state"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "business_label": {
+          "type": "string"
+        },
+        "execution_state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "superseded"
+          ]
+        }
+      }
+    },
+    "WorkflowObligationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "plan_revision_id",
+        "obligation_id",
+        "task_id",
+        "business_label",
+        "obligation_state"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "obligation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "business_label": {
+          "type": "string"
+        },
+        "obligation_state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "satisfied",
+            "boundary",
+            "blocked",
+            "superseded"
+          ]
+        }
+      }
+    },
+    "WorkflowApplicationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt_id",
+        "case_id",
+        "cursor",
+        "source_event_id",
+        "source_event_sha256",
+        "fact_id",
+        "fact_sha256",
+        "prior_receipt_id",
+        "prior_snapshot_sha256",
+        "resulting_snapshot_id",
+        "resulting_snapshot_sha256"
+      ],
+      "properties": {
+        "receipt_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "integer"
+        },
+        "source_event_id": {
+          "type": "string"
+        },
+        "source_event_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fact_id": {
+          "type": "string"
+        },
+        "fact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "prior_receipt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prior_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resulting_snapshot_id": {
+          "type": "string"
+        },
+        "resulting_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "WorkflowProjectionHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "version",
+        "last_applied_cursor",
+        "snapshot_id",
+        "snapshot_sha256",
+        "last_receipt_id"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "last_applied_cursor": {
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "last_receipt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "WorkflowReadModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head",
+        "snapshot",
+        "application_receipts"
+      ],
+      "properties": {
+        "head": {
+          "$ref": "#/$defs/WorkflowProjectionHead"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/WorkflowSnapshot"
+        },
+        "application_receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowApplicationReceipt"
+          }
+        }
+      }
+    }
+  }
+}

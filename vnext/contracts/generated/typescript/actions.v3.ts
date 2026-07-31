@@ -525,15 +525,31 @@ export interface DecisionOption {
 }
 export interface ProposeAnswerPayload {
   claims: ProposedClaim[];
-  narrative_markdown: string;
+  narrative_blocks: NarrativeBlockProposal[];
 }
 export interface ProposedClaim {
-  claim_id: string;
+  proposal_claim_key: string;
   statement: string;
-  applicability: string;
-  evidence_record_ids: string[];
-  boundary_ref: string | null;
-  limitations: string[];
+  target_estimand_id: string;
+  obligation_ids: string[];
+  evidence_selections: EvidenceSelection[];
+  applicability_scope: ScopeExpression;
+  requested_strength: "boundary_only" | "descriptive" | "accounting" | "associational" | "causal";
+  boundary_satisfaction_record_ids: string[];
+  limitation_refs: string[];
+  contradiction_refs: string[];
+  falsification_refs: string[];
+  reversal_refs: string[];
+  depends_on_proposal_claim_keys: string[];
+}
+export interface EvidenceSelection {
+  evidence_record_id: string;
+  role_ref: string;
+}
+export interface NarrativeBlockProposal {
+  block_key: string;
+  markdown: string;
+  proposal_claim_keys: string[];
 }
 export interface StopPayload {
   reason: string;

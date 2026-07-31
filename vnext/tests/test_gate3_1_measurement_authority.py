@@ -12,8 +12,6 @@ from gate1_fixtures import (
     NOW,
     QUESTION_TEXT,
     accept_initial_question,
-    make_answer,
-    make_evidence,
     make_frame,
     make_measurement_design,
     make_operation,
@@ -39,13 +37,9 @@ from waje_vnext.domain.identity import (
 )
 from waje_vnext.domain.measurement import (
     AmbiguousLocalTimePolicy,
-    EvidenceValidityRecord,
-    EvidenceValidityStatus,
     ExposureBasis,
     ExposureFactSourceKind,
     MeasurementResolutionOutcome,
-    ObligationSatisfactionRecord,
-    ObligationSatisfactionStatus,
     ObligationExecutionDisposition,
     ResolvedEvidenceObligation,
     ResolvedExposureFact,
@@ -54,8 +48,6 @@ from waje_vnext.domain.measurement import (
     ResolutionContext,
     ResolutionOutcomeKind,
     ScopeExpression,
-    SettlementPreconditionReport,
-    SettlementPreconditionStatus,
 )
 from waje_vnext.storage import (
     InMemoryAuthorityStore,
@@ -705,101 +697,6 @@ class MeasurementStorageTest(unittest.TestCase):
                 expected_head_version=self.case.head_version,
                 event_id="event-resolution-untrusted-rehash",
             )
-
-    def test_evidence_validity_is_an_append_only_cas_chain(self) -> None:
-        evidence = make_evidence()
-        self.store.record_evidence(
-            evidence,
-            expected_head_version=self.case.head_version,
-            event_id="event-evidence",
-            recorded_at=NOW,
-        )
-        first = EvidenceValidityRecord(
-            evidence_validity_record_id="validity-1",
-            evidence_record_id=evidence.evidence_record_id,
-            prior_validity_record_id=None,
-            status=EvidenceValidityStatus.ADMITTED_VALID,
-            reason_code="admission_passed",
-            source_authority_ref="frame-1",
-            verifier_policy_version="evidence-validity.v1",
-            expected_prior_content_sha256=None,
-            created_at=NOW,
-        )
-        self.store.record_evidence_validity(
-            first,
-            event_id="event-validity-1",
-        )
-        second = EvidenceValidityRecord(
-            evidence_validity_record_id="validity-2",
-            evidence_record_id=evidence.evidence_record_id,
-            prior_validity_record_id=first.evidence_validity_record_id,
-            status=EvidenceValidityStatus.SUPERSEDED,
-            reason_code="authority_head_moved",
-            source_authority_ref="frame-2",
-            verifier_policy_version="evidence-validity.v1",
-            expected_prior_content_sha256=first.content_sha256,
-            created_at=NOW,
-        )
-        self.store.record_evidence_validity(
-            second,
-            event_id="event-validity-2",
-        )
-
-        with self.assertRaisesRegex(
-            InvalidAuthorityTransition,
-            "current disposition",
-        ):
-            self.store.record_evidence_validity(
-                replace(
-                    second,
-                    evidence_validity_record_id="validity-fork",
-                    prior_validity_record_id=first.evidence_validity_record_id,
-                ),
-                event_id="event-validity-fork",
-            )
-
-    def test_precondition_report_cannot_settle_or_change_identity(self) -> None:
-        report = SettlementPreconditionReport(
-            settlement_precondition_report_id="precondition-1",
-            case_id="case-1",
-            question_revision_id=self.question.question_revision_id,
-            frame_revision_id=self.frame.frame_revision_id,
-            plan_revision_id=self.plan.plan_revision_id,
-            accepted_head_version=self.case.head_version,
-            semantic_measurement_ids=self.frame.semantic_measurement_ids,
-            authority_binding_ids=self.frame.authority_binding_ids,
-            resolution_outcome_ids=(),
-            logical_execution_ids=(),
-            obligation_satisfaction_record_ids=(),
-            evidence_compatibility_proof_ids=(),
-            objection_disposition_ids=(),
-            trace_manifest_id="trace:gate3-precondition",
-            verifier_policy_version="settlement-precondition.v1",
-            status=SettlementPreconditionStatus.BLOCKED,
-            fail_reason_codes=("gate5_not_implemented",),
-            derived_input_sha256=SHA_A,
-            created_at=NOW,
-        )
-        self.store.record_settlement_precondition(
-            report,
-            expected_head_version=self.case.head_version,
-            event_id="event-precondition",
-        )
-        with self.assertRaisesRegex(
-            InvalidAuthorityTransition,
-            "changes frame identity",
-        ):
-            self.store.record_settlement_precondition(
-                replace(
-                    report,
-                    settlement_precondition_report_id="precondition-forged",
-                    semantic_measurement_ids=(SHA_E,),
-                ),
-                expected_head_version=self.case.head_version,
-                event_id="event-precondition-forged",
-            )
-        with self.assertRaisesRegex(ValueError, "Gate 3"):
-            make_answer(status=make_answer().status.SETTLED)
 
     def test_question_correction_clears_all_downstream_heads(self) -> None:
         payload = {"message": "改为比较自然周，并重新定义时间口径。"}
