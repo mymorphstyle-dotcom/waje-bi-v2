@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/case-file-authority.v1.schema.json",
+  "title": "WAJE Gate 3 case-file authorities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_version",
+    "authorities"
+  ],
+  "properties": {
+    "artifact_version": {
+      "const": "gate3.case-file-authority.v1"
+    },
+    "authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/authority"
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_id",
+        "authority_slot_id",
+        "source_mode",
+        "status",
+        "evaluation_clock",
+        "scope_claim_target_ids",
+        "agent_projection",
+        "evaluator_projection",
+        "required_reviews",
+        "mutates_runtime_capability_ledger"
+      ],
+      "properties": {
+        "authority_id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9-]+$"
+        },
+        "authority_slot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "source_mode": {
+          "enum": [
+            "frozen_real_snapshot",
+            "controlled_synthetic_fixture"
+          ]
+        },
+        "status": {
+          "enum": [
+            "authoring",
+            "independently_reviewed"
+          ]
+        },
+        "evaluation_clock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "as_of_instant",
+            "target_business_date",
+            "business_timezone",
+            "business_day_boundary"
+          ],
+          "properties": {
+            "as_of_instant": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "target_business_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "business_timezone": {
+              "const": "Africa/Lagos"
+            },
+            "business_day_boundary": {
+              "const": "[00:00, 24:00)"
+            }
+          }
+        },
+        "dataset_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "contract_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "scope_claim_target_ids": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "fixture_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "agent_projection": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evaluator_projection": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "required_reviews": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "business_owner",
+              "measurement_reviewer"
+            ]
+          }
+        },
+        "mutates_runtime_capability_ledger": {
+          "const": false
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "materializations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/materialization"
+          }
+        },
+        "review_records": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/reviewRecord"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "independently_reviewed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "content_sha256",
+              "materializations",
+              "review_records"
+            ]
+          }
+        }
+      ]
+    },
+    "identityValues": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "snapshot_release_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "coverage_watermark_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "query_result_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fixture_version_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fixture_content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "authority_version_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_ref",
+        "artifact_ref",
+        "artifact_content_sha256",
+        "identity_values"
+      ],
+      "properties": {
+        "source_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "artifact_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "artifact_content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "identity_values": {
+          "$ref": "#/$defs/identityValues"
+        }
+      }
+    },
+    "reviewRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "role",
+        "principal_id",
+        "verdict",
+        "reviewed_content_sha256"
+      ],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "role": {
+          "enum": [
+            "business_owner",
+            "measurement_reviewer"
+          ]
+        },
+        "principal_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "verdict": {
+          "const": "approved"
+        },
+        "reviewed_content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

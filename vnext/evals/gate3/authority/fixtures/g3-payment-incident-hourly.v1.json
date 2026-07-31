@@ -1,0 +1,100 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1",
+  "fixture_version_ref": "fixture://wajegame/payment-incident-hourly/v1",
+  "business_timezone": "Africa/Lagos",
+  "incident": {
+    "incident_id": "PAY-INC-20260602-01",
+    "payment_channel": "fixture_channel_p",
+    "started_at": "2026-06-02T12:10:00+01:00",
+    "ended_at": "2026-06-02T14:20:00+01:00",
+    "recovery_started_at": "2026-06-02T14:20:00+01:00",
+    "recovery_ended_at": "2026-06-02T18:00:00+01:00",
+    "mechanism": "terminal callback loss for one routed payment channel"
+  },
+  "hourly_aggregates": [
+    {
+      "hour": "2026-06-02T10:00:00+01:00",
+      "phase": "pre",
+      "attempts": 1000,
+      "successful_orders": 810,
+      "successful_paid_amount_ngn": 1620000
+    },
+    {
+      "hour": "2026-06-02T11:00:00+01:00",
+      "phase": "pre",
+      "attempts": 1020,
+      "successful_orders": 816,
+      "successful_paid_amount_ngn": 1632000
+    },
+    {
+      "hour": "2026-06-02T12:00:00+01:00",
+      "phase": "incident",
+      "attempts": 1040,
+      "successful_orders": 590,
+      "successful_paid_amount_ngn": 1180000
+    },
+    {
+      "hour": "2026-06-02T13:00:00+01:00",
+      "phase": "incident",
+      "attempts": 1100,
+      "successful_orders": 440,
+      "successful_paid_amount_ngn": 880000
+    },
+    {
+      "hour": "2026-06-02T14:00:00+01:00",
+      "phase": "incident_and_recovery",
+      "attempts": 1080,
+      "successful_orders": 620,
+      "successful_paid_amount_ngn": 1240000
+    },
+    {
+      "hour": "2026-06-02T15:00:00+01:00",
+      "phase": "recovery",
+      "attempts": 1060,
+      "successful_orders": 920,
+      "successful_paid_amount_ngn": 1840000
+    },
+    {
+      "hour": "2026-06-02T16:00:00+01:00",
+      "phase": "recovery",
+      "attempts": 1030,
+      "successful_orders": 890,
+      "successful_paid_amount_ngn": 1780000
+    }
+  ],
+  "full_day_summary": {
+    "observed_attempts": 24000,
+    "observed_successful_orders": 19050,
+    "observed_successful_paid_amount_ngn": 38100000,
+    "baseline_expected_paid_amount_ngn": 39000000,
+    "compensating_paid_amount_ngn": 1000000,
+    "full_day_residual_paid_amount_ngn": -900000
+  },
+  "counterfactual_range": {
+    "success_rate_lower": 0.75,
+    "success_rate_upper": 0.85,
+    "lost_paid_amount_lower_ngn": 750000,
+    "lost_paid_amount_upper_ngn": 1250000,
+    "basis": "pre-incident and same-weekday channel success-rate envelope"
+  },
+  "evaluator_oracle": {
+    "affected_attempts_are_directly_observed": true,
+    "lost_amount_requires_range": true,
+    "process_anomaly_direction": "negative",
+    "full_day_residual_direction": "negative",
+    "recovery_payments_must_not_be_counted_as_original_incident_success": true
+  },
+  "agent_projection": {
+    "expose": [
+      "incident",
+      "hourly_aggregates",
+      "full_day_summary",
+      "counterfactual_range"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

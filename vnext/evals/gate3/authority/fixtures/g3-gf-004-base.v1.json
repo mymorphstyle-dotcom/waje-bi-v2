@@ -1,0 +1,219 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-004-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-004-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-04-05",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-004",
+    "episode_id": "G3-GF-004",
+    "binding_id": "fixture_g3_gf_004_base",
+    "authority_slot_id": "fixture_g3_gf_004_base_v1",
+    "scope_claim_target_ids": [
+      "unequal_exposure_raw_total_claim",
+      "normalized_operating_intensity_claim",
+      "matched_exposure_sensitivity_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-004-01",
+      "state": "available",
+      "description": "付费金额单位为 NGN",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-004-02",
+      "state": "available",
+      "description": "valid exposure 为通过日终质量检查的业务日",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-004-03",
+      "state": "available",
+      "description": "总额和日均金额是两个独立 estimand",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-004-04",
+      "state": "available",
+      "description": "comparability policy 要求方向性经营判断优先使用 exposure-normalized measure",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-004-01",
+      "description": "4 月前 5 个 valid days 总额 5000 NGN，日均 1000 NGN",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-004-02",
+      "description": "3 月末 7 个 valid days 总额 6300 NGN，日均 900 NGN",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-004-03",
+      "description": "population、币种、渠道和价格合同一致",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-004-01",
+        "statement": "raw total 下降 20.63%，主要来自少 2 个有效观察日；日均经营强度上升 11.11%。若以经营是否变差为决策目标，当前数据支持强度改善，同时总规模尚不能与 7 日总额直接比较。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "unequal_exposure_raw_total_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_004_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-004-BASE-V1",
+          "CONTRACT-G3-GF-004-01",
+          "CONTRACT-G3-GF-004-02",
+          "CONTRACT-G3-GF-004-03",
+          "CONTRACT-G3-GF-004-04",
+          "DC-G3-GF-004-01",
+          "DC-G3-GF-004-02",
+          "DC-G3-GF-004-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-004-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "任一窗口 total、calendar days 或 valid observed days 改变。",
+          "raw total 被误用于经营强度方向。"
+        ]
+      },
+      {
+        "claim_target_id": "normalized_operating_intensity_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_004_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-004-BASE-V1",
+          "CONTRACT-G3-GF-004-01",
+          "CONTRACT-G3-GF-004-02",
+          "CONTRACT-G3-GF-004-03",
+          "CONTRACT-G3-GF-004-04",
+          "DC-G3-GF-004-01",
+          "DC-G3-GF-004-02",
+          "DC-G3-GF-004-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-004-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "valid exposure 定义改变或存在未记录缺失日。",
+          "matched-window sensitivity 产生反向结论。"
+        ]
+      },
+      {
+        "claim_target_id": "matched_exposure_sensitivity_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_004_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-004-BASE-V1",
+          "CONTRACT-G3-GF-004-01",
+          "CONTRACT-G3-GF-004-02",
+          "CONTRACT-G3-GF-004-03",
+          "CONTRACT-G3-GF-004-04",
+          "DC-G3-GF-004-01",
+          "DC-G3-GF-004-02",
+          "DC-G3-GF-004-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-004-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "3 月最后五个 valid days 的强度与七日平均方向不一致。",
+          "匹配规则或实际日期改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

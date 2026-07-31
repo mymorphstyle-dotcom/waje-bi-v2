@@ -1,0 +1,134 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-ADV-007-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-007-base-v1/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-ADV-007",
+    "episode_id": "G3-ADV-007",
+    "binding_id": "fixture_g3_adv_007_base",
+    "authority_slot_id": "adv_007_activity_effect",
+    "scope_claim_target_ids": [
+      "activity_period_gross_uplift_claim",
+      "activity_exposure_normalized_net_claim",
+      "activity_effectiveness_claim",
+      "activity_reference_sensitivity_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-ADV-007-01",
+      "state": "available",
+      "description": "活动参与资格在用户资格和充值奖励层均有记录",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-007-02",
+      "state": "available",
+      "description": "支付成功金额、成熟净付费金额、付费订单数、付费用户数和活动 exposure 可用",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-007-03",
+      "state": "available",
+      "description": "去年同期存在活动但折扣结构不同",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-007-04",
+      "state": "partial",
+      "description": "部分渠道未参加活动，但需求季节性和支付可用性结构不同",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-ADV-007-05",
+      "state": "missing",
+      "description": "没有用户级随机 holdout",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-ADV-007-01",
+      "description": "活动期总付费金额上涨 25%",
+      "discoverability": "provided_to_agent",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-007-02",
+      "description": "活动 exposure 上涨 40%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ADV-007-03",
+      "description": "每千次合格访问净付费金额下降",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-007-04",
+      "description": "参与渠道增长，未参与渠道也因季节性增长",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ADV-007-05",
+      "description": "部分高付费渠道活动前支付能力受限、活动期恢复支付可用性",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "material"
+    }
+  ],
+  "query_result_surfaces": [
+    {
+      "period": "prior_two_weeks",
+      "gross_paid_amount_index": 100,
+      "eligible_visit_exposure_index": 100,
+      "mature_net_per_1000_eligible_visits_index": 100
+    },
+    {
+      "period": "activity",
+      "gross_paid_amount_index": 125,
+      "eligible_visit_exposure_index": 140,
+      "mature_net_per_1000_eligible_visits_index": 92
+    },
+    {
+      "reference": "non_participating_channels",
+      "gross_paid_amount_index": 108,
+      "comparability": "seasonality_and_payment_availability_differ"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-ADV-007-01",
+        "statement": "raw total 上涨主要由流量和支付可用性恢复驱动，exposure-normalized 表现没有改善。去年同期和未参与渠道都只能提供有局限的敏感性参照。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "observable_contracts",
+      "observable_conditions",
+      "query_result_surfaces"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:async-runtime:v1",
+  "title": "WAJE vNext durable async command contracts v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/mailboxMessage"
+    },
+    {
+      "$ref": "#/$defs/mailboxHead"
+    },
+    {
+      "$ref": "#/$defs/messageIngressReceipt"
+    },
+    {
+      "$ref": "#/$defs/jobLease"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "operationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "causation_id",
+        "correlation_id",
+        "authority_revision",
+        "payload_sha256"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/id"
+        },
+        "causation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "mailboxMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message_id",
+        "case_id",
+        "sequence",
+        "authority_epoch",
+        "kind",
+        "operation",
+        "payload",
+        "created_at"
+      ],
+      "properties": {
+        "message_id": {
+          "$ref": "#/$defs/id"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authority_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "user_message",
+            "user_correction",
+            "user_challenge",
+            "user_scope_revision"
+          ]
+        },
+        "operation": {
+          "$ref": "#/$defs/operationIdentity"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "mailboxHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "last_sequence",
+        "authority_epoch",
+        "updated_at"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "last_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "authority_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "messageIngressReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "run_id",
+        "message_id",
+        "operation_id",
+        "mailbox_sequence",
+        "authority_epoch",
+        "event_cursor"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/id"
+        },
+        "message_id": {
+          "$ref": "#/$defs/id"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "mailbox_sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authority_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_cursor": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "jobLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_message_id",
+        "owner_id",
+        "fencing_token",
+        "acquired_at",
+        "heartbeat_at",
+        "expires_at"
+      ],
+      "properties": {
+        "outbox_message_id": {
+          "$ref": "#/$defs/id"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/id"
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "acquired_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "heartbeat_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

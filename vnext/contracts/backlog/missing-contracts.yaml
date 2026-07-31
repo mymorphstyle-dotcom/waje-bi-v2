@@ -1,0 +1,52 @@
+contract_version: "gate3.v1"
+artifact: vnext_missing_contract_backlog
+review_status: authoring
+scope: >
+  Gate 3-owned registry of known WAJEgame data-contract gaps. This file is
+  part of the isolated vNext implementation and carries no dependency on the
+  historical repository contract tree.
+
+backlog:
+  - backlog_id: active_user_semantic_family
+    data_contract_state: missing_contract
+    title: Define active, paid-active and gameplay-active metric identities.
+
+  - backlog_id: canonical_payer_identity_contract
+    data_contract_state: missing_contract
+    title: Define privacy-safe canonical payer identity and deduplication.
+
+  - backlog_id: cross_country_product_scope_contract
+    data_contract_state: missing_contract
+    title: Define cross-country and cross-product comparison scope.
+
+  - backlog_id: exposure_control_contracts
+    data_contract_state: missing_contract
+    title: Define governed exposure, control and counterfactual assignment.
+
+  - backlog_id: gameplay_metric_contracts
+    data_contract_state: missing_contract
+    title: Define gameplay metric identity and paid-amount linkage.
+
+  - backlog_id: ggr_decomposition_residual_components
+    data_contract_state: missing_contract
+    title: Define governed FX, finance-reclassification, and other residual components for gameplay GGR reconciliation.
+
+  - backlog_id: hourly_time_distribution_contracts
+    data_contract_state: missing_contract
+    title: Define hourly event-time coverage and business-time mapping.
+
+  - backlog_id: paid_active_retention_cohort_contract
+    data_contract_state: missing_contract
+    title: Define paid-active retention and reactivation cohorts.
+
+  - backlog_id: product_operation_event_contracts
+    data_contract_state: missing_contract
+    title: Define product, activity, acquisition and release event timelines.
+
+  - backlog_id: refund_or_reversal_policy
+    data_contract_state: missing_contract
+    title: Define refund, reversal, chargeback and cancellation adjustments.
+
+  - backlog_id: user_level_funnel_event_contract
+    data_contract_state: missing_contract
+    title: Define user-level acquisition, registration and first-pay funnel events.

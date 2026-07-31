@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/github-provider-state.v1.schema.json",
+  "title": "WAJE Gate 3 GitHub provider state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "trust_domain",
+    "repository_id",
+    "repository_owner_id",
+    "trusted_source_ref",
+    "trusted_environment",
+    "trusted_workflow_path",
+    "trusted_workflow_revision",
+    "current_release_epoch",
+    "approved_admission_authority_sha256",
+    "gh_executable_sha256",
+    "trusted_root_sha256",
+    "minimum_trust_policy_epoch",
+    "previous_admission_sha256",
+    "previous_provider_state_sha256",
+    "state_version",
+    "valid_from",
+    "valid_until",
+    "maximum_request_age_seconds",
+    "maximum_attestation_delay_seconds",
+    "clock_skew_seconds"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "gate3_github_provider_state"
+    },
+    "artifact_version": {
+      "const": "gate3.github-provider-state.v1"
+    },
+    "trust_domain": {
+      "const": "waje-gate3-github-public"
+    },
+    "repository_id": {
+      "type": "integer",
+      "const": 1317104320
+    },
+    "repository_owner_id": {
+      "type": "integer",
+      "const": 278493004
+    },
+    "trusted_source_ref": {
+      "const": "refs/heads/main"
+    },
+    "trusted_environment": {
+      "const": "gate3-admission"
+    },
+    "trusted_workflow_path": {
+      "const": ".github/workflows/gate3-protected-admission.yml"
+    },
+    "trusted_workflow_revision": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "current_release_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "approved_admission_authority_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "gh_executable_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "trusted_root_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "minimum_trust_policy_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_admission_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "previous_provider_state_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "maximum_request_age_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2592000
+    },
+    "maximum_attestation_delay_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 604800
+    },
+    "clock_skew_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

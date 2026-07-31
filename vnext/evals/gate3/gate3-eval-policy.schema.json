@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/gate3-eval-policy.v4.schema.json",
+  "title": "WAJE Gate 3 Evaluation Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_version",
+    "policy_epoch",
+    "coverage_taxonomy",
+    "corpus_authority",
+    "promotion_requirements",
+    "required_suite",
+    "calibration_policy",
+    "held_out_policy",
+    "run_policy"
+  ],
+  "properties": {
+    "policy_version": {
+      "const": "gate3.behavior-eval-policy.v4"
+    },
+    "policy_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coverage_taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_version",
+        "canonical_sha256"
+      ],
+      "properties": {
+        "artifact_version": {
+          "const": "gate3.coverage-taxonomy.v1"
+        },
+        "canonical_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "corpus_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_required",
+        "run_manifest_can_weaken_expectations",
+        "eval_failure_auto_promotes_runtime_guardrail",
+        "held_out_content_visible_to_prompt_development",
+        "reviewer_authority_roots",
+        "source_authority_roots",
+        "manifest_authority_roots"
+      ],
+      "properties": {
+        "review_required": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "business_owner",
+              "measurement_reviewer"
+            ]
+          }
+        },
+        "run_manifest_can_weaken_expectations": {
+          "const": false
+        },
+        "eval_failure_auto_promotes_runtime_guardrail": {
+          "const": false
+        },
+        "held_out_content_visible_to_prompt_development": {
+          "const": false
+        },
+        "reviewer_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reviewerAuthorityRoot"
+          }
+        },
+        "source_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sourceAuthorityRoot"
+          }
+        },
+        "manifest_authority_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/manifestAuthorityRoot"
+          }
+        }
+      }
+    },
+    "promotion_requirements": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "const": true
+      }
+    },
+    "required_suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_catalog_episodes",
+        "required_business_domain",
+        "required_candidate_files",
+        "coverage_group_counts",
+        "required_factor_group_refs",
+        "required_question_family_refs",
+        "required_source_modes",
+        "minimum_independent_sources",
+        "counterfactual_siblings_per_episode",
+        "required_counterfactual_roles_per_episode",
+        "multi_turn_episodes",
+        "critical_risk_episodes",
+        "transfer_research_is_non_gating"
+      ],
+      "properties": {
+        "required_catalog_episodes": {
+          "const": 36
+        },
+        "required_business_domain": {
+          "const": "wajegame"
+        },
+        "required_candidate_files": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^wajegame_[a-z_]+_episodes\\.json$"
+          }
+        },
+        "coverage_group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "launch_question",
+            "business_chain",
+            "measurement_regression",
+            "authority_stress"
+          ],
+          "properties": {
+            "launch_question": {
+              "const": 8
+            },
+            "business_chain": {
+              "const": 10
+            },
+            "measurement_regression": {
+              "const": 10
+            },
+            "authority_stress": {
+              "const": 8
+            }
+          }
+        },
+        "required_factor_group_refs": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "required_question_family_refs": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "required_source_modes": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "minimum_independent_sources": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "counterfactual_siblings_per_episode": {
+          "type": "integer",
+          "minimum": 3
+        },
+        "required_counterfactual_roles_per_episode": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "multi_turn_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "critical_risk_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transfer_research_is_non_gating": {
+          "const": true
+        }
+      }
+    },
+    "calibration_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_evaluator_profile_ref",
+        "minimum_episodes",
+        "minimum_critical_episodes",
+        "minimum_noncritical_episodes",
+        "minimum_base_variants",
+        "minimum_counterfactual_variants",
+        "minimum_human_non_pass_labels",
+        "required_human_verdicts",
+        "minimum_grader_human_agreement_basis_points",
+        "critical_false_passes_allowed",
+        "calibration_reviewer_must_be_role_dedicated",
+        "calibration_reviewer_must_be_independent_from_episode_reviewers",
+        "all_selected_role_profiles_must_be_distinct"
+      ],
+      "properties": {
+        "required_evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "minimum_episodes": {
+          "type": "integer",
+          "minimum": 12
+        },
+        "minimum_critical_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_noncritical_episodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_base_variants": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_counterfactual_variants": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_human_non_pass_labels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "required_human_verdicts": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "pass",
+              "fail",
+              "blocked",
+              "invalid"
+            ]
+          },
+          "allOf": [
+            {
+              "contains": {
+                "const": "pass"
+              }
+            },
+            {
+              "contains": {
+                "const": "fail"
+              }
+            },
+            {
+              "contains": {
+                "const": "blocked"
+              }
+            }
+          ]
+        },
+        "minimum_grader_human_agreement_basis_points": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "critical_false_passes_allowed": {
+          "const": 0
+        },
+        "calibration_reviewer_must_be_role_dedicated": {
+          "const": true
+        },
+        "calibration_reviewer_must_be_independent_from_episode_reviewers": {
+          "const": true
+        },
+        "all_selected_role_profiles_must_be_distinct": {
+          "const": true
+        }
+      }
+    },
+    "held_out_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_episodes",
+        "minimum_independent_sources",
+        "external_encrypted_objects_required",
+        "promotion_receipt_required",
+        "source_attestation_required",
+        "independent_double_review_required",
+        "promotion_receipt_must_be_externally_authorized"
+      ],
+      "properties": {
+        "minimum_episodes": {
+          "type": "integer",
+          "minimum": 12
+        },
+        "minimum_independent_sources": {
+          "type": "integer",
+          "minimum": 3
+        },
+        "external_encrypted_objects_required": {
+          "const": true
+        },
+        "promotion_receipt_required": {
+          "const": true
+        },
+        "source_attestation_required": {
+          "const": true
+        },
+        "independent_double_review_required": {
+          "const": true
+        },
+        "promotion_receipt_must_be_externally_authorized": {
+          "const": true
+        }
+      }
+    },
+    "run_policy": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": [
+          "boolean",
+          "integer"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nonEmptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "authorityReceipt": {
+      "type": "object",
+      "required": [
+        "authority_root_id",
+        "receipt_ref",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "authority_root_id": {
+          "$ref": "#/$defs/id"
+        },
+        "receipt_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "reviewerAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "principal_id",
+            "authorized_roles"
+          ],
+          "properties": {
+            "principal_id": {
+              "type": "string",
+              "pattern": "^REVIEWER-[A-Z0-9-]+$"
+            },
+            "authorized_roles": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "business_owner",
+                  "measurement_reviewer",
+                  "calibration_reviewer"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourceAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "authorized_source_pools"
+          ],
+          "properties": {
+            "authorized_source_pools": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "manifestAuthorityRoot": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/authorityReceipt"
+        },
+        {
+          "type": "object",
+          "required": [
+            "authorized_artifact_types"
+          ],
+          "properties": {
+            "authorized_artifact_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

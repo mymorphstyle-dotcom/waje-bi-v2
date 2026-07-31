@@ -1,0 +1,1150 @@
+{
+  "artifact_version": "gate3.authority-observation-bundle.v1",
+  "bundle_id": "BUNDLE-G3-USER-008-AUTHORITY-REPAIR-V1",
+  "episode_id": "G3-USER-008",
+  "source_authority_id": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+  "schedule_id": "SCHEDULE-G3-AUTHORITY-REPAIR-V1",
+  "fixture_ref": "fixture://wajegame/run-evidence-repair/v1",
+  "gate_contract": {
+    "gate_stage": "G3",
+    "authority_state": "provisional",
+    "answer_status": "provisional",
+    "workflow_state": "provisional",
+    "delivery_state": "withheld",
+    "disposition_scope": "claim"
+  },
+  "accepted_authority": {
+    "case_ref": "case:g3-user-008-prior",
+    "analysis_cycle_ref": "cycle:g3-user-008-cycle-1",
+    "question_revision_ref": "question:qrev-g3-user-008-1",
+    "frame_revision_ref": "frame:frev-g3-user-008-1",
+    "plan_revision_ref": "plan:prev-g3-user-008-1"
+  },
+  "observations": [
+    {
+      "observation_id": "OBS-G3-USER-008-01",
+      "sequence": 1,
+      "milestone_id": "MS-G3-01-INGRESS",
+      "kind": "ingress_received",
+      "occurred_at": "2026-06-03T09:30:30+01:00",
+      "observed_at": "2026-06-03T09:30:30+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [],
+      "authority_refs": [
+        "case:g3-user-008-prior",
+        "question:qrev-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:ingress-g3-user-008-1",
+        "idempotency_key": "g3-user-008-ingress-1",
+        "payload_sha256": "783ccdb9c75c9d01336ea3cd31ca878480a3c250066d765fac469d27c601e807",
+        "payload": {
+          "business_facts": [
+            "The user asks whether quality defects overturn the prior total and channel claims."
+          ],
+          "idempotency_key": "g3-user-008-ingress-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "ingress_anchored",
+        "appended_object_refs": [
+          "ingress:g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The challenge request is anchored to the prior case and its two business claims."
+      },
+      "details": {
+        "business_facts": [
+          "The user asks whether quality defects overturn the prior total and channel claims."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-02",
+      "sequence": 2,
+      "milestone_id": "MS-G3-02-FRAME-ACCEPT",
+      "kind": "frame_accepted",
+      "occurred_at": "2026-06-03T08:31:10+01:00",
+      "observed_at": "2026-06-03T09:31:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-01"
+      ],
+      "authority_refs": [
+        "question:qrev-g3-user-008-1",
+        "frame:frev-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:frame-accepted-g3-user-008-1",
+        "idempotency_key": "g3-user-008-frame-accept-1",
+        "payload_sha256": "7cd5e070a4900ac0c9938ec77003930e01044e7fc14c9e823e4d9ebda61461a3",
+        "payload": {
+          "business_facts": [
+            "The correction uses the existing observation unit and deduplication contract."
+          ],
+          "idempotency_key": "g3-user-008-frame-accept-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "accepted_revision_advanced",
+        "appended_object_refs": [
+          "frame:frev-g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The canonical-payment-order frame is accepted for this cycle."
+      },
+      "details": {
+        "business_facts": [
+          "The correction uses the existing observation unit and deduplication contract."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-03",
+      "sequence": 3,
+      "milestone_id": "MS-G3-03-PLAN-ACCEPT",
+      "kind": "plan_accepted",
+      "occurred_at": "2026-06-03T08:31:20+01:00",
+      "observed_at": "2026-06-03T09:31:20+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-02"
+      ],
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:plan-accepted-g3-user-008-1",
+        "idempotency_key": "g3-user-008-plan-accept-1",
+        "payload_sha256": "982f0803e87131239015e34ee1040a43723b88b6b4a06382ad3dba06bef3216a",
+        "payload": {
+          "business_facts": [
+            "Both tasks use the same accepted frame and release."
+          ],
+          "idempotency_key": "g3-user-008-plan-accept-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "accepted_revision_advanced",
+        "appended_object_refs": [
+          "plan:prev-g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The accepted plan binds total recomputation and channel sensitivity tasks."
+      },
+      "details": {
+        "business_facts": [
+          "Both tasks use the same accepted frame and release."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-04",
+      "sequence": 4,
+      "milestone_id": "MS-G3-04-INITIAL-EFFECT",
+      "kind": "effect_recorded",
+      "occurred_at": "2026-06-03T08:33:00+01:00",
+      "observed_at": "2026-06-03T09:33:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-03"
+      ],
+      "authority_refs": [
+        "plan:prev-g3-user-008-1",
+        "query:qspec-g3-user-008-initial-1",
+        "result:result-g3-user-008-initial-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-effect-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-effect-1",
+        "payload_sha256": "c0eefb1214ca4355119f84ae55e90ff19b63c0491d3aa94f3c4b58b2f567be4c",
+        "payload": {
+          "business_facts": [
+            "The unrepaired effect reports 30 percent growth and Channel A first."
+          ],
+          "idempotency_key": "g3-user-008-initial-effect-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "capability_effect_appended",
+        "appended_object_refs": [
+          "result:result-g3-user-008-initial-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The initial result records NGN 1300 target amount against NGN 1000 baseline."
+      },
+      "details": {
+        "business_facts": [
+          "The unrepaired effect reports 30 percent growth and Channel A first."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-05",
+      "sequence": 5,
+      "milestone_id": "MS-G3-05-INITIAL-EVIDENCE",
+      "kind": "evidence_admitted",
+      "occurred_at": "2026-06-03T08:34:10+01:00",
+      "observed_at": "2026-06-03T09:34:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-04"
+      ],
+      "authority_refs": [
+        "evidence:evidence-g3-user-008-total-1",
+        "evidence:evidence-g3-user-008-channel-1",
+        "result:result-g3-user-008-initial-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-evidence-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-evidence-1",
+        "payload_sha256": "0b7a2fd24ba89a67e52840b38a67d9e424535ddbcd58c104a2a8345fdd6f8f82",
+        "payload": {
+          "business_facts": [
+            "Each evidence record binds the accepted frame, plan, query, result and release."
+          ],
+          "idempotency_key": "g3-user-008-initial-evidence-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "evidence_record_appended",
+        "appended_object_refs": [
+          "evidence:evidence-g3-user-008-total-1",
+          "evidence:evidence-g3-user-008-channel-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "Initial total and channel evidence records are admitted as immutable objects."
+      },
+      "details": {
+        "business_facts": [
+          "Each evidence record binds the accepted frame, plan, query, result and release."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-06",
+      "sequence": 6,
+      "milestone_id": "MS-G3-06-INITIAL-REVIEW",
+      "kind": "review_recorded",
+      "occurred_at": "2026-06-03T08:34:30+01:00",
+      "observed_at": "2026-06-03T09:34:30+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-05"
+      ],
+      "authority_refs": [
+        "evidence:evidence-g3-user-008-total-1",
+        "evidence:evidence-g3-user-008-channel-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-review-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-review-1",
+        "payload_sha256": "71a7ef9f7fc3825b0e5937c2d51f3d08926eef9aa7f0abb602fcf62fb5d2ff6f",
+        "payload": {
+          "business_facts": [
+            "No correction is visible at initial review time."
+          ],
+          "idempotency_key": "g3-user-008-initial-review-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "review_appended",
+        "appended_object_refs": [
+          "review:g3-user-008-initial-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The initial review accepts the two claims subject to future quality events."
+      },
+      "details": {
+        "business_facts": [
+          "No correction is visible at initial review time."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-07",
+      "sequence": 7,
+      "milestone_id": "MS-G3-07-INITIAL-DISPOSITION",
+      "kind": "claim_disposition_recorded",
+      "occurred_at": "2026-06-03T08:34:40+01:00",
+      "observed_at": "2026-06-03T09:34:40+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-06"
+      ],
+      "authority_refs": [
+        "review:g3-user-008-initial-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-disposition-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-disposition-1",
+        "payload_sha256": "8fdad312fa07c481e4a7da0f4eb443f9050477f13e0ce2e31948bb4d4b51f6ee",
+        "payload": {
+          "business_facts": [
+            "The initial claim states do not authorize final publication."
+          ],
+          "idempotency_key": "g3-user-008-initial-disposition-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "claim_disposition_appended",
+        "appended_object_refs": [
+          "disposition:g3-user-008-total-initial",
+          "disposition:g3-user-008-channel-initial"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "Initial dispositions are recorded independently for the total and channel claims."
+      },
+      "details": {
+        "business_facts": [
+          "The initial claim states do not authorize final publication."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-08",
+      "sequence": 8,
+      "milestone_id": "MS-G3-08-INITIAL-ANSWER",
+      "kind": "answer_appended",
+      "occurred_at": "2026-06-03T08:35:00+01:00",
+      "observed_at": "2026-06-03T09:35:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-07"
+      ],
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "answer:answer-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-answer-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-answer-1",
+        "payload_sha256": "96a19b48c0e122d3e27806e41a05dc26282b392d2d5355da01618611ba150fb3",
+        "payload": {
+          "business_facts": [
+            "The answer reports 30 percent growth and Channel A as the largest increment."
+          ],
+          "idempotency_key": "g3-user-008-initial-answer-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "answer_version_appended",
+        "appended_object_refs": [
+          "answer:answer-g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The first provisional answer version is appended."
+      },
+      "details": {
+        "business_facts": [
+          "The answer reports 30 percent growth and Channel A as the largest increment."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-09",
+      "sequence": 9,
+      "milestone_id": "MS-G3-09-INITIAL-WORKFLOW",
+      "kind": "workflow_projected",
+      "occurred_at": "2026-06-03T08:35:10+01:00",
+      "observed_at": "2026-06-03T09:35:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-08"
+      ],
+      "authority_refs": [
+        "answer:answer-g3-user-008-1",
+        "workflow:workflow-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:initial-workflow-g3-user-008-1",
+        "idempotency_key": "g3-user-008-initial-workflow-1",
+        "payload_sha256": "aa7aa5921036202351507268cb0dfd6a704cbb4aafcf59ea2e9331d77532c255",
+        "payload": {
+          "business_facts": [
+            "The projection is customer-safe and retains internal authority references on the server."
+          ],
+          "idempotency_key": "g3-user-008-initial-workflow-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "workflow_projection_advanced",
+        "appended_object_refs": [
+          "workflow:workflow-g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The workflow points at the first answer while external delivery remains withheld."
+      },
+      "details": {
+        "business_facts": [
+          "The projection is customer-safe and retains internal authority references on the server."
+        ],
+        "boundary_codes": []
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-10",
+      "sequence": 10,
+      "milestone_id": "MS-G3-10-CORRECTION",
+      "kind": "correction_appended",
+      "occurred_at": "2026-06-03T09:41:00+01:00",
+      "observed_at": "2026-06-03T09:42:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-04",
+        "OBS-G3-USER-008-05"
+      ],
+      "authority_refs": [
+        "event:correction-g3-user-008-1",
+        "evidence:evidence-g3-user-008-total-1",
+        "evidence:evidence-g3-user-008-channel-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:correction-g3-user-008-1",
+        "idempotency_key": "g3-user-008-correction-1",
+        "payload_sha256": "732f0cbdf30e28582bcd335f0fdb620f21048712670f3d7ef6833861d726b59b",
+        "payload": {
+          "business_facts": [
+            "A repeated Channel A order contributes NGN 150 to the initial target amount."
+          ],
+          "idempotency_key": "g3-user-008-correction-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "correction_relation_appended",
+        "appended_object_refs": [
+          "validity:g3-user-008-correction-1"
+        ],
+        "invalidated_object_refs": [
+          "evidence:evidence-g3-user-008-total-1",
+          "evidence:evidence-g3-user-008-channel-1"
+        ],
+        "superseded_object_refs": [],
+        "note": "The correction invalidates both initial evidence records without rewriting them."
+      },
+      "details": {
+        "business_facts": [
+          "A repeated Channel A order contributes NGN 150 to the initial target amount."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ],
+        "source_event_ref": "event:correction-g3-user-008-1"
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-11",
+      "sequence": 11,
+      "milestone_id": "MS-G3-11-LATE",
+      "kind": "late_event_admitted",
+      "occurred_at": "2026-06-03T08:55:00+01:00",
+      "observed_at": "2026-06-03T09:43:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-10"
+      ],
+      "authority_refs": [
+        "event:late-payment-status-g3-user-008-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "claim_refs": [
+        "claim:payment-maturity-quality"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:late-payment-status-g3-user-008-1",
+        "idempotency_key": "g3-user-008-late-payment-1",
+        "payload_sha256": "82d024c94306f6234c19b82a5dea27554d53140228785a6326f2ab9f40a7d72e",
+        "payload": {
+          "business_facts": [
+            "The event arrives 2880 seconds after its source occurrence time."
+          ],
+          "idempotency_key": "g3-user-008-late-payment-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "late_source_event_appended",
+        "appended_object_refs": [
+          "event:late-payment-status-g3-user-008-1"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The late terminal-status event is retained with both clocks and has no effect on the repaired total population."
+      },
+      "details": {
+        "business_facts": [
+          "The event arrives 2880 seconds after its source occurrence time."
+        ],
+        "boundary_codes": [
+          "immature_payment_status"
+        ],
+        "source_event_ref": "event:late-payment-status-g3-user-008-1",
+        "lateness_seconds": 2880
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-12",
+      "sequence": 12,
+      "milestone_id": "MS-G3-12-DUPLICATE",
+      "kind": "duplicate_rejected",
+      "occurred_at": "2026-06-03T09:44:00+01:00",
+      "observed_at": "2026-06-03T09:44:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-10"
+      ],
+      "authority_refs": [
+        "event:correction-g3-user-008-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "rejected_duplicate",
+      "event_identity": {
+        "source_event_ref": "event:correction-g3-user-008-duplicate-1",
+        "idempotency_key": "g3-user-008-correction-1",
+        "payload_sha256": "732f0cbdf30e28582bcd335f0fdb620f21048712670f3d7ef6833861d726b59b",
+        "payload": {
+          "business_facts": [
+            "A repeated Channel A order contributes NGN 150 to the initial target amount."
+          ],
+          "idempotency_key": "g3-user-008-correction-1"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "duplicate_ignored",
+        "appended_object_refs": [],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The replay shares the admitted correction idempotency key and creates no authority object."
+      },
+      "details": {
+        "business_facts": [
+          "The correction is applied exactly once."
+        ],
+        "boundary_codes": [],
+        "duplicate_of_observation_id": "OBS-G3-USER-008-10"
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-13",
+      "sequence": 13,
+      "milestone_id": "MS-G3-13-RESTART",
+      "kind": "restart_replayed",
+      "occurred_at": "2026-06-03T09:45:00+01:00",
+      "observed_at": "2026-06-03T09:45:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-10",
+        "OBS-G3-USER-008-12"
+      ],
+      "authority_refs": [
+        "question:qrev-g3-user-008-1",
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "validity:g3-user-008-correction-1"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:restart-g3-user-008-2",
+        "idempotency_key": "g3-user-008-restart-2",
+        "payload_sha256": "72c1686c1902d509456be0ed3ca56595a3afb7838073323b8082dcfae3004bcf",
+        "payload": {
+          "business_facts": [
+            "Completed ingress, acceptance and correction milestones are replayed without duplicate effects."
+          ],
+          "idempotency_key": "g3-user-008-restart-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "restart_lineage_appended",
+        "appended_object_refs": [
+          "restart:g3-user-008-attempt-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [],
+        "note": "The new attempt resumes from persisted authority and retains the accepted frame and plan."
+      },
+      "details": {
+        "business_facts": [
+          "Completed ingress, acceptance and correction milestones are replayed without duplicate effects."
+        ],
+        "boundary_codes": [],
+        "restart_of_run_attempt_ref": "run:g3-user-008-attempt-1"
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-14",
+      "sequence": 14,
+      "milestone_id": "MS-G3-14-REPAIR-EFFECT",
+      "kind": "effect_recorded",
+      "occurred_at": "2026-06-03T09:47:00+01:00",
+      "observed_at": "2026-06-03T09:47:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-10",
+        "OBS-G3-USER-008-13"
+      ],
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "result:result-g3-user-008-repair-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-effect-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-effect-2",
+        "payload_sha256": "04161196a4338f49629242c0f6eaed0ecaaf0bcd4739c18293b6e105d9c9757c",
+        "payload": {
+          "business_facts": [
+            "Repaired growth is 15 percent and the positive total direction remains."
+          ],
+          "idempotency_key": "g3-user-008-repair-effect-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "capability_effect_appended",
+        "appended_object_refs": [
+          "result:result-g3-user-008-repair-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "result:result-g3-user-008-initial-1"
+        ],
+        "note": "The recomputed result removes NGN 150 and records NGN 1150 target amount."
+      },
+      "details": {
+        "business_facts": [
+          "Repaired growth is 15 percent and the positive total direction remains."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ]
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-15",
+      "sequence": 15,
+      "milestone_id": "MS-G3-15-REPAIR-EVIDENCE",
+      "kind": "evidence_admitted",
+      "occurred_at": "2026-06-03T09:48:10+01:00",
+      "observed_at": "2026-06-03T09:48:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-14"
+      ],
+      "authority_refs": [
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2",
+        "result:result-g3-user-008-repair-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment",
+        "claim:channel-coverage-quality",
+        "claim:high-value-sensitivity"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-evidence-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-evidence-2",
+        "payload_sha256": "250f4790af24e61c553ab09dd537bcef248bdf1734726c005c8c9493cc035945",
+        "payload": {
+          "business_facts": [
+            "The total evidence remains quantified while channel ranking evidence is bounded."
+          ],
+          "idempotency_key": "g3-user-008-repair-evidence-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "evidence_record_appended",
+        "appended_object_refs": [
+          "evidence:evidence-g3-user-008-total-2",
+          "evidence:evidence-g3-user-008-channel-quality-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "evidence:evidence-g3-user-008-total-1",
+          "evidence:evidence-g3-user-008-channel-1"
+        ],
+        "note": "Replacement evidence records are appended with explicit prior-record lineage."
+      },
+      "details": {
+        "business_facts": [
+          "The total evidence remains quantified while channel ranking evidence is bounded."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ]
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-16",
+      "sequence": 16,
+      "milestone_id": "MS-G3-16-REPAIR-REVIEW",
+      "kind": "review_recorded",
+      "occurred_at": "2026-06-03T09:49:00+01:00",
+      "observed_at": "2026-06-03T09:49:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-15"
+      ],
+      "authority_refs": [
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment",
+        "claim:provenance-integrity",
+        "claim:payment-maturity-quality",
+        "claim:channel-coverage-quality",
+        "claim:high-value-sensitivity",
+        "claim:claim-disposition-audit",
+        "claim:repair-republication"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-review-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-review-2",
+        "payload_sha256": "15781089ca9c6bf166efac96dbbf89174fb8c1aad1bca106c0b55b62f3958c2e",
+        "payload": {
+          "business_facts": [
+            "The local channel defect does not propagate to the full-sample total claim."
+          ],
+          "idempotency_key": "g3-user-008-repair-review-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "review_appended",
+        "appended_object_refs": [
+          "review:g3-user-008-repair-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "review:g3-user-008-initial-1"
+        ],
+        "note": "The repaired review keeps the total direction and rejects the channel ranking."
+      },
+      "details": {
+        "business_facts": [
+          "The local channel defect does not propagate to the full-sample total claim."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ]
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-17",
+      "sequence": 17,
+      "milestone_id": "MS-G3-17-REPAIR-DISPOSITION",
+      "kind": "claim_disposition_recorded",
+      "occurred_at": "2026-06-03T09:49:20+01:00",
+      "observed_at": "2026-06-03T09:49:20+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-16"
+      ],
+      "authority_refs": [
+        "review:g3-user-008-repair-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment",
+        "claim:provenance-integrity",
+        "claim:payment-maturity-quality",
+        "claim:channel-coverage-quality",
+        "claim:high-value-sensitivity",
+        "claim:claim-disposition-audit",
+        "claim:repair-republication"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-disposition-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-disposition-2",
+        "payload_sha256": "060cddabd8645420372297ecdf1d109e1ffd5043f20061c6ec4290f1d6fa5b96",
+        "payload": {
+          "business_facts": [
+            "Total magnitude is recomputed, channel ranking is revoked and quality boundaries remain local."
+          ],
+          "idempotency_key": "g3-user-008-repair-disposition-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "claim_disposition_appended",
+        "appended_object_refs": [
+          "disposition:g3-user-008-total-repair",
+          "disposition:g3-user-008-channel-repair",
+          "disposition:g3-user-008-provenance-repair",
+          "disposition:g3-user-008-maturity-repair",
+          "disposition:g3-user-008-channel-quality-repair",
+          "disposition:g3-user-008-high-value-repair",
+          "disposition:g3-user-008-audit-repair",
+          "disposition:g3-user-008-republication-repair"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "disposition:g3-user-008-total-initial",
+          "disposition:g3-user-008-channel-initial"
+        ],
+        "note": "Every affected claim receives its own repaired disposition."
+      },
+      "details": {
+        "business_facts": [
+          "Total magnitude is recomputed, channel ranking is revoked and quality boundaries remain local."
+        ],
+        "boundary_codes": [
+          "immature_payment_status",
+          "partial_attribution_mapping"
+        ]
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-18",
+      "sequence": 18,
+      "milestone_id": "MS-G3-18-REPAIR-ANSWER",
+      "kind": "answer_appended",
+      "occurred_at": "2026-06-03T09:50:00+01:00",
+      "observed_at": "2026-06-03T09:50:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-17"
+      ],
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "answer:answer-g3-user-008-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:provenance-integrity",
+        "claim:payment-maturity-quality",
+        "claim:channel-coverage-quality",
+        "claim:high-value-sensitivity",
+        "claim:claim-disposition-audit",
+        "claim:repair-republication"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-answer-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-answer-2",
+        "payload_sha256": "0d016ea3e239cfa9c768e7b8e21384f465927cc4e506727ba68ad1ec9cc7b3ea",
+        "payload": {
+          "business_facts": [
+            "The old answer remains immutable and replayable."
+          ],
+          "idempotency_key": "g3-user-008-repair-answer-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "answer_version_appended",
+        "appended_object_refs": [
+          "answer:answer-g3-user-008-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "answer:answer-g3-user-008-1"
+        ],
+        "note": "The repaired provisional answer keeps 15 percent growth and withholds the channel ranking."
+      },
+      "details": {
+        "business_facts": [
+          "The old answer remains immutable and replayable."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ]
+      }
+    },
+    {
+      "observation_id": "OBS-G3-USER-008-19",
+      "sequence": 19,
+      "milestone_id": "MS-G3-19-REPAIR-WORKFLOW",
+      "kind": "workflow_projected",
+      "occurred_at": "2026-06-03T09:50:10+01:00",
+      "observed_at": "2026-06-03T09:50:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "causation_observation_ids": [
+        "OBS-G3-USER-008-18"
+      ],
+      "authority_refs": [
+        "answer:answer-g3-user-008-2",
+        "workflow:workflow-g3-user-008-2"
+      ],
+      "claim_refs": [
+        "claim:paid-amount-growth",
+        "claim:channel-a-largest-increment"
+      ],
+      "admission_decision": "admitted",
+      "event_identity": {
+        "source_event_ref": "event:repair-workflow-g3-user-008-2",
+        "idempotency_key": "g3-user-008-repair-workflow-2",
+        "payload_sha256": "095e5211c98485a90b18ddc2a249bab0b1d11b79c901082c4be337b83b98e37e",
+        "payload": {
+          "business_facts": [
+            "The repaired chronology remains replayable across both run attempts."
+          ],
+          "idempotency_key": "g3-user-008-repair-workflow-2"
+        }
+      },
+      "authority_effect": {
+        "effect_kind": "workflow_projection_advanced",
+        "appended_object_refs": [
+          "workflow:workflow-g3-user-008-2"
+        ],
+        "invalidated_object_refs": [],
+        "superseded_object_refs": [
+          "workflow:workflow-g3-user-008-1"
+        ],
+        "note": "The workflow advances to the repaired answer while external delivery remains withheld."
+      },
+      "details": {
+        "business_facts": [
+          "The repaired chronology remains replayable across both run attempts."
+        ],
+        "boundary_codes": [
+          "partial_attribution_mapping"
+        ]
+      }
+    }
+  ],
+  "claim_dispositions": [
+    {
+      "disposition_ref": "disposition:g3-user-008-total-repair",
+      "claim_ref": "claim:paid-amount-growth",
+      "claim_target_ids": [
+        "deduplication_sensitivity_claim",
+        "prior_total_growth_claim_validity_claim"
+      ],
+      "disposition": "recomputed_provisional",
+      "previous_disposition_ref": "disposition:g3-user-008-total-initial",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-total-2"
+      ],
+      "boundary_codes": [],
+      "reason": "Duplicate removal changes the magnitude from 30 percent to 15 percent while preserving the positive direction.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-channel-repair",
+      "claim_ref": "claim:channel-a-largest-increment",
+      "claim_target_ids": [
+        "channel_coverage_quality_claim",
+        "high_value_sensitivity_claim",
+        "prior_channel_driver_claim_validity_claim"
+      ],
+      "disposition": "revoked",
+      "previous_disposition_ref": "disposition:g3-user-008-channel-initial",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [
+        "partial_attribution_mapping"
+      ],
+      "reason": "Channel mapping and high-value payer sensitivity can reverse the ranking.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-provenance-repair",
+      "claim_ref": "claim:provenance-integrity",
+      "claim_target_ids": [
+        "provenance_integrity_claim"
+      ],
+      "disposition": "supported_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [],
+      "reason": "The prior question, frame, plan, query, result, evidence, answer and workflow references remain replayable.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-maturity-repair",
+      "claim_ref": "claim:payment-maturity-quality",
+      "claim_target_ids": [
+        "payment_maturity_quality_claim"
+      ],
+      "disposition": "supported_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-total-2"
+      ],
+      "boundary_codes": [
+        "immature_payment_status"
+      ],
+      "reason": "The late terminal-status event is outside the admitted total population and does not change the repaired total.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-channel-quality-repair",
+      "claim_ref": "claim:channel-coverage-quality",
+      "claim_target_ids": [
+        "channel_coverage_quality_claim"
+      ],
+      "disposition": "boundary_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [
+        "partial_attribution_mapping"
+      ],
+      "reason": "The channel-specific conclusion is bounded until mapping coverage and ranking stability are restored.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-high-value-repair",
+      "claim_ref": "claim:high-value-sensitivity",
+      "claim_target_ids": [
+        "high_value_sensitivity_claim"
+      ],
+      "disposition": "boundary_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [
+        "partial_attribution_mapping"
+      ],
+      "reason": "The channel ranking remains sensitive to anonymous high-value payer treatment.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-audit-repair",
+      "claim_ref": "claim:claim-disposition-audit",
+      "claim_target_ids": [
+        "claim_disposition_claim"
+      ],
+      "disposition": "supported_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [],
+      "reason": "Every affected claim receives an independent disposition and evidence boundary.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    },
+    {
+      "disposition_ref": "disposition:g3-user-008-republication-repair",
+      "claim_ref": "claim:repair-republication",
+      "claim_target_ids": [
+        "repair_republication_claim"
+      ],
+      "disposition": "supported_provisional",
+      "answer_version_ref": "answer:answer-g3-user-008-2",
+      "evidence_record_refs": [
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "boundary_codes": [],
+      "reason": "The repair appends replacement evidence, a new answer version and a new workflow projection.",
+      "recorded_at": "2026-06-03T09:49:20+01:00"
+    }
+  ],
+  "current_projection": {
+    "frame_revision_ref": "frame:frev-g3-user-008-1",
+    "plan_revision_ref": "plan:prev-g3-user-008-1",
+    "answer_version_ref": "answer:answer-g3-user-008-2",
+    "workflow_projection_ref": "workflow:workflow-g3-user-008-2",
+    "answer_status": "provisional",
+    "workflow_state": "provisional",
+    "delivery_state": "withheld",
+    "active_claim_refs": [
+      "claim:claim-disposition-audit",
+      "claim:channel-coverage-quality",
+      "claim:high-value-sensitivity",
+      "claim:paid-amount-growth",
+      "claim:payment-maturity-quality",
+      "claim:provenance-integrity",
+      "claim:repair-republication"
+    ],
+    "withheld_claim_refs": [
+      "claim:channel-a-largest-increment"
+    ]
+  }
+}

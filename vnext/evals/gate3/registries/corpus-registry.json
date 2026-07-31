@@ -1,0 +1,1281 @@
+{
+  "artifact_type": "corpus_registry",
+  "artifact_version": "gate3.corpus-registry.v1",
+  "registry_epoch": 1,
+  "entries": [
+    {
+      "episode_id": "G3-ADV-001",
+      "episode_core_sha256": "30aadcac85acaf99a64c0c48094dbd2f3b28f0971b0b0a4f571428d949826db0",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "hidden_data_gap",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-001"
+    },
+    {
+      "episode_id": "G3-ADV-002",
+      "episode_core_sha256": "35c42936dfeeed4418c826d3945ebe36992760791ace8f4458b88d1cf27f40ed",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "funnel_or_sequence",
+          "exposure",
+          "multi_estimand",
+          "association_or_causal_ceiling"
+        ],
+        "temporal_shapes": [
+          "absolute",
+          "relative"
+        ],
+        "data_conditions": [
+          "complete",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "scope_revision"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "over_strong_claim",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-002"
+    },
+    {
+      "episode_id": "G3-ADV-004",
+      "episode_core_sha256": "4d5d52e8818cd45692f2fe64910bd0223cc01beef9221ea8443f1e92c49f9888",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "distribution",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "conflicting_contract"
+        ],
+        "conversation_dynamics": [
+          "long_context_noise",
+          "scope_revision"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-004"
+    },
+    {
+      "episode_id": "G3-ADV-005",
+      "episode_core_sha256": "99eb9a8ea13c3f19619760df2029751397cf55a55e77b976cbe493c4d296a3db",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "window_or_baseline",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "correction",
+          "concurrent_message"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-005"
+    },
+    {
+      "episode_id": "G3-ADV-006",
+      "episode_core_sha256": "29a4c7c9e59e09b15e9c26e0c1a8f52192c615bd25b02c264732c0fb0742cf6c",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "estimate"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "missing_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "scope_revision"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-006"
+    },
+    {
+      "episode_id": "G3-ADV-007",
+      "episode_core_sha256": "a76fce9ca9a82ce9d00cf4d1f4fa1761940163b58a47fe7c6f558c72c1ec788e",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "exposure",
+          "window_or_baseline",
+          "association_or_causal_ceiling",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "contradictory_evidence",
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-007"
+    },
+    {
+      "episode_id": "G3-ADV-008",
+      "episode_core_sha256": "80ab76617b628ad04ae7668c2cf44bb6944d581f715837d941bc9925b3c00dac",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "estimate",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "observation_unit",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "missing_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-008"
+    },
+    {
+      "episode_id": "G3-ADV-009",
+      "episode_core_sha256": "76b6690b9d6b5bf75a5c2f2e8a723751301326dc9ba787a2b503944e408b878f",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "multi_estimand",
+          "association_or_causal_ceiling"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "complete",
+          "missing_contract"
+        ],
+        "conversation_dynamics": [
+          "scope_revision"
+        ],
+        "risk_types": [
+          "out_of_scope_request",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ADV-009"
+    },
+    {
+      "episode_id": "G3-EXP-001",
+      "episode_core_sha256": "be20fddca1eb740b55b0de00f3d3c87cf514e237b255dcb55d9afada66a8bc39",
+      "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
+      "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "attribute",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "multi_estimand",
+          "observation_unit"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "missing_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "scope_revision",
+          "challenge"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-001"
+    },
+    {
+      "episode_id": "G3-EXP-002",
+      "episode_core_sha256": "27904c5e6a2f24c6cdcba95f53a5b3460ef1feff84ef23ed05646253c1b5c8b0",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "observation_unit",
+          "decomposition",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "correction",
+          "challenge"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "misleading_comparison",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-002"
+    },
+    {
+      "episode_id": "G3-EXP-005",
+      "episode_core_sha256": "91e2467f0da1f67c5b28112a7bd3ce74d3aec7dac443d911af454842a21b7434",
+      "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
+      "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "coverage_tags": {
+        "decision_goals": [
+          "attribute",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "absolute"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "correction",
+          "challenge"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "wrong_business_decision",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-005"
+    },
+    {
+      "episode_id": "G3-EXP-007",
+      "episode_core_sha256": "e25e30955bca0553e0a902608d5ce9060256bdd94e0e9961aed5060d7205fa4b",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "missing_contract",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "concurrent_message",
+          "correction"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "hidden_data_gap",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-007"
+    },
+    {
+      "episode_id": "G3-EXP-008",
+      "episode_core_sha256": "0cc7431699b2d5320f6e3ba4b818f5f88482f2d2dc49026a5674616b53d86974",
+      "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
+      "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "observation_unit",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "stale_release",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "hidden_data_gap",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-008"
+    },
+    {
+      "episode_id": "G3-EXP-010",
+      "episode_core_sha256": "986ae321370be77a3c365be19270f582bb3da7cf8bfbf4d298fa06799c4eaa37",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "estimate",
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "multi_estimand",
+          "cohort_or_risk_set"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "scope_revision",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-010"
+    },
+    {
+      "episode_id": "G3-EXP-012",
+      "episode_core_sha256": "16a2a15e34d948218c08972d8251880ce6e7de76d6ccd11bd20c4de25349bf52",
+      "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
+      "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "misleading_comparison"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-EXP-012"
+    },
+    {
+      "episode_id": "G3-GF-001",
+      "episode_core_sha256": "fc1257191ead9027e4bf5e0ff2bd3f5c05ffc0b91e6d27fe9360f3340911a973",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "cross_month"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "misleading_comparison",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-001"
+    },
+    {
+      "episode_id": "G3-GF-002",
+      "episode_core_sha256": "5fcc885686a6e1f107e048eeefe2ec490c57678fcc10a5d11ec7e181944a1f45",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "cross_year"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-002"
+    },
+    {
+      "episode_id": "G3-GF-003",
+      "episode_core_sha256": "83b6aab27dd2e3842601609dec4cbf417e9a0baf6c0dee7405d6d850c0ae26a3",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "stale_release"
+        ],
+        "conversation_dynamics": [
+          "single_turn",
+          "clarification"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "hidden_data_gap",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-003"
+    },
+    {
+      "episode_id": "G3-GF-004",
+      "episode_core_sha256": "1150b61c584f86adeead8ea82266f69f71664a3c94acfcf9a04e480479b589e4",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "cross_month",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "challenge"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-004"
+    },
+    {
+      "episode_id": "G3-GF-005",
+      "episode_core_sha256": "0d3832082e0be451ec4991b3694b839e85b1232ebfc4075404a66847f745ad9d",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "decomposition",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-005"
+    },
+    {
+      "episode_id": "G3-GF-006",
+      "episode_core_sha256": "336548e734dee9accf5d6b395521d830cbd77011ad52d3d57c3d9c175aa4384f",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival",
+          "stale_release"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "hidden_data_gap",
+          "wrong_business_decision",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-006"
+    },
+    {
+      "episode_id": "G3-GF-007",
+      "episode_core_sha256": "8ae90f08450a42d955f4c685f05be6d4fc83c712f16aecb1af512bc4a0f5afbc",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "denominator",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-007"
+    },
+    {
+      "episode_id": "G3-GF-008",
+      "episode_core_sha256": "7a7d80a0cdd4da5a91ca8dcdd8dd76fe5a183b70c7c34763ae3065c9d4775039",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "compare"
+        ],
+        "measurement_challenges": [
+          "funnel_or_sequence",
+          "denominator",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-008"
+    },
+    {
+      "episode_id": "G3-GF-009",
+      "episode_core_sha256": "8b18b4bb5b3cba0f02eeaf266a8c4e462e8fa87d9e8ea6329f4e003ad224f39e",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "attribute",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "missing_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "hidden_data_gap",
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-009"
+    },
+    {
+      "episode_id": "G3-GF-010",
+      "episode_core_sha256": "4a8e9a4e7be63cfe88b11c78e1866b0368f8ee34aa5999392d55ba22475da9d9",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "challenge",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "challenge"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-010"
+    },
+    {
+      "episode_id": "G3-GF-011",
+      "episode_core_sha256": "488f619970b974229740c6672510057245aa9db9c6e5842177b5de02e8ef5c22",
+      "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-011"
+    },
+    {
+      "episode_id": "G3-GF-012",
+      "episode_core_sha256": "cdbb21ad695532281ed89eeac978d9916cc13d997ca2927925a4a0b551050fb8",
+      "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
+      "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "absolute",
+          "timezone_or_business_day",
+          "cross_year"
+        ],
+        "data_conditions": [
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "misleading_comparison",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-GF-012"
+    },
+    {
+      "episode_id": "G3-ROOT-001",
+      "episode_core_sha256": "5bd39cac6adaa3b80a00e2abc35c1ba3697a90f61d442fdd598eb94db36dc028",
+      "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
+      "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "coverage_tags": {
+        "decision_goals": [
+          "define",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "observation_unit",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "no_time"
+        ],
+        "data_conditions": [
+          "conflicting_contract",
+          "missing_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn",
+          "clarification"
+        ],
+        "risk_types": [
+          "authority_drift",
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-ROOT-001"
+    },
+    {
+      "episode_id": "G3-USER-001",
+      "episode_core_sha256": "bf4863158d7c0a2d3a87458dc0722fd1b198db92ad1a75825a98875bf3355709",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "denominator",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "complete"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "over_strong_claim"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-001"
+    },
+    {
+      "episode_id": "G3-USER-002",
+      "episode_core_sha256": "c1e092ce7d6922e61524115beb145a18a6ad869662a79c3d7c9190fd67486164",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "cross_month",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "complete",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-002"
+    },
+    {
+      "episode_id": "G3-USER-003",
+      "episode_core_sha256": "77458b1f5efebd3f4600356af0e9eab7dda532a68132b9473d9aef77e6b94a19",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "challenge",
+          "attribute"
+        ],
+        "measurement_challenges": [
+          "association_or_causal_ceiling",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "absolute"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "conflicting_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-003"
+    },
+    {
+      "episode_id": "G3-USER-004",
+      "episode_core_sha256": "59b59d0bbacd23c7730e440542da3132fa68ff4ffbd71e4e2d928169e5f872d3",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "cohort_or_risk_set",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "clarification"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-004"
+    },
+    {
+      "episode_id": "G3-USER-005",
+      "episode_core_sha256": "caec89c03dbc079a25eaa8745fdcc9bdbe67e6a2d1a882531f3890d6686ffaf8",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "attribute",
+          "compare"
+        ],
+        "measurement_challenges": [
+          "decomposition",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "missing_contract"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-005"
+    },
+    {
+      "episode_id": "G3-USER-006",
+      "episode_core_sha256": "756e8252dde87ef4484c4ecbe29ce7aa562fc2ad0807ec7fbd8baf17fab62e10",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "validate"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "window_or_baseline",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day"
+        ],
+        "data_conditions": [
+          "complete",
+          "partial_coverage"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-006"
+    },
+    {
+      "episode_id": "G3-USER-007",
+      "episode_core_sha256": "9095e2e792a8e7de2d0ff578de90ba5f3a6c6cbeb56378fbbddf3a75a31e1f7c",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "window_or_baseline",
+          "exposure",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-007"
+    },
+    {
+      "episode_id": "G3-USER-008",
+      "episode_core_sha256": "2831b52761505d73c51cea181518fdeb94b4f319c68571c3bb49d621437ab617",
+      "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
+      "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "coverage_tags": {
+        "decision_goals": [
+          "validate",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "denominator",
+          "observation_unit",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "late_arrival",
+          "partial_coverage",
+          "contradictory_evidence"
+        ],
+        "conversation_dynamics": [
+          "challenge"
+        ],
+        "risk_types": [
+          "hidden_data_gap",
+          "over_strong_claim",
+          "authority_drift"
+        ]
+      },
+      "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
+      "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
+      "world_profile_ref": "WORLD-PROFILE-G3-USER-008"
+    }
+  ]
+}

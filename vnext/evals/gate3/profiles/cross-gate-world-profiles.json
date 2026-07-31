@@ -1,0 +1,1663 @@
+{
+  "artifact_type": "cross_gate_world_profiles",
+  "artifact_version": "gate3.cross-gate-world-profiles.v1",
+  "registry_epoch": 1,
+  "profiles": [
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-001",
+      "episode_id": "G3-ADV-001",
+      "episode_core_sha256": "30aadcac85acaf99a64c0c48094dbd2f3b28f0971b0b0a4f571428d949826db0",
+      "world_id": "WORLD-ADV-001",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-002",
+      "episode_id": "G3-ADV-002",
+      "episode_core_sha256": "35c42936dfeeed4418c826d3945ebe36992760791ace8f4458b88d1cf27f40ed",
+      "world_id": "WORLD-ADV-002",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-004",
+      "episode_id": "G3-ADV-004",
+      "episode_core_sha256": "4d5d52e8818cd45692f2fe64910bd0223cc01beef9221ea8443f1e92c49f9888",
+      "world_id": "WORLD-ADV-004",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-005",
+      "episode_id": "G3-ADV-005",
+      "episode_core_sha256": "99eb9a8ea13c3f19619760df2029751397cf55a55e77b976cbe493c4d296a3db",
+      "world_id": "WORLD-ADV-005",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-006",
+      "episode_id": "G3-ADV-006",
+      "episode_core_sha256": "29a4c7c9e59e09b15e9c26e0c1a8f52192c615bd25b02c264732c0fb0742cf6c",
+      "world_id": "WORLD-ADV-006",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-007",
+      "episode_id": "G3-ADV-007",
+      "episode_core_sha256": "a76fce9ca9a82ce9d00cf4d1f4fa1761940163b58a47fe7c6f558c72c1ec788e",
+      "world_id": "WORLD-ADV-007",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-008",
+      "episode_id": "G3-ADV-008",
+      "episode_core_sha256": "80ab76617b628ad04ae7668c2cf44bb6944d581f715837d941bc9925b3c00dac",
+      "world_id": "WORLD-ADV-008",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ADV-009",
+      "episode_id": "G3-ADV-009",
+      "episode_core_sha256": "76b6690b9d6b5bf75a5c2f2e8a723751301326dc9ba787a2b503944e408b878f",
+      "world_id": "WORLD-ADV-009",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-001",
+      "episode_id": "G3-EXP-001",
+      "episode_core_sha256": "be20fddca1eb740b55b0de00f3d3c87cf514e237b255dcb55d9afada66a8bc39",
+      "world_id": "WORLD-CHAIN-PROFIT-001",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-002",
+      "episode_id": "G3-EXP-002",
+      "episode_core_sha256": "27904c5e6a2f24c6cdcba95f53a5b3460ef1feff84ef23ed05646253c1b5c8b0",
+      "world_id": "WORLD-PAYER-MIX-REVERSAL-002",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-005",
+      "episode_id": "G3-EXP-005",
+      "episode_core_sha256": "91e2467f0da1f67c5b28112a7bd3ce74d3aec7dac443d911af454842a21b7434",
+      "world_id": "WORLD-GGR-GROWTH-005",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-007",
+      "episode_id": "G3-EXP-007",
+      "episode_core_sha256": "e25e30955bca0553e0a902608d5ce9060256bdd94e0e9961aed5060d7205fa4b",
+      "world_id": "WORLD-WAJEGAME-PAYMENT-CONTRACT-RECOVERY",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-008",
+      "episode_id": "G3-EXP-008",
+      "episode_core_sha256": "0cc7431699b2d5320f6e3ba4b818f5f88482f2d2dc49026a5674616b53d86974",
+      "world_id": "WORLD-NEW-PAYER-008",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-010",
+      "episode_id": "G3-EXP-010",
+      "episode_core_sha256": "986ae321370be77a3c365be19270f582bb3da7cf8bfbf4d298fa06799c4eaa37",
+      "world_id": "WORLD-RETENTION-OUTREACH-010",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-EXP-012",
+      "episode_id": "G3-EXP-012",
+      "episode_core_sha256": "16a2a15e34d948218c08972d8251880ce6e7de76d6ccd11bd20c4de25349bf52",
+      "world_id": "WORLD-CHANNEL-ROAS-012",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-001",
+      "episode_id": "G3-GF-001",
+      "episode_core_sha256": "fc1257191ead9027e4bf5e0ff2bd3f5c05ffc0b91e6d27fe9360f3340911a973",
+      "world_id": "WORLD-G3-GF-001",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-002",
+      "episode_id": "G3-GF-002",
+      "episode_core_sha256": "5fcc885686a6e1f107e048eeefe2ec490c57678fcc10a5d11ec7e181944a1f45",
+      "world_id": "WORLD-G3-GF-002",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-003",
+      "episode_id": "G3-GF-003",
+      "episode_core_sha256": "83b6aab27dd2e3842601609dec4cbf417e9a0baf6c0dee7405d6d850c0ae26a3",
+      "world_id": "WORLD-G3-GF-003",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-004",
+      "episode_id": "G3-GF-004",
+      "episode_core_sha256": "1150b61c584f86adeead8ea82266f69f71664a3c94acfcf9a04e480479b589e4",
+      "world_id": "WORLD-G3-GF-004",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-005",
+      "episode_id": "G3-GF-005",
+      "episode_core_sha256": "0d3832082e0be451ec4991b3694b839e85b1232ebfc4075404a66847f745ad9d",
+      "world_id": "WORLD-G3-GF-005",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-006",
+      "episode_id": "G3-GF-006",
+      "episode_core_sha256": "336548e734dee9accf5d6b395521d830cbd77011ad52d3d57c3d9c175aa4384f",
+      "world_id": "WORLD-G3-GF-006",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-007",
+      "episode_id": "G3-GF-007",
+      "episode_core_sha256": "8ae90f08450a42d955f4c685f05be6d4fc83c712f16aecb1af512bc4a0f5afbc",
+      "world_id": "WORLD-G3-GF-007",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-008",
+      "episode_id": "G3-GF-008",
+      "episode_core_sha256": "7a7d80a0cdd4da5a91ca8dcdd8dd76fe5a183b70c7c34763ae3065c9d4775039",
+      "world_id": "WORLD-G3-GF-008",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-009",
+      "episode_id": "G3-GF-009",
+      "episode_core_sha256": "8b18b4bb5b3cba0f02eeaf266a8c4e462e8fa87d9e8ea6329f4e003ad224f39e",
+      "world_id": "WORLD-G3-GF-009",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-010",
+      "episode_id": "G3-GF-010",
+      "episode_core_sha256": "4a8e9a4e7be63cfe88b11c78e1866b0368f8ee34aa5999392d55ba22475da9d9",
+      "world_id": "WORLD-G3-GF-010",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-011",
+      "episode_id": "G3-GF-011",
+      "episode_core_sha256": "488f619970b974229740c6672510057245aa9db9c6e5842177b5de02e8ef5c22",
+      "world_id": "WORLD-G3-GF-011",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-GF-012",
+      "episode_id": "G3-GF-012",
+      "episode_core_sha256": "cdbb21ad695532281ed89eeac978d9916cc13d997ca2927925a4a0b551050fb8",
+      "world_id": "WORLD-G3-GF-012",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-ROOT-001",
+      "episode_id": "G3-ROOT-001",
+      "episode_core_sha256": "5bd39cac6adaa3b80a00e2abc35c1ba3697a90f61d442fdd598eb94db36dc028",
+      "world_id": "WORLD-ACTIVE-PLAYER-DEFINITION",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-001",
+      "episode_id": "G3-USER-001",
+      "episode_core_sha256": "bf4863158d7c0a2d3a87458dc0722fd1b198db92ad1a75825a98875bf3355709",
+      "world_id": "WORLD-PAID-AMOUNT-CHANGE-001",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-002",
+      "episode_id": "G3-USER-002",
+      "episode_core_sha256": "c1e092ce7d6922e61524115beb145a18a6ad869662a79c3d7c9190fd67486164",
+      "world_id": "WORLD-PAID-PATTERN-002",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-003",
+      "episode_id": "G3-USER-003",
+      "episode_core_sha256": "77458b1f5efebd3f4600356af0e9eab7dda532a68132b9473d9aef77e6b94a19",
+      "world_id": "WORLD-PAID-EVENT-003",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-004",
+      "episode_id": "G3-USER-004",
+      "episode_core_sha256": "59b59d0bbacd23c7730e440542da3132fa68ff4ffbd71e4e2d928169e5f872d3",
+      "world_id": "WORLD-REVENUE-HEALTH-004",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-005",
+      "episode_id": "G3-USER-005",
+      "episode_core_sha256": "caec89c03dbc079a25eaa8745fdcc9bdbe67e6a2d1a882531f3890d6686ffaf8",
+      "world_id": "WORLD-REVENUE-ATTRIBUTION-005",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-006",
+      "episode_id": "G3-USER-006",
+      "episode_core_sha256": "756e8252dde87ef4484c4ecbe29ce7aa562fc2ad0807ec7fbd8baf17fab62e10",
+      "world_id": "WORLD-REVENUE-ANOMALY-006",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-007",
+      "episode_id": "G3-USER-007",
+      "episode_core_sha256": "9095e2e792a8e7de2d0ff578de90ba5f3a6c6cbeb56378fbbddf3a75a31e1f7c",
+      "world_id": "WORLD-REVENUE-BASELINES-007",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    },
+    {
+      "profile_id": "WORLD-PROFILE-G3-USER-008",
+      "episode_id": "G3-USER-008",
+      "episode_core_sha256": "2831b52761505d73c51cea181518fdeb94b4f319c68571c3bb49d621437ab617",
+      "world_id": "WORLD-REVENUE-EVIDENCE-008",
+      "stage_profiles": {
+        "gate3": {
+          "status": "authoring",
+          "required_artifacts": [
+            "evaluation_episode_core",
+            "agent_world_view",
+            "evaluator_oracle_view"
+          ]
+        },
+        "gate4": {
+          "status": "pending",
+          "required_artifacts": [
+            "semantic_contract_bundle",
+            "frozen_data_snapshot",
+            "capability_availability_profile",
+            "result_oracle"
+          ]
+        },
+        "gate5": {
+          "status": "pending",
+          "required_artifacts": [
+            "claim_publication_profile",
+            "evidence_strength_oracle"
+          ]
+        },
+        "gate6": {
+          "status": "pending",
+          "required_artifacts": [
+            "workbench_observation_contract",
+            "customer_safe_projection_oracle"
+          ]
+        },
+        "gate7": {
+          "status": "pending",
+          "required_artifacts": [
+            "release_profile",
+            "replay_manifest"
+          ]
+        }
+      }
+    }
+  ]
+}

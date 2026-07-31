@@ -1,0 +1,70 @@
+name: vNext CI
+
+on:
+  pull_request:
+  merge_group:
+    types:
+      - checks_requested
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vnext-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vnext-validation:
+    name: vNext validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: vnext
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Python 3.12.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: 3.12.13
+
+      - name: Install Node.js 22.18.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.18.0
+          cache: npm
+          cache-dependency-path: vnext/package-lock.json
+
+      - name: Install uv 0.12.0
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          version: 0.12.0
+          enable-cache: false
+
+      - name: Bootstrap locked Python environment
+        run: uv sync --frozen --no-install-project --python 3.12.13
+
+      - name: Install locked Node dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check generated contracts
+        run: npm run check:contracts
+
+      - name: Check deployed GitHub workflow authority
+        run: npm run check:github-deployment
+
+      - name: Run vNext tests
+        run: npm run test:bootstrap
+
+      - name: Validate Gate 3 evaluation authority
+        run: npm run check:evals:gate3
+
+      - name: Prove clean-slate isolation and build
+        run: npm run check

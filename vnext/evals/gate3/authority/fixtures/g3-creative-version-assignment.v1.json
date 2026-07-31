@@ -1,0 +1,83 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1",
+  "fixture_version_ref": "fixture://wajegame/creative-version-assignment/v1",
+  "business_timezone": "Africa/Lagos",
+  "assignment_contract": {
+    "unit": "eligible account",
+    "assignment_time": "2026-06-02T00:00:00+01:00",
+    "randomized_factors": [
+      "creative",
+      "client_version"
+    ],
+    "creative_levels": [
+      "control",
+      "new"
+    ],
+    "version_levels": [
+      "control",
+      "new"
+    ],
+    "allocation": "balanced 2x2 factorial",
+    "actual_exposure_required": true,
+    "contamination_rate": 0.004,
+    "attrition_rate": 0.011,
+    "pre_period_days": 14,
+    "post_period_days": 7,
+    "interference_policy": "account-level first-assignment; cross-device exposure follows account"
+  },
+  "post_period_cells": [
+    {
+      "creative": "control",
+      "client_version": "control",
+      "assigned_accounts": 10000,
+      "exposed_accounts": 9820,
+      "paid_amount_ngn": 19640000
+    },
+    {
+      "creative": "new",
+      "client_version": "control",
+      "assigned_accounts": 10000,
+      "exposed_accounts": 9800,
+      "paid_amount_ngn": 20580000
+    },
+    {
+      "creative": "control",
+      "client_version": "new",
+      "assigned_accounts": 10000,
+      "exposed_accounts": 9810,
+      "paid_amount_ngn": 18840000
+    },
+    {
+      "creative": "new",
+      "client_version": "new",
+      "assigned_accounts": 10000,
+      "exposed_accounts": 9790,
+      "paid_amount_ngn": 19730000
+    }
+  ],
+  "quality_checks": {
+    "allocation_balance_passed": true,
+    "pre_period_balance_passed": true,
+    "actual_exposure_coverage_passed": true,
+    "interference_within_limit": true
+  },
+  "evaluator_oracle": {
+    "creative_effect_direction": "positive",
+    "version_effect_direction": "negative",
+    "interaction_material": false,
+    "claim_scope": "fixture eligible accounts with valid assignment and observed exposure",
+    "causal_ceiling_allowed": true
+  },
+  "agent_projection": {
+    "expose": [
+      "assignment_contract",
+      "post_period_cells",
+      "quality_checks"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

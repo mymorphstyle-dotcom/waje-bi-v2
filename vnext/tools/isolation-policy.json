@@ -1,0 +1,96 @@
+{
+  "policy_version": 2,
+  "implementation_root": ".",
+  "repository_deployment_paths": [
+    ".github/CODEOWNERS",
+    ".github/workflows/gate3-protected-admission.yml",
+    ".github/workflows/vnext-ci.yml"
+  ],
+  "python": {
+    "minimum": "3.12",
+    "toolchain": "3.12.13"
+  },
+  "required_paths": [
+    "README.md",
+    ".python-version",
+    "pyproject.toml",
+    "uv.lock",
+    "package.json",
+    "package-lock.json",
+    "services/analysis_core/src/waje_vnext/__init__.py",
+    "services/analysis_core/src/waje_vnext/__main__.py",
+    "tests/test_bootstrap.py"
+  ],
+  "scan_extensions": [
+    ".cjs",
+    ".js",
+    ".json",
+    ".mjs",
+    ".py",
+    ".pyi",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml"
+  ],
+  "scan_file_names": [
+    "package-lock.json",
+    "package.json",
+    "pyproject.toml",
+    "uv.lock"
+  ],
+  "excluded_relative_paths": [
+    "tools/isolation-policy.json"
+  ],
+  "ignored_directory_names": [
+    ".git",
+    ".mypy_cache",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "artifacts",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules"
+  ],
+  "ignored_directory_patterns": [
+    "*.egg-info"
+  ],
+  "forbidden_python_modules": [
+    "bi_agent"
+  ],
+  "forbidden_python_string_literals": [
+    "bi_agent"
+  ],
+  "forbidden_references": [
+    "from bi_agent",
+    "import bi_agent",
+    "bi_agent.",
+    "../bi_agent",
+    "/bi_agent/",
+    "../app",
+    "../components",
+    "../lib",
+    "../contracts",
+    "../tests",
+    "../tools",
+    "../evals",
+    "tools.runtime",
+    "conversation-runtime.sql",
+    "waje_runtime",
+    "WAJE_RUNTIME_",
+    "/Users/luka/"
+  ],
+  "forbidden_manifest_specifiers": [
+    "file:..",
+    "link:..",
+    "../"
+  ],
+  "allowlist": []
+}

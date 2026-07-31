@@ -1,0 +1,276 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-002-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-002-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-27T10:00:00+01:00",
+    "target_business_date": "2026-07-26",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-002",
+    "episode_id": "G3-EXP-002",
+    "binding_id": "fixture_g3_exp_002_base",
+    "authority_slot_id": "fixture_g3_exp_002_base_v1",
+    "scope_claim_target_ids": [
+      "overall_weekly_payer_value_claim",
+      "fixed_mix_payer_value_claim",
+      "payer_mix_contribution_claim",
+      "payer_value_reversal_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/paid-amount-per-payer/v1",
+      "state": "available",
+      "description": "支付成功事实按 Africa/Lagos 业务日记录 gross paid amount、canonical payer、订单和渠道，可计算每付费用户金额。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/payer-lifecycle/v2",
+      "state": "available",
+      "description": "付费用户生命周期合同区分本周新付费用户与此前已付费用户，并固定 canonical payer 观察单位。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/acquisition-channel-history/v1",
+      "state": "available",
+      "description": "首获渠道按版本化规则绑定到 canonical payer，支持跨周一致的渠道分层。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/release-daily-completeness/v1",
+      "state": "available",
+      "description": "两个比较周均包含七个完整业务日，snapshot 和 release 状态可审计。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-PAYER-MIX-HIGH-VALUE-CHANNEL",
+      "description": "高价值首获渠道的付费用户占比从上周 18% 上升到本周 35%。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYER-MIX-RETURNING-SHIFT",
+      "description": "历史高价值付费用户占比同步上升，新付费用户占比下降。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYER-WITHIN-STRATUM-DECLINE",
+      "description": "在主要首获渠道与新老付费用户交叉组内，本周每付费用户金额均低于上周。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-PAYER-WEEK-COMPLETE",
+      "description": "两周都覆盖相同的七个完整业务日，不存在日数或 release 完整性差异。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-002-01",
+        "statement": "总体每付费用户金额上涨 9%，主要由高价值首获渠道和历史高价值付费用户占比上升造成；主要可比交叉组内均下降，存在 Simpson 型反转。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-002-02",
+        "statement": "将本周各组结果按上周渠道与新老付费用户构成重新加权后，可比每付费用户金额下降约 5%。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "overall_weekly_payer_value_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-002-BASE-V1",
+          "contract://wajegame/paid-amount-per-payer/v1",
+          "contract://wajegame/payer-lifecycle/v2",
+          "contract://wajegame/acquisition-channel-history/v1",
+          "contract://wajegame/release-daily-completeness/v1",
+          "DC-PAYER-MIX-HIGH-VALUE-CHANNEL",
+          "DC-PAYER-MIX-RETURNING-SHIFT",
+          "DC-PAYER-WITHIN-STRATUM-DECLINE",
+          "DC-PAYER-WEEK-COMPLETE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-002-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "canonical payer denominator、week identity 或付费金额合同改变。"
+        ]
+      },
+      {
+        "claim_target_id": "fixed_mix_payer_value_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-002-BASE-V1",
+          "contract://wajegame/paid-amount-per-payer/v1",
+          "contract://wajegame/payer-lifecycle/v2",
+          "contract://wajegame/acquisition-channel-history/v1",
+          "contract://wajegame/release-daily-completeness/v1",
+          "DC-PAYER-MIX-HIGH-VALUE-CHANNEL",
+          "DC-PAYER-MIX-RETURNING-SHIFT",
+          "DC-PAYER-WITHIN-STRATUM-DECLINE",
+          "DC-PAYER-WEEK-COMPLETE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-002-02"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "标准化 reference mix 从上周改为本周或 pooled mix。",
+          "渠道 × 新老付费用户 cell coverage 改变。"
+        ]
+      },
+      {
+        "claim_target_id": "payer_mix_contribution_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-002-BASE-V1",
+          "contract://wajegame/paid-amount-per-payer/v1",
+          "contract://wajegame/payer-lifecycle/v2",
+          "contract://wajegame/acquisition-channel-history/v1",
+          "contract://wajegame/release-daily-completeness/v1",
+          "DC-PAYER-MIX-HIGH-VALUE-CHANNEL",
+          "DC-PAYER-MIX-RETURNING-SHIFT",
+          "DC-PAYER-WITHIN-STRATUM-DECLINE",
+          "DC-PAYER-WEEK-COMPLETE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-002-01",
+          "TRUTH-G3-EXP-002-02"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "decomposition 顺序改变主导贡献。",
+          "贡献不能回收到总体 +9%。"
+        ]
+      },
+      {
+        "claim_target_id": "payer_value_reversal_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_exp_002_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-EXP-002-BASE-V1",
+          "contract://wajegame/paid-amount-per-payer/v1",
+          "contract://wajegame/payer-lifecycle/v2",
+          "contract://wajegame/acquisition-channel-history/v1",
+          "contract://wajegame/release-daily-completeness/v1",
+          "DC-PAYER-MIX-HIGH-VALUE-CHANNEL",
+          "DC-PAYER-MIX-RETURNING-SHIFT",
+          "DC-PAYER-WITHIN-STRATUM-DECLINE",
+          "DC-PAYER-WEEK-COMPLETE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-002-01",
+          "TRUTH-G3-EXP-002-02"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "任一主要可比组内方向改为上涨。",
+          "标准化后方向不再低于零。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

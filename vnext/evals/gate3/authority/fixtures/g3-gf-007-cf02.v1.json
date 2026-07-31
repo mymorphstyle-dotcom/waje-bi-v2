@@ -1,0 +1,207 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-007-CF02-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-007-cf02/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2025-05-15T00:00:00+01:00",
+    "target_business_date": "2025-04-30",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-007:G3-GF-007-CF02",
+    "episode_id": "G3-GF-007",
+    "binding_id": "real_paid_order_success",
+    "authority_slot_id": "fixture_g3_gf_007_cf02_v1",
+    "scope_claim_target_ids": [
+      "calendar_censoring_artifact_claim",
+      "full_april_cohort_direction_claim",
+      "mature_d30_retention_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-007-01",
+      "state": "available",
+      "description": "cohort entry 为首次支付成功日",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-007-02",
+      "state": "available",
+      "description": "D30 retention 表示 entry 后第 30 个自然日有 再次支付成功",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-007-03",
+      "state": "available",
+      "description": "未到达 D30 的首充用户为 right-censored，不能计为未留存",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-007-04",
+      "state": "available",
+      "description": "可使用成熟 cohort 子集或显式 survival/risk-set estimator",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-007-01",
+      "description": "3 月 cohort 共 1000 人，均到达 D30，观测留存 40%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-007-02",
+      "description": "4 月 cohort 共 1000 人，仅前 45% 到达 D30；成熟者留存 40%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-007-03",
+      "description": "若把未成熟首充用户计为未留存，4 月表面留存只有 18%",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-007-04",
+      "description": "首充用户层 follow-up 完整且没有失联 censoring",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-007-01",
+        "statement": "4 月成熟首充用户留存改为 30%",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "mature_d30_retention_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "paid_order_success",
+          "CONTRACT-G3-GF-007-03",
+          "DC-G3-GF-007-02"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-007-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "成熟 risk set 的 retained numerator 或 entry identity 改变。"
+        ]
+      },
+      {
+        "claim_target_id": "full_april_cohort_direction_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "paid_order_success",
+          "CONTRACT-G3-GF-007-03",
+          "DC-G3-GF-007-02"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-007-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "4 月 cohort 全部成熟后的方向与成熟子集不同。"
+        ]
+      },
+      {
+        "claim_target_id": "calendar_censoring_artifact_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "data_quality_only",
+        "required_observation_refs": [
+          "paid_order_success",
+          "CONTRACT-G3-GF-007-03",
+          "DC-G3-GF-007-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-007-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "右删失政策或 evaluation clock 改变。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

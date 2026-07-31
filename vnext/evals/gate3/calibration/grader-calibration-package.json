@@ -1,0 +1,13 @@
+{
+  "artifact_type": "grader_calibration_package",
+  "artifact_version": "gate3.grader-calibration.v2",
+  "registry_epoch": 1,
+  "status": "pending",
+  "grader_registry_sha256": "9585b1895477bc42fe8764d9453ef2d4465e746939b116c4eaa6f05c2cb29740",
+  "evaluator_profile_ref": "EVALUATOR-DEEPSEEK-FLASH-THINK-V1",
+  "evaluator_profile_sha256": "6dc8fdf218805cc252a074859b28304d8ebf990b8019e377a1036e3bd296a9a3",
+  "labeled_episode_refs": [],
+  "label_records": [],
+  "agreement": null,
+  "critical_false_passes": null
+}

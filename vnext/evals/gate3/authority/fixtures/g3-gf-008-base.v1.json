@@ -1,0 +1,298 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-008-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-008-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-008",
+    "episode_id": "G3-GF-008",
+    "binding_id": "fixture_g3_gf_008_base",
+    "authority_slot_id": "fixture_g3_gf_008_base_v1",
+    "scope_claim_target_ids": [
+      "matched_new_user_count_claim",
+      "registration_rate_change_claim",
+      "first_payment_rate_change_claim",
+      "same_day_new_paid_rate_change_claim",
+      "user_level_transition_loss_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-008-01",
+      "state": "available",
+      "description": "新增人数、注册人数、首充人数和新增首日付费人数按 Africa/Lagos 完整业务日聚合。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-008-02",
+      "state": "available",
+      "description": "注册率 = 注册人数 / 新增人数，跨日聚合采用 ratio-of-sums。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-008-03",
+      "state": "available",
+      "description": "首充率 = 首充人数 / 新增人数；新增首日付费率 = 新增首日付费人数 / 新增人数。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "vnext/contracts/backlog/missing-contracts.yaml#backlog.user_level_funnel_event_contract",
+      "state": "missing",
+      "description": "用户级事件顺序、实体连续性、逐阶段 risk set 与 transition window 合同缺失。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-008-01",
+      "description": "本周已完整三日：新增 1000、注册 600、首充 300、新增首日付费 250；对应 60%、30%、25%。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-008-02",
+      "description": "上周同星期三日：新增 1000、注册 650、首充 320、新增首日付费 300；对应 65%、32%、30%。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-008-03",
+      "description": "注册率下降 5 个百分点、首充率下降 2 个百分点、新增首日付费率下降 5 个百分点；新增人数持平。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-G3-GF-008-04",
+      "description": "聚合数据无法确认同一用户在注册、首充和首日付费阶段之间的逐阶段流失位置。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-008-01",
+        "statement": "本周与上周同星期三日的新增人数持平。按官方同一新增分母，注册率和新增首日付费率都下降 5 个百分点，首充率下降 2 个百分点；“掉得最多”在百分点口径下为并列。聚合合同不能识别用户级逐阶段流失。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "matched_new_user_count_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_008_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-008-BASE-V1",
+          "CONTRACT-G3-GF-008-01",
+          "CONTRACT-G3-GF-008-02",
+          "CONTRACT-G3-GF-008-03",
+          "DC-G3-GF-008-01",
+          "DC-G3-GF-008-02",
+          "DC-G3-GF-008-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-008-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "matched weekdays、完整日或新增人数定义改变。"
+        ]
+      },
+      {
+        "claim_target_id": "registration_rate_change_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_008_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-008-BASE-V1",
+          "CONTRACT-G3-GF-008-01",
+          "CONTRACT-G3-GF-008-02",
+          "CONTRACT-G3-GF-008-03",
+          "DC-G3-GF-008-01",
+          "DC-G3-GF-008-02",
+          "DC-G3-GF-008-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-008-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "注册人数或新增分母改变；禁止换成注册成熟人数分母。"
+        ]
+      },
+      {
+        "claim_target_id": "first_payment_rate_change_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_008_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-008-BASE-V1",
+          "CONTRACT-G3-GF-008-01",
+          "CONTRACT-G3-GF-008-02",
+          "CONTRACT-G3-GF-008-03",
+          "DC-G3-GF-008-01",
+          "DC-G3-GF-008-02",
+          "DC-G3-GF-008-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-008-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "首充人数或新增分母改变；禁止换成注册人数分母。"
+        ]
+      },
+      {
+        "claim_target_id": "same_day_new_paid_rate_change_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_008_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-008-BASE-V1",
+          "CONTRACT-G3-GF-008-01",
+          "CONTRACT-G3-GF-008-02",
+          "CONTRACT-G3-GF-008-03",
+          "DC-G3-GF-008-01",
+          "DC-G3-GF-008-02",
+          "DC-G3-GF-008-03"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-008-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "新增首日付费人数、业务日边界或新增分母改变。",
+          "首日窗口改成七日转化窗口。"
+        ]
+      },
+      {
+        "claim_target_id": "user_level_transition_loss_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_008_base",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_user_level_funnel_event_contract",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-008-BASE-V1",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.user_level_funnel_event_contract",
+          "DC-G3-GF-008-04"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-008-01"
+        ],
+        "boundary_codes": [
+          "user_level_funnel_unavailable"
+        ],
+        "reversal_conditions": [
+          "补齐用户级事件、实体连续性、顺序和 transition window 合同后创建新 FrameRevision。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

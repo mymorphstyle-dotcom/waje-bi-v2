@@ -1,0 +1,257 @@
+{
+  "artifact_type": "readiness_manifest",
+  "artifact_version": "gate3.e0-readiness.v2",
+  "registry_epoch": 1,
+  "evaluated_artifact_hashes": {
+    ".python-version": "aa0d6581054e6e4ff3f91839deca7a854ad37221b8784d060b42d0f847ff1a3b",
+    "package.json": "a7b38b64dfab063866ee909c983c74605989e46e23e52adb65b24b4a121c00de",
+    "package-lock.json": "e61ee4796da31fcbe8385ec486dca42aea4eb405738510f7500e1b57165f0e00",
+    "pyproject.toml": "c59d0b966db3d74237613b06e4e77b240c53a16053b5eca74b60f293e953fb72",
+    "uv.lock": "8f4794fdd9818229baf5adc919c7ede3e4ca5a51475701b514b3ec0c8f496897",
+    "tools/isolation-policy.json": "d9e737274d7ac5b107cc8683eb6dbfbdf6b607e1f76e1500926e3b275ba23ae2",
+    "contracts/backlog/missing-contracts.yaml": "0ee2f59546ce3df19f0c35a9dae1391bd64f9e34874d347bdeae7c313b4b5493",
+    "catalog/gate3-authoring-candidates.json": "adf7e3b007f4d6770010febb0d8833480280b6902b76f29c09a36c07317b799e",
+    "coverage-ledger.json": "259faa73ac40e371903d7f561404f8dce149db9bfd4ae41ccd4fb4737d28d37a",
+    "gate3-eval-policy.json": "e38d64bdca237ce5b43189b5f530dc4fbf711148383adf9e2a32dfbc290b6380",
+    "evaluation-episode.schema.json": "0c9f9f15d69c6415b8eb9c084027934b360470fd475b38e01eaa5c4eb55380a9",
+    "gate3-eval-policy.schema.json": "51a48199edd040cb20335a81590d901a93a4a06499685d235c922869f925e4f3",
+    "github-admission-request.schema.json": "fa1fef1d7c8a9d595b5acbb245110939ba430669b35b005823304ab58e9d06d9",
+    "github-provider-state.schema.json": "384da472e55d59fd6b7556fc79d8a3b76ffb33a9c0a1f05df745116c09c2aadd",
+    "gate3-e0-trust.schema.json": "c6b7cb84a65d98c47c1f0518afa84bdb9cc4b0b16903798efddb91802475c172",
+    "review-package.schema.json": "d6b0338682a5984015f13df440888f3c44ec214529b5364eb26cce53007149a0",
+    "evaluation-views.schema.json": "15d4a93f7dd98153c495838d6a8c4d316dc00d97809793f438a49f6588aeaaef",
+    "evaluation-run-result.schema.json": "70f110654468338f75d84068a51a4133023406d218d45e8a0ba33359276ccd46",
+    "runner-artifact-index.schema.json": "d8ee5cc29cdb797a2927a2cbc337eba36d3668ba2bb570c87c75bf5259229e14",
+    "case-files/case-file-authority.schema.json": "f48e6ba7fffff2f22e53cf307f7232416b9403b63d8ded0ee36907a75e944f75",
+    "case-files/case-file-authorities.json": "58e8784325144657fedbac92f75e281b53f557150a31c202c3d9e63b9b8a69f2",
+    "authority/controlled-business-fixture.schema.json": "89b8d2397bb800d8aeda5811253eb86c6a2ca7638c5d5abdd038f4c303e610c4",
+    "authority/real-snapshot-materialization.schema.json": "bb6b0bc0e0e12d86e0f2b5bb59f5628b952f81dd0fd4668add30710cac002610",
+    "authority/fixtures/g3-real-authority-stress-20260704.v1.json": "23912591f8def82d724e082682837d5012679bfd2b018ab15cde8eb6a3397708",
+    "authority/fixtures/g3-real-business-chain-20260730.v1.json": "362a918a9f6ec689953a7c3784b4737232146a312600fee9a7229d22f5e2478d",
+    "authority/fixtures/g3-real-common-snapshot-20260602.v1.json": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+    "authority/fixtures/g3-real-d30-cohort-20250515.v1.json": "c73b4ca20da6ac2fcac77126bb541911328b8a84b2074cc25ed1ac4eb9f2ef3b",
+    "authority/fixtures/g3-adv-002-base.v1.json": "9ed4a68a409b34ea03e9ae261cea7b94574dbfe996b9978a659832b498423944",
+    "authority/fixtures/g3-adv-002-cf03.v1.json": "8ef9fcaab2a3109ebbf16225936cad3b21605d15161b6e151baa4ecd2035c3f9",
+    "authority/fixtures/g3-adv-007-base.v1.json": "6ebbf4675a083c865055f4ec7e977bd53f97d51eb4a98997563d3efc4ba47754",
+    "authority/fixtures/g3-adv-007-cf03.v1.json": "4af9c3b2318aa4fd2c9c4b462d9ff8bec33e3a475128e0c4c680cac3d3fa063f",
+    "authority/fixtures/g3-adv-008-cf03.v1.json": "1fb1ea38be969a2bdeca43b5bb451aa7008004d45338fd70b5e5efa8ee7eac1f",
+    "authority/fixtures/g3-canonical-payer-identity.v1.json": "6ba4901f06f829b9330f69917cc85bf50512a8033c20ff8c4094a58d10281bc4",
+    "authority/fixtures/g3-creative-version-assignment-incomplete.v1.json": "509182603a560111443f56c56c293a0e52ceea896400648338c77bc930c10124",
+    "authority/fixtures/g3-creative-version-assignment.v1.json": "b02cef6a6f750114dc9b3e2dfdd64f497a4c4bd7eb98bdf59fc313fd74e05245",
+    "authority/fixtures/g3-exp-001-cf03.v1.json": "3f3f3a8bcd82ce2e2a68875e00f2205c04a33eb629e19b4e58fe55949ae44610",
+    "authority/fixtures/g3-exp-002-base.v1.json": "a6cb3ce8bd03aa815cebc6691cd63a7d48aa06b7ffd6f4f8ccf45fb0586dbd3f",
+    "authority/fixtures/g3-exp-005-base.v1.json": "314fce22f9646e90475f3777fa790641cba2600b737970be320036ca45a00a0a",
+    "authority/fixtures/g3-exp-005-cf03.v1.json": "2c39394bb56e2213a0828efa54abb8bd84df3ff32a3a9fd7799dff6f55f1b637",
+    "authority/fixtures/g3-exp-007-base.v1.json": "cc8bbf8de71c8e1e4c956e077a3595e2ec8577930eb8cf021d6914ed0d88279c",
+    "authority/fixtures/g3-exp-007-cf03.v1.json": "b5c229b548a4ecaa309d08b03e143b8fefa8ad0ba923737b119deb73165748b4",
+    "authority/fixtures/g3-exp-008-cf03.v1.json": "4d5303a929fec6474553cb0864aa93054c2041c8babeb8412fb41d5e70aea197",
+    "authority/fixtures/g3-exp-010-cf03.v1.json": "72015d5c45b0ad2f7ed733b4c9c32a3df6b8c878e4062929cb2fbedf847f5524",
+    "authority/fixtures/g3-exp-012-cf03.v1.json": "154aef58b8b80d28e01f8c2dd71556d0b7fc09832d3357bc7de62d12c1637c14",
+    "authority/fixtures/g3-gf-001-base.v1.json": "b6af7759bd715f8019ac67e0df307fbd38c9a0ff04cfccfc42e335562944909f",
+    "authority/fixtures/g3-gf-002-base.v1.json": "9f183277a2345c260d63418f79a8362d240cd629df9d0033d2fdb89b6fb6d5db",
+    "authority/fixtures/g3-gf-003-base.v1.json": "870e234b351dc1a41da364150bb65e78810fee2c6c4383ea254d7b2c2a00564d",
+    "authority/fixtures/g3-gf-004-base.v1.json": "4833720fd110dc35fc2a77210738d94ddf488f97b9814e727efe9412a11f3d9b",
+    "authority/fixtures/g3-gf-005-base.v1.json": "c63b78680bacf2804805bd36efe7f1108258cdcd3a87d3eb19e021e9c2aca959",
+    "authority/fixtures/g3-gf-005-cf02.v1.json": "7b34c5b43c4225485b9208960e6f9d7f9d77fbf5483e94b2fe7eb712032edeeb",
+    "authority/fixtures/g3-gf-005-cf03.v1.json": "c49687029a91d58eda5944ff0737c0ad68de2821a012c0daf0b4b90f635e113a",
+    "authority/fixtures/g3-gf-006-cf03.v1.json": "ae555c499a22544e01052f9d2157e0d7f34e78d113ef9fc914edd3ebde4846cf",
+    "authority/fixtures/g3-gf-007-cf02.v1.json": "9e21eacaf0768a2c1e645db11cbf112c2ffd397d1b29db3941466c74a54968fb",
+    "authority/fixtures/g3-gf-008-base.v1.json": "52e871a5b09aecb8853067daea488fb152f35d1f2042a56b3d1cd4a102434fca",
+    "authority/fixtures/g3-gf-009-base.v1.json": "564c19be5fbc9e7b00ad21793c64c2d5b3daf1537551528430321c07fcc6425c",
+    "authority/fixtures/g3-gf-010-base.v1.json": "d5ba28eded25e8341fd81954c718967c4b130dcb7302f5af8dd75c28a966bb89",
+    "authority/fixtures/g3-gf-011-base.v1.json": "0d865b5da35bffc0a7f87175b98fa4868b5f96b1e382771e0c5b1ec112377dc3",
+    "authority/fixtures/g3-gf-012-base.v1.json": "0d5fd69bc6c7133565bd6c667a7b3088fcb4391fc0f86d00dc98296e6154f778",
+    "authority/fixtures/g3-operations-assignment.v1.json": "8158ee3d182f33110227abb209186bb828aaf8d4a09b4d372db20430487243e4",
+    "authority/fixtures/g3-payment-incident-hourly.v1.json": "4e13f27d00db08861de0b77c200c20fc571c79fecbd167231bfcec10ff9cce3b",
+    "authority/fixtures/g3-payment-release.v1.json": "0c55787cd581033ce0291854d2a0f68dbeb333fc277d7ab7aa5a49098f215a25",
+    "authority/fixtures/g3-root-001-cf03.v1.json": "f67a974fb96cc9f303e3fd9401f8b5c41a7d2a9ad378f0565a5dad0789e4c975",
+    "authority/fixtures/g3-run-summary-only.v1.json": "e3db9daa0bbc750015cf99bdc80376bc310a9444fd097ff870d63f3839436332",
+    "grader-rubric.json": "8983c0b7546709e9097d9cda02275f06951c78f317ba7e15ca87acb7af31d02a",
+    "authority/authority-observation-bundle.schema.json": "6e26333c0a3f5e471d43da24ef3b7898236a37444f5bc479d30d34d664506b38",
+    "authority/authority-registry.schema.json": "6a7924659d5f7db3a32dc82cef03d6be6b785ba1165562899a8b794a8e75bd7d",
+    "authority/milestone-schedule.schema.json": "e4a6de66bf8057d7c838b75496291a57275014bd76a958507e619640c61ed5b8",
+    "authority/prior-authority-fixture.schema.json": "a656fc36d2d6247c733b0a2e93b95b353f12b90acdf2f173b2b98778c3b0d3ad",
+    "authority/authority-registry.json": "f9079778a9b4bb72a168126c92aa6416022f3b4ab9ea0260654cd18017cc05ef",
+    "authority/schedules/gate3-authority-repair.v1.json": "a547c9dcaf5700af5dc9f1fa8e19b26ea548211da64b0923658b2b6d6ef7540f",
+    "authority/fixtures/g3-user-008-prior-authority.v1.json": "159a41731e9c17dfcc013ee686a0ff87cb6175b0953a1d0424f4e50e84cdd58d",
+    "authority/examples/g3-user-008-authority-observation-bundle.v1.json": "0619048c6a52894c3e43c73b591b88f74f1b458e2cd860580233a8de365b8db3",
+    "authority/validate_authority_package.py": "9d8f144667ce5a9650232a318ba15c7cefaa504c89154674125bcf0e172158e4",
+    "taxonomy/coverage-taxonomy.json": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
+    "registries/source-registry.json": "92bb9cec67e2cf2f81deb8b3aaa4d93839bc6f74e726c6ebb030af64b4e78c2e",
+    "registries/review-registry.json": "507acd9a31330bbaeeac982651a807102999d048a2dc47c188cf5c4fe570c5ef",
+    "registries/corpus-registry.json": "4536abf14ae997dafea873738b9949a79737017aa334c54fde4ff3dd7d371568",
+    "registries/grader-registry.json": "9585b1895477bc42fe8764d9453ef2d4465e746939b116c4eaa6f05c2cb29740",
+    "profiles/authority-conformance-profiles.json": "162abec811b604972b9cc0ebb386269259bb3002663fe14681a27d4b7a52fa57",
+    "profiles/cross-gate-world-profiles.json": "01ee67e3cc70f81d805268a5aa3b29c6683c43097c18872fa558973016231748",
+    "manifests/promotion-manifest.json": "53ca35e034b90770b5e975df8edbf85fc64c552ade4043c7289c274d403f0fa8",
+    "manifests/protected-held-out-manifest.json": "d851187b829a98659ec61fe1018edbaf9bf7bf89cad32f64f098a7c1d1394c34",
+    "calibration/grader-calibration-package.json": "8cf3f89ab54a90082b3b518ed2983ff10ecc8718d5abf129b9859ae4ec0656b3",
+    "manifests/run-manifest.json": "ed004046a20d00d9d44c24a04518b8de3368772815bbcfdb259e405c162f1ad0",
+    "promotion/review-packages.json": "53ca8a77d254a38a7655e5677ec8750a07c6d4ce0fb7d0e2bc4bd8cef7d2bbc4",
+    "tools/build_gate3_eval_corpus.py": "834b7494d166f759e8e178731b56da3aa95569344ac7a22688980a2d73919938",
+    "tools/compile_gate3_eval_views.py": "bc17cdf7d08cba0ee68e5284ce35c70eb9980e29ac910e8d0e9f3cfad5564553",
+    "tools/validate_gate3_eval_catalog.py": "80a1b14697e0b25689a811af6c0afd54c036657d27b587443bb5ed0f39662bec",
+    "tools/validate_gate3_eval_result.py": "0140dc489c420c2f4a57a5ee5946922b4a42bd22de22fa8bc1dc2759eeb55ff8",
+    "tools/verify_gate3_e0.py": "4bd3a1326dc7f8f6fb5c100309a965a948505ce7453011e2cc31b80a2904d0d5",
+    "tools/assert_gate3_1_entry.py": "18d8afa364d5dedbff46fa290665df4dcc6a785f063125262e14cf01b9db143d",
+    "tools/gate3_admission_authority.py": "a433a38130006c5a13c362a0ff7981f1388f6c054d6f984eaa83ba22dc55b41e",
+    "tools/github_gate3_admission.py": "404bc8cf1d7f156ed364547f9edb8fcc9c1ea60b942bd17c47723faa8a921160",
+    "tools/build_gate3_github_admission_request.py": "b4dd0239204611a343a9c8c2a442570e1850d650d4af596ed3a174a785313f0c",
+    "tools/verify_github_workflow_deployment.py": "8fd1cfdf000e29a30c8cc46390e1be69ef4401a2a71bbffe790fb800ff191e03",
+    "ops/github/workflow-authority-policy.json": "c9e9561ddf497327d292aed4908c7fe44e8176b033cf5a1ca76a01f0d8c11773"
+  },
+  "condition_verdicts": [
+    {
+      "condition_id": "external_admission_verified",
+      "verdict": "blocked",
+      "evidence": [
+        "canonical external admission connector is unprovisioned"
+      ]
+    },
+    {
+      "condition_id": "authoring_catalog_valid",
+      "verdict": "pass",
+      "evidence": [
+        "36 authoring Episodes"
+      ]
+    },
+    {
+      "condition_id": "generated_artifacts_fresh",
+      "verdict": "pass",
+      "evidence": [
+        "candidate union, corpus, profiles and review packages are deterministic"
+      ]
+    },
+    {
+      "condition_id": "transfer_research_isolated",
+      "verdict": "pass",
+      "evidence": [
+        "4 cross-domain probes remain outside Required catalog, review, promotion and run artifacts"
+      ]
+    },
+    {
+      "condition_id": "agent_evaluator_projection_contract_safe",
+      "verdict": "pass",
+      "evidence": [
+        "36 Required projections validate; CLI cannot emit oracle, suite binding or caller-selected future turns; runtime process isolation remains G3.2"
+      ]
+    },
+    {
+      "condition_id": "claim_case_files_ready",
+      "verdict": "blocked",
+      "evidence": [
+        "schema findings: 0",
+        "missing authorities: []",
+        "pending independent review: ['FIXTURE-G3-ADV-002-BASE-V1', 'FIXTURE-G3-ADV-002-CF03-V1', 'FIXTURE-G3-ADV-007-BASE-V1', 'FIXTURE-G3-ADV-007-CF03-V1', 'FIXTURE-G3-ADV-008-CF03-V1', 'FIXTURE-G3-EXP-001-CF03-V1', 'FIXTURE-G3-EXP-002-BASE-V1', 'FIXTURE-G3-EXP-005-BASE-V1', 'FIXTURE-G3-EXP-005-CF03-V1', 'FIXTURE-G3-EXP-007-BASE-V1', 'FIXTURE-G3-EXP-007-CF03-V1', 'FIXTURE-G3-EXP-008-CF03-V1', 'FIXTURE-G3-EXP-010-CF03-V1', 'FIXTURE-G3-EXP-012-CF03-V1', 'FIXTURE-G3-GF-001-BASE-V1', 'FIXTURE-G3-GF-002-BASE-V1', 'FIXTURE-G3-GF-003-BASE-V1', 'FIXTURE-G3-GF-004-BASE-V1', 'FIXTURE-G3-GF-005-BASE-V1', 'FIXTURE-G3-GF-005-CF02-V1', 'FIXTURE-G3-GF-005-CF03-V1', 'FIXTURE-G3-GF-006-CF03-V1', 'FIXTURE-G3-GF-007-CF02-V1', 'FIXTURE-G3-GF-008-BASE-V1', 'FIXTURE-G3-GF-009-BASE-V1', 'FIXTURE-G3-GF-010-BASE-V1', 'FIXTURE-G3-GF-011-BASE-V1', 'FIXTURE-G3-GF-012-BASE-V1', 'FIXTURE-G3-ROOT-001-CF03-V1', 'FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1', 'FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1', 'FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1', 'FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1', 'FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1', 'FIXTURE-WAJE-PAYMENT-RELEASE-V1', 'FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1', 'FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1', 'REAL-WAJE-AUTHORITY-STRESS-20260704', 'REAL-WAJE-BUSINESS-CHAIN-20260730', 'REAL-WAJE-COMMON-20260602', 'REAL-WAJE-D30-COHORT-20250515']",
+        "pending materializations: 0",
+        "authority integrity gaps: []"
+      ]
+    },
+    {
+      "condition_id": "authority_observation_package_valid",
+      "verdict": "pass",
+      "evidence": [
+        "USER008 repair package: 19 milestones, 19 observations, 8 claim dispositions"
+      ]
+    },
+    {
+      "condition_id": "source_registry_verified",
+      "verdict": "blocked",
+      "evidence": [
+        "source binding findings: 20",
+        "Required Episode source gaps: ['G3-ADV-001', 'G3-ADV-002', 'G3-ADV-004', 'G3-ADV-005', 'G3-ADV-006', 'G3-ADV-007', 'G3-ADV-008', 'G3-ADV-009', 'G3-EXP-001', 'G3-EXP-002', 'G3-EXP-005', 'G3-EXP-007', 'G3-EXP-008', 'G3-EXP-010', 'G3-EXP-012', 'G3-GF-001', 'G3-GF-002', 'G3-GF-003', 'G3-GF-004', 'G3-GF-005', 'G3-GF-006', 'G3-GF-007', 'G3-GF-008', 'G3-GF-009', 'G3-GF-010', 'G3-GF-011', 'G3-GF-012', 'G3-ROOT-001', 'G3-USER-001', 'G3-USER-002', 'G3-USER-003', 'G3-USER-004', 'G3-USER-005', 'G3-USER-006', 'G3-USER-007', 'G3-USER-008']",
+        "global independent source gap: 3",
+        "verified independent sources: 0"
+      ]
+    },
+    {
+      "condition_id": "independent_reviews_complete",
+      "verdict": "blocked",
+      "evidence": [
+        "0 independently double-reviewed Episodes",
+        "Required review gaps: ['G3-ADV-001', 'G3-ADV-002', 'G3-ADV-004', 'G3-ADV-005', 'G3-ADV-006', 'G3-ADV-007', 'G3-ADV-008', 'G3-ADV-009', 'G3-EXP-001', 'G3-EXP-002', 'G3-EXP-005', 'G3-EXP-007', 'G3-EXP-008', 'G3-EXP-010', 'G3-EXP-012', 'G3-GF-001', 'G3-GF-002', 'G3-GF-003', 'G3-GF-004', 'G3-GF-005', 'G3-GF-006', 'G3-GF-007', 'G3-GF-008', 'G3-GF-009', 'G3-GF-010', 'G3-GF-011', 'G3-GF-012', 'G3-ROOT-001', 'G3-USER-001', 'G3-USER-002', 'G3-USER-003', 'G3-USER-004', 'G3-USER-005', 'G3-USER-006', 'G3-USER-007', 'G3-USER-008']"
+      ]
+    },
+    {
+      "condition_id": "reviewed_coverage_complete",
+      "verdict": "blocked",
+      "evidence": [
+        "reviewed coverage gaps: {'decision_goals': ['attribute', 'challenge', 'compare', 'define', 'diagnose', 'estimate', 'recommend_with_boundary', 'validate'], 'measurement_challenges': ['association_or_causal_ceiling', 'cohort_or_risk_set', 'decomposition', 'denominator', 'distribution', 'exposure', 'funnel_or_sequence', 'multi_estimand', 'observation_unit', 'window_or_baseline'], 'temporal_shapes': ['absolute', 'cross_month', 'cross_year', 'no_time', 'partial_period', 'relative', 'timezone_or_business_day'], 'data_conditions': ['complete', 'conflicting_contract', 'contradictory_evidence', 'late_arrival', 'missing_contract', 'partial_coverage', 'stale_release'], 'conversation_dynamics': ['challenge', 'clarification', 'concurrent_message', 'correction', 'long_context_noise', 'scope_revision', 'single_turn'], 'risk_types': ['authority_drift', 'hidden_data_gap', 'misleading_comparison', 'out_of_scope_request', 'over_strong_claim', 'wrong_business_decision']}",
+        "reviewed WAJEgame suite binding gaps: {'coverage_group_counts': {'launch_question': 8, 'business_chain': 10, 'measurement_regression': 10, 'authority_stress': 8}, 'factor_group_refs': ['amount_tier_and_user_value', 'calendar_time_and_payday', 'external_context_events', 'gameplay_engagement_and_arpu', 'gameplay_ggr_and_betting', 'geo_device_environment', 'marketing_channel_and_growth_ops', 'paid_amount_metric_source', 'payment_channel_and_method', 'payment_order_metric_chain', 'payment_status_latency_and_quality', 'product_operation_events', 'sensitive_identity_and_dedup_fields', 'user_acquisition_and_first_payment'], 'question_family_refs': ['anomaly_or_black_swan_review', 'business_object_impact_review', 'custom_baseline_comparison', 'data_quality_or_evidence_review', 'paid_amount_change_explanation', 'pattern_explanation', 'revenue_health_review', 'segment_or_factor_attribution']}"
+      ]
+    },
+    {
+      "condition_id": "truth_identifiability_reviewed",
+      "verdict": "blocked",
+      "evidence": [
+        "pending truth facts: 54"
+      ]
+    },
+    {
+      "condition_id": "per_claim_ceiling_complete",
+      "verdict": "pass",
+      "evidence": [
+        "estimand/claim structure gaps: 0"
+      ]
+    },
+    {
+      "condition_id": "counterfactual_mutations_executable",
+      "verdict": "pass",
+      "evidence": [
+        "unexecutable counterfactuals: 0"
+      ]
+    },
+    {
+      "condition_id": "grader_and_authority_profiles_resolve",
+      "verdict": "pass",
+      "evidence": [
+        "profile findings: 0"
+      ]
+    },
+    {
+      "condition_id": "promotion_manifest_approved",
+      "verdict": "blocked",
+      "evidence": [
+        "promotion status: draft",
+        "promotion entries: 0",
+        "promotion binding findings: 0"
+      ]
+    },
+    {
+      "condition_id": "grader_calibrated",
+      "verdict": "blocked",
+      "evidence": [
+        "calibration status: pending",
+        "calibration review findings: 0",
+        "calibration label findings: 0"
+      ]
+    },
+    {
+      "condition_id": "held_out_partition_sealed",
+      "verdict": "blocked",
+      "evidence": [
+        "held-out status: unsealed",
+        "held-out entries: 0",
+        "held-out receipt findings: 0"
+      ]
+    },
+    {
+      "condition_id": "run_manifest_frozen",
+      "verdict": "blocked",
+      "evidence": [
+        "run manifest status: draft",
+        "run-cell binding findings: 0"
+      ]
+    },
+    {
+      "condition_id": "three_layer_result_contract_present",
+      "verdict": "pass",
+      "evidence": [
+        "product, authority and implementation verdicts use strict AND",
+        "contract self-test findings: 0"
+      ]
+    }
+  ],
+  "derived_status": "blocked",
+  "entry_decision": "deny_g3_1"
+}

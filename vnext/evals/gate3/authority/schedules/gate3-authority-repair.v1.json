@@ -1,0 +1,416 @@
+{
+  "artifact_version": "gate3.authority-milestone-schedule.v1",
+  "schedule_id": "SCHEDULE-G3-AUTHORITY-REPAIR-V1",
+  "gate_contract": {
+    "gate_stage": "G3",
+    "authority_state": "provisional",
+    "answer_status": "provisional",
+    "workflow_state": "provisional",
+    "delivery_state": "withheld",
+    "disposition_scope": "claim"
+  },
+  "milestones": [
+    {
+      "milestone_id": "MS-G3-01-INGRESS",
+      "ordinal": 1,
+      "phase": "ingress",
+      "kind": "ingress_received",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [],
+      "expected_effect_kind": "ingress_anchored",
+      "required_observation_fields": [
+        "event_identity",
+        "run_attempt_ref",
+        "authority_effect"
+      ],
+      "description": "Anchor the user request and prior-authority lookup to one case and analysis cycle."
+    },
+    {
+      "milestone_id": "MS-G3-02-FRAME-ACCEPT",
+      "ordinal": 2,
+      "phase": "authority_acceptance",
+      "kind": "frame_accepted",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-01-INGRESS"
+      ],
+      "expected_effect_kind": "accepted_revision_advanced",
+      "required_observation_fields": [
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Accept one AnalysisFrameRevision for the current measurement design."
+    },
+    {
+      "milestone_id": "MS-G3-03-PLAN-ACCEPT",
+      "ordinal": 3,
+      "phase": "authority_acceptance",
+      "kind": "plan_accepted",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-02-FRAME-ACCEPT"
+      ],
+      "expected_effect_kind": "accepted_revision_advanced",
+      "required_observation_fields": [
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Accept one WorkPlanRevision bound to the accepted frame."
+    },
+    {
+      "milestone_id": "MS-G3-04-INITIAL-EFFECT",
+      "ordinal": 4,
+      "phase": "execution",
+      "kind": "effect_recorded",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-03-PLAN-ACCEPT"
+      ],
+      "expected_effect_kind": "capability_effect_appended",
+      "required_observation_fields": [
+        "authority_refs",
+        "event_identity",
+        "authority_effect"
+      ],
+      "description": "Record the capability result as an append-only effect before evidence admission."
+    },
+    {
+      "milestone_id": "MS-G3-05-INITIAL-EVIDENCE",
+      "ordinal": 5,
+      "phase": "evidence",
+      "kind": "evidence_admitted",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-04-INITIAL-EFFECT"
+      ],
+      "expected_effect_kind": "evidence_record_appended",
+      "required_observation_fields": [
+        "authority_refs",
+        "claim_refs",
+        "authority_effect"
+      ],
+      "description": "Admit immutable EvidenceRecords with exact frame, plan, query, result and snapshot references."
+    },
+    {
+      "milestone_id": "MS-G3-06-INITIAL-REVIEW",
+      "ordinal": 6,
+      "phase": "review",
+      "kind": "review_recorded",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-05-INITIAL-EVIDENCE"
+      ],
+      "expected_effect_kind": "review_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Record verifier and reviewer findings against individual claims."
+    },
+    {
+      "milestone_id": "MS-G3-07-INITIAL-DISPOSITION",
+      "ordinal": 7,
+      "phase": "review",
+      "kind": "claim_disposition_recorded",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-06-INITIAL-REVIEW"
+      ],
+      "expected_effect_kind": "claim_disposition_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_effect"
+      ],
+      "description": "Append claim-local dispositions without deriving a global completion state."
+    },
+    {
+      "milestone_id": "MS-G3-08-INITIAL-ANSWER",
+      "ordinal": 8,
+      "phase": "answer",
+      "kind": "answer_appended",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-07-INITIAL-DISPOSITION"
+      ],
+      "expected_effect_kind": "answer_version_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Append a provisional AnswerVersion containing only claims permitted by their local dispositions."
+    },
+    {
+      "milestone_id": "MS-G3-09-INITIAL-WORKFLOW",
+      "ordinal": 9,
+      "phase": "workflow",
+      "kind": "workflow_projected",
+      "requirement": "always_required",
+      "predecessor_milestone_ids": [
+        "MS-G3-08-INITIAL-ANSWER"
+      ],
+      "expected_effect_kind": "workflow_projection_advanced",
+      "required_observation_fields": [
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Advance the customer-safe workflow projection while delivery remains withheld."
+    },
+    {
+      "milestone_id": "MS-G3-10-CORRECTION",
+      "ordinal": 10,
+      "phase": "repair",
+      "kind": "correction_appended",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-09-INITIAL-WORKFLOW"
+      ],
+      "expected_effect_kind": "correction_relation_appended",
+      "required_observation_fields": [
+        "causation_observation_ids",
+        "authority_effect.invalidated_object_refs"
+      ],
+      "description": "Append a correction relation and invalidate affected evidence without mutating prior records."
+    },
+    {
+      "milestone_id": "MS-G3-11-LATE",
+      "ordinal": 11,
+      "phase": "repair",
+      "kind": "late_event_admitted",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "late_arrival"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-10-CORRECTION"
+      ],
+      "expected_effect_kind": "late_source_event_appended",
+      "required_observation_fields": [
+        "occurred_at",
+        "observed_at",
+        "details.lateness_seconds"
+      ],
+      "description": "Admit a late source event with separate event and observation times."
+    },
+    {
+      "milestone_id": "MS-G3-12-DUPLICATE",
+      "ordinal": 12,
+      "phase": "repair",
+      "kind": "duplicate_rejected",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "duplicate_replay"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-11-LATE"
+      ],
+      "expected_effect_kind": "duplicate_ignored",
+      "required_observation_fields": [
+        "event_identity.idempotency_key",
+        "details.duplicate_of_observation_id",
+        "admission_decision"
+      ],
+      "description": "Reject a repeated logical event and append no authority object."
+    },
+    {
+      "milestone_id": "MS-G3-13-RESTART",
+      "ordinal": 13,
+      "phase": "repair",
+      "kind": "restart_replayed",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "restart_recovery"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-12-DUPLICATE"
+      ],
+      "expected_effect_kind": "restart_lineage_appended",
+      "required_observation_fields": [
+        "run_attempt_ref",
+        "details.restart_of_run_attempt_ref",
+        "authority_refs"
+      ],
+      "description": "Resume from persisted authority and preserve accepted frame and plan identity."
+    },
+    {
+      "milestone_id": "MS-G3-14-REPAIR-EFFECT",
+      "ordinal": 14,
+      "phase": "execution",
+      "kind": "effect_recorded",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair",
+        "restart_recovery"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-13-RESTART"
+      ],
+      "expected_effect_kind": "capability_effect_appended",
+      "required_observation_fields": [
+        "authority_refs",
+        "event_identity",
+        "authority_effect"
+      ],
+      "description": "Record the recomputed capability result under the preserved accepted authority."
+    },
+    {
+      "milestone_id": "MS-G3-15-REPAIR-EVIDENCE",
+      "ordinal": 15,
+      "phase": "evidence",
+      "kind": "evidence_admitted",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-14-REPAIR-EFFECT"
+      ],
+      "expected_effect_kind": "evidence_record_appended",
+      "required_observation_fields": [
+        "authority_refs",
+        "claim_refs",
+        "authority_effect"
+      ],
+      "description": "Append replacement evidence and explicit supersession links."
+    },
+    {
+      "milestone_id": "MS-G3-16-REPAIR-REVIEW",
+      "ordinal": 16,
+      "phase": "review",
+      "kind": "review_recorded",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-15-REPAIR-EVIDENCE"
+      ],
+      "expected_effect_kind": "review_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Review repaired evidence and local boundaries before revising claim dispositions."
+    },
+    {
+      "milestone_id": "MS-G3-17-REPAIR-DISPOSITION",
+      "ordinal": 17,
+      "phase": "review",
+      "kind": "claim_disposition_recorded",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-16-REPAIR-REVIEW"
+      ],
+      "expected_effect_kind": "claim_disposition_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_effect"
+      ],
+      "description": "Append the repaired disposition for every affected claim independently."
+    },
+    {
+      "milestone_id": "MS-G3-18-REPAIR-ANSWER",
+      "ordinal": 18,
+      "phase": "answer",
+      "kind": "answer_appended",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-17-REPAIR-DISPOSITION"
+      ],
+      "expected_effect_kind": "answer_version_appended",
+      "required_observation_fields": [
+        "claim_refs",
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Append a new provisional AnswerVersion and retain the prior version."
+    },
+    {
+      "milestone_id": "MS-G3-19-REPAIR-WORKFLOW",
+      "ordinal": 19,
+      "phase": "workflow",
+      "kind": "workflow_projected",
+      "requirement": "scenario_required",
+      "scenario_ids": [
+        "correction_repair"
+      ],
+      "predecessor_milestone_ids": [
+        "MS-G3-18-REPAIR-ANSWER"
+      ],
+      "expected_effect_kind": "workflow_projection_advanced",
+      "required_observation_fields": [
+        "authority_refs",
+        "authority_effect"
+      ],
+      "description": "Advance the workflow to the repaired provisional answer while delivery remains withheld."
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "base_authority_path",
+      "trigger": "A new authority-bound analysis run is accepted.",
+      "required_milestone_ids": [
+        "MS-G3-01-INGRESS",
+        "MS-G3-02-FRAME-ACCEPT",
+        "MS-G3-03-PLAN-ACCEPT",
+        "MS-G3-04-INITIAL-EFFECT",
+        "MS-G3-05-INITIAL-EVIDENCE",
+        "MS-G3-06-INITIAL-REVIEW",
+        "MS-G3-07-INITIAL-DISPOSITION",
+        "MS-G3-08-INITIAL-ANSWER",
+        "MS-G3-09-INITIAL-WORKFLOW"
+      ],
+      "acceptance_rule": "One accepted frame and plan bind every downstream effect, evidence record, review, claim disposition, answer and workflow projection."
+    },
+    {
+      "scenario_id": "correction_repair",
+      "trigger": "An admitted correction changes a material fact used by one or more claims.",
+      "required_milestone_ids": [
+        "MS-G3-10-CORRECTION",
+        "MS-G3-14-REPAIR-EFFECT",
+        "MS-G3-15-REPAIR-EVIDENCE",
+        "MS-G3-16-REPAIR-REVIEW",
+        "MS-G3-17-REPAIR-DISPOSITION",
+        "MS-G3-18-REPAIR-ANSWER",
+        "MS-G3-19-REPAIR-WORKFLOW"
+      ],
+      "acceptance_rule": "Old objects remain immutable; invalidation, replacement evidence, claim-local disposition and a new provisional answer are appended."
+    },
+    {
+      "scenario_id": "late_arrival",
+      "trigger": "A source event is observed after its original event time and affects the active release.",
+      "required_milestone_ids": [
+        "MS-G3-11-LATE"
+      ],
+      "acceptance_rule": "The event retains both clocks and enters the correction path only when material to an active claim."
+    },
+    {
+      "scenario_id": "duplicate_replay",
+      "trigger": "An event with an already admitted idempotency identity is replayed.",
+      "required_milestone_ids": [
+        "MS-G3-12-DUPLICATE"
+      ],
+      "acceptance_rule": "The replay is recorded as rejected_duplicate and appends no authority object."
+    },
+    {
+      "scenario_id": "restart_recovery",
+      "trigger": "A run attempt restarts after persisted authority exists.",
+      "required_milestone_ids": [
+        "MS-G3-13-RESTART",
+        "MS-G3-14-REPAIR-EFFECT"
+      ],
+      "acceptance_rule": "The new attempt preserves accepted revision identity, reuses admitted effects idempotently and appends only missing downstream records."
+    }
+  ]
+}

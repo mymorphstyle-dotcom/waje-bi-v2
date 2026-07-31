@@ -1,0 +1,617 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/authority/prior-authority-fixture.v1.schema.json",
+  "title": "WAJE Gate 3 prior-authority fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_version",
+    "fixture_id",
+    "fixture_uri",
+    "episode_id",
+    "source_authority_id",
+    "evaluation_clock",
+    "accepted_authority",
+    "object_inventory",
+    "journal_object_refs",
+    "business_facts",
+    "source_events",
+    "expected_append_only_repair"
+  ],
+  "properties": {
+    "artifact_version": {
+      "const": "gate3.prior-authority-fixture.v1"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^FIXTURE-G3-[A-Z0-9-]+-V[0-9]+$"
+    },
+    "fixture_uri": {
+      "type": "string",
+      "pattern": "^fixture://wajegame/[a-z0-9-]+/v[0-9]+$"
+    },
+    "episode_id": {
+      "const": "G3-USER-008"
+    },
+    "source_authority_id": {
+      "const": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1"
+    },
+    "evaluation_clock": {
+      "$ref": "#/$defs/evaluationClock"
+    },
+    "accepted_authority": {
+      "$ref": "#/$defs/acceptedAuthority"
+    },
+    "object_inventory": {
+      "type": "array",
+      "minItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/authorityObject"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "question_revision"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "analysis_frame_revision"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "work_plan_revision"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "query_spec"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "result_handle"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "evidence_record"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "answer_version"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "object_type": {
+                "const": "workflow_projection"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          }
+        }
+      ]
+    },
+    "journal_object_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/objectRef"
+      }
+    },
+    "business_facts": {
+      "$ref": "#/$defs/businessFacts"
+    },
+    "source_events": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/sourceEvent"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "event_kind": {
+                "const": "correction"
+              }
+            },
+            "required": [
+              "event_kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "event_kind": {
+                "const": "late_arrival"
+              }
+            },
+            "required": [
+              "event_kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "event_kind": {
+                "const": "duplicate_replay"
+              }
+            },
+            "required": [
+              "event_kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "event_kind": {
+                "const": "restart"
+              }
+            },
+            "required": [
+              "event_kind"
+            ]
+          }
+        }
+      ]
+    },
+    "expected_append_only_repair": {
+      "$ref": "#/$defs/expectedRepair"
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "objectRef": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._:-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "evaluationClock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of_instant",
+        "target_business_date",
+        "business_timezone",
+        "release_cutoff_instant"
+      ],
+      "properties": {
+        "as_of_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "target_business_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "business_timezone": {
+          "const": "Africa/Lagos"
+        },
+        "release_cutoff_instant": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "acceptedAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_ref",
+        "analysis_cycle_ref",
+        "question_revision_ref",
+        "frame_revision_ref",
+        "plan_revision_ref"
+      ],
+      "properties": {
+        "case_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "analysis_cycle_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "question_revision_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "frame_revision_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "plan_revision_ref": {
+          "$ref": "#/$defs/objectRef"
+        }
+      }
+    },
+    "authorityObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_ref",
+        "object_type",
+        "version",
+        "prior_object_ref",
+        "recorded_at",
+        "immutability",
+        "authority_refs",
+        "facts"
+      ],
+      "properties": {
+        "object_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "object_type": {
+          "enum": [
+            "question_revision",
+            "analysis_frame_revision",
+            "work_plan_revision",
+            "query_spec",
+            "result_handle",
+            "evidence_record",
+            "answer_version",
+            "workflow_projection"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prior_object_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/objectRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "immutability": {
+          "const": "append_only"
+        },
+        "authority_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/objectRef"
+          }
+        },
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "payload_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "answer_status": {
+          "const": "provisional"
+        },
+        "workflow_state": {
+          "const": "provisional"
+        },
+        "delivery_state": {
+          "const": "withheld"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "object_type": {
+                "const": "answer_version"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "answer_status"
+            ],
+            "properties": {
+              "answer_status": {
+                "const": "provisional"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "object_type": {
+                "const": "workflow_projection"
+              }
+            },
+            "required": [
+              "object_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "workflow_state",
+              "delivery_state"
+            ],
+            "properties": {
+              "workflow_state": {
+                "const": "provisional"
+              },
+              "delivery_state": {
+                "const": "withheld"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "businessFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "baseline_paid_amount",
+        "prior_target_paid_amount",
+        "duplicate_paid_amount",
+        "repaired_target_paid_amount",
+        "prior_growth_pct",
+        "repaired_growth_pct",
+        "duplicate_channel",
+        "prior_total_claim_ref",
+        "prior_channel_claim_ref"
+      ],
+      "properties": {
+        "currency": {
+          "const": "NGN"
+        },
+        "baseline_paid_amount": {
+          "type": "number"
+        },
+        "prior_target_paid_amount": {
+          "type": "number"
+        },
+        "duplicate_paid_amount": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "repaired_target_paid_amount": {
+          "type": "number"
+        },
+        "prior_growth_pct": {
+          "type": "number"
+        },
+        "repaired_growth_pct": {
+          "type": "number"
+        },
+        "duplicate_channel": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "prior_total_claim_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "prior_channel_claim_ref": {
+          "$ref": "#/$defs/objectRef"
+        }
+      }
+    },
+    "sourceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_event_ref",
+        "event_kind",
+        "occurred_at",
+        "observed_at",
+        "run_attempt_ref",
+        "idempotency_key",
+        "facts"
+      ],
+      "properties": {
+        "source_event_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "event_kind": {
+          "enum": [
+            "correction",
+            "late_arrival",
+            "duplicate_replay",
+            "restart"
+          ]
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "run_attempt_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "related_event_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "event_kind": {
+                "enum": [
+                  "duplicate_replay",
+                  "restart"
+                ]
+              }
+            },
+            "required": [
+              "event_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "related_event_ref"
+            ]
+          }
+        }
+      ]
+    },
+    "expectedClaimDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_ref",
+        "claim_target_ids",
+        "disposition",
+        "reason"
+      ],
+      "properties": {
+        "claim_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "claim_target_ids": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "disposition": {
+          "enum": [
+            "supported_provisional",
+            "boundary_provisional",
+            "recomputed_provisional",
+            "revoked",
+            "unverifiable"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "expectedRepair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invalidated_object_refs",
+        "superseded_object_refs",
+        "appended_object_refs",
+        "expected_claim_dispositions",
+        "current_answer_version_ref",
+        "current_workflow_projection_ref"
+      ],
+      "properties": {
+        "invalidated_object_refs": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "superseded_object_refs": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "appended_object_refs": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "expected_claim_dispositions": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/expectedClaimDisposition"
+          }
+        },
+        "current_answer_version_ref": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "current_workflow_projection_ref": {
+          "$ref": "#/$defs/objectRef"
+        }
+      }
+    }
+  }
+}

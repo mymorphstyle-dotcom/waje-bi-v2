@@ -1,0 +1,356 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-ROOT-001-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-root-001-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-ROOT-001:G3-ROOT-001-CF03",
+    "episode_id": "G3-ROOT-001",
+    "binding_id": "gap_active_user_semantic_family",
+    "authority_slot_id": "fixture_g3_root_001_cf03_v1",
+    "scope_claim_target_ids": [
+      "active_user_metric_family_claim",
+      "cross_use_interchangeability_claim",
+      "gameplay_active_user_definition_claim",
+      "growth_active_user_definition_claim",
+      "paid_active_user_definition_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/login-active-user/v1",
+      "state": "available",
+      "description": "登录活跃按有效注册账户去重，要求业务日内出现有效登录或会话事件，并排除测试账户。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/gameplay-active-user/v1",
+      "state": "available",
+      "description": "玩法活跃按玩法账户去重，要求业务日内至少有一局有效且已结算的真实玩法行为。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/paid-active-user/v1",
+      "state": "available",
+      "description": "付费活跃按 canonical payer 去重，要求业务日内至少一笔最终成功的真实支付。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/player-identity-map/v1",
+      "state": "partial",
+      "description": "合作渠道实体映射升级为完整且已审计，三个指标 owner 同时签署 canonical player 聚合规则。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-ACTIVE-PLAYER-GRAIN-CONFLICT",
+      "description": "三个正式定义使用不同观察单位，数值无法直接等同。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ACTIVE-PLAYER-MAPPING-GAP",
+      "description": "部分合作渠道缺少玩法账户和支付账户到 canonical player 的可靠映射。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-ROOT-001-01",
+        "statement": "增长触达覆盖率需要稳定的注册账户或 canonical player 分母，并明确合作渠道映射缺口。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-ROOT-001-02",
+        "statement": "玩法渗透率需要玩法账户或 canonical player 上的有效结算玩法行为，无法与登录活跃共享同一个分子。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-ROOT-001-03",
+        "statement": "统一语义层可以维护一个概念族和明确用途，强行生成单一万能数字会损害至少一个决策。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-ROOT-001-04",
+        "statement": "合作伙伴渠道在实体映射补齐前只能给出边界或分渠道口径。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "active_user_metric_family_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_gameplay",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_active_user_semantic_family",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "market_dashboard",
+          "gameplay",
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.active_user_semantic_family",
+          "contract://wajegame/player-identity-map/v1",
+          "DC-ACTIVE-PLAYER-GRAIN-CONFLICT"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ROOT-001-01",
+          "TRUTH-G3-ROOT-001-02",
+          "TRUTH-G3-ROOT-001-03",
+          "TRUTH-G3-ROOT-001-04"
+        ],
+        "boundary_codes": [
+          "identity_mapping_gap",
+          "unsupported_grain"
+        ],
+        "reversal_conditions": [
+          "业务 owner 选择单一用途并接受更窄定义。"
+        ]
+      },
+      {
+        "claim_target_id": "growth_active_user_definition_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_active_user_semantic_family",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "market_dashboard",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.active_user_semantic_family",
+          "contract://wajegame/login-active-user/v1",
+          "DC-ACTIVE-PLAYER-MAPPING-GAP"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ROOT-001-01",
+          "TRUTH-G3-ROOT-001-02",
+          "TRUTH-G3-ROOT-001-03",
+          "TRUTH-G3-ROOT-001-04"
+        ],
+        "boundary_codes": [
+          "identity_mapping_gap",
+          "unsupported_grain"
+        ],
+        "reversal_conditions": [
+          "增长用途改用 canonical player 且实体映射完整。"
+        ]
+      },
+      {
+        "claim_target_id": "gameplay_active_user_definition_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_gameplay",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_active_user_semantic_family",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "gameplay",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.active_user_semantic_family",
+          "contract://wajegame/gameplay-active-user/v1",
+          "DC-ACTIVE-PLAYER-MAPPING-GAP"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ROOT-001-01",
+          "TRUTH-G3-ROOT-001-02",
+          "TRUTH-G3-ROOT-001-03",
+          "TRUTH-G3-ROOT-001-04"
+        ],
+        "boundary_codes": [
+          "identity_mapping_gap",
+          "unsupported_grain"
+        ],
+        "reversal_conditions": [
+          "玩法行为 eligibility 或结算状态定义改变。"
+        ]
+      },
+      {
+        "claim_target_id": "paid_active_user_definition_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_active_user_semantic_family",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.active_user_semantic_family",
+          "contract://wajegame/paid-active-user/v1",
+          "DC-ACTIVE-PLAYER-MAPPING-GAP"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ROOT-001-01",
+          "TRUTH-G3-ROOT-001-02",
+          "TRUTH-G3-ROOT-001-03",
+          "TRUTH-G3-ROOT-001-04"
+        ],
+        "boundary_codes": [
+          "identity_mapping_gap",
+          "unsupported_grain"
+        ],
+        "reversal_conditions": [
+          "最终成功支付或 canonical payer 合同改变。"
+        ]
+      },
+      {
+        "claim_target_id": "cross_use_interchangeability_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_gameplay",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "real_paid_order_success",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_active_user_semantic_family",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "partial"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "definition_only",
+        "required_observation_refs": [
+          "market_dashboard",
+          "gameplay",
+          "paid_order_success",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.active_user_semantic_family",
+          "contract://wajegame/player-identity-map/v1",
+          "DC-ACTIVE-PLAYER-GRAIN-CONFLICT"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-ROOT-001-01",
+          "TRUTH-G3-ROOT-001-02",
+          "TRUTH-G3-ROOT-001-03",
+          "TRUTH-G3-ROOT-001-04"
+        ],
+        "boundary_codes": [
+          "identity_mapping_gap",
+          "unsupported_grain"
+        ],
+        "reversal_conditions": [
+          "完整实体映射和 owner 决策证明某两个用途可共享。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

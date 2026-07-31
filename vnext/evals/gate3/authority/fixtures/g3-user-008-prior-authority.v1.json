@@ -1,0 +1,446 @@
+{
+  "artifact_version": "gate3.prior-authority-fixture.v1",
+  "fixture_id": "FIXTURE-G3-USER-008-PRIOR-AUTHORITY-V1",
+  "fixture_uri": "fixture://wajegame/run-evidence-repair/v1",
+  "episode_id": "G3-USER-008",
+  "source_authority_id": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+  "evaluation_clock": {
+    "as_of_instant": "2026-06-03T10:00:00+01:00",
+    "target_business_date": "2026-06-02",
+    "business_timezone": "Africa/Lagos",
+    "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
+  },
+  "accepted_authority": {
+    "case_ref": "case:g3-user-008-prior",
+    "analysis_cycle_ref": "cycle:g3-user-008-cycle-1",
+    "question_revision_ref": "question:qrev-g3-user-008-1",
+    "frame_revision_ref": "frame:frev-g3-user-008-1",
+    "plan_revision_ref": "plan:prev-g3-user-008-1"
+  },
+  "object_inventory": [
+    {
+      "object_ref": "question:qrev-g3-user-008-1",
+      "object_type": "question_revision",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:31:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "case:g3-user-008-prior"
+      ],
+      "facts": [
+        "Compare successful paid amount on 2026-06-02 with the accepted baseline and identify the largest channel increment."
+      ]
+    },
+    {
+      "object_ref": "frame:frev-g3-user-008-1",
+      "object_type": "analysis_frame_revision",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:31:10+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "case:g3-user-008-prior",
+        "question:qrev-g3-user-008-1"
+      ],
+      "facts": [
+        "Observation unit is one canonical payment order.",
+        "Successful paid amount uses the accepted terminal-success and deduplication contracts.",
+        "Channel attribution is descriptive and cannot exceed the observed mapping coverage."
+      ]
+    },
+    {
+      "object_ref": "plan:prev-g3-user-008-1",
+      "object_type": "work_plan_revision",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:31:20+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "case:g3-user-008-prior",
+        "frame:frev-g3-user-008-1"
+      ],
+      "facts": [
+        "Task one computes target and baseline successful paid amount.",
+        "Task two ranks channel increments after applying the same payment population."
+      ]
+    },
+    {
+      "object_ref": "query:qspec-g3-user-008-initial-1",
+      "object_type": "query_spec",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:32:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "facts": [
+        "The query returns successful paid amount by target or baseline period and attributed channel.",
+        "The initial execution failed to remove a repeated Channel A order event."
+      ]
+    },
+    {
+      "object_ref": "result:result-g3-user-008-initial-1",
+      "object_type": "result_handle",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:33:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "query:qspec-g3-user-008-initial-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "facts": [
+        "Baseline successful paid amount is NGN 1000.",
+        "Initial target successful paid amount is NGN 1300.",
+        "Initial target growth is 30 percent.",
+        "Channel A appears as the largest increment."
+      ]
+    },
+    {
+      "object_ref": "evidence:evidence-g3-user-008-total-1",
+      "object_type": "evidence_record",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:34:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "query:qspec-g3-user-008-initial-1",
+        "result:result-g3-user-008-initial-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "facts": [
+        "The initial total-amount evidence supports a 30 percent increase before repair."
+      ]
+    },
+    {
+      "object_ref": "evidence:evidence-g3-user-008-channel-1",
+      "object_type": "evidence_record",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:34:10+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "query:qspec-g3-user-008-initial-1",
+        "result:result-g3-user-008-initial-1",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "facts": [
+        "The initial channel evidence ranks Channel A first before duplicate removal and mapping sensitivity."
+      ]
+    },
+    {
+      "object_ref": "answer:answer-g3-user-008-1",
+      "object_type": "answer_version",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:35:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "evidence:evidence-g3-user-008-total-1",
+        "evidence:evidence-g3-user-008-channel-1"
+      ],
+      "facts": [
+        "The initial answer says total successful paid amount increased 30 percent.",
+        "The initial answer says Channel A is the largest increment channel."
+      ],
+      "answer_status": "provisional"
+    },
+    {
+      "object_ref": "workflow:workflow-g3-user-008-1",
+      "object_type": "workflow_projection",
+      "version": 1,
+      "prior_object_ref": null,
+      "recorded_at": "2026-06-03T08:35:10+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "answer:answer-g3-user-008-1"
+      ],
+      "facts": [
+        "The first answer is visible inside the evaluation workflow and remains in Gate 3."
+      ],
+      "workflow_state": "provisional",
+      "delivery_state": "withheld"
+    },
+    {
+      "object_ref": "result:result-g3-user-008-repair-2",
+      "object_type": "result_handle",
+      "version": 2,
+      "prior_object_ref": "result:result-g3-user-008-initial-1",
+      "recorded_at": "2026-06-03T09:47:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "query:qspec-g3-user-008-initial-1",
+        "snapshot:paid-success-20260602-release-0930",
+        "event:correction-g3-user-008-1"
+      ],
+      "facts": [
+        "NGN 150 of repeated Channel A amount is removed.",
+        "Repaired target successful paid amount is NGN 1150.",
+        "Repaired target growth is 15 percent.",
+        "Channel mapping uncertainty can reverse the channel ranking."
+      ]
+    },
+    {
+      "object_ref": "evidence:evidence-g3-user-008-total-2",
+      "object_type": "evidence_record",
+      "version": 2,
+      "prior_object_ref": "evidence:evidence-g3-user-008-total-1",
+      "recorded_at": "2026-06-03T09:48:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "query:qspec-g3-user-008-initial-1",
+        "result:result-g3-user-008-repair-2",
+        "snapshot:paid-success-20260602-release-0930"
+      ],
+      "facts": [
+        "The repaired total-amount evidence supports a 15 percent increase and supersedes the initial magnitude."
+      ]
+    },
+    {
+      "object_ref": "evidence:evidence-g3-user-008-channel-quality-2",
+      "object_type": "evidence_record",
+      "version": 2,
+      "prior_object_ref": "evidence:evidence-g3-user-008-channel-1",
+      "recorded_at": "2026-06-03T09:48:10+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "result:result-g3-user-008-repair-2",
+        "contract:paid-order-detail-source-0.4"
+      ],
+      "facts": [
+        "Blank and Unknown channel values plus high-value payer sensitivity can change the channel ranking.",
+        "The channel defect does not invalidate the full-sample total amount."
+      ]
+    },
+    {
+      "object_ref": "answer:answer-g3-user-008-2",
+      "object_type": "answer_version",
+      "version": 2,
+      "prior_object_ref": "answer:answer-g3-user-008-1",
+      "recorded_at": "2026-06-03T09:50:00+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "frame:frev-g3-user-008-1",
+        "plan:prev-g3-user-008-1",
+        "evidence:evidence-g3-user-008-total-2",
+        "evidence:evidence-g3-user-008-channel-quality-2"
+      ],
+      "facts": [
+        "The repaired answer keeps the positive total direction, revises growth to 15 percent and withholds the Channel A ranking."
+      ],
+      "answer_status": "provisional"
+    },
+    {
+      "object_ref": "workflow:workflow-g3-user-008-2",
+      "object_type": "workflow_projection",
+      "version": 2,
+      "prior_object_ref": "workflow:workflow-g3-user-008-1",
+      "recorded_at": "2026-06-03T09:50:10+01:00",
+      "immutability": "append_only",
+      "authority_refs": [
+        "answer:answer-g3-user-008-2"
+      ],
+      "facts": [
+        "The workflow points at the repaired answer and retains the full prior chronology."
+      ],
+      "workflow_state": "provisional",
+      "delivery_state": "withheld"
+    }
+  ],
+  "journal_object_refs": [
+    "event:ingress-g3-user-008-1",
+    "event:frame-accepted-g3-user-008-1",
+    "event:plan-accepted-g3-user-008-1",
+    "event:initial-effect-g3-user-008-1",
+    "event:initial-evidence-g3-user-008-1",
+    "event:initial-review-g3-user-008-1",
+    "event:initial-disposition-g3-user-008-1",
+    "event:initial-answer-g3-user-008-1",
+    "event:initial-workflow-g3-user-008-1",
+    "event:repair-effect-g3-user-008-2",
+    "event:repair-evidence-g3-user-008-2",
+    "event:repair-review-g3-user-008-2",
+    "event:repair-disposition-g3-user-008-2",
+    "event:repair-answer-g3-user-008-2",
+    "event:repair-workflow-g3-user-008-2",
+    "ingress:g3-user-008-1",
+    "review:g3-user-008-initial-1",
+    "review:g3-user-008-repair-2",
+    "disposition:g3-user-008-total-initial",
+    "disposition:g3-user-008-channel-initial",
+    "disposition:g3-user-008-total-repair",
+    "disposition:g3-user-008-channel-repair",
+    "disposition:g3-user-008-provenance-repair",
+    "disposition:g3-user-008-maturity-repair",
+    "disposition:g3-user-008-channel-quality-repair",
+    "disposition:g3-user-008-high-value-repair",
+    "disposition:g3-user-008-audit-repair",
+    "disposition:g3-user-008-republication-repair",
+    "validity:g3-user-008-correction-1",
+    "restart:g3-user-008-attempt-2"
+  ],
+  "business_facts": {
+    "currency": "NGN",
+    "baseline_paid_amount": 1000,
+    "prior_target_paid_amount": 1300,
+    "duplicate_paid_amount": 150,
+    "repaired_target_paid_amount": 1150,
+    "prior_growth_pct": 30,
+    "repaired_growth_pct": 15,
+    "duplicate_channel": "Channel A",
+    "prior_total_claim_ref": "claim:paid-amount-growth",
+    "prior_channel_claim_ref": "claim:channel-a-largest-increment"
+  },
+  "source_events": [
+    {
+      "source_event_ref": "event:correction-g3-user-008-1",
+      "event_kind": "correction",
+      "occurred_at": "2026-06-03T09:41:00+01:00",
+      "observed_at": "2026-06-03T09:42:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "idempotency_key": "g3-user-008-correction-1",
+      "facts": [
+        "A repeated Channel A order contributes NGN 150 to the initial target result."
+      ]
+    },
+    {
+      "source_event_ref": "event:late-payment-status-g3-user-008-1",
+      "event_kind": "late_arrival",
+      "occurred_at": "2026-06-03T08:55:00+01:00",
+      "observed_at": "2026-06-03T09:43:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "idempotency_key": "g3-user-008-late-payment-1",
+      "facts": [
+        "A late terminal-status event is observable after the release cutoff.",
+        "Its amount is already outside both total claims and does not change the repaired total."
+      ]
+    },
+    {
+      "source_event_ref": "event:correction-g3-user-008-duplicate-1",
+      "event_kind": "duplicate_replay",
+      "occurred_at": "2026-06-03T09:44:00+01:00",
+      "observed_at": "2026-06-03T09:44:00+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-1",
+      "idempotency_key": "g3-user-008-correction-1",
+      "related_event_ref": "event:correction-g3-user-008-1",
+      "facts": [
+        "The correction message is replayed with the admitted idempotency key and creates no second correction."
+      ]
+    },
+    {
+      "source_event_ref": "event:restart-g3-user-008-2",
+      "event_kind": "restart",
+      "occurred_at": "2026-06-03T09:45:00+01:00",
+      "observed_at": "2026-06-03T09:45:10+01:00",
+      "run_attempt_ref": "run:g3-user-008-attempt-2",
+      "idempotency_key": "g3-user-008-restart-2",
+      "related_event_ref": "run:g3-user-008-attempt-1",
+      "facts": [
+        "The worker restarts after the correction is persisted.",
+        "The new attempt reuses the accepted question, frame and plan."
+      ]
+    }
+  ],
+  "expected_append_only_repair": {
+    "invalidated_object_refs": [
+      "evidence:evidence-g3-user-008-channel-1",
+      "evidence:evidence-g3-user-008-total-1"
+    ],
+    "superseded_object_refs": [
+      "answer:answer-g3-user-008-1",
+      "workflow:workflow-g3-user-008-1"
+    ],
+    "appended_object_refs": [
+      "answer:answer-g3-user-008-2",
+      "evidence:evidence-g3-user-008-channel-quality-2",
+      "evidence:evidence-g3-user-008-total-2",
+      "result:result-g3-user-008-repair-2",
+      "workflow:workflow-g3-user-008-2"
+    ],
+    "expected_claim_dispositions": [
+      {
+        "claim_ref": "claim:paid-amount-growth",
+        "claim_target_ids": [
+          "deduplication_sensitivity_claim",
+          "prior_total_growth_claim_validity_claim"
+        ],
+        "disposition": "recomputed_provisional",
+        "reason": "Duplicate removal changes the magnitude from 30 percent to 15 percent while preserving the positive direction."
+      },
+      {
+        "claim_ref": "claim:channel-a-largest-increment",
+        "claim_target_ids": [
+          "channel_coverage_quality_claim",
+          "high_value_sensitivity_claim",
+          "prior_channel_driver_claim_validity_claim"
+        ],
+        "disposition": "revoked",
+        "reason": "Channel mapping and high-value payer sensitivity can reverse the ranking."
+      },
+      {
+        "claim_ref": "claim:provenance-integrity",
+        "claim_target_ids": [
+          "provenance_integrity_claim"
+        ],
+        "disposition": "supported_provisional",
+        "reason": "The prior question, frame, plan, query, result, evidence, answer and workflow references remain replayable."
+      },
+      {
+        "claim_ref": "claim:payment-maturity-quality",
+        "claim_target_ids": [
+          "payment_maturity_quality_claim"
+        ],
+        "disposition": "supported_provisional",
+        "reason": "The late terminal-status event is outside the admitted total population and does not change the repaired total."
+      },
+      {
+        "claim_ref": "claim:channel-coverage-quality",
+        "claim_target_ids": [
+          "channel_coverage_quality_claim"
+        ],
+        "disposition": "boundary_provisional",
+        "reason": "The channel-specific conclusion is bounded until mapping coverage and ranking stability are restored."
+      },
+      {
+        "claim_ref": "claim:high-value-sensitivity",
+        "claim_target_ids": [
+          "high_value_sensitivity_claim"
+        ],
+        "disposition": "boundary_provisional",
+        "reason": "The channel ranking remains sensitive to anonymous high-value payer treatment."
+      },
+      {
+        "claim_ref": "claim:claim-disposition-audit",
+        "claim_target_ids": [
+          "claim_disposition_claim"
+        ],
+        "disposition": "supported_provisional",
+        "reason": "Every affected claim receives an independent disposition and evidence boundary."
+      },
+      {
+        "claim_ref": "claim:repair-republication",
+        "claim_target_ids": [
+          "repair_republication_claim"
+        ],
+        "disposition": "supported_provisional",
+        "reason": "The repair appends replacement evidence, a new answer version and a new workflow projection."
+      }
+    ],
+    "current_answer_version_ref": "answer:answer-g3-user-008-2",
+    "current_workflow_projection_ref": "workflow:workflow-g3-user-008-2"
+  }
+}

@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/authority/authority-registry.v1.schema.json",
+  "title": "WAJE Gate 3 authority artifact registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_version",
+    "registry_id",
+    "schema_catalog",
+    "schedules",
+    "fixtures",
+    "examples",
+    "episode_bindings",
+    "integrity_rules"
+  ],
+  "properties": {
+    "artifact_version": {
+      "const": "gate3.authority-registry.v1"
+    },
+    "registry_id": {
+      "const": "REGISTRY-G3-AUTHORITY-V1"
+    },
+    "schema_catalog": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/schemaEntry"
+      }
+    },
+    "schedules": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/scheduleEntry"
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/fixtureEntry"
+      }
+    },
+    "examples": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/exampleEntry"
+      }
+    },
+    "episode_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/episodeBinding"
+      }
+    },
+    "integrity_rules": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "all_registry_paths_exist",
+          "all_instances_validate_against_registered_schema",
+          "bundle_milestone_ids_resolve_in_schedule",
+          "bundle_observation_sequences_are_unique_and_monotonic",
+          "bundle_authority_refs_resolve_in_fixture_or_prior_observation",
+          "bundle_current_projection_resolves_to_appended_fixture_objects",
+          "fixture_repair_amounts_reconcile",
+          "duplicate_observation_appends_no_authority_object",
+          "gate3_projection_is_provisional_and_withheld",
+          "claim_dispositions_are_claim_scoped"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaId": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://waje\\.dev/schemas/evals/gate3/authority/"
+    },
+    "relativeJsonPath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\.\\.)[a-zA-Z0-9_./-]+\\.json$"
+    },
+    "schemaEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_kind",
+        "schema_id",
+        "path"
+      ],
+      "properties": {
+        "artifact_kind": {
+          "enum": [
+            "authority_registry",
+            "milestone_schedule",
+            "prior_authority_fixture",
+            "authority_observation_bundle"
+          ]
+        },
+        "schema_id": {
+          "$ref": "#/$defs/schemaId"
+        },
+        "path": {
+          "$ref": "#/$defs/relativeJsonPath"
+        }
+      }
+    },
+    "scheduleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedule_id",
+        "schema_id",
+        "path"
+      ],
+      "properties": {
+        "schedule_id": {
+          "type": "string",
+          "pattern": "^SCHEDULE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "schema_id": {
+          "$ref": "#/$defs/schemaId"
+        },
+        "path": {
+          "$ref": "#/$defs/relativeJsonPath"
+        }
+      }
+    },
+    "fixtureEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "fixture_uri",
+        "episode_id",
+        "source_authority_id",
+        "schema_id",
+        "path"
+      ],
+      "properties": {
+        "fixture_id": {
+          "type": "string",
+          "pattern": "^FIXTURE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "fixture_uri": {
+          "type": "string",
+          "pattern": "^fixture://wajegame/[a-z0-9-]+/v[0-9]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "source_authority_id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9-]+$"
+        },
+        "schema_id": {
+          "$ref": "#/$defs/schemaId"
+        },
+        "path": {
+          "$ref": "#/$defs/relativeJsonPath"
+        }
+      }
+    },
+    "exampleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "episode_id",
+        "schedule_id",
+        "fixture_id",
+        "schema_id",
+        "path"
+      ],
+      "properties": {
+        "bundle_id": {
+          "type": "string",
+          "pattern": "^BUNDLE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "schedule_id": {
+          "type": "string",
+          "pattern": "^SCHEDULE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "fixture_id": {
+          "type": "string",
+          "pattern": "^FIXTURE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "schema_id": {
+          "$ref": "#/$defs/schemaId"
+        },
+        "path": {
+          "$ref": "#/$defs/relativeJsonPath"
+        }
+      }
+    },
+    "episodeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "source_authority_id",
+        "fixture_id",
+        "schedule_id",
+        "example_bundle_id"
+      ],
+      "properties": {
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "source_authority_id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9-]+$"
+        },
+        "fixture_id": {
+          "type": "string",
+          "pattern": "^FIXTURE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "schedule_id": {
+          "type": "string",
+          "pattern": "^SCHEDULE-G3-[A-Z0-9-]+-V[0-9]+$"
+        },
+        "example_bundle_id": {
+          "type": "string",
+          "pattern": "^BUNDLE-G3-[A-Z0-9-]+-V[0-9]+$"
+        }
+      }
+    }
+  }
+}

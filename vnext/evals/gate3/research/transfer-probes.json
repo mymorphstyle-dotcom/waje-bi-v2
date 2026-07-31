@@ -1,0 +1,1259 @@
+{
+  "catalog_version": "gate3.transfer-research.v1",
+  "non_gating": true,
+  "gate_artifact_reachability": "forbidden",
+  "episodes": [
+    {
+      "episode_id": "G3-EXP-003",
+      "title": "SaaS 新客留存恶化与产品改版",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "origin_note": "基于 B2B SaaS cohort 与非随机产品暴露模式合成；尚未经过业务或测量专家审核。",
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
+      },
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "text": "最近来的企业客户更留不住了吗？产品首页 5 月改过版，我想知道改版后有没有变差。",
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
+          },
+          {
+            "turn": 2,
+            "speaker": "user",
+            "text": "销售说最近小微客户占比高，所以你要区分客户质量变化和产品问题。",
+            "communication_function": "context",
+            "trigger": {
+              "kind": "after_user_visible_measurement_proposal",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
+          },
+          {
+            "turn": 3,
+            "speaker": "user",
+            "text": "还有一点，6 月那批客户目前只观察了四周，别把它和已经观察三个月的 cohort 直接比。",
+            "communication_function": "constraint",
+            "trigger": {
+              "kind": "while_investigation_pending",
+              "fallback": "inject_when_observable_or_mark_unreached"
+            }
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-SAAS-RETENTION-003",
+        "narrative": "B2B SaaS 按企业注册 cohort 观察激活、付费续订和产品使用。5 月 12 日发布新版首页，同时销售渠道结构发生变化。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://account/lifecycle/v2",
+            "state": "available",
+            "description": "企业账户定义注册、激活、首次付费和取消事件。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://subscription/renewal/v3",
+            "state": "available",
+            "description": "订阅区分月付、年付、暂停和欠费。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://product/release-exposure/v1",
+            "state": "partial",
+            "description": "产品发布记录企业用户首次暴露新版首页的时间，旧浏览器覆盖不完整。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-SAAS-UNEQUAL-HORIZON",
+            "description": "不同注册 cohort 的最大可观察时长不同。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-SAAS-YEARLY-RISK",
+            "description": "部分年付客户在短期 horizon 内没有续费风险。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-SAAS-GRAIN-MISMATCH",
+            "description": "首页暴露按用户发生，续订结果按企业账户发生。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-SAAS-LATE-CANCEL",
+            "description": "6 月底取消事件存在七天回补延迟。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-003-01",
+            "statement": "表面 8 周留存下降主要来自小微自助渠道占比上升。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-003-02",
+            "statement": "可比企业规模和渠道内，新版暴露组核心功能采用率提高，续订没有显著变差。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-003-03",
+            "statement": "未改版的低活跃旧浏览器客户流失较高。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否回滚首页、调整 onboarding，或把资源投入小微渠道筛选。",
+        "consequence_of_error": "混淆 cohort maturity 和渠道 mix 会造成不必要的产品回滚。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "客户留存的观察单位是企业账户。",
+          "cohort 必须在共同可观察 horizon 和明确 risk set 上比较。",
+          "用户级暴露到企业级续订的粒度关系需要明确。",
+          "区分描述性留存变化与改版因果效果。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "mature-cohort-fixed-horizon",
+            "rationale": "在相同 4 周或 8 周 horizon 比较成熟 cohort，并按渠道和企业规模分层。",
+            "required_properties": [
+              "time origin 明确",
+              "at-risk population 明确",
+              "未成熟 cohort 不当作流失"
+            ]
+          },
+          {
+            "design_family": "survival-with-censoring",
+            "rationale": "使用生存分析保留不同观察时长，并把年付续费风险集分开。",
+            "required_properties": [
+              "右删失显式",
+              "账户级 outcome",
+              "暴露聚合规则可审计"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "cohort eligibility、time origin、risk set 和 censoring。",
+          "渠道与客户规模构成变化。",
+          "改版暴露覆盖和旧浏览器兼容问题。",
+          "取消事件回补对最近 cohort 的影响。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "immature_cohort",
+          "missing_identification"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "共同 horizon、风险集和渠道构成可从合同与数据发现；先执行多个合理描述性设计并记录推断。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "immature_cohort_as_churn",
+          "description": "把未成熟 6 月 cohort 的未来周期当成流失。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "user_account_grain_leak",
+          "description": "以用户级浏览事件直接充当企业级续订分母。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "release_timing_causal_claim",
+          "description": "看到改版时间与留存下降重合就声称改版导致流失。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-003-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "expected_invariants": [
+            "企业 cohort 留存和改版挑战保持。",
+            "risk set、censoring 与 mix 调查保持。"
+          ],
+          "expected_changes": [
+            "仅 source wording lineage 改变。"
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把问题改写为“5 月首页更新后，新签企业的留存表现有没有恶化”。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-003-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "expected_invariants": [
+            "新版暴露合同和企业范围保持。",
+            "旧浏览器覆盖问题仍需披露。"
+          ],
+          "expected_changes": [
+            "结果事件由续订改为采用率。",
+            "留存 risk set 退居辅助，measurement identity 改变。"
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只询问新版首页使用率，不再询问留存。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-003-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_contract",
+          "expected_invariants": [
+            "留存业务决策和企业观察单位保持。",
+            "cohort maturity 要求保持。"
+          ],
+          "expected_changes": [
+            "missing identification boundary 解除。",
+            "claim ceiling 可在实验资格范围内提升。"
+          ],
+          "mutation_operation": {
+            "path": "/business_world/available_contracts",
+            "operation": "replace",
+            "value_description": "新版在企业账户层随机灰度，并完整记录分配和依从。"
+          }
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "cohort_or_risk_set",
+          "observation_unit",
+          "association_or_causal_ceiling"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "clarification",
+          "challenge"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "over_strong_claim",
+          "hidden_data_gap"
+        ]
+      },
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://account/lifecycle/v2",
+          "contract://subscription/renewal/v3",
+          "DC-SAAS-UNEQUAL-HORIZON",
+          "DC-SAAS-YEARLY-RISK",
+          "DC-SAAS-GRAIN-MISMATCH",
+          "DC-SAAS-LATE-CANCEL"
+        ],
+        "boundary_authorizations": [
+          {
+            "boundary_code": "immature_cohort",
+            "allowed_when_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "required_observation_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "missing_identification",
+            "allowed_when_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "required_observation_refs": [
+              "contract://product/release-exposure/v1",
+              "DC-SAAS-UNEQUAL-HORIZON",
+              "DC-SAAS-YEARLY-RISK",
+              "DC-SAAS-GRAIN-MISMATCH",
+              "DC-SAAS-LATE-CANCEL"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
+      }
+    },
+    {
+      "episode_id": "G3-EXP-004",
+      "title": "贷款申请漏斗转化下降",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "origin_note": "基于金融申请漏斗、动态资格分母和埋点故障模式合成；尚未经过业务或测量专家审核。",
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
+      },
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "text": "这周贷款申请的转化怎么突然掉了？帮我看是用户在哪一步流失，还是风控规则变严了。",
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-LOAN-FUNNEL-004",
+        "narrative": "线上信贷申请包含开始申请、身份验证、资料提交、风控审批、签约和放款。老用户可跳过已完成的身份验证，审批结果会晚于申请。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://loan/application/v3",
+            "state": "available",
+            "description": "申请实例定义唯一 application_id 和用户关系。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://loan/funnel-event/v2",
+            "state": "partial",
+            "description": "漏斗事件记录阶段、时间和流程版本；安卓旧版资料提交埋点不完整。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://risk/decision/v4",
+            "state": "available",
+            "description": "风控决策记录规则版本、决策时间和拒绝原因。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-LOAN-SKIPPABLE-STAGE",
+            "description": "老用户可跳过身份验证阶段。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-LOAN-DELAYED-OUTCOME",
+            "description": "周五申请可能在下周完成审批和放款。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-LOAN-RULE-CHANGE",
+            "description": "本周三启用了新的反欺诈规则。",
+            "discoverability": "provided_to_agent",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-LOAN-ANDROID-MISSING",
+            "description": "安卓旧版客户端有资料提交埋点丢失。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          }
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-004-01",
+            "statement": "表面资料提交转化下降主要来自安卓埋点缺失。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-004-02",
+            "statement": "新反欺诈规则降低审批通过率，但只影响一个高风险渠道。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "决定修复客户端、回滚风控规则或优化申请流程。",
+        "consequence_of_error": "把埋点缺失当成真实流失会误导产品改版；忽视风险渠道会错误放宽规则。",
+        "risk_level": "critical"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "漏斗实体为申请实例，阶段顺序和可跳过规则显式。",
+          "每一步分母由有资格进入该阶段的申请动态定义。",
+          "区分事件缺失、流程流失和风控拒绝。",
+          "未完成观察窗口的申请不能直接计为失败。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "eligibility-aware-process-funnel",
+            "rationale": "按流程版本和合法路径构建动态资格分母。",
+            "required_properties": [
+              "申请实例为观察单位",
+              "跳步规则显式",
+              "未成熟 outcome 排除或删失"
+            ]
+          },
+          {
+            "design_family": "mature-application-cohort-funnel",
+            "rationale": "在固定成熟 horizon 内按客户端和渠道诊断业务转化及事件覆盖。",
+            "required_properties": [
+              "数据质量和业务流失分离",
+              "规则版本覆盖明确",
+              "渠道 scope 不外推"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "安卓埋点完整性和事件顺序。",
+          "阶段 eligibility 与跳步路径。",
+          "审批和放款完成延迟。",
+          "风控规则版本在渠道中的覆盖和拒绝原因。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "event_coverage_failure",
+          "immature_application_outcome"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "流程资格和数据缺失均可从合同与 probe 查明，无需让用户提供系统已有事实。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "static_funnel_denominator",
+          "description": "用固定上一阶段总人数作为所有流程版本的分母。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "missing_event_as_dropout",
+          "description": "把埋点缺失解释为用户真实退出。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "immature_application_as_rejection",
+          "description": "把尚未完成审批的申请标记为拒绝。",
+          "severity": "blocking"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-004-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "expected_invariants": [
+            "申请漏斗诊断与风控挑战保持。",
+            "动态资格分母和 maturity 要求保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“本周申请通过链路在哪一步掉得最明显，风控是否也有变化”。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-004-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "expected_invariants": [
+            "申请实例与规则版本范围保持。",
+            "延迟 outcome 数据条件保持。"
+          ],
+          "expected_changes": [
+            "目标变为完成时间分布和删失。",
+            "阶段转化率退居辅助。"
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户改问审批通过到放款的完成时长。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-004-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "expected_invariants": [
+            "漏斗实体、资格路径和规则版本保持。",
+            "渠道范围保持。"
+          ],
+          "expected_changes": [
+            "event coverage boundary 解除。",
+            "调查重心转向流程体验与真实流失。"
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "安卓埋点完整且资料提交下降仍存在。"
+          }
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "diagnose",
+          "challenge"
+        ],
+        "measurement_challenges": [
+          "funnel_or_sequence",
+          "denominator",
+          "cohort_or_risk_set"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "wrong_business_decision",
+          "hidden_data_gap",
+          "over_strong_claim"
+        ]
+      },
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://loan/application/v3",
+          "contract://risk/decision/v4",
+          "DC-LOAN-SKIPPABLE-STAGE",
+          "DC-LOAN-DELAYED-OUTCOME",
+          "DC-LOAN-RULE-CHANGE",
+          "DC-LOAN-ANDROID-MISSING"
+        ],
+        "boundary_authorizations": [
+          {
+            "boundary_code": "event_coverage_failure",
+            "allowed_when_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "required_observation_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "immature_application_outcome",
+            "allowed_when_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "required_observation_refs": [
+              "contract://loan/funnel-event/v2",
+              "DC-LOAN-SKIPPABLE-STAGE",
+              "DC-LOAN-DELAYED-OUTCOME",
+              "DC-LOAN-RULE-CHANGE",
+              "DC-LOAN-ANDROID-MISSING"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
+      }
+    },
+    {
+      "episode_id": "G3-EXP-006",
+      "title": "配送准时率趋势与节假日业务日",
+      "source_pool": "expert_business_case",
+      "provenance": {
+        "authoring_method": "expert_authored",
+        "origin_note": "基于即时零售业务日、节假日和事件回补模式合成；尚未经过业务或测量专家审核。",
+        "source_record_ref": "SRC-EXPERT-CLAIM-PENDING-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
+      },
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "text": "最近六周配送准时率一直在变差吗？上海和深圳分别看，别让端午假期把趋势带偏。",
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-DELIVERY-TREND-006",
+        "narrative": "即时零售平台按承诺送达时间衡量准时率。订单跨城市与午夜，法定节假日会改变供需结构和承诺时长。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://delivery/order-time/v3",
+            "state": "available",
+            "description": "订单包含下单、承诺送达、实际送达和取消时间。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://calendar/city-business-day/v2",
+            "state": "available",
+            "description": "城市业务日历包含法定节假日、调休和版本。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://delivery/on-time-rate/v4",
+            "state": "available",
+            "description": "准时率定义 eligible delivered orders 和容忍分钟数。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://delivery/event-release/v1",
+            "state": "partial",
+            "description": "深圳一周的实际送达事件仍在回补。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-DELIVERY-DAY-CUTOFF",
+            "description": "业务日截止时间为当地凌晨 3 点。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-DELIVERY-HOLIDAY",
+            "description": "端午前后存在调休工作日。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-DELIVERY-SZ-LAG",
+            "description": "深圳一周的实际送达事件回补延迟。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-DELIVERY-WEATHER",
+            "description": "极端天气同时改变订单 mix 和承诺时长。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "material"
+          }
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-006-01",
+            "statement": "上海在控制节假日与天气后没有持续恶化，只在暴雨周下滑。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-006-02",
+            "statement": "深圳从第五周开始稳定下降，集中在晚高峰和一个新站点。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-006-03",
+            "statement": "回补数据会缩小但不会消除深圳下降。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "决定是否进行城市级运力扩充或只处理局部站点。",
+        "consequence_of_error": "把节假日或数据延迟当成长期趋势会造成高额运力误配。",
+        "risk_level": "medium"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "分析最近六周，并分别给出上海和深圳结果。",
+          "业务日与节假日版本进入时间语义。",
+          "准时率分母只包含有可比承诺和有效送达记录的订单。",
+          "区分一次冲击、水平突变和持续趋势。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "business-week-city-trend",
+            "rationale": "按版本化业务周计算城市准时率趋势，并排除未完整 release。",
+            "required_properties": [
+              "当地业务日边界",
+              "eligible denominator",
+              "趋势不被单周异常替代"
+            ]
+          },
+          {
+            "design_family": "calendar-adjusted-station-diagnostic",
+            "rationale": "在节假日、天气和承诺时长可比条件下按时段和站点定位异质变化。",
+            "required_properties": [
+              "节假日和调休显式",
+              "城市 scope 分离",
+              "partial week 敏感性"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "节假日、调休、天气和承诺时长 mix。",
+          "深圳事件回补完整性。",
+          "晚高峰与新站点异质性。",
+          "持续下降、突变和单周异常的替代解释。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "partial_delivery_release"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "城市日历、业务日、完整性和时段均可从现有合同和数据确定。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "natural_day_delivery_cutoff",
+          "description": "按自然日截断跨午夜订单。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "unreported_delivery_as_late",
+          "description": "把尚未回补的记录当成配送超时。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "single_week_as_persistent_trend",
+          "description": "把上海暴雨周概括为持续六周恶化。",
+          "severity": "major"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-006-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "expected_invariants": [
+            "六周城市趋势和节假日调整保持。",
+            "eligible denominator 与 release 边界保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“分城市判断过去六个业务周的准时率是否持续下滑，并控制端午影响”。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-006-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "time_semantics",
+          "expected_invariants": [
+            "上海与深圳分开分析。",
+            "订单事件仍使用当地时区。"
+          ],
+          "expected_changes": [
+            "时间分组与 temporal identity 改变。",
+            "跨周订单归属需按新规则重算。"
+          ],
+          "mutation_operation": {
+            "path": "/business_world/evaluation_clock",
+            "operation": "replace",
+            "value_description": "用户明确要求按自然周汇总，不采用业务周。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-006-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "expected_invariants": [
+            "城市 scope、业务日和准时率定义保持。",
+            "上海的趋势证据保持独立。"
+          ],
+          "expected_changes": [
+            "深圳 provisional 趋势撤回。",
+            "数据完整性成为深圳主解释。"
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "深圳回补完成后下降趋势完全消失。"
+          }
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "compare",
+          "diagnose"
+        ],
+        "measurement_challenges": [
+          "distribution",
+          "denominator",
+          "window_or_baseline"
+        ],
+        "temporal_shapes": [
+          "relative",
+          "timezone_or_business_day",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "late_arrival"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "misleading_comparison",
+          "hidden_data_gap"
+        ]
+      },
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://delivery/order-time/v3",
+          "contract://calendar/city-business-day/v2",
+          "contract://delivery/on-time-rate/v4",
+          "DC-DELIVERY-DAY-CUTOFF",
+          "DC-DELIVERY-HOLIDAY",
+          "DC-DELIVERY-SZ-LAG",
+          "DC-DELIVERY-WEATHER"
+        ],
+        "boundary_authorizations": [
+          {
+            "boundary_code": "partial_delivery_release",
+            "allowed_when_refs": [
+              "contract://delivery/event-release/v1",
+              "DC-DELIVERY-DAY-CUTOFF",
+              "DC-DELIVERY-HOLIDAY",
+              "DC-DELIVERY-SZ-LAG",
+              "DC-DELIVERY-WEATHER"
+            ],
+            "required_observation_refs": [
+              "contract://delivery/event-release/v1",
+              "DC-DELIVERY-DAY-CUTOFF",
+              "DC-DELIVERY-HOLIDAY",
+              "DC-DELIVERY-SZ-LAG",
+              "DC-DELIVERY-WEATHER"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
+      }
+    },
+    {
+      "episode_id": "G3-EXP-011",
+      "title": "促销期间缺货与销量机会损失",
+      "source_pool": "generated_business_world",
+      "provenance": {
+        "authoring_method": "controlled_world_generation",
+        "origin_note": "为测试截断需求、库存 exposure、替代和反事实区间而构造的受控业务世界；尚未经过业务或测量专家审核。",
+        "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
+        "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES"
+      },
+      "user_episode": {
+        "locale": "zh-CN",
+        "messages": [
+          {
+            "turn": 1,
+            "speaker": "user",
+            "text": "618 期间华南卖得没预期好，是需求不行还是缺货拖了后腿？估一下少卖了多少，也告诉我哪些 SKU 应该补库存。",
+            "communication_function": "question",
+            "trigger": {
+              "kind": "initial",
+              "fallback": "none"
+            }
+          }
+        ]
+      },
+      "business_world": {
+        "world_id": "WORLD-STOCKOUT-011",
+        "narrative": "零售商在大促期间按 SKU、仓和区域经营库存。销量同时受需求、价格、曝光、库存可得性和替代购买影响。",
+        "available_contracts": [
+          {
+            "contract_ref": "contract://inventory/availability/v3",
+            "state": "partial",
+            "description": "库存快照每小时一次，小时内短暂缺货可能缺失。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://order/stockout-substitution/v2",
+            "state": "available",
+            "description": "订单记录下单、缺货取消和替代 SKU。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://promotion/exposure/v2",
+            "state": "partial",
+            "description": "促销记录价格、曝光和活动资格；缺货时曝光下降。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          },
+          {
+            "contract_ref": "contract://forecast/promo-demand/v1",
+            "state": "stale",
+            "description": "大促前需求预测对首次参加活动的新品不稳定。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "access_state": "accessible"
+          }
+        ],
+        "data_conditions": [
+          {
+            "condition_id": "DC-STOCK-HOURLY-SNAPSHOT",
+            "description": "小时快照无法捕捉全部短暂缺货。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          },
+          {
+            "condition_id": "DC-STOCK-CENSORED-DEMAND",
+            "description": "缺货时页面曝光降低，观测需求被截断。",
+            "discoverability": "provided_to_agent",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-STOCK-SUBSTITUTION",
+            "description": "相似 SKU 之间存在购买替代。",
+            "discoverability": "discoverable_by_data_probe",
+            "materiality": "critical"
+          },
+          {
+            "condition_id": "DC-STOCK-NEW-SKU-FORECAST",
+            "description": "预测模型对首次参加大促新品不稳定。",
+            "discoverability": "discoverable_by_semantic_inspection",
+            "materiality": "material"
+          }
+        ],
+        "evaluation_clock": {
+          "as_of_instant": "2026-07-30T09:00:00+08:00",
+          "default_business_timezone": "Asia/Shanghai",
+          "calendar_contract_ref": "calendar.gregorian.v1",
+          "business_day_contract_ref": "calendar.business-day.default.v1",
+          "release_cutoff_instant": "2026-07-30T09:00:00+08:00"
+        },
+        "truth_facts": [
+          {
+            "truth_id": "TRUTH-G3-EXP-011-01",
+            "statement": "三款头部 SKU 的仓间调拨延迟造成显著缺货，部分需求转移到替代 SKU。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-011-02",
+            "statement": "另一些长尾 SKU 需求低于预测。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          },
+          {
+            "truth_id": "TRUTH-G3-EXP-011-03",
+            "statement": "用缺货前日均销量直接外推会高估机会损失。",
+            "observability": "evaluator_only",
+            "identifiability": "pending_independent_review"
+          }
+        ]
+      },
+      "decision_stakes": {
+        "business_decision": "安排紧急补货、仓间调拨，并修正下一次大促备货。",
+        "consequence_of_error": "把低需求当成缺货会积压库存；忽视替代会重复计算损失。",
+        "risk_level": "high"
+      },
+      "acceptable_outcome": {
+        "must_preserve": [
+          "区分需求不足与库存约束。",
+          "机会损失属于反事实估计，需要明确假设和范围。",
+          "SKU 建议考虑仓、剩余活动时间和替代。",
+          "小时级 availability exposure 优先于日级 raw sales。"
+        ],
+        "valid_design_space": [
+          {
+            "design_family": "availability-exposure-demand-bounds",
+            "rationale": "以有货小时、页面曝光和相似区域构建销量率与保守需求范围。",
+            "required_properties": [
+              "available hours 为 exposure",
+              "无货不等于零需求",
+              "区间而非伪精确点估计"
+            ]
+          },
+          {
+            "design_family": "category-substitution-counterfactual",
+            "rationale": "在品类层处理替代与蚕食，并按补货 lead time 给情景排序。",
+            "required_properties": [
+              "替代销量不重复计为损失",
+              "新品预测不确定性显式",
+              "剩余活动 horizon 进入建议"
+            ]
+          }
+        ],
+        "must_investigate": [
+          "可售库存和曝光的小时级覆盖。",
+          "缺货前需求趋势、价格和促销强度。",
+          "替代 SKU 的销量转移。",
+          "预测误差与新品不确定性。",
+          "补货 lead time 和活动剩余 horizon。"
+        ],
+        "allowed_dispositions": [
+          "executable_design",
+          "typed_boundary"
+        ],
+        "allowed_boundary_codes": [
+          "censored_demand",
+          "insufficient_availability_resolution"
+        ],
+        "claim_ceiling": "associational",
+        "clarification_policy": {
+          "mode": "proceed_with_recorded_inference",
+          "rationale": "用户允许估算，Agent 可采用透明情景和 bounds；数据不足时局部降级。"
+        }
+      },
+      "forbidden_outcomes": [
+        {
+          "failure_code": "zero_sales_as_zero_demand",
+          "description": "把零销量小时自动视为零需求。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "substitution_double_count",
+          "description": "忽略替代购买并重复计算机会损失。",
+          "severity": "blocking"
+        },
+        {
+          "failure_code": "uniform_precise_stockout_loss",
+          "description": "为所有 SKU 输出同等确定性的损失点估计。",
+          "severity": "major"
+        }
+      ],
+      "counterfactual_siblings": [
+        {
+          "sibling_id": "G3-EXP-011-CF01",
+          "expected_relation": "meaning_preserving",
+          "mutation_dimension": "wording",
+          "expected_invariants": [
+            "需求与库存诊断、损失估计和补货排序保持。",
+            "exposure、替代和不确定性调查保持。"
+          ],
+          "expected_changes": [
+            "仅用户措辞 lineage 改变。"
+          ],
+          "mutation_operation": {
+            "path": "/user_episode/messages",
+            "operation": "replace",
+            "value_description": "把首问改写为“华南 618 销量未达标有多少来自缺货，哪些 SKU 值得马上补”。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-011-CF02",
+          "expected_relation": "measurement_changing",
+          "mutation_dimension": "decision_goal",
+          "expected_invariants": [
+            "SKU、仓和区域范围保持。",
+            "库存 availability 合同保持。"
+          ],
+          "expected_changes": [
+            "目标变为 availability 描述。",
+            "销量反事实与补货价值不再是主结论。"
+          ],
+          "mutation_operation": {
+            "path": "/decision_stakes/business_decision",
+            "operation": "replace",
+            "value_description": "用户只问哪些 SKU 实际缺货时间最长。"
+          }
+        },
+        {
+          "sibling_id": "G3-EXP-011-CF03",
+          "expected_relation": "boundary_changing",
+          "mutation_dimension": "data_coverage",
+          "expected_invariants": [
+            "机会损失和补货决策保持。",
+            "SKU 替代分析保持。"
+          ],
+          "expected_changes": [
+            "潜在需求可观测性提高。",
+            "censored demand boundary 减弱，损失区间可收窄。"
+          ],
+          "mutation_operation": {
+            "path": "/business_world/data_conditions",
+            "operation": "replace",
+            "value_description": "缺货时仍保留完整页面曝光，并记录到货提醒需求。"
+          }
+        }
+      ],
+      "coverage_tags": {
+        "decision_goals": [
+          "estimate",
+          "diagnose",
+          "recommend_with_boundary"
+        ],
+        "measurement_challenges": [
+          "exposure",
+          "association_or_causal_ceiling",
+          "multi_estimand"
+        ],
+        "temporal_shapes": [
+          "absolute",
+          "partial_period"
+        ],
+        "data_conditions": [
+          "partial_coverage",
+          "stale_release"
+        ],
+        "conversation_dynamics": [
+          "single_turn"
+        ],
+        "risk_types": [
+          "over_strong_claim",
+          "wrong_business_decision",
+          "hidden_data_gap"
+        ]
+      },
+      "support_expectation": {
+        "baseline_support_state": "supported",
+        "contract_supported": true,
+        "required_disposition": "executable_design",
+        "support_evidence_refs": [
+          "contract://order/stockout-substitution/v2",
+          "DC-STOCK-HOURLY-SNAPSHOT",
+          "DC-STOCK-CENSORED-DEMAND",
+          "DC-STOCK-SUBSTITUTION",
+          "DC-STOCK-NEW-SKU-FORECAST"
+        ],
+        "boundary_authorizations": [
+          {
+            "boundary_code": "censored_demand",
+            "allowed_when_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "required_observation_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "maximum_claim_ceiling": "associational"
+          },
+          {
+            "boundary_code": "insufficient_availability_resolution",
+            "allowed_when_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "required_observation_refs": [
+              "contract://inventory/availability/v3",
+              "contract://promotion/exposure/v2",
+              "contract://forecast/promo-demand/v1",
+              "DC-STOCK-HOURLY-SNAPSHOT",
+              "DC-STOCK-CENSORED-DEMAND",
+              "DC-STOCK-SUBSTITUTION",
+              "DC-STOCK-NEW-SKU-FORECAST"
+            ],
+            "maximum_claim_ceiling": "associational"
+          }
+        ]
+      }
+    }
+  ]
+}

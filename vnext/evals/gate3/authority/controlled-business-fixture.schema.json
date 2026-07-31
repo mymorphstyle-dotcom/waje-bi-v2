@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/controlled-business-fixture.v1.schema.json",
+  "title": "WAJE Gate 3 controlled business fixture",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "fixture_id",
+    "fixture_version_ref",
+    "business_timezone",
+    "evaluator_oracle",
+    "agent_projection"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "gate3_controlled_business_fixture"
+    },
+    "artifact_version": {
+      "const": "gate3.controlled-business-fixture.v1"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^FIXTURE-[A-Z0-9-]+$"
+    },
+    "fixture_version_ref": {
+      "type": "string",
+      "pattern": "^fixture://"
+    },
+    "business_timezone": {
+      "const": "Africa/Lagos"
+    },
+    "evaluator_oracle": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "agent_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expose",
+        "hide"
+      ],
+      "properties": {
+        "expose": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hide": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "evaluator_oracle"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "const": "FIXTURE-WAJE-PAYMENT-RELEASE-V1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "release_sequence",
+          "late_update_facts"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "const": "FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "assignment_contract",
+          "aggregates"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "enum": [
+              "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1",
+              "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "assignment_contract"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "const": "FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "incident",
+          "hourly_aggregates",
+          "full_day_summary",
+          "counterfactual_range"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "const": "FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "mapping_contract",
+          "concentration_aggregates",
+          "unchanged_contract_gaps"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fixture_id": {
+            "const": "FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "prior_run_projection",
+          "missing_authority_manifest"
+        ]
+      }
+    }
+  ]
+}

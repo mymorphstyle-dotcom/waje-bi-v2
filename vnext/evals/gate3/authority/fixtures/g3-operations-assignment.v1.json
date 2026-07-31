@@ -1,0 +1,66 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1",
+  "fixture_version_ref": "fixture://wajegame/operations-assignment/v1",
+  "business_timezone": "Africa/Lagos",
+  "assignment_contract": {
+    "eligible_population": "Channel K eligible payers active in the prior 14 days",
+    "activity_start": "2026-06-02T10:00:00+01:00",
+    "budget_start": "2026-06-02T10:00:00+01:00",
+    "activity_scope": "Channel K",
+    "budget_scope": "Channel K",
+    "activity_and_budget_independent_variation": false,
+    "actual_exposure_observed": true,
+    "interference_policy": "exclude cross-channel reassignment after first exposure"
+  },
+  "aggregates": [
+    {
+      "group": "joint_activity_budget_exposed",
+      "period": "pre",
+      "eligible_payers": 5000,
+      "observed_payers": 4800,
+      "paid_amount_ngn": 9600000,
+      "observed_days": 7
+    },
+    {
+      "group": "joint_activity_budget_exposed",
+      "period": "post",
+      "eligible_payers": 5000,
+      "observed_payers": 4750,
+      "paid_amount_ngn": 11400000,
+      "observed_days": 7
+    },
+    {
+      "group": "unexposed_reference",
+      "period": "pre",
+      "eligible_payers": 5200,
+      "observed_payers": 5000,
+      "paid_amount_ngn": 10000000,
+      "observed_days": 7
+    },
+    {
+      "group": "unexposed_reference",
+      "period": "post",
+      "eligible_payers": 5200,
+      "observed_payers": 4980,
+      "paid_amount_ngn": 10400000,
+      "observed_days": 7
+    }
+  ],
+  "evaluator_oracle": {
+    "activity_effect_identifiable": false,
+    "budget_effect_identifiable": false,
+    "joint_effect_claim_ceiling": "associational",
+    "required_wording": "The activity and budget moved together; only their joint exposed-path association is estimable."
+  },
+  "agent_projection": {
+    "expose": [
+      "assignment_contract",
+      "aggregates"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/real-snapshot-materialization.v1.schema.json",
+  "title": "WAJE Gate 3 real snapshot materialization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "authority_id",
+    "evaluation_clock",
+    "projection",
+    "sources",
+    "verification"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "gate3_real_snapshot_materialization"
+    },
+    "artifact_version": {
+      "const": "gate3.real-snapshot-materialization.v1"
+    },
+    "authority_id": {
+      "type": "string",
+      "pattern": "^REAL-[A-Z0-9-]+$"
+    },
+    "evaluation_clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of_instant",
+        "target_business_date",
+        "business_timezone",
+        "business_day_boundary"
+      ],
+      "properties": {
+        "as_of_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "target_business_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "business_timezone": {
+          "const": "Africa/Lagos"
+        },
+        "business_day_boundary": {
+          "const": "[00:00, 24:00)"
+        }
+      }
+    },
+    "projection": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_ref",
+          "contract_ref",
+          "snapshot_release_ref",
+          "physical_revision",
+          "schema_fingerprint",
+          "coverage",
+          "coverage_watermark_ref",
+          "query_result_ref"
+        ],
+        "properties": {
+          "source_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contract_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "snapshot_release_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "physical_revision": {
+            "type": "string",
+            "pattern": "^waje_bi\\."
+          },
+          "schema_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start_business_date",
+              "physical_end_business_date",
+              "evaluation_cutoff_business_date",
+              "physical_rows",
+              "eligible_rows_through_cutoff"
+            ],
+            "properties": {
+              "start_business_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "physical_end_business_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "evaluation_cutoff_business_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "physical_rows": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "eligible_rows_through_cutoff": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "coverage_watermark_ref": {
+            "type": "string",
+            "pattern": "^watermark://"
+          },
+          "query_result_ref": {
+            "type": "string",
+            "pattern": "^result-manifest://"
+          },
+          "evidence_boundary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query_class",
+        "verified_against_clickhouse",
+        "verified_against_dataset_release_store",
+        "verified_at"
+      ],
+      "properties": {
+        "query_class": {
+          "const": "read_only_metadata_and_coverage"
+        },
+        "verified_against_clickhouse": {
+          "const": true
+        },
+        "verified_against_dataset_release_store": {
+          "const": true
+        },
+        "verified_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

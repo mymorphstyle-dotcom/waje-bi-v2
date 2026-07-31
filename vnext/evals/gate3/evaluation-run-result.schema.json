@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-run-result.v1.schema.json",
+  "title": "WAJE Gate 3 Evaluation Run Cell Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "result_version",
+    "run_cell_id",
+    "run_manifest_sha256",
+    "episode_id",
+    "episode_core_sha256",
+    "world_profile_ref",
+    "world_profile_sha256",
+    "authority_profile_ref",
+    "authority_profile_sha256",
+    "product_grader_profile_ref",
+    "case_variant",
+    "layer_results",
+    "critical_vetoes",
+    "artifact_completeness",
+    "leakage_detected",
+    "derived_final_verdict"
+  ],
+  "properties": {
+    "result_version": {
+      "const": "gate3.eval-result.v1"
+    },
+    "run_cell_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "episode_core_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "episode_id": {
+      "type": "string",
+      "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+    },
+    "world_profile_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "world_profile_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_profile_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority_profile_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "product_grader_profile_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_variant": {
+      "$ref": "#/$defs/caseVariant"
+    },
+    "layer_results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_behavior",
+        "authority_conformance",
+        "implementation"
+      ],
+      "properties": {
+        "product_behavior": {
+          "$ref": "#/$defs/layerResult"
+        },
+        "authority_conformance": {
+          "$ref": "#/$defs/layerResult"
+        },
+        "implementation": {
+          "$ref": "#/$defs/layerResult"
+        }
+      }
+    },
+    "critical_vetoes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/criticalVeto"
+      }
+    },
+    "artifact_completeness": {
+      "type": "boolean"
+    },
+    "leakage_detected": {
+      "type": "boolean"
+    },
+    "derived_final_verdict": {
+      "$ref": "#/$defs/verdict"
+    }
+  },
+  "$defs": {
+    "criticalVeto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "veto_id",
+        "layer",
+        "check_id",
+        "artifact_sha256",
+        "reason_code"
+      ],
+      "properties": {
+        "veto_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "layer": {
+          "enum": [
+            "product_behavior",
+            "authority_conformance",
+            "implementation"
+          ]
+        },
+        "check_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        }
+      }
+    },
+    "caseVariant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sibling_id",
+            "materialized_sibling_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "counterfactual"
+            },
+            "sibling_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "materialized_sibling_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "invalid"
+      ]
+    },
+    "layerResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "check_results",
+        "artifact_sha256s"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/verdict"
+        },
+        "check_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check_id",
+              "verdict"
+            ],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "verdict": {
+                "$ref": "#/$defs/verdict"
+              }
+            }
+          }
+        },
+        "artifact_sha256s": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    }
+  }
+}

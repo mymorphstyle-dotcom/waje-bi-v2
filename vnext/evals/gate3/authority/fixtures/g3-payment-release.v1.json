@@ -1,0 +1,66 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-WAJE-PAYMENT-RELEASE-V1",
+  "fixture_version_ref": "fixture://wajegame/payment-release/v1",
+  "business_timezone": "Africa/Lagos",
+  "grain": [
+    "snapshot_id",
+    "business_date",
+    "final_outcome"
+  ],
+  "release_sequence": [
+    {
+      "snapshot_id": "release-r1",
+      "cutoff": "2026-06-03T07:00:00+01:00",
+      "business_date": "2026-06-02",
+      "terminal_orders": 720,
+      "successful_orders": 650,
+      "successful_paid_amount_ngn": 1300000,
+      "coverage_ratio": 0.72,
+      "status": "incomplete"
+    },
+    {
+      "snapshot_id": "release-r2",
+      "cutoff": "2026-06-03T12:00:00+01:00",
+      "business_date": "2026-06-02",
+      "terminal_orders": 940,
+      "successful_orders": 820,
+      "successful_paid_amount_ngn": 1640000,
+      "coverage_ratio": 0.94,
+      "status": "provisional"
+    },
+    {
+      "snapshot_id": "release-r3",
+      "cutoff": "2026-06-05T12:00:00+01:00",
+      "business_date": "2026-06-02",
+      "terminal_orders": 1000,
+      "successful_orders": 850,
+      "successful_paid_amount_ngn": 1700000,
+      "coverage_ratio": 1.0,
+      "status": "complete"
+    }
+  ],
+  "late_update_facts": {
+    "r1_to_r2_terminal_orders": 220,
+    "r2_to_r3_terminal_orders": 60,
+    "r1_to_r3_successful_paid_amount_ngn": 400000,
+    "prior_release_objects_are_immutable": true
+  },
+  "evaluator_oracle": {
+    "settled_publication_allowed_from_snapshot": "release-r3",
+    "earlier_snapshots_require_provisional_or_blocked_claims": true,
+    "technical_retry_may_not_replace_snapshot_identity": true
+  },
+  "agent_projection": {
+    "expose": [
+      "release_sequence",
+      "coverage_ratio",
+      "cutoff",
+      "status"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

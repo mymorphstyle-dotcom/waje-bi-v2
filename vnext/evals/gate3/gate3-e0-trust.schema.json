@@ -1,0 +1,1589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/gate3-e0-trust.v1.schema.json",
+  "title": "WAJE Gate 3 E0 Trust Artifacts",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/coverageTaxonomy"
+    },
+    {
+      "$ref": "#/$defs/sourceRegistry"
+    },
+    {
+      "$ref": "#/$defs/reviewRegistry"
+    },
+    {
+      "$ref": "#/$defs/corpusRegistry"
+    },
+    {
+      "$ref": "#/$defs/graderRegistry"
+    },
+    {
+      "$ref": "#/$defs/authorityProfiles"
+    },
+    {
+      "$ref": "#/$defs/worldProfiles"
+    },
+    {
+      "$ref": "#/$defs/promotionManifest"
+    },
+    {
+      "$ref": "#/$defs/heldOutManifest"
+    },
+    {
+      "$ref": "#/$defs/heldOutPromotionReceipt"
+    },
+    {
+      "$ref": "#/$defs/calibrationPackage"
+    },
+    {
+      "$ref": "#/$defs/runManifest"
+    },
+    {
+      "$ref": "#/$defs/readinessManifest"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "artifactHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch"
+      ],
+      "properties": {
+        "artifact_type": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "artifact_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "coverageTaxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "dimensions"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "coverage_taxonomy"
+        },
+        "artifact_version": {
+          "const": "gate3.coverage-taxonomy.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dimensions": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        }
+      }
+    },
+    "sourceRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "records"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "source_registry"
+        },
+        "artifact_version": {
+          "const": "gate3.source-registry.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceRecord"
+          }
+        }
+      }
+    },
+    "sourceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_record_id",
+        "source_pool",
+        "provenance_kind",
+        "verification_status",
+        "source_artifacts",
+        "attested_scope",
+        "independent_source_key"
+      ],
+      "properties": {
+        "source_record_id": {
+          "type": "string",
+          "pattern": "^SRC-[A-Z0-9-]+$"
+        },
+        "source_pool": {
+          "enum": [
+            "real_user_language",
+            "expert_business_case",
+            "historical_failure",
+            "generated_business_world",
+            "adversarial_conversation"
+          ]
+        },
+        "provenance_kind": {
+          "enum": [
+            "task_transcript",
+            "expert_authorship",
+            "incident_reconstruction",
+            "controlled_generation",
+            "adversarial_generation"
+          ]
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "pending_external_evidence",
+            "revoked"
+          ]
+        },
+        "source_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref",
+              "content_sha256"
+            ],
+            "properties": {
+              "ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "content_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        "attested_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "user_wording",
+              "business_world",
+              "historical_failure_identity",
+              "authoring_method"
+            ]
+          }
+        },
+        "independent_source_key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "privacy_status": {
+          "enum": [
+            "approved_redacted",
+            "pending_review",
+            "not_applicable"
+          ]
+        },
+        "verification_authority_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "reviewRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "principals",
+        "records",
+        "calibration_records"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "review_registry"
+        },
+        "artifact_version": {
+          "const": "gate3.review-registry.v2"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "principals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reviewerPrincipal"
+          }
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reviewRecord"
+          }
+        },
+        "calibration_records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/calibrationReviewRecord"
+          }
+        }
+      }
+    },
+    "reviewerPrincipal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal_id",
+        "roles",
+        "status",
+        "authority_root_ref"
+      ],
+      "properties": {
+        "principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "business_owner",
+              "measurement_reviewer",
+              "calibration_reviewer"
+            ]
+          }
+        },
+        "status": {
+          "enum": [
+            "active",
+            "revoked"
+          ]
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "reviewRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_record_id",
+        "episode_id",
+        "episode_core_sha256",
+        "principal_id",
+        "reviewer_role",
+        "decision",
+        "reviewed_scopes",
+        "review_package_sha256"
+      ],
+      "properties": {
+        "review_record_id": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "reviewer_role": {
+          "enum": [
+            "business_owner",
+            "measurement_reviewer"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "changes_requested",
+            "rejected"
+          ]
+        },
+        "reviewed_scopes": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "review_package_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "calibrationReviewRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibration_review_record_id",
+        "episode_id",
+        "episode_core_sha256",
+        "principal_id",
+        "run_cell_id",
+        "case_variant",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
+        "grader_result_sha256",
+        "human_verdict"
+      ],
+      "properties": {
+        "calibration_review_record_id": {
+          "type": "string",
+          "pattern": "^CAL-REVIEW-[A-Z0-9-]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "run_cell_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "grader_result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "human_verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked",
+            "invalid"
+          ]
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "corpusRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "entries"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "corpus_registry"
+        },
+        "artifact_version": {
+          "const": "gate3.corpus-registry.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/corpusEntry"
+          }
+        }
+      }
+    },
+    "corpusEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "episode_core_sha256",
+        "source_record_ref",
+        "authoring_batch_id",
+        "coverage_tags",
+        "product_grader_profile_ref",
+        "authority_profile_ref",
+        "world_profile_ref"
+      ],
+      "properties": {
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_record_ref": {
+          "type": "string",
+          "pattern": "^SRC-[A-Z0-9-]+$"
+        },
+        "authoring_batch_id": {
+          "type": "string",
+          "pattern": "^BATCH-[A-Z0-9-]+$"
+        },
+        "coverage_tags": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/stringArray"
+          }
+        },
+        "product_grader_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "world_profile_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "graderRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "profiles",
+        "evaluator_profiles",
+        "predicates",
+        "authority_invariants",
+        "implementation_checks"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "grader_registry"
+        },
+        "artifact_version": {
+          "const": "gate3.grader-registry.v2"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/graderProfile"
+          }
+        },
+        "evaluator_profiles": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/evaluatorProfile"
+          }
+        },
+        "predicates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/graderPredicate"
+          }
+        },
+        "authority_invariants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/authorityInvariant"
+          }
+        },
+        "implementation_checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/implementationCheck"
+          }
+        }
+      }
+    },
+    "graderProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "layer",
+        "required_predicate_ids"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "layer": {
+          "enum": [
+            "product_behavior",
+            "authority_conformance",
+            "implementation"
+          ]
+        },
+        "required_predicate_ids": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "evaluatorProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "role",
+        "provider",
+        "model",
+        "thinking",
+        "lifecycle_status",
+        "prompt_bundle_ref",
+        "prompt_contract_id",
+        "prompt_sha256",
+        "rubric_ref",
+        "rubric_sha256",
+        "input_contract_sha256",
+        "output_contract_sha256",
+        "runner_ref",
+        "runner_sha256"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "primary_business_analysis_agent",
+            "runtime_reviewer",
+            "evaluation_reviewer"
+          ]
+        },
+        "provider": {
+          "const": "deepseek"
+        },
+        "model": {
+          "enum": [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+          ]
+        },
+        "thinking": {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "lifecycle_status": {
+          "enum": [
+            "quality_probe_only",
+            "selected_unprovisioned",
+            "calibration_eligible",
+            "revoked"
+          ]
+        },
+        "prompt_bundle_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "prompt_contract_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rubric_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rubric_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "input_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runner_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "graderPredicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predicate_id",
+        "layer",
+        "evaluator_types",
+        "required_input_views",
+        "unassessable_disposition",
+        "severity"
+      ],
+      "properties": {
+        "predicate_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "layer": {
+          "const": "product_behavior"
+        },
+        "evaluator_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "deterministic",
+              "model",
+              "human"
+            ]
+          }
+        },
+        "required_input_views": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "unassessable_disposition": {
+          "const": "blocked"
+        },
+        "severity": {
+          "enum": [
+            "blocking",
+            "major"
+          ]
+        }
+      }
+    },
+    "authorityInvariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invariant_id",
+        "required_observation_kinds",
+        "severity"
+      ],
+      "properties": {
+        "invariant_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "required_observation_kinds": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "severity": {
+          "const": "blocking"
+        }
+      }
+    },
+    "implementationCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "severity"
+      ],
+      "properties": {
+        "check_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "severity": {
+          "const": "blocking"
+        }
+      }
+    },
+    "authorityProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "profiles",
+        "bindings"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "authority_conformance_profiles"
+        },
+        "artifact_version": {
+          "const": "gate3.authority-conformance.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profile_id",
+              "authority_contract_version",
+              "required_invariant_ids",
+              "trace_profile_ref"
+            ],
+            "properties": {
+              "profile_id": {
+                "$ref": "#/$defs/id"
+              },
+              "authority_contract_version": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "required_invariant_ids": {
+                "$ref": "#/$defs/stringArray"
+              },
+              "trace_profile_ref": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "episode_id",
+              "episode_core_sha256",
+              "world_profile_ref",
+              "profile_id"
+            ],
+            "properties": {
+              "episode_id": {
+                "type": "string",
+                "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+              },
+              "episode_core_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "world_profile_ref": {
+                "$ref": "#/$defs/id"
+              },
+              "profile_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        }
+      }
+    },
+    "worldProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "profiles"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "cross_gate_world_profiles"
+        },
+        "artifact_version": {
+          "const": "gate3.cross-gate-world-profiles.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/worldProfile"
+          }
+        }
+      }
+    },
+    "worldProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "episode_id",
+        "episode_core_sha256",
+        "world_id",
+        "stage_profiles"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "world_id": {
+          "$ref": "#/$defs/id"
+        },
+        "stage_profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "gate3",
+            "gate4",
+            "gate5",
+            "gate6",
+            "gate7"
+          ],
+          "properties": {
+            "gate3": {
+              "$ref": "#/$defs/profileStage"
+            },
+            "gate4": {
+              "$ref": "#/$defs/profileStage"
+            },
+            "gate5": {
+              "$ref": "#/$defs/profileStage"
+            },
+            "gate6": {
+              "$ref": "#/$defs/profileStage"
+            },
+            "gate7": {
+              "$ref": "#/$defs/profileStage"
+            }
+          }
+        }
+      }
+    },
+    "profileStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "required_artifacts"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "authoring",
+            "pending",
+            "reviewed"
+          ]
+        },
+        "required_artifacts": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "promotionManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "status",
+        "entries"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "promotion_manifest"
+        },
+        "artifact_version": {
+          "const": "gate3.promotion-manifest.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/promotionEntry"
+          }
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_history": {
+          "$ref": "#/$defs/authorityHistory"
+        }
+      }
+    },
+    "promotionEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "episode_core_sha256",
+        "target_partition",
+        "source_record_ref",
+        "business_review_ref",
+        "measurement_review_ref",
+        "world_profile_ref",
+        "authority_profile_ref",
+        "grader_profile_ref"
+      ],
+      "properties": {
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "target_partition": {
+          "enum": [
+            "calibration",
+            "development",
+            "challenge",
+            "production_mined"
+          ]
+        },
+        "source_record_ref": {
+          "type": "string",
+          "pattern": "^SRC-[A-Z0-9-]+$"
+        },
+        "business_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "measurement_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "world_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "grader_profile_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "heldOutManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "status",
+        "entries"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "protected_held_out_manifest"
+        },
+        "artifact_version": {
+          "const": "gate3.protected-held-out.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "unsealed",
+            "sealed"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "opaque_episode_id",
+              "encrypted_object_ref",
+              "ciphertext_sha256",
+              "promotion_ref",
+              "promotion_receipt_ref",
+              "promotion_receipt_sha256",
+              "access_realm",
+              "object_receipt_ref",
+              "object_receipt_sha256"
+            ],
+            "properties": {
+              "opaque_episode_id": {
+                "$ref": "#/$defs/id"
+              },
+              "encrypted_object_ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "ciphertext_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "promotion_ref": {
+                "$ref": "#/$defs/id"
+              },
+              "promotion_receipt_ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "promotion_receipt_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "access_realm": {
+                "const": "held_out_runner_only"
+              },
+              "object_receipt_ref": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "object_receipt_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_history": {
+          "$ref": "#/$defs/authorityHistory"
+        }
+      }
+    },
+    "heldOutPromotionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "promotion_ref",
+        "opaque_episode_id",
+        "episode_core_sha256",
+        "source_record_ref",
+        "source_attestation_sha256",
+        "independent_source_key",
+        "business_review_ref",
+        "business_review_attestation_sha256",
+        "business_reviewer_principal_id",
+        "measurement_review_ref",
+        "measurement_review_attestation_sha256",
+        "measurement_reviewer_principal_id",
+        "decision"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "held_out_promotion_receipt"
+        },
+        "artifact_version": {
+          "const": "gate3.held-out-promotion-receipt.v1"
+        },
+        "promotion_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "opaque_episode_id": {
+          "$ref": "#/$defs/id"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_record_ref": {
+          "type": "string",
+          "pattern": "^SRC-[A-Z0-9-]+$"
+        },
+        "source_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "independent_source_key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "business_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "business_review_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "business_reviewer_principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "measurement_review_ref": {
+          "type": "string",
+          "pattern": "^REVIEW-[A-Z0-9-]+$"
+        },
+        "measurement_review_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "measurement_reviewer_principal_id": {
+          "type": "string",
+          "pattern": "^REVIEWER-[A-Z0-9-]+$"
+        },
+        "decision": {
+          "const": "approved"
+        }
+      }
+    },
+    "calibrationPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "status",
+        "grader_registry_sha256",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
+        "labeled_episode_refs",
+        "label_records",
+        "agreement",
+        "critical_false_passes"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "grader_calibration_package"
+        },
+        "artifact_version": {
+          "const": "gate3.grader-calibration.v2"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "calibrated"
+          ]
+        },
+        "grader_registry_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "labeled_episode_refs": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "label_records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/calibrationLabelRecord"
+          }
+        },
+        "agreement": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "critical_false_passes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_history": {
+          "$ref": "#/$defs/authorityHistory"
+        }
+      }
+    },
+    "calibrationLabelRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "episode_core_sha256",
+        "human_verdict",
+        "grader_verdict",
+        "human_review_ref",
+        "run_cell_id",
+        "case_variant",
+        "evaluator_profile_ref",
+        "evaluator_profile_sha256",
+        "grader_result_ref",
+        "grader_result_sha256",
+        "runner_artifact_index_ref",
+        "runner_artifact_index_sha256",
+        "critical"
+      ],
+      "properties": {
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "human_verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked",
+            "invalid"
+          ]
+        },
+        "grader_verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked",
+            "invalid"
+          ]
+        },
+        "human_review_ref": {
+          "type": "string",
+          "pattern": "^CAL-REVIEW-[A-Z0-9-]+$"
+        },
+        "run_cell_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
+        },
+        "evaluator_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "grader_result_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "grader_result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runner_artifact_index_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "runner_artifact_index_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "critical": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "status",
+        "policy_sha256",
+        "taxonomy_sha256",
+        "grader_registry_sha256",
+        "promotion_manifest_sha256",
+        "selected_episode_hashes",
+        "run_cells",
+        "required_layers"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "run_manifest"
+        },
+        "artifact_version": {
+          "const": "gate3.run-manifest.v1"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "frozen"
+          ]
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "taxonomy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "grader_registry_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "promotion_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_episode_hashes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "run_cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/runCell"
+          }
+        },
+        "required_layers": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "product_behavior",
+              "authority_conformance",
+              "implementation"
+            ]
+          }
+        },
+        "authority_root_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_history": {
+          "$ref": "#/$defs/authorityHistory"
+        }
+      }
+    },
+    "runCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_cell_id",
+        "episode_id",
+        "episode_core_sha256",
+        "world_profile_ref",
+        "world_profile_sha256",
+        "authority_profile_ref",
+        "authority_profile_sha256",
+        "product_grader_profile_ref",
+        "case_variant"
+      ],
+      "properties": {
+        "run_cell_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "world_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "world_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "authority_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "authority_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "product_grader_profile_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "case_variant": {
+          "$ref": "#/$defs/runCaseVariant"
+        }
+      }
+    },
+    "runCaseVariant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sibling_id",
+            "materialized_sibling_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "counterfactual"
+            },
+            "sibling_id": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "materialized_sibling_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "authorityHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predecessor_ref",
+        "predecessor_sha256"
+      ],
+      "properties": {
+        "predecessor_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "predecessor_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "readinessManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "registry_epoch",
+        "evaluated_artifact_hashes",
+        "condition_verdicts",
+        "derived_status",
+        "entry_decision"
+      ],
+      "properties": {
+        "artifact_type": {
+          "const": "readiness_manifest"
+        },
+        "artifact_version": {
+          "const": "gate3.e0-readiness.v2"
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "evaluated_artifact_hashes": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "condition_verdicts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "condition_id",
+              "verdict",
+              "evidence"
+            ],
+            "properties": {
+              "condition_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]+$"
+              },
+              "verdict": {
+                "enum": [
+                  "pass",
+                  "blocked"
+                ]
+              },
+              "evidence": {
+                "$ref": "#/$defs/stringArray"
+              }
+            }
+          }
+        },
+        "derived_status": {
+          "enum": [
+            "ready",
+            "blocked"
+          ]
+        },
+        "entry_decision": {
+          "enum": [
+            "allow_g3_1",
+            "deny_g3_1"
+          ]
+        }
+      }
+    }
+  }
+}

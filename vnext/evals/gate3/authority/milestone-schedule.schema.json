@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/authority/milestone-schedule.v1.schema.json",
+  "title": "WAJE Gate 3 authority milestone schedule",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_version",
+    "schedule_id",
+    "gate_contract",
+    "milestones",
+    "scenarios"
+  ],
+  "properties": {
+    "artifact_version": {
+      "const": "gate3.authority-milestone-schedule.v1"
+    },
+    "schedule_id": {
+      "$ref": "#/$defs/scheduleId"
+    },
+    "gate_contract": {
+      "$ref": "#/$defs/gateContract"
+    },
+    "milestones": {
+      "type": "array",
+      "minItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/milestone"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "ingress_received"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "frame_accepted"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "plan_accepted"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "effect_recorded"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "evidence_admitted"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "review_recorded"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "claim_disposition_recorded"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "answer_appended"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "workflow_projected"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "correction_appended"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "late_event_admitted"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "duplicate_rejected"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "restart_replayed"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        }
+      ]
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/scenario"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "scenario_id": {
+                "const": "base_authority_path"
+              }
+            },
+            "required": [
+              "scenario_id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "scenario_id": {
+                "const": "correction_repair"
+              }
+            },
+            "required": [
+              "scenario_id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "scenario_id": {
+                "const": "late_arrival"
+              }
+            },
+            "required": [
+              "scenario_id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "scenario_id": {
+                "const": "duplicate_replay"
+              }
+            },
+            "required": [
+              "scenario_id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "scenario_id": {
+                "const": "restart_recovery"
+              }
+            },
+            "required": [
+              "scenario_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "scheduleId": {
+      "type": "string",
+      "pattern": "^SCHEDULE-G3-[A-Z0-9-]+-V[0-9]+$"
+    },
+    "milestoneId": {
+      "type": "string",
+      "pattern": "^MS-G3-[A-Z0-9-]+$"
+    },
+    "milestoneKind": {
+      "enum": [
+        "ingress_received",
+        "frame_accepted",
+        "plan_accepted",
+        "effect_recorded",
+        "evidence_admitted",
+        "review_recorded",
+        "claim_disposition_recorded",
+        "answer_appended",
+        "workflow_projected",
+        "correction_appended",
+        "late_event_admitted",
+        "duplicate_rejected",
+        "restart_replayed"
+      ]
+    },
+    "effectKind": {
+      "enum": [
+        "ingress_anchored",
+        "accepted_revision_advanced",
+        "capability_effect_appended",
+        "evidence_record_appended",
+        "review_appended",
+        "claim_disposition_appended",
+        "answer_version_appended",
+        "workflow_projection_advanced",
+        "correction_relation_appended",
+        "late_source_event_appended",
+        "duplicate_ignored",
+        "restart_lineage_appended"
+      ]
+    },
+    "gateContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_stage",
+        "authority_state",
+        "answer_status",
+        "workflow_state",
+        "delivery_state",
+        "disposition_scope"
+      ],
+      "properties": {
+        "gate_stage": {
+          "const": "G3"
+        },
+        "authority_state": {
+          "const": "provisional"
+        },
+        "answer_status": {
+          "const": "provisional"
+        },
+        "workflow_state": {
+          "const": "provisional"
+        },
+        "delivery_state": {
+          "const": "withheld"
+        },
+        "disposition_scope": {
+          "const": "claim"
+        }
+      }
+    },
+    "milestone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "milestone_id",
+        "ordinal",
+        "phase",
+        "kind",
+        "requirement",
+        "predecessor_milestone_ids",
+        "expected_effect_kind",
+        "required_observation_fields",
+        "description"
+      ],
+      "properties": {
+        "milestone_id": {
+          "$ref": "#/$defs/milestoneId"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase": {
+          "enum": [
+            "ingress",
+            "authority_acceptance",
+            "execution",
+            "evidence",
+            "review",
+            "answer",
+            "workflow",
+            "repair"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/milestoneKind"
+        },
+        "requirement": {
+          "enum": [
+            "always_required",
+            "scenario_required"
+          ]
+        },
+        "scenario_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "base_authority_path",
+              "correction_repair",
+              "late_arrival",
+              "duplicate_replay",
+              "restart_recovery"
+            ]
+          }
+        },
+        "predecessor_milestone_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/milestoneId"
+          }
+        },
+        "expected_effect_kind": {
+          "$ref": "#/$defs/effectKind"
+        },
+        "required_observation_fields": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "requirement": {
+                "const": "scenario_required"
+              }
+            },
+            "required": [
+              "requirement"
+            ]
+          },
+          "then": {
+            "required": [
+              "scenario_ids"
+            ]
+          }
+        }
+      ]
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "trigger",
+        "required_milestone_ids",
+        "acceptance_rule"
+      ],
+      "properties": {
+        "scenario_id": {
+          "enum": [
+            "base_authority_path",
+            "correction_repair",
+            "late_arrival",
+            "duplicate_replay",
+            "restart_recovery"
+          ]
+        },
+        "trigger": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "required_milestone_ids": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "acceptance_rule": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    }
+  }
+}

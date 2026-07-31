@@ -1,0 +1,272 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-GF-009-BASE-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-009-base/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-08-03T10:00:00+01:00",
+    "target_business_date": "2026-07-31",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-GF-009",
+    "episode_id": "G3-GF-009",
+    "binding_id": "fixture_g3_gf_009_base",
+    "authority_slot_id": "fixture_g3_gf_009_base_v1",
+    "scope_claim_target_ids": [
+      "closed_month_ggr_change_claim",
+      "ggr_component_contribution_claim",
+      "ggr_residual_magnitude_claim",
+      "ggr_residual_cause_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "CONTRACT-G3-GF-009-01",
+      "state": "available",
+      "description": "财务玩法利润/GGR变化是 decomposition 的 reconciliation target",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-009-02",
+      "state": "available",
+      "description": "平均单次下注金额、下注次数和 mix 使用版本化对称分解规则",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "CONTRACT-G3-GF-009-03",
+      "state": "available",
+      "description": "分解必须保留 residual，reconciliation tolerance 为 2 万",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "vnext/contracts/backlog/missing-contracts.yaml#backlog.ggr_decomposition_residual_components",
+      "state": "missing",
+      "description": "汇率、财务重分类及其他 residual component 的版本化合同缺失。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-G3-GF-009-01",
+      "description": "财务玩法利润/GGR变化为 -NGN 1,000,000",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-009-02",
+      "description": "可计算 volume contribution -30 万",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-009-03",
+      "description": "可计算 price contribution -20 万",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-009-04",
+      "description": "可计算 product mix contribution +10 万",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-G3-GF-009-05",
+      "description": "已解释合计 -40 万，residual 为 -60 万，超过 tolerance",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "critical"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-GF-009-01",
+        "statement": "现有因素只能解释 40 万下降，仍有 60 万未解释。隐藏世界中 residual 来自 -35 万汇率和 -25 万玩法利润/GGR重分类。当前不能把 residual 按比例摊给平均单次下注金额、下注次数或 mix。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "closed_month_ggr_change_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_009_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "descriptive",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-009-BASE-V1",
+          "CONTRACT-G3-GF-009-01",
+          "CONTRACT-G3-GF-009-02",
+          "CONTRACT-G3-GF-009-03",
+          "DC-G3-GF-009-01",
+          "DC-G3-GF-009-02",
+          "DC-G3-GF-009-03",
+          "DC-G3-GF-009-04",
+          "DC-G3-GF-009-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-009-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "财务 reconciliation target 或完整月身份改变。"
+        ]
+      },
+      {
+        "claim_target_id": "ggr_component_contribution_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_009_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-009-BASE-V1",
+          "CONTRACT-G3-GF-009-01",
+          "CONTRACT-G3-GF-009-02",
+          "CONTRACT-G3-GF-009-03",
+          "DC-G3-GF-009-01",
+          "DC-G3-GF-009-02",
+          "DC-G3-GF-009-03",
+          "DC-G3-GF-009-04",
+          "DC-G3-GF-009-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-009-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "allocation rule 或 factor ordering 改变。",
+          "已解释贡献不能回收到 -40 万。"
+        ]
+      },
+      {
+        "claim_target_id": "ggr_residual_magnitude_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_009_base",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "supported",
+          "business_evidence_state": "supported"
+        },
+        "disposition": {
+          "resolution": "resolved_instance",
+          "verifier": "accepted",
+          "settlement_precondition": "eligible_for_future_settlement"
+        },
+        "applicability": "fixture_only_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-009-BASE-V1",
+          "CONTRACT-G3-GF-009-01",
+          "CONTRACT-G3-GF-009-02",
+          "CONTRACT-G3-GF-009-03",
+          "DC-G3-GF-009-01",
+          "DC-G3-GF-009-02",
+          "DC-G3-GF-009-03",
+          "DC-G3-GF-009-04",
+          "DC-G3-GF-009-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-009-01"
+        ],
+        "boundary_codes": [],
+        "reversal_conditions": [
+          "任一 component、target 或 tolerance 改变。"
+        ]
+      },
+      {
+        "claim_target_id": "ggr_residual_cause_claim",
+        "evaluation_turn": 1,
+        "source_uses": [
+          {
+            "binding_id": "fixture_g3_gf_009_base",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_gameplay_decomposition_components",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "FIXTURE-G3-GF-009-BASE-V1",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.ggr_decomposition_residual_components",
+          "DC-G3-GF-009-05"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-GF-009-01"
+        ],
+        "boundary_codes": [
+          "missing_decomposition_component_contract"
+        ],
+        "reversal_conditions": [
+          "补齐汇率与重分类合同后创建新 evidence obligation。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

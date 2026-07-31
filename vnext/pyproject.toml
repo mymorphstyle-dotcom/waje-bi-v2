@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waje-bi-agent-vnext-analysis-core"
+version = "0.0.0"
+description = "Clean-slate WAJE BI Agent vNext analysis core"
+requires-python = ">=3.12"
+dependencies = [
+  "psycopg[binary]>=3.2,<4",
+]
+
+[dependency-groups]
+dev = [
+  "build>=1.2,<2",
+  "jsonschema>=4.23,<5",
+  "pyyaml>=6,<7",
+  "setuptools>=75,<76",
+]
+
+[tool.setuptools]
+package-dir = {"" = "services/analysis_core/src"}
+
+[tool.setuptools.packages.find]
+where = ["services/analysis_core/src"]

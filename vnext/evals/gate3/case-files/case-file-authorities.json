@@ -1,0 +1,1873 @@
+{
+  "artifact_version": "gate3.case-file-authority.v1",
+  "authorities": [
+    {
+      "authority_id": "REAL-WAJE-COMMON-20260602",
+      "authority_slot_id": "real_common_snapshot",
+      "source_mode": "frozen_real_snapshot",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "dataset_refs": [
+        "paid_order_success",
+        "payment_final_outcome",
+        "market_dashboard",
+        "market_dashboard_channel",
+        "gameplay",
+        "gameplay_channel",
+        "payment_order_bet_link",
+        "external_event"
+      ],
+      "contract_refs": [
+        "contracts/sources/paid-order-detail.source.yaml@0.4",
+        "contracts/sources/payment-final-outcome.source.yaml@0.1",
+        "contracts/sources/market-dashboard.source.yaml@0.1",
+        "contracts/sources/gameplay.source.yaml@0.1",
+        "contracts/sources/payment-order-bet-link.source.yaml@0.1",
+        "contracts/sources/external-events.source.yaml@0.1"
+      ],
+      "materializations": [
+        {
+          "source_ref": "paid_order_success",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+            "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/paid_order_success/v1"
+          }
+        },
+        {
+          "source_ref": "payment_final_outcome",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:610c0c0b714199619b5f8b50c6a1718e4a3e9df6dfa354250764688d055ca43f#dataset-snapshot:sha256:1ea81b42ae17e7fab0c3474b541a977dfdbcf834ffb34390ce7f72e4179f27c1",
+            "coverage_watermark_ref": "watermark://payment_final_outcome/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/payment_final_outcome/v1"
+          }
+        },
+        {
+          "source_ref": "market_dashboard",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:2b21a49da3aa15a25b8a485830ea6274d8e4cc07d6c2800df36147368dd8cdec",
+            "coverage_watermark_ref": "watermark://market_dashboard/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/market_dashboard/v1"
+          }
+        },
+        {
+          "source_ref": "market_dashboard_channel",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:8db87003c1286a6617ad4d77e0975c6108662658f7a3d200a23d8f347ed3988f",
+            "coverage_watermark_ref": "watermark://market_dashboard_channel/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/market_dashboard_channel/v1"
+          }
+        },
+        {
+          "source_ref": "gameplay",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:a38cfaa37d37f3f60ba5de8b7775d4bc32b67b517200d8c8c1ff3bbd37aeee44#dataset-snapshot:sha256:0418478c590258e2e0a40b57e4587ff1bd43b5568e4782c548b5fa604157b651",
+            "coverage_watermark_ref": "watermark://gameplay/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/gameplay/v1"
+          }
+        },
+        {
+          "source_ref": "gameplay_channel",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:a38cfaa37d37f3f60ba5de8b7775d4bc32b67b517200d8c8c1ff3bbd37aeee44#dataset-snapshot:sha256:492db67904bdc38e6644d9670472a39880d731753d70b657ef7cf604a02a6df7",
+            "coverage_watermark_ref": "watermark://gameplay_channel/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/gameplay_channel/v1"
+          }
+        },
+        {
+          "source_ref": "payment_order_bet_link",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:82bfae9efb981f4735ebdaf793c14d8d67ce52e27cb4c78bc3d0db10dab31c12#dataset-snapshot:sha256:6079ac0d36bb79a7dc178841eb3c86e58d61f2c030a5047b7862d05553bcf0a0",
+            "coverage_watermark_ref": "watermark://payment_order_bet_link/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/payment_order_bet_link/v1"
+          }
+        },
+        {
+          "source_ref": "external_event",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-common-snapshot-20260602.v1.json",
+          "artifact_content_sha256": "cf55b4bd078e173e5b5942d48bba748435f0dba475486a816173b1d6a697525a",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:6da4c000e3a18485f62435dfa90fd568be484ed4689f7dff7ec1f238d5485c86#dataset-snapshot:sha256:1a0ad0df647eb0431cc56a90ba042f7196ce11346ae8f706c15d76110337c269",
+            "coverage_watermark_ref": "watermark://external_event/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-COMMON-20260602/external_event/v1"
+          }
+        }
+      ],
+      "scope_claim_target_ids": [
+        "behavior_contribution_claim",
+        "behavior_factor_top_three_claim",
+        "business_segment_concentration_claim",
+        "channel_coverage_quality_claim",
+        "claim_disposition_claim",
+        "conditional_normal_deviation_claim",
+        "daily_anomaly_claim",
+        "external_event_effect_claim",
+        "gameplay_pattern_driver_claim",
+        "high_value_sensitivity_claim",
+        "largest_observed_slice_claim",
+        "monthly_pattern_claim",
+        "overall_health_judgment_claim",
+        "primary_paid_amount_change_claim",
+        "payer_concentration_claim",
+        "per_dimension_leader_claim",
+        "prior_day_contrast_claim",
+        "prior_day_driver_claim",
+        "prior_week_driver_claim",
+        "prior_week_same_day_claim",
+        "prior_week_sensitivity_claim",
+        "priority_risk_claim",
+        "revenue_quality_claim",
+        "revenue_stability_claim",
+        "segment_localization_claim",
+        "segment_pattern_driver_claim",
+        "seven_day_driver_claim",
+        "seven_day_mean_contrast_claim",
+        "seven_day_sensitivity_claim",
+        "sustainable_payer_base_claim",
+        "weekly_pattern_claim",
+        "prior_channel_driver_claim_validity_claim"
+      ],
+      "agent_projection": "Exact frozen snapshot/release and query surfaces are visible; hidden evaluator outcomes remain excluded.",
+      "evaluator_projection": "Result oracles must be generated from the bound physical revisions before independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-PAYMENT-RELEASE-V1",
+      "authority_slot_id": "payment_release",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "claim_disposition_claim",
+        "payment_maturity_quality_claim",
+        "repair_republication_claim",
+        "prior_total_growth_claim_validity_claim"
+      ],
+      "fixture_facts": [
+        "The same order population has ordered snapshot, watermark, terminal-status transition and late-update records.",
+        "Every release-sensitive result binds an exact cutoff and never rewrites a prior release."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-PAYMENT-RELEASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-payment-release.v1.json",
+          "artifact_content_sha256": "0c55787cd581033ce0291854d2a0f68dbeb333fc277d7ab7aa5a49098f215a25",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/payment-release/v1",
+            "fixture_content_sha256": "0c55787cd581033ce0291854d2a0f68dbeb333fc277d7ab7aa5a49098f215a25",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-PAYMENT-RELEASE-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "Release metadata and observable completeness checks are exposed through data probes.",
+      "evaluator_projection": "Ordered snapshots, hidden final state and expected claim-local degradation are evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1",
+      "authority_slot_id": "activity_budget_assignment",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "activity_effect_claim",
+        "budget_effect_claim",
+        "joint_activity_budget_effect_claim"
+      ],
+      "fixture_facts": [
+        "Activity and budget start together and cannot receive separate effects.",
+        "Their joint event, eligibility and actual exposure fields are complete for the fixture scope."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-operations-assignment.v1.json",
+          "artifact_content_sha256": "8158ee3d182f33110227abb209186bb828aaf8d4a09b4d372db20430487243e4",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/operations-assignment/v1",
+            "fixture_content_sha256": "8158ee3d182f33110227abb209186bb828aaf8d4a09b4d372db20430487243e4",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-OPERATIONS-ASSIGNMENT-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "The Agent can inspect activity and budget event/exposure contracts and query approved aggregates.",
+      "evaluator_projection": "Activity-budget overlap truth and scoped joint-effect oracles remain hidden.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1",
+      "authority_slot_id": "creative_version_assignment",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "creative_effect_claim",
+        "version_effect_claim"
+      ],
+      "fixture_facts": [
+        "Creative and version paths include eligibility, assignment, actual exposure, pre-period, control and interference fields."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-creative-version-assignment.v1.json",
+          "artifact_content_sha256": "b02cef6a6f750114dc9b3e2dfdd64f497a4c4bd7eb98bdf59fc313fd74e05245",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/creative-version-assignment/v1",
+            "fixture_content_sha256": "b02cef6a6f750114dc9b3e2dfdd64f497a4c4bd7eb98bdf59fc313fd74e05245",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "The Agent can inspect creative/version assignment and exposure contracts and query approved aggregates.",
+      "evaluator_projection": "Assignment validity and scoped creative/version effect oracles remain hidden.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1",
+      "authority_slot_id": "payment_incident_hourly",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "payment_outage_attempt_claim",
+        "payment_outage_loss_claim",
+        "intraday_process_anomaly_claim",
+        "full_day_residual_impact_claim",
+        "mechanism_explanation_claim"
+      ],
+      "fixture_facts": [
+        "Attempt-level terminal outcomes and local-hour coverage identify a bounded incident interval.",
+        "Recovery actions and compensating payments are separate from the original disruption and complete-day residual.",
+        "Lost paid amount is a range when the counterfactual success rate is uncertain."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-payment-incident-hourly.v1.json",
+          "artifact_content_sha256": "4e13f27d00db08861de0b77c200c20fc571c79fecbd167231bfcec10ff9cce3b",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/payment-incident-hourly/v1",
+            "fixture_content_sha256": "4e13f27d00db08861de0b77c200c20fc571c79fecbd167231bfcec10ff9cce3b",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-PAYMENT-INCIDENT-HOURLY-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "Approved hourly aggregates, incident events and release metadata are available through fixture-only probes.",
+      "evaluator_projection": "The true incident interval, recovery attribution and counterfactual range remain evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+      "authority_slot_id": "run_evidence_authority",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "channel_coverage_quality_claim",
+        "provenance_integrity_claim",
+        "deduplication_sensitivity_claim",
+        "payment_maturity_quality_claim",
+        "high_value_sensitivity_claim",
+        "claim_disposition_claim",
+        "repair_republication_claim",
+        "prior_total_growth_claim_validity_claim",
+        "prior_channel_driver_claim_validity_claim"
+      ],
+      "fixture_facts": [
+        "A prior answer contains one total-amount claim and one channel-driver claim with complete authority references.",
+        "The target total is 1300 versus a 1000 baseline before repair and 1150 after removing 150 duplicate Channel A amount.",
+        "The total claim remains directionally supported; the channel-driver claim is revoked because mapping uncertainty can change the ranking.",
+        "Old Evidence and Answer objects remain immutable while validity, replacement Evidence and a new provisional AnswerVersion are appended."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-RUN-EVIDENCE-REPAIR-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-user-008-prior-authority.v1.json",
+          "artifact_content_sha256": "159a41731e9c17dfcc013ee686a0ff87cb6175b0953a1d0424f4e50e84cdd58d",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/run-evidence-repair/v1",
+            "fixture_content_sha256": "159a41731e9c17dfcc013ee686a0ff87cb6175b0953a1d0424f4e50e84cdd58d",
+            "query_result_ref": "result:result-g3-user-008-repair-2"
+          }
+        }
+      ],
+      "agent_projection": "The prior customer-visible answer and safe authority references are available through authority lookup.",
+      "evaluator_projection": "Hidden object hashes, defect truth and expected supersession joins are evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1",
+      "authority_slot_id": "creative_version_assignment",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "creative_effect_claim",
+        "version_effect_claim"
+      ],
+      "fixture_facts": [
+        "Creative and version assignment populations are no longer comparable across the target and control windows.",
+        "Creative and version causal effects cannot be identified from this fixture; only a scoped association or typed boundary is supportable."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-creative-version-assignment-incomplete.v1.json",
+          "artifact_content_sha256": "509182603a560111443f56c56c293a0e52ceea896400648338c77bc930c10124",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/creative-version-assignment-incomplete/v1",
+            "fixture_content_sha256": "509182603a560111443f56c56c293a0e52ceea896400648338c77bc930c10124",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-CREATIVE-VERSION-ASSIGNMENT-INCOMPLETE-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "The Agent can inspect that creative and version assignment comparability is incomplete.",
+      "evaluator_projection": "The exact incomplete assignment rows and expected claim-local degradation remain evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1",
+      "authority_slot_id": "canonical_payer_identity",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "payer_concentration_claim",
+        "revenue_quality_claim",
+        "overall_health_judgment_claim",
+        "priority_risk_claim"
+      ],
+      "fixture_facts": [
+        "A versioned canonical payer mapping links eligible accounts and devices to one governed payer identity.",
+        "The mapping exposes coverage, collision, ambiguity and effective-time fields required for payer-level concentration and duplicate-identity sensitivity.",
+        "Refund, retention and activity-exposure gaps remain unchanged."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-canonical-payer-identity.v1.json",
+          "artifact_content_sha256": "6ba4901f06f829b9330f69917cc85bf50512a8033c20ff8c4094a58d10281bc4",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/canonical-payer-identity/v1",
+            "fixture_content_sha256": "6ba4901f06f829b9330f69917cc85bf50512a8033c20ff8c4094a58d10281bc4",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-CANONICAL-PAYER-IDENTITY-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "The Agent can inspect the canonical payer contract and query approved payer-level aggregates with mapping-quality fields.",
+      "evaluator_projection": "Exact identity links and expected concentration oracles remain evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1",
+      "authority_slot_id": "run_evidence_authority",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-06-03T10:00:00+01:00",
+        "target_business_date": "2026-06-02",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "provenance_integrity_claim",
+        "deduplication_sensitivity_claim",
+        "channel_coverage_quality_claim",
+        "claim_disposition_claim",
+        "repair_republication_claim",
+        "prior_total_growth_claim_validity_claim",
+        "prior_channel_driver_claim_validity_claim"
+      ],
+      "fixture_facts": [
+        "The prior run exposes only aggregate answer text and labels for one total-amount claim and one channel-driver claim.",
+        "No accepted Frame, Plan, Evidence, query/result, snapshot/release or deduplication provenance is available.",
+        "Aggregate values cannot be used to reconstruct missing authority identities or validate the prior claims."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-run-summary-only.v1.json",
+          "artifact_content_sha256": "e3db9daa0bbc750015cf99bdc80376bc310a9444fd097ff870d63f3839436332",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/run-summary-only/v1",
+            "fixture_content_sha256": "e3db9daa0bbc750015cf99bdc80376bc310a9444fd097ff870d63f3839436332",
+            "query_result_ref": "result-manifest://gate3/FIXTURE-WAJE-RUN-SUMMARY-ONLY-V1/v1"
+          }
+        }
+      ],
+      "agent_projection": "The Agent can read the aggregate prior answer and an explicit manifest of missing authority references.",
+      "evaluator_projection": "The expected unverifiable dispositions and recovery obligations remain evaluator-only.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false
+    },
+    {
+      "authority_id": "REAL-WAJE-BUSINESS-CHAIN-20260730",
+      "authority_slot_id": "business_chain_real_snapshot",
+      "source_mode": "frozen_real_snapshot",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "active_user_metric_family_claim",
+        "all_channel_ggr_change_claim",
+        "all_channel_paid_amount_change_claim",
+        "attributed_roas_ranking_claim",
+        "attribution_sensitivity_claim",
+        "budget_reallocation_decision_claim",
+        "cross_use_interchangeability_claim",
+        "dashboard_spike_validity_claim",
+        "duplicate_backfill_diagnosis_claim",
+        "gameplay_active_user_definition_claim",
+        "gross_paid_amount_auxiliary_claim",
+        "growth_active_user_definition_claim",
+        "historical_outreach_cost_claim",
+        "incremental_channel_return_claim",
+        "incremental_profit_effect_claim",
+        "incremental_reactivation_effect_claim",
+        "net_revenue_direction_claim",
+        "new_payer_definition_claim",
+        "next_experiment_design_claim",
+        "observed_reactivation_difference_claim",
+        "paid_active_user_definition_claim",
+        "recharge_activity_effect",
+        "refund_release_eligibility_claim",
+        "scale_decision_claim",
+        "stable_channel_ggr_change",
+        "stable_channel_paid_amount_change"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "dataset_refs": [
+        "paid_order_success",
+        "gameplay",
+        "market_dashboard",
+        "market_dashboard_channel"
+      ],
+      "materializations": [
+        {
+          "source_ref": "paid_order_success",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-business-chain-20260730.v1.json",
+          "artifact_content_sha256": "362a918a9f6ec689953a7c3784b4737232146a312600fee9a7229d22f5e2478d",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+            "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2026-07-04",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-BUSINESS-CHAIN-20260730/paid_order_success/v1"
+          }
+        },
+        {
+          "source_ref": "gameplay",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-business-chain-20260730.v1.json",
+          "artifact_content_sha256": "362a918a9f6ec689953a7c3784b4737232146a312600fee9a7229d22f5e2478d",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:a38cfaa37d37f3f60ba5de8b7775d4bc32b67b517200d8c8c1ff3bbd37aeee44#dataset-snapshot:sha256:0418478c590258e2e0a40b57e4587ff1bd43b5568e4782c548b5fa604157b651",
+            "coverage_watermark_ref": "watermark://gameplay/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-BUSINESS-CHAIN-20260730/gameplay/v1"
+          }
+        },
+        {
+          "source_ref": "market_dashboard",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-business-chain-20260730.v1.json",
+          "artifact_content_sha256": "362a918a9f6ec689953a7c3784b4737232146a312600fee9a7229d22f5e2478d",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:2b21a49da3aa15a25b8a485830ea6274d8e4cc07d6c2800df36147368dd8cdec",
+            "coverage_watermark_ref": "watermark://market_dashboard/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-BUSINESS-CHAIN-20260730/market_dashboard/v1"
+          }
+        },
+        {
+          "source_ref": "market_dashboard_channel",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-business-chain-20260730.v1.json",
+          "artifact_content_sha256": "362a918a9f6ec689953a7c3784b4737232146a312600fee9a7229d22f5e2478d",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:6a1fe6f7595e0457e58113404c774061ab828360757b8499c0c73061cecac1eb#dataset-snapshot:sha256:8db87003c1286a6617ad4d77e0975c6108662658f7a3d200a23d8f347ed3988f",
+            "coverage_watermark_ref": "watermark://market_dashboard_channel/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-BUSINESS-CHAIN-20260730/market_dashboard_channel/v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "REAL-WAJE-D30-COHORT-20250515",
+      "authority_slot_id": "d30_cohort_real_snapshot",
+      "source_mode": "frozen_real_snapshot",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2025-05-15T00:00:00+01:00",
+        "target_business_date": "2025-04-30",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "calendar_censoring_artifact_claim",
+        "full_april_cohort_direction_claim",
+        "mature_d30_retention_claim",
+        "mature_d7_retention_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "dataset_refs": [
+        "paid_order_success"
+      ],
+      "materializations": [
+        {
+          "source_ref": "paid_order_success",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-d30-cohort-20250515.v1.json",
+          "artifact_content_sha256": "c73b4ca20da6ac2fcac77126bb541911328b8a84b2074cc25ed1ac4eb9f2ef3b",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+            "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2025-05-15",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-D30-COHORT-20250515/paid_order_success/v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ADV-002-BASE-V1",
+      "authority_slot_id": "adv_002_base",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "bounded_paid_amount_impact_claim",
+        "browser_failure_mechanism_claim",
+        "h5_conversion_change_claim",
+        "quarterly_mature_net_loss_claim",
+        "rollback_decision_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ADV-002-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-adv-002-base.v1.json",
+          "artifact_content_sha256": "9ed4a68a409b34ea03e9ae261cea7b94574dbfe996b9978a659832b498423944",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-002-base/v1",
+            "fixture_content_sha256": "9ed4a68a409b34ea03e9ae261cea7b94574dbfe996b9978a659832b498423944",
+            "query_result_ref": "result:g3-adv-002-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-005-BASE-V1",
+      "authority_slot_id": "gf_005_base",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "composition_contribution_claim",
+        "new_customer_quality_claim",
+        "new_payer_count_change_claim",
+        "overall_payment_rate_claim",
+        "within_segment_rate_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-005-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-005-base.v1.json",
+          "artifact_content_sha256": "c63b78680bacf2804805bd36efe7f1108258cdcd3a87d3eb19e021e9c2aca959",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-005-base/v1",
+            "fixture_content_sha256": "c63b78680bacf2804805bd36efe7f1108258cdcd3a87d3eb19e021e9c2aca959",
+            "query_result_ref": "result:g3-gf-005-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-005-BASE-V1",
+      "authority_slot_id": "exp_005_base",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "aligned_ggr_growth_claim",
+        "gameplay_contribution_ranking_claim",
+        "ggr_factor_contribution_claim",
+        "ggr_residual_claim",
+        "q2_gameplay_composition_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-005-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-005-base.v1.json",
+          "artifact_content_sha256": "314fce22f9646e90475f3777fa790641cba2600b737970be320036ca45a00a0a",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-005-base/v1",
+            "fixture_content_sha256": "314fce22f9646e90475f3777fa790641cba2600b737970be320036ca45a00a0a",
+            "query_result_ref": "result:g3-exp-005-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ADV-002-CF03-V1",
+      "authority_slot_id": "fixture_g3_adv_002_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "bounded_paid_amount_impact_claim",
+        "browser_failure_mechanism_claim",
+        "h5_conversion_change_claim",
+        "rollback_decision_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ADV-002-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-adv-002-cf03.v1.json",
+          "artifact_content_sha256": "8ef9fcaab2a3109ebbf16225936cad3b21605d15161b6e151baa4ecd2035c3f9",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-002-cf03/v1",
+            "fixture_content_sha256": "8ef9fcaab2a3109ebbf16225936cad3b21605d15161b6e151baa4ecd2035c3f9",
+            "query_result_ref": "result:g3-adv-002-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-005-CF02-V1",
+      "authority_slot_id": "fixture_g3_gf_005_cf02_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "composition_contribution_claim",
+        "new_customer_quality_claim",
+        "overall_payment_rate_claim",
+        "within_segment_rate_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-005-CF02-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-005-cf02.v1.json",
+          "artifact_content_sha256": "7b34c5b43c4225485b9208960e6f9d7f9d77fbf5483e94b2fe7eb712032edeeb",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-005-cf02/v1",
+            "fixture_content_sha256": "7b34c5b43c4225485b9208960e6f9d7f9d77fbf5483e94b2fe7eb712032edeeb",
+            "query_result_ref": "result:g3-gf-005-cf02"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-005-CF03-V1",
+      "authority_slot_id": "fixture_g3_gf_005_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "composition_contribution_claim",
+        "new_customer_quality_claim",
+        "overall_payment_rate_claim",
+        "within_segment_rate_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-005-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-005-cf03.v1.json",
+          "artifact_content_sha256": "c49687029a91d58eda5944ff0737c0ad68de2821a012c0daf0b4b90f635e113a",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-005-cf03/v1",
+            "fixture_content_sha256": "c49687029a91d58eda5944ff0737c0ad68de2821a012c0daf0b4b90f635e113a",
+            "query_result_ref": "result:g3-gf-005-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-006-CF03-V1",
+      "authority_slot_id": "fixture_g3_gf_006_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "net_revenue_direction_claim",
+        "refund_release_eligibility_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-006-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-006-cf03.v1.json",
+          "artifact_content_sha256": "ae555c499a22544e01052f9d2157e0d7f34e78d113ef9fc914edd3ebde4846cf",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-006-cf03/v1",
+            "fixture_content_sha256": "ae555c499a22544e01052f9d2157e0d7f34e78d113ef9fc914edd3ebde4846cf",
+            "query_result_ref": "result:g3-gf-006-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-007-CF02-V1",
+      "authority_slot_id": "fixture_g3_gf_007_cf02_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2025-05-15T00:00:00+01:00",
+        "target_business_date": "2025-04-30",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "calendar_censoring_artifact_claim",
+        "full_april_cohort_direction_claim",
+        "mature_d30_retention_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-007-CF02-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-007-cf02.v1.json",
+          "artifact_content_sha256": "9e21eacaf0768a2c1e645db11cbf112c2ffd397d1b29db3941466c74a54968fb",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-007-cf02/v1",
+            "fixture_content_sha256": "9e21eacaf0768a2c1e645db11cbf112c2ffd397d1b29db3941466c74a54968fb",
+            "query_result_ref": "result:g3-gf-007-cf02"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-001-CF03-V1",
+      "authority_slot_id": "fixture_g3_exp_001_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "recharge_activity_effect"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-001-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-001-cf03.v1.json",
+          "artifact_content_sha256": "3f3f3a8bcd82ce2e2a68875e00f2205c04a33eb629e19b4e58fe55949ae44610",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-001-cf03/v1",
+            "fixture_content_sha256": "3f3f3a8bcd82ce2e2a68875e00f2205c04a33eb629e19b4e58fe55949ae44610",
+            "query_result_ref": "result:g3-exp-001-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-005-CF03-V1",
+      "authority_slot_id": "fixture_g3_exp_005_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "aligned_ggr_growth_claim",
+        "gameplay_contribution_ranking_claim",
+        "ggr_factor_contribution_claim",
+        "ggr_residual_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-005-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-005-cf03.v1.json",
+          "artifact_content_sha256": "2c39394bb56e2213a0828efa54abb8bd84df3ff32a3a9fd7799dff6f55f1b637",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-005-cf03/v1",
+            "fixture_content_sha256": "2c39394bb56e2213a0828efa54abb8bd84df3ff32a3a9fd7799dff6f55f1b637",
+            "query_result_ref": "result:g3-exp-005-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-008-CF03-V1",
+      "authority_slot_id": "fixture_g3_exp_008_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "dashboard_spike_validity_claim",
+        "duplicate_backfill_diagnosis_claim",
+        "new_payer_definition_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-008-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-008-cf03.v1.json",
+          "artifact_content_sha256": "4d5303a929fec6474553cb0864aa93054c2041c8babeb8412fb41d5e70aea197",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-008-cf03/v1",
+            "fixture_content_sha256": "4d5303a929fec6474553cb0864aa93054c2041c8babeb8412fb41d5e70aea197",
+            "query_result_ref": "result:g3-exp-008-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-010-CF03-V1",
+      "authority_slot_id": "fixture_g3_exp_010_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "incremental_profit_effect_claim",
+        "incremental_reactivation_effect_claim",
+        "next_experiment_design_claim",
+        "observed_reactivation_difference_claim",
+        "scale_decision_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-010-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-010-cf03.v1.json",
+          "artifact_content_sha256": "72015d5c45b0ad2f7ed733b4c9c32a3df6b8c878e4062929cb2fbedf847f5524",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-010-cf03/v1",
+            "fixture_content_sha256": "72015d5c45b0ad2f7ed733b4c9c32a3df6b8c878e4062929cb2fbedf847f5524",
+            "query_result_ref": "result:g3-exp-010-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-012-CF03-V1",
+      "authority_slot_id": "fixture_g3_exp_012_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "attributed_roas_ranking_claim",
+        "attribution_sensitivity_claim",
+        "budget_reallocation_decision_claim",
+        "incremental_channel_return_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-012-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-012-cf03.v1.json",
+          "artifact_content_sha256": "154aef58b8b80d28e01f8c2dd71556d0b7fc09832d3357bc7de62d12c1637c14",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-012-cf03/v1",
+            "fixture_content_sha256": "154aef58b8b80d28e01f8c2dd71556d0b7fc09832d3357bc7de62d12c1637c14",
+            "query_result_ref": "result:g3-exp-012-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ROOT-001-CF03-V1",
+      "authority_slot_id": "fixture_g3_root_001_cf03_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "active_user_metric_family_claim",
+        "cross_use_interchangeability_claim",
+        "gameplay_active_user_definition_claim",
+        "growth_active_user_definition_claim",
+        "paid_active_user_definition_claim"
+      ],
+      "agent_projection": "The Agent can inspect the bound contracts, data conditions and approved aggregate query surfaces.",
+      "evaluator_projection": "Hidden business outcomes and claim-local result oracles remain evaluator-only pending independent review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ROOT-001-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-root-001-cf03.v1.json",
+          "artifact_content_sha256": "f67a974fb96cc9f303e3fd9401f8b5c41a7d2a9ad378f0565a5dad0789e4c975",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-root-001-cf03/v1",
+            "fixture_content_sha256": "f67a974fb96cc9f303e3fd9401f8b5c41a7d2a9ad378f0565a5dad0789e4c975",
+            "query_result_ref": "result:g3-root-001-cf03"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-001-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_001_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2025-03-08T10:00:00+01:00",
+        "target_business_date": "2025-03-07",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "cross_month_daily_intensity_claim",
+        "cross_month_raw_total_context_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-001-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-001-base.v1.json",
+          "artifact_content_sha256": "b6af7759bd715f8019ac67e0df307fbd38c9a0ff04cfccfc42e335562944909f",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-001-base/v1",
+            "fixture_content_sha256": "b6af7759bd715f8019ac67e0df307fbd38c9a0ff04cfccfc42e335562944909f",
+            "query_result_ref": "result:g3-gf-001-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-002-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_002_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2025-12-31",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "monthly_resolved_window_claim",
+        "paired_year_over_year_month_end_claim",
+        "month_end_stability_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-002-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-002-base.v1.json",
+          "artifact_content_sha256": "9f183277a2345c260d63418f79a8362d240cd629df9d0033d2fdb89b6fb6d5db",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-002-base/v1",
+            "fixture_content_sha256": "9f183277a2345c260d63418f79a8362d240cd629df9d0033d2fdb89b6fb6d5db",
+            "query_result_ref": "result:g3-gf-002-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-003-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_003_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2025-06-12T09:00:00+01:00",
+        "target_business_date": "2025-06-10",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "matched_maturity_mtd_rate_claim",
+        "complete_month_rate_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-003-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-003-base.v1.json",
+          "artifact_content_sha256": "870e234b351dc1a41da364150bb65e78810fee2c6c4383ea254d7b2c2a00564d",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-003-base/v1",
+            "fixture_content_sha256": "870e234b351dc1a41da364150bb65e78810fee2c6c4383ea254d7b2c2a00564d",
+            "query_result_ref": "result:g3-gf-003-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-004-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_004_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-04-05",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "unequal_exposure_raw_total_claim",
+        "normalized_operating_intensity_claim",
+        "matched_exposure_sensitivity_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-004-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-004-base.v1.json",
+          "artifact_content_sha256": "4833720fd110dc35fc2a77210738d94ddf488f97b9814e727efe9412a11f3d9b",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-004-base/v1",
+            "fixture_content_sha256": "4833720fd110dc35fc2a77210738d94ddf488f97b9814e727efe9412a11f3d9b",
+            "query_result_ref": "result:g3-gf-004-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-008-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_008_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "matched_new_user_count_claim",
+        "registration_rate_change_claim",
+        "first_payment_rate_change_claim",
+        "same_day_new_paid_rate_change_claim",
+        "user_level_transition_loss_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-008-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-008-base.v1.json",
+          "artifact_content_sha256": "52e871a5b09aecb8853067daea488fb152f35d1f2042a56b3d1cd4a102434fca",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-008-base/v1",
+            "fixture_content_sha256": "52e871a5b09aecb8853067daea488fb152f35d1f2042a56b3d1cd4a102434fca",
+            "query_result_ref": "result:g3-gf-008-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-009-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_009_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-08-03T10:00:00+01:00",
+        "target_business_date": "2026-07-31",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "closed_month_ggr_change_claim",
+        "ggr_component_contribution_claim",
+        "ggr_residual_magnitude_claim",
+        "ggr_residual_cause_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-009-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-009-base.v1.json",
+          "artifact_content_sha256": "564c19be5fbc9e7b00ad21793c64c2d5b3daf1537551528430321c07fcc6425c",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-009-base/v1",
+            "fixture_content_sha256": "564c19be5fbc9e7b00ad21793c64c2d5b3daf1537551528430321c07fcc6425c",
+            "query_result_ref": "result:g3-gf-009-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-010-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_010_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "reactivation_unadjusted_association_claim",
+        "reactivation_adjusted_association_claim",
+        "reactivation_causal_effect_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-010-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-010-base.v1.json",
+          "artifact_content_sha256": "d5ba28eded25e8341fd81954c718967c4b130dcb7302f5af8dd75c28a966bb89",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-010-base/v1",
+            "fixture_content_sha256": "d5ba28eded25e8341fd81954c718967c4b130dcb7302f5af8dd75c28a966bb89",
+            "query_result_ref": "result:g3-gf-010-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-011-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_011_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-08-03T10:00:00+01:00",
+        "target_business_date": "2026-07-31",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "income_metric_resolution_claim",
+        "selected_ggr_change_claim",
+        "selected_ggr_driver_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-011-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-011-base.v1.json",
+          "artifact_content_sha256": "0d865b5da35bffc0a7f87175b98fa4868b5f96b1e382771e0c5b1ec112377dc3",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-011-base/v1",
+            "fixture_content_sha256": "0d865b5da35bffc0a7f87175b98fa4868b5f96b1e382771e0c5b1ec112377dc3",
+            "query_result_ref": "result:g3-gf-011-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-GF-012-BASE-V1",
+      "authority_slot_id": "fixture_g3_gf_012_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2025-11-13T10:00:00+01:00",
+        "target_business_date": "2025-11-11",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "lagos_business_day_campaign_claim",
+        "utc_source_date_diagnostic_claim",
+        "timezone_reassignment_contribution_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-GF-012-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-gf-012-base.v1.json",
+          "artifact_content_sha256": "0d5fd69bc6c7133565bd6c667a7b3088fcb4391fc0f86d00dc98296e6154f778",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-gf-012-base/v1",
+            "fixture_content_sha256": "0d5fd69bc6c7133565bd6c667a7b3088fcb4391fc0f86d00dc98296e6154f778",
+            "query_result_ref": "result:g3-gf-012-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-002-BASE-V1",
+      "authority_slot_id": "fixture_g3_exp_002_base_v1",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-27T10:00:00+01:00",
+        "target_business_date": "2026-07-26",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "overall_weekly_payer_value_claim",
+        "fixed_mix_payer_value_claim",
+        "payer_mix_contribution_claim",
+        "payer_value_reversal_claim"
+      ],
+      "agent_projection": "The Agent can inspect the authored business contracts, data conditions and governed fixture query surface.",
+      "evaluator_projection": "Truth conclusions and result-oracle acceptance remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The controlled fixture is mechanically materialized from the authored Episode business world and claim-case contract, independent of runtime output.",
+        "The artifact content is hash-bound; all truth facts remain pending independent business and measurement review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-002-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-002-base.v1.json",
+          "artifact_content_sha256": "a6cb3ce8bd03aa815cebc6691cd63a7d48aa06b7ffd6f4f8ccf45fb0586dbd3f",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-002-base/v1",
+            "fixture_content_sha256": "a6cb3ce8bd03aa815cebc6691cd63a7d48aa06b7ffd6f4f8ccf45fb0586dbd3f",
+            "query_result_ref": "result:g3-exp-002-base"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "REAL-WAJE-AUTHORITY-STRESS-20260704",
+      "authority_slot_id": "authority_stress_real_snapshot",
+      "source_mode": "frozen_real_snapshot",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-05T09:00:00+01:00",
+        "target_business_date": "2026-07-04",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "dataset_refs": [
+        "paid_order_success",
+        "payment_final_outcome"
+      ],
+      "contract_refs": [
+        "contracts/sources/paid-order-detail.source.yaml@0.4",
+        "contracts/sources/payment-final-outcome.source.yaml@0.1"
+      ],
+      "scope_claim_target_ids": [
+        "all_payer_d30_paid_amount_retention_claim",
+        "all_payer_d30_payer_retention_claim",
+        "cross_country_all_platform_week1_payment_rate_claim",
+        "cross_scope_denominator_quality_claim",
+        "high_value_d30_paid_amount_retention_claim",
+        "high_value_d30_payer_retention_claim",
+        "high_value_loss_concentration_claim",
+        "incremental_reactivated_users_claim",
+        "mature_net_payment_direction_claim",
+        "mature_paid_silence_change_claim",
+        "nigeria_all_platform_week1_payment_rate_claim",
+        "observed_reactivation_difference_claim",
+        "paid_silence_factor_priority_claim",
+        "payer_mix_driver_claim",
+        "prediction_action_scope_claim",
+        "recall_scale_decision_claim",
+        "recent_gross_payment_health_claim"
+      ],
+      "agent_projection": "Exact accepted release identities, per-source watermarks and aggregate query handles are visible.",
+      "evaluator_projection": "Business truth and claim acceptance remain pending independent review; metadata verification does not approve a conclusion.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "materializations": [
+        {
+          "source_ref": "paid_order_success",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-authority-stress-20260704.v1.json",
+          "artifact_content_sha256": "23912591f8def82d724e082682837d5012679bfd2b018ab15cde8eb6a3397708",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:22c8cb2b770a0b03d32db806ae9900cb1b922c8545c7719b14fa1ea17a74705a#snapshot:paid-order-detail-20240101-20260704:accepted-20260723-first-payment-timezone-v2:paid_order_success",
+            "coverage_watermark_ref": "watermark://paid_order_success/Africa-Lagos/2026-07-04",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-AUTHORITY-STRESS-20260704/paid_order_success/v1"
+          }
+        },
+        {
+          "source_ref": "payment_final_outcome",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-real-authority-stress-20260704.v1.json",
+          "artifact_content_sha256": "23912591f8def82d724e082682837d5012679bfd2b018ab15cde8eb6a3397708",
+          "identity_values": {
+            "snapshot_release_ref": "dataset-release:sha256:610c0c0b714199619b5f8b50c6a1718e4a3e9df6dfa354250764688d055ca43f#dataset-snapshot:sha256:1ea81b42ae17e7fab0c3474b541a977dfdbcf834ffb34390ce7f72e4179f27c1",
+            "coverage_watermark_ref": "watermark://payment_final_outcome/Africa-Lagos/2026-06-02",
+            "query_result_ref": "result-manifest://gate3/REAL-WAJE-AUTHORITY-STRESS-20260704/payment_final_outcome/v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ADV-007-BASE-V1",
+      "authority_slot_id": "adv_007_activity_effect",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "activity_effectiveness_claim",
+        "activity_exposure_normalized_net_claim",
+        "activity_period_gross_uplift_claim",
+        "activity_reference_sensitivity_claim"
+      ],
+      "agent_projection": "The Agent can inspect authored contracts, data conditions and aggregate query-result surfaces; evaluator-only truth is hidden.",
+      "evaluator_projection": "Truth identifiability and claim gold remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "Raw gross rises 25% while eligible exposure rises 40%.",
+        "Exposure-normalized mature net falls; no random holdout exists."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ADV-007-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-adv-007-base.v1.json",
+          "artifact_content_sha256": "6ebbf4675a083c865055f4ec7e977bd53f97d51eb4a98997563d3efc4ba47754",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-007-base-v1/v1",
+            "fixture_content_sha256": "6ebbf4675a083c865055f4ec7e977bd53f97d51eb4a98997563d3efc4ba47754",
+            "query_result_ref": "result:g3-adv-007-base-v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ADV-007-CF03-V1",
+      "authority_slot_id": "adv_007_activity_effect",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "activity_effectiveness_claim",
+        "activity_exposure_normalized_net_claim",
+        "activity_period_gross_uplift_claim",
+        "activity_reference_sensitivity_claim"
+      ],
+      "agent_projection": "The Agent can inspect authored contracts, data conditions and aggregate query-result surfaces; evaluator-only truth is hidden.",
+      "evaluator_projection": "Truth identifiability and claim gold remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The variant replaces the observational source with immutable randomized holdout authority.",
+        "Causal judgment remains pending independent review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ADV-007-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-adv-007-cf03.v1.json",
+          "artifact_content_sha256": "4af9c3b2318aa4fd2c9c4b462d9ff8bec33e3a475128e0c4c680cac3d3fa063f",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-007-cf03-v1/v1",
+            "fixture_content_sha256": "4af9c3b2318aa4fd2c9c4b462d9ff8bec33e3a475128e0c4c680cac3d3fa063f",
+            "query_result_ref": "result:g3-adv-007-cf03-v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-ADV-008-CF03-V1",
+      "authority_slot_id": "adv_008_recall_assignment",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-05T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "incremental_reactivated_users_claim",
+        "observed_reactivation_difference_claim",
+        "recall_scale_decision_claim"
+      ],
+      "agent_projection": "The Agent can inspect authored contracts, data conditions and aggregate query-result surfaces; evaluator-only truth is hidden.",
+      "evaluator_projection": "Truth identifiability and claim gold remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The contract-gap binding is atomically replaced by randomized exposure authority.",
+        "Incremental reactivation acceptance remains pending independent review."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-ADV-008-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-adv-008-cf03.v1.json",
+          "artifact_content_sha256": "1fb1ea38be969a2bdeca43b5bb451aa7008004d45338fd70b5e5efa8ee7eac1f",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-adv-008-cf03-v1/v1",
+            "fixture_content_sha256": "1fb1ea38be969a2bdeca43b5bb451aa7008004d45338fd70b5e5efa8ee7eac1f",
+            "query_result_ref": "result:g3-adv-008-cf03-v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-007-BASE-V1",
+      "authority_slot_id": "exp_007_payment_failure_release",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "payment_success_rate_drop_claim",
+        "post_release_failure_reason_claim",
+        "pre_release_failure_diagnosis_boundary_claim"
+      ],
+      "agent_projection": "The Agent can inspect authored contracts, data conditions and aggregate query-result surfaces; evaluator-only truth is hidden.",
+      "evaluator_projection": "Truth identifiability and claim gold remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "Before the contract release only final outcome and payment-method localization are visible.",
+        "After turn 3 a new release exposes provider-timeout diagnostics."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-007-BASE-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-007-base.v1.json",
+          "artifact_content_sha256": "cc8bbf8de71c8e1e4c956e077a3595e2ec8577930eb8cf021d6914ed0d88279c",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-007-base-v1/v1",
+            "fixture_content_sha256": "cc8bbf8de71c8e1e4c956e077a3595e2ec8577930eb8cf021d6914ed0d88279c",
+            "query_result_ref": "result:g3-exp-007-base-v1"
+          }
+        }
+      ]
+    },
+    {
+      "authority_id": "FIXTURE-G3-EXP-007-CF03-V1",
+      "authority_slot_id": "exp_007_payment_failure_release",
+      "source_mode": "controlled_synthetic_fixture",
+      "status": "authoring",
+      "evaluation_clock": {
+        "as_of_instant": "2026-07-30T09:00:00+01:00",
+        "target_business_date": "2026-07-29",
+        "business_timezone": "Africa/Lagos",
+        "business_day_boundary": "[00:00, 24:00)"
+      },
+      "scope_claim_target_ids": [
+        "payment_success_rate_drop_claim",
+        "post_release_failure_reason_claim",
+        "pre_release_failure_diagnosis_boundary_claim"
+      ],
+      "agent_projection": "The Agent can inspect authored contracts, data conditions and aggregate query-result surfaces; evaluator-only truth is hidden.",
+      "evaluator_projection": "Truth identifiability and claim gold remain pending independent business and measurement review.",
+      "required_reviews": [
+        "business_owner",
+        "measurement_reviewer"
+      ],
+      "mutates_runtime_capability_ledger": false,
+      "fixture_facts": [
+        "The failure-diagnostic contract and complete release exist at initial investigation.",
+        "The source authority changes atomically with the contract boundary."
+      ],
+      "materializations": [
+        {
+          "source_ref": "FIXTURE-G3-EXP-007-CF03-V1",
+          "artifact_ref": "vnext/evals/gate3/authority/fixtures/g3-exp-007-cf03.v1.json",
+          "artifact_content_sha256": "b5c229b548a4ecaa309d08b03e143b8fefa8ad0ba923737b119deb73165748b4",
+          "identity_values": {
+            "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-007-cf03-v1/v1",
+            "fixture_content_sha256": "b5c229b548a4ecaa309d08b03e143b8fefa8ad0ba923737b119deb73165748b4",
+            "query_result_ref": "result:g3-exp-007-cf03-v1"
+          }
+        }
+      ]
+    }
+  ]
+}

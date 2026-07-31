@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/github-admission-request.v1.schema.json",
+  "title": "WAJE Gate 3 GitHub admission request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "operation_id",
+    "admission_authority_sha256",
+    "repository",
+    "workflow",
+    "release_authority",
+    "runtime_attestation",
+    "authorization",
+    "previous_admission_sha256",
+    "created_at"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "gate3_github_admission_request"
+    },
+    "artifact_version": {
+      "const": "gate3.github-admission-request.v1"
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^gate3-e0:[0-9]+:[1-9][0-9]*$"
+    },
+    "admission_authority_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name_with_owner",
+        "repository_id",
+        "repository_owner_id",
+        "source_revision",
+        "source_ref",
+        "event_name",
+        "environment"
+      ],
+      "properties": {
+        "name_with_owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repository_owner_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "source_ref": {
+          "type": "string",
+          "pattern": "^refs/heads/[A-Za-z0-9._/-]+$"
+        },
+        "event_name": {
+          "const": "push"
+        },
+        "environment": {
+          "const": "gate3-admission"
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_path",
+        "workflow_revision",
+        "run_id",
+        "run_attempt",
+        "runner_environment"
+      ],
+      "properties": {
+        "workflow_path": {
+          "const": ".github/workflows/gate3-protected-admission.yml"
+        },
+        "workflow_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runner_environment": {
+          "const": "github-hosted"
+        }
+      }
+    },
+    "release_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_epoch",
+        "trust_policy_epoch",
+        "policy_sha256",
+        "authority_root_bundle_sha256",
+        "verifier_release_sha256",
+        "evaluated_artifact_hashes"
+      ],
+      "properties": {
+        "release_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "trust_policy_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "authority_root_bundle_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "verifier_release_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluated_artifact_hashes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9._/-]+$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "runtime_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python_version",
+        "python_executable_sha256",
+        "node_version",
+        "node_executable_sha256",
+        "npm_version",
+        "npm_executable_sha256",
+        "uv_version",
+        "uv_executable_sha256",
+        "dependency_inventory_sha256",
+        "import_inventory_sha256",
+        "source_tree_sha256"
+      ],
+      "properties": {
+        "python_version": {
+          "type": "string",
+          "pattern": "^3\\.12\\.[0-9]+$"
+        },
+        "python_executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "node_version": {
+          "const": "v22.18.0"
+        },
+        "node_executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "npm_version": {
+          "type": "string",
+          "pattern": "^10\\.[0-9]+\\.[0-9]+$"
+        },
+        "npm_executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "uv_version": {
+          "const": "uv 0.12.0"
+        },
+        "uv_executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "dependency_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "import_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_tree_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorized_attestation_sha256s",
+        "authorized_manifest_sha256s"
+      ],
+      "properties": {
+        "authorized_attestation_sha256s": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "authorized_manifest_sha256s": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "previous_admission_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "catalog_sha256": "adf7e3b007f4d6770010febb0d8833480280b6902b76f29c09a36c07317b799e",
+  "schema_sha256": "0c9f9f15d69c6415b8eb9c084027934b360470fd475b38e01eaa5c4eb55380a9",
+  "policy_sha256": "e38d64bdca237ce5b43189b5f530dc4fbf711148383adf9e2a32dfbc290b6380",
+  "taxonomy_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
+  "policy_version": "gate3.behavior-eval-policy.v4",
+  "episode_count": 36,
+  "source_pool_counts": {
+    "adversarial_conversation": 11,
+    "generated_business_world": 11,
+    "historical_failure": 6,
+    "real_user_language": 8
+  },
+  "multi_turn_episode_count": 19,
+  "critical_risk_episode_count": 12,
+  "suite_binding_coverage": {
+    "coverage_group_counts": {
+      "authority_stress": 8,
+      "business_chain": 10,
+      "launch_question": 8,
+      "measurement_regression": 10
+    },
+    "factor_group_refs": [
+      "amount_tier_and_user_value",
+      "calendar_time_and_payday",
+      "external_context_events",
+      "gameplay_engagement_and_arpu",
+      "gameplay_ggr_and_betting",
+      "geo_device_environment",
+      "marketing_channel_and_growth_ops",
+      "paid_amount_metric_source",
+      "payment_channel_and_method",
+      "payment_order_metric_chain",
+      "payment_status_latency_and_quality",
+      "product_operation_events",
+      "sensitive_identity_and_dedup_fields",
+      "user_acquisition_and_first_payment"
+    ],
+    "question_family_refs": [
+      "anomaly_or_black_swan_review",
+      "business_object_impact_review",
+      "custom_baseline_comparison",
+      "data_quality_or_evidence_review",
+      "paid_amount_change_explanation",
+      "pattern_explanation",
+      "revenue_health_review",
+      "segment_or_factor_attribution"
+    ],
+    "source_modes": [
+      "controlled_synthetic_fixture",
+      "frozen_real_snapshot",
+      "known_contract_gap"
+    ]
+  },
+  "coverage": {
+    "decision_goals": [
+      "attribute",
+      "challenge",
+      "compare",
+      "define",
+      "diagnose",
+      "estimate",
+      "recommend_with_boundary",
+      "validate"
+    ],
+    "measurement_challenges": [
+      "association_or_causal_ceiling",
+      "cohort_or_risk_set",
+      "decomposition",
+      "denominator",
+      "distribution",
+      "exposure",
+      "funnel_or_sequence",
+      "multi_estimand",
+      "observation_unit",
+      "window_or_baseline"
+    ],
+    "temporal_shapes": [
+      "absolute",
+      "cross_month",
+      "cross_year",
+      "no_time",
+      "partial_period",
+      "relative",
+      "timezone_or_business_day"
+    ],
+    "data_conditions": [
+      "complete",
+      "conflicting_contract",
+      "contradictory_evidence",
+      "late_arrival",
+      "missing_contract",
+      "partial_coverage",
+      "stale_release"
+    ],
+    "conversation_dynamics": [
+      "challenge",
+      "clarification",
+      "concurrent_message",
+      "correction",
+      "long_context_noise",
+      "scope_revision",
+      "single_turn"
+    ],
+    "risk_types": [
+      "authority_drift",
+      "hidden_data_gap",
+      "misleading_comparison",
+      "out_of_scope_request",
+      "over_strong_claim",
+      "wrong_business_decision"
+    ]
+  },
+  "authoring_gaps": {
+    "missing_coverage": {},
+    "counterfactual_role_gaps": {}
+  },
+  "promotion_ready": false,
+  "promotion_authority": "verify_gate3_e0.py"
+}

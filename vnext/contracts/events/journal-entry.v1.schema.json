@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:events:journal-entry:v1",
+  "title": "WAJE vNext event journal entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "case_id",
+    "cursor",
+    "event_type",
+    "recorded_at",
+    "operation",
+    "action_id",
+    "authority_ref",
+    "payload",
+    "customer_projection"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "enum": [
+        "case_opened",
+        "message_ingressed",
+        "action_admitted",
+        "action_rejected",
+        "user_decision_requested",
+        "frame_accepted",
+        "plan_accepted",
+        "evidence_recorded",
+        "interpretation_recorded",
+        "user_decision_recorded",
+        "reviewer_objection_recorded",
+        "answer_accepted",
+        "checkpoint_recorded",
+        "effect_enqueued",
+        "effect_attempt_failed",
+        "effect_completed",
+        "llm_job_enqueued",
+        "llm_job_completed",
+        "reviewer_job_enqueued",
+        "reviewer_job_completed",
+        "job_superseded",
+        "run_resumed",
+        "case_stopped",
+        "case_closed"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "operation": {
+      "$ref": "#/$defs/operationIdentity"
+    },
+    "action_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "customer_projection": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "operationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "causation_id",
+        "correlation_id",
+        "authority_revision",
+        "payload_sha256"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "causation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

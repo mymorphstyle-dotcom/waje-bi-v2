@@ -1,0 +1,289 @@
+{
+  "artifact_type": "gate3_controlled_business_fixture",
+  "artifact_version": "gate3.controlled-business-fixture.v1",
+  "fixture_id": "FIXTURE-G3-EXP-012-CF03-V1",
+  "fixture_version_ref": "fixture://wajegame/gate3/g3-exp-012-cf03/v1",
+  "business_timezone": "Africa/Lagos",
+  "evaluation_clock": {
+    "as_of_instant": "2026-07-30T09:00:00+01:00",
+    "target_business_date": "2026-07-29",
+    "business_timezone": "Africa/Lagos",
+    "business_day_boundary": "[00:00, 24:00)"
+  },
+  "case_identity": {
+    "case_ref": "G3-EXP-012:G3-EXP-012-CF03",
+    "episode_id": "G3-EXP-012",
+    "binding_id": "gap_exposure_control_contracts",
+    "authority_slot_id": "fixture_g3_exp_012_cf03_v1",
+    "scope_claim_target_ids": [
+      "attributed_roas_ranking_claim",
+      "attribution_sensitivity_claim",
+      "budget_reallocation_decision_claim",
+      "incremental_channel_return_claim"
+    ]
+  },
+  "observable_contracts": [
+    {
+      "contract_ref": "contract://wajegame/acquisition-spend/v3",
+      "state": "available",
+      "description": "广告成本按渠道、campaign、日期和币种记录。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/acquisition-attribution-touch/v4",
+      "state": "conflicting",
+      "description": "所有渠道都有同期随机 geo holdout，净收入已完整成熟。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/payer-value-30d/v2",
+      "state": "partial",
+      "description": "用户成熟付费金额包含退款和 30 天成熟状态，最近七天未成熟。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    },
+    {
+      "contract_ref": "contract://wajegame/privacy-constrained-client-coverage/v1",
+      "state": "partial",
+      "description": "隐私合同记录 隐私受限客户端聚合转化和渠道可观测比例。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "access_state": "accessible"
+    }
+  ],
+  "observable_conditions": [
+    {
+      "condition_id": "DC-ROAS-IMMATURE-REVENUE",
+      "description": "最近七天净收入尚未成熟。",
+      "discoverability": "discoverable_by_semantic_inspection",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ROAS-IOS-COVERAGE",
+      "description": "隐私受限客户端可观测率在渠道间不同。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ROAS-BRAND-ASSIST",
+      "description": "品牌投放主要产生 view-through 和自然承接渠道。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    },
+    {
+      "condition_id": "DC-ROAS-SEARCH-CAPTURE",
+      "description": "自然承接渠道承接部分其他渠道创造的需求。",
+      "discoverability": "provided_to_agent",
+      "materiality": "critical"
+    },
+    {
+      "condition_id": "DC-ROAS-SEASONAL-BUDGET",
+      "description": "渠道预算变化与需求季节性同时发生。",
+      "discoverability": "discoverable_by_data_probe",
+      "materiality": "material"
+    }
+  ],
+  "evaluator_oracle": {
+    "truth_facts": [
+      {
+        "truth_id": "TRUTH-G3-EXP-012-01",
+        "statement": "last-click ROAS 把自然承接渠道排在第一，但自然承接渠道承接明显。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-012-02",
+        "statement": "成熟净收入和隐私覆盖校正后，买量渠道效率低于表面值。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      },
+      {
+        "truth_id": "TRUTH-G3-EXP-012-03",
+        "statement": "品牌投放存在辅助效应，现有观测数据无法给出可信增量回报。",
+        "observability": "evaluator_only",
+        "identifiability": "pending_independent_review"
+      }
+    ],
+    "claim_cases": [
+      {
+        "claim_target_id": "attributed_roas_ranking_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard_channel",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "market_dashboard_channel",
+          "contract://wajegame/acquisition-attribution-touch/v4",
+          "DC-ROAS-IMMATURE-REVENUE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-012-01",
+          "TRUTH-G3-EXP-012-02",
+          "TRUTH-G3-EXP-012-03"
+        ],
+        "boundary_codes": [
+          "conflicting_attribution_definition",
+          "immature_net_revenue"
+        ],
+        "reversal_conditions": [
+          "主归因、成熟净收入或成本币种对齐改变排名。"
+        ]
+      },
+      {
+        "claim_target_id": "attribution_sensitivity_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard_channel",
+            "requirement": "required"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "conflicting",
+          "business_evidence_state": "not_evaluated"
+        },
+        "disposition": {
+          "resolution": "omitted",
+          "verifier": "not_run",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "real_snapshot_scope",
+        "effective_claim_ceiling": "accounting_attribution",
+        "required_observation_refs": [
+          "market_dashboard_channel",
+          "contract://wajegame/privacy-constrained-client-coverage/v1",
+          "DC-ROAS-IOS-COVERAGE"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-012-01",
+          "TRUTH-G3-EXP-012-02",
+          "TRUTH-G3-EXP-012-03"
+        ],
+        "boundary_codes": [
+          "conflicting_attribution_definition",
+          "immature_net_revenue"
+        ],
+        "reversal_conditions": [
+          "覆盖 bounds 或替代归因使渠道排序反转。"
+        ]
+      },
+      {
+        "claim_target_id": "incremental_channel_return_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard_channel",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "market_dashboard_channel",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/acquisition-attribution-touch/v4",
+          "DC-ROAS-BRAND-ASSIST"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-012-01",
+          "TRUTH-G3-EXP-012-02",
+          "TRUTH-G3-EXP-012-03"
+        ],
+        "boundary_codes": [
+          "missing_incrementality_design"
+        ],
+        "reversal_conditions": [
+          "随机 holdout 或准实验识别出不同增量方向。"
+        ]
+      },
+      {
+        "claim_target_id": "budget_reallocation_decision_claim",
+        "evaluation_turn": 3,
+        "source_uses": [
+          {
+            "binding_id": "real_market_dashboard_channel",
+            "requirement": "required"
+          },
+          {
+            "binding_id": "gap_exposure_control_contracts",
+            "requirement": "boundary_probe"
+          }
+        ],
+        "support_state": {
+          "data_contract_state": "partial",
+          "business_evidence_state": "unidentifiable"
+        },
+        "disposition": {
+          "resolution": "typed_resolution_boundary",
+          "verifier": "boundary_only",
+          "settlement_precondition": "blocked"
+        },
+        "applicability": "mixed_scope",
+        "effective_claim_ceiling": "associational",
+        "required_observation_refs": [
+          "market_dashboard_channel",
+          "vnext/contracts/backlog/missing-contracts.yaml#backlog.exposure_control_contracts",
+          "contract://wajegame/acquisition-spend/v3",
+          "DC-ROAS-SEASONAL-BUDGET"
+        ],
+        "oracle_truth_refs": [
+          "TRUTH-G3-EXP-012-01",
+          "TRUTH-G3-EXP-012-02",
+          "TRUTH-G3-EXP-012-03"
+        ],
+        "boundary_codes": [
+          "conflicting_attribution_definition",
+          "immature_net_revenue",
+          "missing_incrementality_design"
+        ],
+        "reversal_conditions": [
+          "边际增量回报、预算约束或成熟净收入改变推荐。"
+        ]
+      }
+    ],
+    "replacement_expectation": null,
+    "review_status": "pending_independent_review"
+  },
+  "agent_projection": {
+    "expose": [
+      "fixture_id",
+      "fixture_version_ref",
+      "business_timezone",
+      "evaluation_clock",
+      "case_identity",
+      "observable_contracts",
+      "observable_conditions"
+    ],
+    "hide": [
+      "evaluator_oracle"
+    ]
+  }
+}

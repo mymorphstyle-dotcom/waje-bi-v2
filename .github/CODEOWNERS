@@ -1,0 +1,14 @@
+# Gate authority and CI changes require explicit repository-owner review.
+/.github/CODEOWNERS @mymorphstyle-dotcom
+/.github/workflows/ @mymorphstyle-dotcom
+/vnext/tools/gate3_admission_authority.py @mymorphstyle-dotcom
+/vnext/tools/github_gate3_admission.py @mymorphstyle-dotcom
+/vnext/tools/build_gate3_github_admission_request.py @mymorphstyle-dotcom
+/vnext/tools/verify_github_workflow_deployment.py @mymorphstyle-dotcom
+/vnext/tools/verify_gate3_e0.py @mymorphstyle-dotcom
+/vnext/tools/verify_isolation.py @mymorphstyle-dotcom
+/vnext/tools/isolation-policy.json @mymorphstyle-dotcom
+/vnext/evals/gate3/ @mymorphstyle-dotcom
+/vnext/ops/github/ @mymorphstyle-dotcom
+/vnext/pyproject.toml @mymorphstyle-dotcom
+/vnext/uv.lock @mymorphstyle-dotcom
