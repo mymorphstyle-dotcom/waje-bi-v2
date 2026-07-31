@@ -34,6 +34,15 @@ export interface ContextPacket {
   accepted_answer_payload: {
     [k: string]: JsonValue;
   } | null;
+  accepted_message_binding_payload: {
+    [k: string]: JsonValue;
+  } | null;
+  active_frame_candidate_payload: {
+    [k: string]: JsonValue;
+  } | null;
+  latest_frame_review_payload: {
+    [k: string]: JsonValue;
+  } | null;
   user_messages: ContextUserMessageItem[];
   relevant_event_cursor_start: number;
   relevant_event_cursor_end: number;

@@ -33,6 +33,12 @@ class JournalEventType(StrEnum):
     OBLIGATION_SATISFACTION_RECORDED = (
         "obligation_satisfaction_recorded"
     )
+    OBLIGATION_SCHEDULE_CREATED = "obligation_schedule_created"
+    OBLIGATION_DISPATCH_ENQUEUED = "obligation_dispatch_enqueued"
+    OBLIGATION_COMPLETION_ADMITTED = "obligation_completion_admitted"
+    OBLIGATION_SCHEDULE_CHECKPOINTED = (
+        "obligation_schedule_checkpointed"
+    )
     SETTLEMENT_PRECONDITION_RECORDED = (
         "settlement_precondition_recorded"
     )
@@ -46,9 +52,12 @@ class JournalEventType(StrEnum):
     EFFECT_COMPLETED = "effect_completed"
     LLM_JOB_ENQUEUED = "llm_job_enqueued"
     LLM_JOB_COMPLETED = "llm_job_completed"
+    MESSAGE_BINDING_JOB_ENQUEUED = "message_binding_job_enqueued"
+    MESSAGE_BINDING_COMPLETED = "message_binding_completed"
     REVIEWER_JOB_ENQUEUED = "reviewer_job_enqueued"
     REVIEWER_JOB_COMPLETED = "reviewer_job_completed"
     JOB_SUPERSEDED = "job_superseded"
+    JOB_TERMINALLY_FAILED = "job_terminally_failed"
     RUN_RESUMED = "run_resumed"
     CASE_STOPPED = "case_stopped"
     CASE_CLOSED = "case_closed"

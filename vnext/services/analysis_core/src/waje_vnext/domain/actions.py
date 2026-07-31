@@ -33,10 +33,21 @@ class ActionKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ProposedObjectionClosure:
+    objection_id: str
+    explanation: str
+
+    def __post_init__(self) -> None:
+        require_nonempty(self.objection_id, "objection_id")
+        require_nonempty(self.explanation, "explanation")
+
+
+@dataclass(frozen=True, slots=True)
 class ReviseFramePayload:
     question_revision_id: str
     revision_reason_ref: str
     measurement_design: MeasurementDesign
+    objection_closures: tuple[ProposedObjectionClosure, ...] = ()
 
     def __post_init__(self) -> None:
         require_nonempty(
@@ -58,6 +69,20 @@ class ReviseFramePayload:
             raise ValueError(
                 "frame action grounding must bind its question revision"
             )
+        _validate_typed_tuple(
+            self.objection_closures,
+            ProposedObjectionClosure,
+            "objection_closures",
+        )
+        objection_ids = self.addressed_objection_ids
+        if len(objection_ids) != len(set(objection_ids)):
+            raise ValueError("objection closures must be unique")
+
+    @property
+    def addressed_objection_ids(self) -> tuple[str, ...]:
+        return tuple(
+            closure.objection_id for closure in self.objection_closures
+        )
 
 
 @dataclass(frozen=True, slots=True)

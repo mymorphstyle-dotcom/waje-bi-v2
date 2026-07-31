@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Mapping
 
-from .async_runtime import AsyncJobKind, OperationIdentity
+from .async_runtime import (
+    AsyncJobKind,
+    AuthoritySnapshot,
+    OperationIdentity,
+)
 from .canonical import (
     FrozenJson,
     content_sha256,
@@ -92,6 +96,8 @@ class OutboxMessage:
     operation: OperationIdentity
     expected_head_version: int
     expected_authority_epoch: int
+    authority_snapshot: AuthoritySnapshot
+    authority_snapshot_sha256: str
     idempotency_key: str
     destination: str
     contract_ref: str
@@ -122,6 +128,29 @@ class OutboxMessage:
             raise ValueError("expected_head_version must be non-negative")
         if self.expected_authority_epoch < 1:
             raise ValueError("expected_authority_epoch must be positive")
+        if not isinstance(self.authority_snapshot, AuthoritySnapshot):
+            raise TypeError(
+                "authority_snapshot must be AuthoritySnapshot"
+            )
+        require_sha256(
+            self.authority_snapshot_sha256,
+            "authority_snapshot_sha256",
+        )
+        if (
+            self.authority_snapshot.content_sha256
+            != self.authority_snapshot_sha256
+        ):
+            raise ValueError("authority snapshot hash is stale or forged")
+        if (
+            self.authority_snapshot.case_id != self.case_id
+            or self.authority_snapshot.head_version
+            != self.expected_head_version
+            or self.authority_snapshot.mailbox_authority_epoch
+            != self.expected_authority_epoch
+        ):
+            raise ValueError(
+                "outbox authority snapshot does not match job fence"
+            )
         if self.source_event_cursor < 1:
             raise ValueError("source_event_cursor must be positive")
         require_sha256(self.payload_sha256, "payload_sha256")

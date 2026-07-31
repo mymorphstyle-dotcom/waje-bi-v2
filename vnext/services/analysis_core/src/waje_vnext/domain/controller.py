@@ -23,9 +23,13 @@ from .context import ContextPacket
 class ControllerPhase(StrEnum):
     READY_FOR_AGENT = "ready_for_agent"
     WAITING_FOR_LLM = "waiting_for_llm"
+    WAITING_FOR_MESSAGE_BINDING = "waiting_for_message_binding"
+    WAITING_FOR_MEASUREMENT_REVIEW = "waiting_for_measurement_review"
+    WAITING_FOR_EVIDENCE_ADMISSION = "waiting_for_evidence_admission"
     WAITING_FOR_USER = "waiting_for_user"
     WAITING_FOR_EFFECT = "waiting_for_effect"
     WAITING_FOR_REVIEW = "waiting_for_review"
+    BLOCKED = "blocked"
     COMPLETED = "completed"
     STOPPED = "stopped"
 
@@ -249,6 +253,9 @@ def _validate_phase_bindings(state: ControllerState) -> None:
             raise ValueError("waiting_for_user cannot carry pending jobs")
     elif state.phase in {
         ControllerPhase.WAITING_FOR_LLM,
+        ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
+        ControllerPhase.WAITING_FOR_EVIDENCE_ADMISSION,
         ControllerPhase.WAITING_FOR_EFFECT,
         ControllerPhase.WAITING_FOR_REVIEW,
     }:

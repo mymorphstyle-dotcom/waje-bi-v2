@@ -7,7 +7,11 @@ from typing import Any, Mapping
 
 from waje_vnext.domain.action_codec import decode_agent_action_proposal
 from waje_vnext.domain.actions import ActionEnvelope, ActionKind
-from waje_vnext.domain.async_runtime import AsyncJobKind, OperationIdentity
+from waje_vnext.domain.async_runtime import (
+    AsyncJobKind,
+    AuthoritySnapshot,
+    OperationIdentity,
+)
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerClaim,
@@ -49,6 +53,22 @@ from waje_vnext.domain.runtime_state import (
     CheckpointRecord,
     OutboxMessage,
 )
+from waje_vnext.domain.runtime_amendment import (
+    FrameAdmissionProof,
+    DurableModelResult,
+    FrameCandidateRecord,
+    FrameCandidateSupersessionRecord,
+    FrameReviewRecord,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageImpactBinding,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceManifest,
+)
 from waje_vnext.domain.measurement import (
     EvidenceValidityRecord,
     MeasurementResolutionOutcome,
@@ -56,6 +76,15 @@ from waje_vnext.domain.measurement import (
     QuestionRevision,
     ResolvedEvidenceObligation,
     SettlementPreconditionReport,
+)
+from waje_vnext.domain.obligation_scheduler import (
+    ObligationCompletionRecord,
+    ObligationDispatchRecord,
+    ObligationScheduleCheckpoint,
+    ObligationScheduleRecord,
+)
+from waje_vnext.domain.measurement_resolver import (
+    MeasurementResolutionAdmission,
 )
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
@@ -75,6 +104,15 @@ def decode_measurement_resolution(
     payload: Mapping[str, Any],
 ) -> MeasurementResolutionOutcome:
     return decode_typed_dataclass(MeasurementResolutionOutcome, payload)
+
+
+def decode_measurement_resolution_admission(
+    payload: Mapping[str, Any],
+) -> MeasurementResolutionAdmission:
+    return decode_typed_dataclass(
+        MeasurementResolutionAdmission,
+        payload,
+    )
 
 
 def decode_evidence_obligation(
@@ -103,6 +141,120 @@ def decode_settlement_precondition(
 
 def decode_frame(payload: Mapping[str, Any]) -> AnalysisFrameRevision:
     return decode_typed_dataclass(AnalysisFrameRevision, payload)
+
+
+def decode_frame_candidate(
+    payload: Mapping[str, Any],
+) -> FrameCandidateRecord:
+    return decode_typed_dataclass(FrameCandidateRecord, payload)
+
+
+def decode_frame_candidate_supersession(
+    payload: Mapping[str, Any],
+) -> FrameCandidateSupersessionRecord:
+    return decode_typed_dataclass(
+        FrameCandidateSupersessionRecord,
+        payload,
+    )
+
+
+def decode_frame_review(
+    payload: Mapping[str, Any],
+) -> FrameReviewRecord:
+    return decode_typed_dataclass(FrameReviewRecord, payload)
+
+
+def decode_objection_closure(
+    payload: Mapping[str, Any],
+) -> ObjectionClosureRecord:
+    return decode_typed_dataclass(ObjectionClosureRecord, payload)
+
+
+def decode_frame_admission_proof(
+    payload: Mapping[str, Any],
+) -> FrameAdmissionProof:
+    return decode_typed_dataclass(FrameAdmissionProof, payload)
+
+
+def decode_job_disposition(
+    payload: Mapping[str, Any],
+) -> JobDispositionRecord:
+    return decode_typed_dataclass(JobDispositionRecord, payload)
+
+
+def decode_message_ingress_record(
+    payload: Mapping[str, Any],
+) -> MessageIngressRecord:
+    return decode_typed_dataclass(MessageIngressRecord, payload)
+
+
+def decode_pending_user_message(
+    payload: Mapping[str, Any],
+) -> PendingUserMessage:
+    return decode_typed_dataclass(PendingUserMessage, payload)
+
+
+def decode_message_impact_binding(
+    payload: Mapping[str, Any],
+) -> MessageImpactBinding:
+    return decode_typed_dataclass(MessageImpactBinding, payload)
+
+
+def decode_logical_model_job(
+    payload: Mapping[str, Any],
+) -> LogicalModelJob:
+    return decode_typed_dataclass(LogicalModelJob, payload)
+
+
+def decode_provider_attempt_request(
+    payload: Mapping[str, Any],
+) -> ProviderAttemptRequest:
+    return decode_typed_dataclass(ProviderAttemptRequest, payload)
+
+
+def decode_provider_attempt_receipt(
+    payload: Mapping[str, Any],
+) -> ProviderAttemptReceipt:
+    return decode_typed_dataclass(ProviderAttemptReceipt, payload)
+
+
+def decode_durable_model_result(
+    payload: Mapping[str, Any],
+) -> DurableModelResult:
+    return decode_typed_dataclass(DurableModelResult, payload)
+
+
+def decode_obligation_schedule(
+    payload: Mapping[str, Any],
+) -> ObligationScheduleRecord:
+    return decode_typed_dataclass(ObligationScheduleRecord, payload)
+
+
+def decode_obligation_dispatch(
+    payload: Mapping[str, Any],
+) -> ObligationDispatchRecord:
+    return decode_typed_dataclass(ObligationDispatchRecord, payload)
+
+
+def decode_obligation_completion_record(
+    payload: Mapping[str, Any],
+) -> ObligationCompletionRecord:
+    return decode_typed_dataclass(ObligationCompletionRecord, payload)
+
+
+def decode_obligation_schedule_checkpoint(
+    payload: Mapping[str, Any],
+) -> ObligationScheduleCheckpoint:
+    return decode_typed_dataclass(
+        ObligationScheduleCheckpoint,
+        payload,
+    )
+
+
+def decode_run_trace_manifest(
+    payload: Mapping[str, Any],
+) -> RunTraceManifest:
+    return decode_typed_dataclass(RunTraceManifest, payload)
 
 
 def decode_plan(payload: Mapping[str, Any]) -> WorkPlanRevision:
@@ -297,6 +449,15 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
         accepted_frame_payload=payload["accepted_frame_payload"],
         accepted_plan_payload=payload["accepted_plan_payload"],
         accepted_answer_payload=payload["accepted_answer_payload"],
+        accepted_message_binding_payload=payload[
+            "accepted_message_binding_payload"
+        ],
+        active_frame_candidate_payload=payload[
+            "active_frame_candidate_payload"
+        ],
+        latest_frame_review_payload=payload[
+            "latest_frame_review_payload"
+        ],
         user_messages=tuple(
             ContextUserMessageItem(
                 message_id=item["message_id"],
@@ -402,6 +563,12 @@ def decode_outbox_message(payload: Mapping[str, Any]) -> OutboxMessage:
         operation=OperationIdentity(**payload["operation"]),
         expected_head_version=payload["expected_head_version"],
         expected_authority_epoch=payload["expected_authority_epoch"],
+        authority_snapshot=AuthoritySnapshot(
+            **payload["authority_snapshot"]
+        ),
+        authority_snapshot_sha256=payload[
+            "authority_snapshot_sha256"
+        ],
         idempotency_key=payload["idempotency_key"],
         destination=payload["destination"],
         contract_ref=payload["contract_ref"],

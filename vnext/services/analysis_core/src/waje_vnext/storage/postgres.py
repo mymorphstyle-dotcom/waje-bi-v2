@@ -21,6 +21,7 @@ from waje_vnext.domain.actions import (
 )
 from waje_vnext.domain.async_runtime import (
     AsyncJobKind,
+    AuthoritySnapshot,
     JobLease,
     MailboxHead,
     MailboxMessage,
@@ -47,11 +48,26 @@ from waje_vnext.domain.identity import (
 from waje_vnext.domain.measurement import (
     EvidenceValidityRecord,
     MeasurementResolutionOutcome,
+    ObligationExecutionDisposition,
     ObligationSatisfactionRecord,
     QuestionRevision,
     ResolvedEvidenceObligation,
     ResolutionOutcomeKind,
     SettlementPreconditionReport,
+)
+from waje_vnext.domain.measurement_resolver import (
+    MeasurementResolutionAdmission,
+    TrustedResolutionInputVerifier,
+    validate_executable_design,
+)
+from waje_vnext.domain.obligation_scheduler import (
+    ObligationCompletionRecord,
+    ObligationDispatchRecord,
+    ObligationScheduleCheckpoint,
+    ObligationScheduleRecord,
+    ObligationTerminalStatus,
+    same_obligation_business_authority,
+    validate_persisted_obligation_completion,
 )
 from waje_vnext.domain.context import ContextPacket
 from waje_vnext.domain.canonical import content_sha256
@@ -68,6 +84,28 @@ from waje_vnext.domain.runtime_state import (
     CheckpointRecord,
     OutboxMessage,
 )
+from waje_vnext.domain.runtime_amendment import (
+    DispatcherRecoveryCursor,
+    DurableModelResult,
+    FrameAdmissionProof,
+    FrameCandidateRecord,
+    FrameCandidateSupersessionRecord,
+    FrameReviewDisposition,
+    FrameReviewRecord,
+    JobDisposition,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageImpactBinding,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptDisposition,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceManifest,
+    derive_changed_measurement_node_ids,
+    measurement_paths_overlap,
+)
 
 from .codec import (
     decode_answer,
@@ -76,19 +114,38 @@ from .codec import (
     decode_context_packet,
     decode_decision_request,
     decode_decision,
+    decode_durable_model_result,
     decode_evidence,
     decode_evidence_obligation,
     decode_evidence_validity,
     decode_effect_attempt,
     decode_frame,
+    decode_frame_admission_proof,
+    decode_frame_candidate,
+    decode_frame_candidate_supersession,
+    decode_frame_review,
     decode_interpretation,
+    decode_job_disposition,
+    decode_logical_model_job,
+    decode_message_impact_binding,
+    decode_message_ingress_record,
     decode_objection,
+    decode_objection_closure,
+    decode_obligation_completion_record,
+    decode_obligation_dispatch,
+    decode_obligation_schedule,
+    decode_obligation_schedule_checkpoint,
+    decode_pending_user_message,
+    decode_provider_attempt_receipt,
+    decode_provider_attempt_request,
+    decode_run_trace_manifest,
     decode_obligation_satisfaction,
     decode_outbox_message,
     decode_persisted_action,
     decode_plan,
     decode_question,
     decode_measurement_resolution,
+    decode_measurement_resolution_admission,
     decode_settlement_precondition,
     encode_record,
 )
@@ -100,6 +157,7 @@ from .ports import (
     LeaseFenceLost,
     StaleHead,
 )
+from .trace_validation import validate_run_trace_manifest_references
 
 
 RecordT = TypeVar("RecordT")
@@ -163,6 +221,21 @@ def apply_gate3_1_migration(
     )
 
 
+def apply_gate3_2_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply the Gate 3.2 durable runtime saga amendment."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=4,
+        name="gate3_2_runtime_sagas",
+    )
+
+
 def _apply_migration(
     dsn: str,
     *,
@@ -216,13 +289,31 @@ def _apply_migration(
 class PostgresAuthorityStore:
     """Transactional PostgreSQL implementation of the authority storage port."""
 
-    def __init__(self, connection: Connection[Any]) -> None:
+    def __init__(
+        self,
+        connection: Connection[Any],
+        *,
+        resolution_input_verifier: (
+            TrustedResolutionInputVerifier | None
+        ) = None,
+    ) -> None:
         self._connection = connection
         self._lock = RLock()
+        self._resolution_input_verifier = resolution_input_verifier
 
     @classmethod
-    def connect(cls, dsn: str) -> "PostgresAuthorityStore":
-        return cls(psycopg.connect(dsn))
+    def connect(
+        cls,
+        dsn: str,
+        *,
+        resolution_input_verifier: (
+            TrustedResolutionInputVerifier | None
+        ) = None,
+    ) -> "PostgresAuthorityStore":
+        return cls(
+            psycopg.connect(dsn),
+            resolution_input_verifier=resolution_input_verifier,
+        )
 
     @classmethod
     def from_env(cls) -> "PostgresAuthorityStore":
@@ -246,6 +337,7 @@ class PostgresAuthorityStore:
         thread_id: str,
         event_id: str,
         opened_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -321,6 +413,15 @@ class PostgresAuthorityStore:
                     authority_ref=case_id,
                     payload={"thread_id": thread_id},
                     customer_projection={"state": "open"},
+                    operation=(
+                        None
+                        if operation is None
+                        else _causal_event_operation(
+                            causal_operation=operation,
+                            event_id=event_id,
+                            payload={"thread_id": thread_id},
+                        )
+                    ),
                 )
                 return self._get_case(cursor, case_id)
 
@@ -470,6 +571,14 @@ class PostgresAuthorityStore:
                     updated_at=row["updated_at"],
                 )
 
+    def get_authority_snapshot(self, case_id: str) -> AuthoritySnapshot:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                return self._authority_snapshot_from_cursor(
+                    cursor,
+                    case_id,
+                )
+
     def list_mailbox_messages(
         self,
         case_id: str,
@@ -493,6 +602,1043 @@ class PostgresAuthorityStore:
                     _mailbox_message_from_row(row)
                     for row in cursor.fetchall()
                 )
+
+    def record_message_ingress(
+        self,
+        record: MessageIngressRecord,
+    ) -> MessageIngressRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_messages
+                    WHERE message_id = %s
+                    """,
+                    (record.message_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise AuthorityNotFound(
+                        "mailbox message does not exist"
+                    )
+                message = _mailbox_message_from_row(row)
+                if (
+                    message.case_id != record.case_id
+                    or message.sequence != record.mailbox_sequence
+                    or message.authority_epoch != record.authority_epoch
+                    or message.operation != record.operation
+                    or message.operation.payload_sha256
+                    != record.message_payload_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "message ingress record does not bind mailbox authority"
+                    )
+                payload = encode_record(record)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="message_ingress_records",
+                    id_column="ingress_record_id",
+                    record_id=record.ingress_record_id,
+                    columns=(
+                        "case_id",
+                        "message_id",
+                        "run_id",
+                        "authority_epoch",
+                        "payload",
+                    ),
+                    values=(
+                        record.case_id,
+                        record.message_id,
+                        record.run_id,
+                        record.authority_epoch,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="message ingress record",
+                )
+                return record
+
+    def list_message_ingress_records(
+        self,
+        case_id: str,
+    ) -> tuple[MessageIngressRecord, ...]:
+        return self._list_payloads(
+            table="message_ingress_records",
+            case_id=case_id,
+            order_by=("authority_epoch", "ingress_record_id"),
+            decoder=decode_message_ingress_record,
+        )
+
+    def record_pending_user_message(
+        self,
+        record: PendingUserMessage,
+    ) -> PendingUserMessage:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                ingress = self._get_payload(
+                    cursor,
+                    table="message_ingress_records",
+                    id_column="ingress_record_id",
+                    record_id=record.ingress_record_id,
+                    label="message ingress record",
+                    decoder=decode_message_ingress_record,
+                )
+                if (
+                    ingress.case_id != record.case_id
+                    or ingress.message_id != record.message_id
+                    or ingress.authority_epoch != record.authority_epoch
+                    or ingress.operation.operation_id
+                    != record.source_operation_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "pending message does not bind ingress record"
+                    )
+                payload = encode_record(record)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="pending_user_messages",
+                    id_column="pending_message_id",
+                    record_id=record.pending_message_id,
+                    columns=(
+                        "ingress_record_id",
+                        "binding_job_id",
+                        "payload",
+                    ),
+                    values=(
+                        record.ingress_record_id,
+                        record.binding_job_id,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="pending user message",
+                )
+                return record
+
+    def get_pending_user_message(
+        self,
+        pending_message_id: str,
+    ) -> PendingUserMessage:
+        return self._get_authority(
+            table="pending_user_messages",
+            id_column="pending_message_id",
+            record_id=pending_message_id,
+            label="pending user message",
+            decoder=decode_pending_user_message,
+        )
+
+    def record_message_impact_binding(
+        self,
+        binding: MessageImpactBinding,
+    ) -> MessageImpactBinding:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                pending = self._get_payload(
+                    cursor,
+                    table="pending_user_messages",
+                    id_column="pending_message_id",
+                    record_id=binding.pending_message_id,
+                    label="pending user message",
+                    decoder=decode_pending_user_message,
+                )
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.case_mailbox_messages
+                    WHERE message_id = %s
+                    """,
+                    (pending.message_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise AuthorityNotFound(
+                        "mailbox message does not exist"
+                    )
+                message = _mailbox_message_from_row(row)
+                if (
+                    binding.case_id != pending.case_id
+                    or binding.message_id != pending.message_id
+                    or binding.authority_epoch != pending.authority_epoch
+                    or binding.source_payload_sha256
+                    != message.operation.payload_sha256
+                    or binding.logical_model_job_id
+                    != pending.binding_job_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "message impact binding is stale or misbound"
+                    )
+                payload = encode_record(binding)
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="message_impact_bindings",
+                        id_column="binding_id",
+                        record_id=binding.binding_id,
+                        columns=(
+                            "pending_message_id",
+                            "case_id",
+                            "authority_epoch",
+                            "disposition",
+                            "semantic_binding_sha256",
+                            "payload",
+                        ),
+                        values=(
+                            binding.pending_message_id,
+                            binding.case_id,
+                            binding.authority_epoch,
+                            binding.disposition.value,
+                            binding.semantic_binding_sha256,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="message impact binding",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "pending message already has another binding"
+                    ) from error
+                return binding
+
+    def get_message_impact_binding(
+        self,
+        binding_id: str,
+    ) -> MessageImpactBinding:
+        return self._get_authority(
+            table="message_impact_bindings",
+            id_column="binding_id",
+            record_id=binding_id,
+            label="message impact binding",
+            decoder=decode_message_impact_binding,
+        )
+
+    def list_message_impact_bindings(
+        self,
+        case_id: str,
+    ) -> tuple[MessageImpactBinding, ...]:
+        return self._list_payloads(
+            table="message_impact_bindings",
+            case_id=case_id,
+            order_by=("authority_epoch", "binding_id"),
+            decoder=decode_message_impact_binding,
+        )
+
+    def record_logical_model_job(
+        self,
+        record: LogicalModelJob,
+    ) -> LogicalModelJob:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                outbox = self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=record.job_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                if (
+                    outbox.case_id != record.case_id
+                    or outbox.operation.operation_id
+                    != record.operation_id
+                    or outbox.authority_snapshot_sha256
+                    != record.authority_snapshot_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "logical model job does not bind its outbox authority"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="logical_model_jobs",
+                        id_column="logical_model_job_id",
+                        record_id=record.logical_model_job_id,
+                        columns=(
+                            "case_id",
+                            "job_id",
+                            "authority_snapshot_sha256",
+                            "payload",
+                        ),
+                        values=(
+                            record.case_id,
+                            record.job_id,
+                            record.authority_snapshot_sha256,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="logical model job",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "outbox already has another logical model job"
+                    ) from error
+                return record
+
+    def get_logical_model_job(
+        self,
+        logical_model_job_id: str,
+    ) -> LogicalModelJob:
+        return self._get_authority(
+            table="logical_model_jobs",
+            id_column="logical_model_job_id",
+            record_id=logical_model_job_id,
+            label="logical model job",
+            decoder=decode_logical_model_job,
+        )
+
+    def list_logical_model_jobs(
+        self,
+        case_id: str,
+    ) -> tuple[LogicalModelJob, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.logical_model_jobs
+                    WHERE case_id = %s
+                    ORDER BY logical_model_job_id
+                    """,
+                    (case_id,),
+                )
+                return tuple(
+                    decode_logical_model_job(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_provider_attempt_request(
+        self,
+        record: ProviderAttemptRequest,
+    ) -> ProviderAttemptRequest:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="logical_model_jobs",
+                    id_column="logical_model_job_id",
+                    record_id=record.logical_model_job_id,
+                    label="logical model job",
+                    decoder=decode_logical_model_job,
+                )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="provider_attempt_requests",
+                        id_column="provider_attempt_id",
+                        record_id=record.provider_attempt_id,
+                        columns=(
+                            "logical_model_job_id",
+                            "attempt_number",
+                            "prior_provider_attempt_id",
+                            "payload",
+                        ),
+                        values=(
+                            record.logical_model_job_id,
+                            record.attempt_number,
+                            record.prior_provider_attempt_id,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="provider attempt request",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "logical job attempt number already exists"
+                    ) from error
+                return record
+
+    def record_provider_attempt_receipt(
+        self,
+        record: ProviderAttemptReceipt,
+    ) -> ProviderAttemptReceipt:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                request = self._get_payload(
+                    cursor,
+                    table="provider_attempt_requests",
+                    id_column="provider_attempt_id",
+                    record_id=record.provider_attempt_id,
+                    label="provider attempt request",
+                    decoder=decode_provider_attempt_request,
+                )
+                if (
+                    request.logical_model_job_id
+                    != record.logical_model_job_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "provider receipt belongs to another logical job"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="provider_attempt_receipts",
+                        id_column="provider_attempt_receipt_id",
+                        record_id=record.provider_attempt_receipt_id,
+                        columns=(
+                            "provider_attempt_id",
+                            "logical_model_job_id",
+                            "disposition",
+                            "payload",
+                        ),
+                        values=(
+                            record.provider_attempt_id,
+                            record.logical_model_job_id,
+                            record.disposition.value,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="provider attempt receipt",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "provider attempt already has another receipt"
+                    ) from error
+                return record
+
+    def get_provider_attempt_request(
+        self,
+        provider_attempt_id: str,
+    ) -> ProviderAttemptRequest:
+        return self._get_authority(
+            table="provider_attempt_requests",
+            id_column="provider_attempt_id",
+            record_id=provider_attempt_id,
+            label="provider attempt request",
+            decoder=decode_provider_attempt_request,
+        )
+
+    def get_provider_attempt_receipt(
+        self,
+        provider_attempt_receipt_id: str,
+    ) -> ProviderAttemptReceipt:
+        return self._get_authority(
+            table="provider_attempt_receipts",
+            id_column="provider_attempt_receipt_id",
+            record_id=provider_attempt_receipt_id,
+            label="provider attempt receipt",
+            decoder=decode_provider_attempt_receipt,
+        )
+
+    def list_provider_attempt_receipts(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptReceipt, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="logical_model_jobs",
+                    id_column="logical_model_job_id",
+                    record_id=logical_model_job_id,
+                    label="logical model job",
+                    decoder=decode_logical_model_job,
+                )
+                cursor.execute(
+                    """
+                    SELECT r.payload
+                    FROM waje_vnext.provider_attempt_receipts AS r
+                    JOIN waje_vnext.provider_attempt_requests AS q
+                      ON q.provider_attempt_id = r.provider_attempt_id
+                    WHERE r.logical_model_job_id = %s
+                    ORDER BY q.attempt_number
+                    """,
+                    (logical_model_job_id,),
+                )
+                return tuple(
+                    decode_provider_attempt_receipt(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_durable_model_result(
+        self,
+        record: DurableModelResult,
+    ) -> DurableModelResult:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                request = self._get_payload(
+                    cursor,
+                    table="provider_attempt_requests",
+                    id_column="provider_attempt_id",
+                    record_id=record.provider_attempt_id,
+                    label="provider attempt request",
+                    decoder=decode_provider_attempt_request,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.provider_attempt_receipts
+                    WHERE provider_attempt_id = %s
+                    """,
+                    (record.provider_attempt_id,),
+                )
+                receipt_row = cursor.fetchone()
+                if receipt_row is None:
+                    raise InvalidAuthorityTransition(
+                        "durable model result lacks a provider receipt"
+                    )
+                receipt = decode_provider_attempt_receipt(
+                    receipt_row["payload"]
+                )
+                if (
+                    request.logical_model_job_id
+                    != record.logical_model_job_id
+                    or receipt.logical_model_job_id
+                    != record.logical_model_job_id
+                    or receipt.disposition
+                    is not ProviderAttemptDisposition.SUCCEEDED
+                    or receipt.output_sha256 != record.output_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "durable model result lacks its successful attempt"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="durable_model_results",
+                        id_column="durable_model_result_id",
+                        record_id=record.durable_model_result_id,
+                        columns=(
+                            "logical_model_job_id",
+                            "provider_attempt_id",
+                            "output_sha256",
+                            "payload",
+                            "recorded_at",
+                        ),
+                        values=(
+                            record.logical_model_job_id,
+                            record.provider_attempt_id,
+                            record.output_sha256,
+                            Jsonb(payload),
+                            record.recorded_at,
+                        ),
+                        payload=payload,
+                        label="durable model result",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "logical model job already has a different result"
+                    ) from error
+                return record
+
+    def get_durable_model_result(
+        self,
+        logical_model_job_id: str,
+    ) -> DurableModelResult | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="logical_model_jobs",
+                    id_column="logical_model_job_id",
+                    record_id=logical_model_job_id,
+                    label="logical model job",
+                    decoder=decode_logical_model_job,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.durable_model_results
+                    WHERE logical_model_job_id = %s
+                    """,
+                    (logical_model_job_id,),
+                )
+                row = cursor.fetchone()
+                return (
+                    None
+                    if row is None
+                    else decode_durable_model_result(row["payload"])
+                )
+
+    def record_obligation_schedule(
+        self,
+        record: ObligationScheduleRecord,
+    ) -> ObligationScheduleRecord:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                if (
+                    self._authority_snapshot_from_cursor(
+                        cursor,
+                        record.case_id,
+                    )
+                    != record.authority_snapshot
+                ):
+                    raise InvalidAuthorityTransition(
+                        "obligation schedule authority is stale"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=record.schedule_id,
+                    columns=(
+                        "case_id",
+                        "frame_revision_id",
+                        "authority_snapshot_sha256",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        record.case_id,
+                        record.frame_revision_id,
+                        record.authority_snapshot_sha256,
+                        Jsonb(payload),
+                        record.created_at,
+                    ),
+                    payload=payload,
+                    label="obligation schedule",
+                )
+                return record
+
+    def get_obligation_schedule(
+        self,
+        schedule_id: str,
+    ) -> ObligationScheduleRecord:
+        return self._get_authority(
+            table="obligation_schedules",
+            id_column="schedule_id",
+            record_id=schedule_id,
+            label="obligation schedule",
+            decoder=decode_obligation_schedule,
+        )
+
+    def record_obligation_dispatch(
+        self,
+        record: ObligationDispatchRecord,
+    ) -> ObligationDispatchRecord:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                schedule = self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=record.schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                message = self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=record.outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                if (
+                    record.dispatch.obligation_id
+                    not in {
+                        item.obligation_id
+                        for item in schedule.obligations
+                    }
+                    or record.dispatch.authority_snapshot
+                    != schedule.authority_snapshot
+                    or message.job_kind is not AsyncJobKind.OBLIGATION
+                    or str(message.payload.get("schedule_id", ""))
+                    != record.schedule_id
+                    or str(message.payload.get("obligation_id", ""))
+                    != record.dispatch.obligation_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "obligation dispatch does not bind schedule outbox"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="obligation_dispatch_records",
+                    id_column="dispatch_record_id",
+                    record_id=record.dispatch_record_id,
+                    columns=(
+                        "schedule_id",
+                        "obligation_id",
+                        "outbox_message_id",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        record.schedule_id,
+                        record.dispatch.obligation_id,
+                        record.outbox_message_id,
+                        Jsonb(payload),
+                        record.created_at,
+                    ),
+                    payload=payload,
+                    label="obligation dispatch",
+                )
+                return record
+
+    def list_obligation_dispatches(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationDispatchRecord, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.obligation_dispatch_records
+                    WHERE schedule_id = %s
+                    ORDER BY obligation_id
+                    """,
+                    (schedule_id,),
+                )
+                return tuple(
+                    decode_obligation_dispatch(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_obligation_completion(
+        self,
+        record: ObligationCompletionRecord,
+    ) -> ObligationCompletionRecord:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                schedule = self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=record.schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                current = self._authority_snapshot_from_cursor(
+                    cursor,
+                    schedule.case_id,
+                )
+                current_hash_matches = (
+                    current.content_sha256
+                    == record.admitted_authority_snapshot_sha256
+                )
+                superseded_under_drift = (
+                    record.completion.status
+                    is ObligationTerminalStatus.SUPERSEDED
+                    and not same_obligation_business_authority(
+                        schedule.authority_snapshot,
+                        current,
+                    )
+                )
+                if (
+                    record.completion.status
+                    is ObligationTerminalStatus.SUPERSEDED
+                    and not superseded_under_drift
+                ):
+                    raise InvalidAuthorityTransition(
+                        "obligation cannot be superseded without "
+                        "authority drift"
+                    )
+                if not current_hash_matches or (
+                    not same_obligation_business_authority(
+                        schedule.authority_snapshot,
+                        current,
+                    )
+                    and not superseded_under_drift
+                ):
+                    raise InvalidAuthorityTransition(
+                        "obligation completion authority is stale"
+                    )
+                obligation = next(
+                    (
+                        item
+                        for item in schedule.obligations
+                        if item.obligation_id
+                        == record.completion.obligation_id
+                    ),
+                    None,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.obligation_dispatch_records
+                    WHERE schedule_id = %s AND obligation_id = %s
+                    """,
+                    (
+                        record.schedule_id,
+                        record.completion.obligation_id,
+                    ),
+                )
+                dispatch_row = cursor.fetchone()
+                dispatch = (
+                    None
+                    if dispatch_row is None
+                    else decode_obligation_dispatch(
+                        dispatch_row["payload"]
+                    )
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.obligation_completion_records
+                    WHERE schedule_id = %s
+                    ORDER BY obligation_id
+                    """,
+                    (record.schedule_id,),
+                )
+                prior_completions = tuple(
+                    decode_obligation_completion_record(
+                        row["payload"]
+                    ).completion
+                    for row in cursor.fetchall()
+                )
+                try:
+                    validate_persisted_obligation_completion(
+                        schedule=schedule,
+                        completion=record.completion,
+                        prior_completions=prior_completions,
+                        dispatch=(
+                            None
+                            if dispatch is None
+                            else dispatch.dispatch
+                        ),
+                        current_authority=current,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="obligation_completion_records",
+                    id_column="completion_record_id",
+                    record_id=record.completion_record_id,
+                    columns=(
+                        "schedule_id",
+                        "obligation_id",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        record.schedule_id,
+                        record.completion.obligation_id,
+                        Jsonb(payload),
+                        record.created_at,
+                    ),
+                    payload=payload,
+                    label="obligation completion",
+                )
+                return record
+
+    def list_obligation_completions(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationCompletionRecord, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.obligation_completion_records
+                    WHERE schedule_id = %s
+                    ORDER BY obligation_id
+                    """,
+                    (schedule_id,),
+                )
+                return tuple(
+                    decode_obligation_completion_record(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_obligation_schedule_checkpoint(
+        self,
+        record: ObligationScheduleCheckpoint,
+    ) -> ObligationScheduleCheckpoint:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                schedule = self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=record.schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                cursor.execute(
+                    """
+                    SELECT checkpoint_id, checkpoint_number
+                    FROM waje_vnext.obligation_schedule_checkpoints
+                    WHERE schedule_id = %s
+                    ORDER BY checkpoint_number DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (record.schedule_id,),
+                )
+                prior_row = cursor.fetchone()
+                expected_number = (
+                    1
+                    if prior_row is None
+                    else prior_row["checkpoint_number"] + 1
+                )
+                expected_prior = (
+                    None
+                    if prior_row is None
+                    else prior_row["checkpoint_id"]
+                )
+                cursor.execute(
+                    """
+                    SELECT obligation_id
+                    FROM waje_vnext.obligation_dispatch_records
+                    WHERE schedule_id = %s
+                    """,
+                    (record.schedule_id,),
+                )
+                dispatched = {
+                    row["obligation_id"] for row in cursor.fetchall()
+                }
+                cursor.execute(
+                    """
+                    SELECT obligation_id
+                    FROM waje_vnext.obligation_completion_records
+                    WHERE schedule_id = %s
+                    """,
+                    (record.schedule_id,),
+                )
+                completed = {
+                    row["obligation_id"] for row in cursor.fetchall()
+                }
+                expected_dispatched = tuple(
+                    sorted(dispatched - completed)
+                )
+                expected_completed = tuple(sorted(completed))
+                expected_pending = tuple(
+                    sorted(
+                        {
+                            item.obligation_id
+                            for item in schedule.obligations
+                        }
+                        - dispatched
+                        - completed
+                    )
+                )
+                if (
+                    record.checkpoint_number != expected_number
+                    or record.prior_checkpoint_id != expected_prior
+                    or record.schedule_sha256
+                    != schedule.content_sha256
+                    or record.authority_snapshot_sha256
+                    != schedule.authority_snapshot_sha256
+                    or record.dispatched_obligation_ids
+                    != expected_dispatched
+                    or record.completed_obligation_ids
+                    != expected_completed
+                    or record.pending_obligation_ids
+                    != expected_pending
+                ):
+                    raise InvalidAuthorityTransition(
+                        "obligation checkpoint is not a state derivation"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="obligation_schedule_checkpoints",
+                    id_column="checkpoint_id",
+                    record_id=record.checkpoint_id,
+                    columns=(
+                        "schedule_id",
+                        "checkpoint_number",
+                        "prior_checkpoint_id",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        record.schedule_id,
+                        record.checkpoint_number,
+                        record.prior_checkpoint_id,
+                        Jsonb(payload),
+                        record.created_at,
+                    ),
+                    payload=payload,
+                    label="obligation schedule checkpoint",
+                )
+                return record
+
+    def list_obligation_schedule_checkpoints(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationScheduleCheckpoint, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="obligation_schedules",
+                    id_column="schedule_id",
+                    record_id=schedule_id,
+                    label="obligation schedule",
+                    decoder=decode_obligation_schedule,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.obligation_schedule_checkpoints
+                    WHERE schedule_id = %s
+                    ORDER BY checkpoint_number
+                    """,
+                    (schedule_id,),
+                )
+                return tuple(
+                    decode_obligation_schedule_checkpoint(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_run_trace_manifest(
+        self,
+        record: RunTraceManifest,
+    ) -> RunTraceManifest:
+        validate_run_trace_manifest_references(self, record)
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, record.case_id)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="run_trace_manifests",
+                    id_column="trace_manifest_id",
+                    record_id=record.trace_manifest_id,
+                    columns=(
+                        "case_id",
+                        "run_id",
+                        "lineage_sha256",
+                        "payload",
+                    ),
+                    values=(
+                        record.case_id,
+                        record.run_id,
+                        record.lineage_sha256,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="run trace manifest",
+                )
+                return record
+
+    def get_run_trace_manifest(
+        self,
+        trace_manifest_id: str,
+    ) -> RunTraceManifest:
+        return self._get_authority(
+            table="run_trace_manifests",
+            id_column="trace_manifest_id",
+            record_id=trace_manifest_id,
+            label="run trace manifest",
+            decoder=decode_run_trace_manifest,
+        )
 
     def get_frame(self, frame_revision_id: str) -> AnalysisFrameRevision:
         return self._get_authority(
@@ -525,6 +1671,18 @@ class PostgresAuthorityStore:
             record_id=resolution_outcome_id,
             label="measurement resolution",
             decoder=decode_measurement_resolution,
+        )
+
+    def get_measurement_resolution_admission(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionAdmission:
+        return self._get_authority(
+            table="measurement_resolution_admissions",
+            id_column="resolution_outcome_id",
+            record_id=resolution_outcome_id,
+            label="measurement resolution admission",
+            decoder=decode_measurement_resolution_admission,
         )
 
     def get_evidence_obligation(
@@ -600,6 +1758,7 @@ class PostgresAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -743,16 +1902,723 @@ class PostgresAuthorityStore:
                         "analysis_cycle_id": question.analysis_cycle_id,
                         "head_version": updated.head_version,
                     },
+                    operation=operation,
                 )
                 return updated
+
+    def record_frame_candidate(
+        self,
+        candidate: FrameCandidateRecord,
+    ) -> FrameCandidateRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                case = self._get_case(
+                    cursor,
+                    candidate.case_id,
+                    for_update=True,
+                )
+                if (
+                    candidate.question_revision_id
+                    != case.accepted_question_revision_id
+                    or candidate.proposed_frame.question_revision_id
+                    != case.accepted_question_revision_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame candidate must bind the accepted question"
+                    )
+                cursor.execute(
+                    """
+                    SELECT c.payload
+                    FROM waje_vnext.active_frame_candidate_heads h
+                    JOIN waje_vnext.frame_candidate_records c
+                      ON c.frame_candidate_id = h.frame_candidate_id
+                    WHERE h.case_id = %s
+                    FOR UPDATE OF h
+                    """,
+                    (candidate.case_id,),
+                )
+                prior_row = cursor.fetchone()
+                prior = (
+                    None
+                    if prior_row is None
+                    else decode_frame_candidate(prior_row["payload"])
+                )
+                expected_generation = (
+                    1 if prior is None else prior.candidate_generation + 1
+                )
+                expected_prior = (
+                    None if prior is None else prior.frame_candidate_id
+                )
+                if (
+                    candidate.candidate_generation != expected_generation
+                    or candidate.prior_frame_candidate_id != expected_prior
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame candidate does not extend the active candidate"
+                    )
+                if prior is not None:
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.frame_review_records
+                        WHERE frame_candidate_id = %s
+                        """,
+                        (prior.frame_candidate_id,),
+                    )
+                    prior_review_row = cursor.fetchone()
+                    if prior_review_row is None:
+                        raise InvalidAuthorityTransition(
+                            "replacement candidate requires prior review"
+                        )
+                    prior_review = decode_frame_review(
+                        prior_review_row["payload"]
+                    )
+                    required_closures = {
+                        item.objection_id
+                        for item in prior_review.objections
+                        if (
+                            prior_review.disposition
+                            is not FrameReviewDisposition.ACCEPT
+                        )
+                    }
+                    if (
+                        set(candidate.addressed_objection_ids)
+                        != required_closures
+                    ):
+                        raise InvalidAuthorityTransition(
+                            "replacement candidate must address every prior objection"
+                        )
+                payload = encode_record(candidate)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=candidate.frame_candidate_id,
+                    columns=(
+                        "case_id",
+                        "candidate_generation",
+                        "prior_frame_candidate_id",
+                        "proposed_frame_revision_id",
+                        "proposed_frame_content_sha256",
+                        "payload",
+                    ),
+                    values=(
+                        candidate.case_id,
+                        candidate.candidate_generation,
+                        candidate.prior_frame_candidate_id,
+                        candidate.proposed_frame_revision_id,
+                        candidate.proposed_frame_content_sha256,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="frame candidate",
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.active_frame_candidate_heads (
+                        case_id,
+                        frame_candidate_id,
+                        candidate_generation,
+                        proposed_frame_content_sha256
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (case_id) DO UPDATE
+                    SET frame_candidate_id = EXCLUDED.frame_candidate_id,
+                        candidate_generation = EXCLUDED.candidate_generation,
+                        proposed_frame_content_sha256 =
+                            EXCLUDED.proposed_frame_content_sha256
+                    WHERE
+                        waje_vnext.active_frame_candidate_heads
+                            .candidate_generation
+                        = EXCLUDED.candidate_generation - 1
+                    RETURNING frame_candidate_id
+                    """,
+                    (
+                        candidate.case_id,
+                        candidate.frame_candidate_id,
+                        candidate.candidate_generation,
+                        candidate.proposed_frame_content_sha256,
+                    ),
+                )
+                moved = cursor.fetchone()
+                if moved is None:
+                    cursor.execute(
+                        """
+                        SELECT frame_candidate_id
+                        FROM waje_vnext.active_frame_candidate_heads
+                        WHERE case_id = %s
+                        """,
+                        (candidate.case_id,),
+                    )
+                    current = cursor.fetchone()
+                    if (
+                        current is None
+                        or current["frame_candidate_id"]
+                        != candidate.frame_candidate_id
+                    ):
+                        raise StaleHead(
+                            "active frame candidate changed concurrently"
+                        )
+                return candidate
+
+    def get_frame_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameCandidateRecord:
+        return self._get_authority(
+            table="frame_candidate_records",
+            id_column="frame_candidate_id",
+            record_id=frame_candidate_id,
+            label="frame candidate",
+            decoder=decode_frame_candidate,
+        )
+
+    def get_active_frame_candidate(
+        self,
+        case_id: str,
+    ) -> FrameCandidateRecord | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT c.payload
+                    FROM waje_vnext.active_frame_candidate_heads h
+                    JOIN waje_vnext.frame_candidate_records c
+                      ON c.frame_candidate_id = h.frame_candidate_id
+                    WHERE h.case_id = %s
+                    """,
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                return (
+                    None
+                    if row is None
+                    else decode_frame_candidate(row["payload"])
+                )
+
+    def list_frame_candidates(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateRecord, ...]:
+        return self._list_payloads(
+            table="frame_candidate_records",
+            case_id=case_id,
+            order_by=("candidate_generation",),
+            decoder=decode_frame_candidate,
+        )
+
+    def supersede_active_frame_candidate(
+        self,
+        record: FrameCandidateSupersessionRecord,
+    ) -> FrameCandidateSupersessionRecord:
+        payload = encode_record(record)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT frame_candidate_id
+                    FROM waje_vnext.active_frame_candidate_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (record.case_id,),
+                )
+                active = cursor.fetchone()
+                if (
+                    active is None
+                    or active["frame_candidate_id"]
+                    != record.frame_candidate_id
+                ):
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.frame_candidate_supersession_records
+                        WHERE supersession_record_id = %s
+                        """,
+                        (record.supersession_record_id,),
+                    )
+                    existing_row = cursor.fetchone()
+                    existing = (
+                        None
+                        if existing_row is None
+                        else decode_frame_candidate_supersession(
+                            existing_row["payload"]
+                        )
+                    )
+                    if existing == record:
+                        return existing
+                    raise InvalidAuthorityTransition(
+                        "frame candidate supersession does not target active head"
+                    )
+                candidate = self._get_payload(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=record.frame_candidate_id,
+                    label="frame candidate",
+                    decoder=decode_frame_candidate,
+                )
+                question = self._get_question(
+                    cursor,
+                    record.superseded_by_question_revision_id,
+                )
+                cursor.execute(
+                    """
+                    SELECT authority_epoch
+                    FROM waje_vnext.case_mailbox_heads
+                    WHERE case_id = %s
+                    """,
+                    (record.case_id,),
+                )
+                mailbox = cursor.fetchone()
+                if (
+                    question.case_id != record.case_id
+                    or candidate.question_revision_id
+                    == question.question_revision_id
+                    or record.authority_epoch
+                    != mailbox["authority_epoch"]
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame candidate supersession authority is invalid"
+                    )
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="frame_candidate_supersession_records",
+                    id_column="supersession_record_id",
+                    record_id=record.supersession_record_id,
+                    columns=(
+                        "case_id",
+                        "frame_candidate_id",
+                        "superseded_by_question_revision_id",
+                        "authority_epoch",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        record.case_id,
+                        record.frame_candidate_id,
+                        record.superseded_by_question_revision_id,
+                        record.authority_epoch,
+                        Jsonb(payload),
+                        record.created_at,
+                    ),
+                    payload=payload,
+                    label="frame candidate supersession",
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM waje_vnext.active_frame_candidate_heads
+                    WHERE case_id = %s AND frame_candidate_id = %s
+                    """,
+                    (record.case_id, record.frame_candidate_id),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleHead(
+                        "active frame candidate changed concurrently"
+                    )
+                return record
+
+    def list_frame_candidate_supersessions(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateSupersessionRecord, ...]:
+        return self._list_payloads(
+            table="frame_candidate_supersession_records",
+            case_id=case_id,
+            order_by=("created_at", "supersession_record_id"),
+            decoder=decode_frame_candidate_supersession,
+        )
+
+    def record_objection_closure(
+        self,
+        closure: ObjectionClosureRecord,
+    ) -> ObjectionClosureRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                source = self._get_payload(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=closure.source_frame_candidate_id,
+                    label="source frame candidate",
+                    decoder=decode_frame_candidate,
+                )
+                replacement = self._get_payload(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=closure.replacement_frame_candidate_id,
+                    label="replacement frame candidate",
+                    decoder=decode_frame_candidate,
+                )
+                if source.case_id != replacement.case_id:
+                    raise InvalidAuthorityTransition(
+                        "objection closure crosses cases"
+                    )
+                if (
+                    replacement.prior_frame_candidate_id
+                    != source.frame_candidate_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "objection closure must bind adjacent candidates"
+                    )
+                if (
+                    closure.objection_id
+                    not in replacement.addressed_objection_ids
+                ):
+                    raise InvalidAuthorityTransition(
+                        "replacement candidate does not address objection"
+                    )
+                review = self._get_payload(
+                    cursor,
+                    table="frame_review_records",
+                    id_column="frame_review_id",
+                    record_id=closure.source_frame_review_id,
+                    label="source frame review",
+                    decoder=decode_frame_review,
+                )
+                if review.frame_candidate_id != source.frame_candidate_id:
+                    raise InvalidAuthorityTransition(
+                        "objection closure cites another candidate review"
+                    )
+                objection = next(
+                    (
+                        item
+                        for item in review.objections
+                        if item.objection_id == closure.objection_id
+                    ),
+                    None,
+                )
+                if (
+                    objection is None
+                    or closure.objection_content_sha256
+                    != content_sha256(objection)
+                ):
+                    raise InvalidAuthorityTransition(
+                        "objection closure does not bind an exact objection"
+                    )
+                all_changed_node_ids = (
+                    derive_changed_measurement_node_ids(
+                        source.proposed_frame.measurement_design,
+                        replacement.proposed_frame.measurement_design,
+                    )
+                )
+                expected_changed_node_ids = tuple(
+                    node_id
+                    for node_id in all_changed_node_ids
+                    if any(
+                        measurement_paths_overlap(
+                            node_id,
+                            affected_node_id,
+                        )
+                        for affected_node_id
+                        in objection.affected_node_ids
+                    )
+                )
+                if (
+                    closure.changed_node_ids
+                    != expected_changed_node_ids
+                ):
+                    raise InvalidAuthorityTransition(
+                        "objection closure change proof does not match Frames"
+                    )
+                payload = encode_record(closure)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="objection_closure_records",
+                    id_column="objection_closure_id",
+                    record_id=closure.objection_closure_id,
+                    columns=(
+                        "objection_id",
+                        "source_frame_candidate_id",
+                        "replacement_frame_candidate_id",
+                        "payload",
+                    ),
+                    values=(
+                        closure.objection_id,
+                        closure.source_frame_candidate_id,
+                        closure.replacement_frame_candidate_id,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="objection closure",
+                )
+                return closure
+
+    def get_objection_closure(
+        self,
+        objection_closure_id: str,
+    ) -> ObjectionClosureRecord:
+        return self._get_authority(
+            table="objection_closure_records",
+            id_column="objection_closure_id",
+            record_id=objection_closure_id,
+            label="objection closure",
+            decoder=decode_objection_closure,
+        )
+
+    def record_frame_review(
+        self,
+        review: FrameReviewRecord,
+    ) -> FrameReviewRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                candidate = self._get_payload(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=review.frame_candidate_id,
+                    label="frame candidate",
+                    decoder=decode_frame_candidate,
+                )
+                cursor.execute(
+                    """
+                    SELECT frame_candidate_id
+                    FROM waje_vnext.active_frame_candidate_heads
+                    WHERE case_id = %s
+                    FOR UPDATE
+                    """,
+                    (candidate.case_id,),
+                )
+                active = cursor.fetchone()
+                if (
+                    active is None
+                    or active["frame_candidate_id"]
+                    != candidate.frame_candidate_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "review targets a superseded frame candidate"
+                    )
+                snapshot = self._authority_snapshot_from_cursor(
+                    cursor,
+                    candidate.case_id,
+                )
+                if (
+                    review.authority_epoch
+                    != snapshot.mailbox_authority_epoch
+                    or review.reviewed_frame_content_sha256
+                    != candidate.proposed_frame_content_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame review authority or content is stale"
+                    )
+                cursor.execute(
+                    """
+                    SELECT objection_closure_id
+                    FROM waje_vnext.objection_closure_records
+                    WHERE replacement_frame_candidate_id = %s
+                    """,
+                    (candidate.frame_candidate_id,),
+                )
+                expected_closure_ids = {
+                    row["objection_closure_id"]
+                    for row in cursor.fetchall()
+                }
+                if set(review.closure_proof_refs) != expected_closure_ids:
+                    raise InvalidAuthorityTransition(
+                        "frame review has incomplete objection closure references"
+                    )
+                payload = encode_record(review)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="frame_review_records",
+                    id_column="frame_review_id",
+                    record_id=review.frame_review_id,
+                    columns=(
+                        "frame_candidate_id",
+                        "reviewer_job_id",
+                        "disposition",
+                        "reviewed_frame_content_sha256",
+                        "payload",
+                    ),
+                    values=(
+                        review.frame_candidate_id,
+                        review.reviewer_job_id,
+                        review.disposition.value,
+                        review.reviewed_frame_content_sha256,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="frame review",
+                )
+                return review
+
+    def get_frame_review(
+        self,
+        frame_review_id: str,
+    ) -> FrameReviewRecord:
+        return self._get_authority(
+            table="frame_review_records",
+            id_column="frame_review_id",
+            record_id=frame_review_id,
+            label="frame review",
+            decoder=decode_frame_review,
+        )
+
+    def get_frame_review_for_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameReviewRecord | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT payload
+                FROM waje_vnext.frame_review_records
+                WHERE frame_candidate_id = %s
+                """,
+                (frame_candidate_id,),
+            )
+            rows = cursor.fetchall()
+        if len(rows) > 1:
+            raise AuthorityConflict(
+                "frame candidate has multiple immutable reviews"
+            )
+        if not rows:
+            return None
+        return decode_frame_review(rows[0]["payload"])
+
+    def list_frame_reviews(
+        self,
+        case_id: str,
+    ) -> tuple[FrameReviewRecord, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, case_id)
+                cursor.execute(
+                    """
+                    SELECT r.payload
+                    FROM waje_vnext.frame_review_records r
+                    JOIN waje_vnext.frame_candidate_records c
+                      ON c.frame_candidate_id = r.frame_candidate_id
+                    WHERE c.case_id = %s
+                    ORDER BY c.candidate_generation, r.frame_review_id
+                    """,
+                    (case_id,),
+                )
+                return tuple(
+                    decode_frame_review(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_frame_admission_proof(
+        self,
+        proof: FrameAdmissionProof,
+    ) -> FrameAdmissionProof:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_case(cursor, proof.case_id, for_update=True)
+                candidate = self._get_payload(
+                    cursor,
+                    table="frame_candidate_records",
+                    id_column="frame_candidate_id",
+                    record_id=proof.frame_candidate_id,
+                    label="frame candidate",
+                    decoder=decode_frame_candidate,
+                )
+                review = self._get_payload(
+                    cursor,
+                    table="frame_review_records",
+                    id_column="frame_review_id",
+                    record_id=proof.frame_review_id,
+                    label="frame review",
+                    decoder=decode_frame_review,
+                )
+                if (
+                    candidate.case_id != proof.case_id
+                    or review.frame_candidate_id
+                    != candidate.frame_candidate_id
+                    or review.disposition
+                    is not FrameReviewDisposition.ACCEPT
+                    or any(item.blocking for item in review.objections)
+                    or proof.candidate_generation
+                    != candidate.candidate_generation
+                    or proof.frame_revision_id
+                    != candidate.proposed_frame_revision_id
+                    or proof.frame_content_sha256
+                    != candidate.proposed_frame_content_sha256
+                    or proof.frame_review_content_sha256
+                    != review.content_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame admission proof lacks an accepting fresh review"
+                    )
+                closure_ids = proof.objection_closure_record_ids
+                closures = tuple(
+                    self._get_payload(
+                        cursor,
+                        table="objection_closure_records",
+                        id_column="objection_closure_id",
+                        record_id=closure_id,
+                        label="objection closure",
+                        decoder=decode_objection_closure,
+                    )
+                    for closure_id in closure_ids
+                )
+                if {
+                    item.objection_id for item in closures
+                } != set(candidate.addressed_objection_ids):
+                    raise InvalidAuthorityTransition(
+                        "frame admission proof has incomplete objection closure"
+                    )
+                if any(
+                    item.replacement_frame_candidate_id
+                    != candidate.frame_candidate_id
+                    for item in closures
+                ):
+                    raise InvalidAuthorityTransition(
+                        "objection closure targets another candidate"
+                    )
+                if (
+                    proof.authority_snapshot
+                    != self._authority_snapshot_from_cursor(
+                        cursor,
+                        proof.case_id,
+                    )
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame admission proof authority snapshot is stale"
+                    )
+                payload = encode_record(proof)
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="frame_admission_proofs",
+                    id_column="frame_admission_proof_id",
+                    record_id=proof.frame_admission_proof_id,
+                    columns=(
+                        "case_id",
+                        "frame_candidate_id",
+                        "candidate_generation",
+                        "frame_revision_id",
+                        "frame_content_sha256",
+                        "frame_review_id",
+                        "authority_snapshot_sha256",
+                        "payload",
+                    ),
+                    values=(
+                        proof.case_id,
+                        proof.frame_candidate_id,
+                        proof.candidate_generation,
+                        proof.frame_revision_id,
+                        proof.frame_content_sha256,
+                        proof.frame_review_id,
+                        proof.authority_snapshot_sha256,
+                        Jsonb(payload),
+                    ),
+                    payload=payload,
+                    label="frame admission proof",
+                )
+                return proof
 
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
         *,
+        frame_admission_proof_id: str,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -766,6 +2632,32 @@ class PostgresAuthorityStore:
                 if idempotent is not None:
                     return idempotent
                 case = self._lock_case(cursor, frame.case_id, expected_head_version)
+                proof = self._get_payload(
+                    cursor,
+                    table="frame_admission_proofs",
+                    id_column="frame_admission_proof_id",
+                    record_id=frame_admission_proof_id,
+                    label="frame admission proof",
+                    decoder=decode_frame_admission_proof,
+                )
+                if (
+                    proof.case_id != frame.case_id
+                    or proof.frame_revision_id != frame.frame_revision_id
+                    or proof.frame_content_sha256 != frame.content_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame admission proof does not bind this Frame"
+                    )
+                if (
+                    proof.authority_snapshot
+                    != self._authority_snapshot_from_cursor(
+                        cursor,
+                        frame.case_id,
+                    )
+                ):
+                    raise InvalidAuthorityTransition(
+                        "frame admission proof authority snapshot is stale"
+                    )
                 if (
                     frame.question_revision_id
                     != case.accepted_question_revision_id
@@ -783,6 +2675,19 @@ class PostgresAuthorityStore:
                         .source_spans
                     )
                     validate_frame_identities(question, frame)
+                    findings = validate_executable_design(
+                        frame.measurement_design
+                    )
+                    if findings:
+                        raise ValueError(
+                            "measurement design is not executable: {}".format(
+                                ",".join(
+                                    sorted(
+                                        {item.code for item in findings}
+                                    )
+                                )
+                            )
+                        )
                 except ValueError as error:
                     raise InvalidAuthorityTransition(
                         str(error)
@@ -877,6 +2782,7 @@ class PostgresAuthorityStore:
                         "content_sha256": frame.content_sha256,
                         "head_version": updated.head_version,
                     },
+                    operation=operation,
                 )
                 return updated
 
@@ -887,6 +2793,7 @@ class PostgresAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -966,6 +2873,7 @@ class PostgresAuthorityStore:
                         "content_sha256": plan.content_sha256,
                         "head_version": updated.head_version,
                     },
+                    operation=operation,
                 )
                 return updated
 
@@ -1056,6 +2964,7 @@ class PostgresAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -1157,6 +3066,7 @@ class PostgresAuthorityStore:
                         "content_sha256": answer.content_sha256,
                         "head_version": updated.head_version,
                     },
+                    operation=operation,
                 )
                 return updated
 
@@ -1164,6 +3074,7 @@ class PostgresAuthorityStore:
         self,
         outcome: MeasurementResolutionOutcome,
         *,
+        admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
     ) -> MeasurementResolutionOutcome:
@@ -1171,6 +3082,18 @@ class PostgresAuthorityStore:
             cursor: Cursor[Mapping[str, Any]],
             record: MeasurementResolutionOutcome,
         ) -> None:
+            if self._resolution_input_verifier is None:
+                raise InvalidAuthorityTransition(
+                    "measurement resolution admission verifier is not "
+                    "configured"
+                )
+            try:
+                self._resolution_input_verifier.verify_resolution_admission(
+                    admission=admission,
+                    outcome=record,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
             case = self._lock_case(
                 cursor,
                 record.case_id,
@@ -1225,45 +3148,75 @@ class PostgresAuthorityStore:
             except ValueError as error:
                 raise InvalidAuthorityTransition(str(error)) from error
 
-        return self._record_subordinate(
-            record=outcome,
-            record_id=outcome.resolution_outcome_id,
-            case_id=outcome.case_id,
-            table="measurement_resolution_outcomes",
-            id_column="resolution_outcome_id",
-            columns=(
-                "case_id",
-                "question_revision_id",
-                "frame_revision_id",
-                "estimand_id",
-                "semantic_measurement_id",
-                "authority_binding_id",
-                "outcome_kind",
-                "content_sha256",
-                "payload",
-                "created_at",
-                "schema_epoch",
-            ),
-            values=(
-                outcome.case_id,
-                outcome.question_revision_id,
-                outcome.frame_revision_id,
-                outcome.estimand_id,
-                outcome.semantic_measurement_id,
-                outcome.authority_binding_id,
-                outcome.kind.value,
-                outcome.content_sha256,
-                Jsonb(encode_record(outcome)),
-                outcome.created_at,
-                outcome.schema_epoch,
-            ),
-            event_id=event_id,
-            event_type=JournalEventType.MEASUREMENT_RESOLUTION_RECORDED,
-            action_id=None,
-            recorded_at=outcome.created_at,
-            validator=validate,
-            label="measurement resolution",
-        )
+        with self.atomic():
+            stored = self._record_subordinate(
+                record=outcome,
+                record_id=outcome.resolution_outcome_id,
+                case_id=outcome.case_id,
+                table="measurement_resolution_outcomes",
+                id_column="resolution_outcome_id",
+                columns=(
+                    "case_id",
+                    "question_revision_id",
+                    "frame_revision_id",
+                    "estimand_id",
+                    "semantic_measurement_id",
+                    "authority_binding_id",
+                    "outcome_kind",
+                    "content_sha256",
+                    "payload",
+                    "created_at",
+                    "schema_epoch",
+                ),
+                values=(
+                    outcome.case_id,
+                    outcome.question_revision_id,
+                    outcome.frame_revision_id,
+                    outcome.estimand_id,
+                    outcome.semantic_measurement_id,
+                    outcome.authority_binding_id,
+                    outcome.kind.value,
+                    outcome.content_sha256,
+                    Jsonb(encode_record(outcome)),
+                    outcome.created_at,
+                    outcome.schema_epoch,
+                ),
+                event_id=event_id,
+                event_type=(
+                    JournalEventType.MEASUREMENT_RESOLUTION_RECORDED
+                ),
+                action_id=None,
+                recorded_at=outcome.created_at,
+                validator=validate,
+                label="measurement resolution",
+            )
+            admission_payload = encode_record(admission)
+            with self._cursor() as cursor:
+                self._insert_idempotent_immutable(
+                    cursor,
+                    table="measurement_resolution_admissions",
+                    id_column="resolution_outcome_id",
+                    record_id=outcome.resolution_outcome_id,
+                    columns=(
+                        "issuer_ref",
+                        "registry_content_sha256",
+                        "resolver_input_bundle_sha256",
+                        "resolution_context_sha256",
+                        "payload",
+                        "created_at",
+                    ),
+                    values=(
+                        admission.issuer_ref,
+                        admission.registry_content_sha256,
+                        admission.resolver_input_bundle_sha256,
+                        admission.resolution_context_sha256,
+                        Jsonb(admission_payload),
+                        outcome.created_at,
+                    ),
+                    payload=admission_payload,
+                    label="measurement resolution admission",
+                )
+            return stored
 
     def record_evidence_obligation(
         self,
@@ -1692,6 +3645,7 @@ class PostgresAuthorityStore:
         event_id: str,
         action_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         if lifecycle not in {CaseLifecycle.STOPPED, CaseLifecycle.CLOSED}:
             raise InvalidAuthorityTransition(
@@ -1758,6 +3712,7 @@ class PostgresAuthorityStore:
                         "lifecycle": lifecycle.value,
                         "head_version": updated.head_version,
                     },
+                    operation=operation,
                 )
                 return updated
 
@@ -2045,6 +4000,14 @@ class PostgresAuthorityStore:
                         "outbox expected mailbox authority is stale"
                     )
                 if (
+                    message.authority_snapshot
+                    != self._authority_snapshot_from_cursor(
+                        cursor,
+                        message.case_id,
+                    )
+                ):
+                    raise StaleHead("outbox authority snapshot is stale")
+                if (
                     message.operation.authority_revision
                     != message.expected_authority_epoch
                 ):
@@ -2069,17 +4032,45 @@ class PostgresAuthorityStore:
                         raise InvalidAuthorityTransition(
                             "outbox action case does not match message"
                         )
-                    if action.action.kind not in _EFFECT_ACTION_KINDS:
+                    is_frame_review = (
+                        message.job_kind is AsyncJobKind.REVIEWER
+                        and action.action.kind is ActionKind.REVISE_FRAME
+                        and message.payload.get("frame_candidate_id")
+                    )
+                    if (
+                        action.action.kind not in _EFFECT_ACTION_KINDS
+                        and not is_frame_review
+                    ):
                         raise InvalidAuthorityTransition(
-                            "outbox requires an effect action"
+                            "outbox action is incompatible with job kind"
                         )
-                    if message.job_kind is not _ACTION_JOB_KINDS[
-                        action.action.kind
-                    ]:
+                    if (
+                        action.action.kind in _EFFECT_ACTION_KINDS
+                        and message.job_kind
+                        is not _ACTION_JOB_KINDS[action.action.kind]
+                    ):
                         raise InvalidAuthorityTransition(
                             "outbox job kind does not match action"
                         )
-                    if (
+                    if is_frame_review:
+                        cursor.execute(
+                            """
+                            SELECT frame_candidate_id
+                            FROM waje_vnext.active_frame_candidate_heads
+                            WHERE case_id = %s
+                            """,
+                            (message.case_id,),
+                        )
+                        active = cursor.fetchone()
+                        if (
+                            active is None
+                            or message.payload.get("frame_candidate_id")
+                            != active["frame_candidate_id"]
+                        ):
+                            raise InvalidAuthorityTransition(
+                                "review outbox does not target active candidate"
+                            )
+                    elif (
                         message.payload.get("action_kind")
                         != action.action.kind.value
                     ):
@@ -2183,6 +4174,290 @@ class PostgresAuthorityStore:
                     for row in cursor.fetchall()
                 )
 
+    def list_pending_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                where = sql.SQL("")
+                parameters: tuple[object, ...] = ()
+                if case_id is not None:
+                    self._get_case(cursor, case_id)
+                    where = sql.SQL("AND o.case_id = %s")
+                    parameters = (case_id,)
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        SELECT o.payload
+                        FROM waje_vnext.outbox_messages o
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM waje_vnext.job_disposition_records d
+                            WHERE d.outbox_message_id =
+                                o.outbox_message_id
+                        )
+                        {}
+                        ORDER BY o.created_at, o.source_event_cursor,
+                                 o.outbox_message_id
+                        """
+                    ).format(where),
+                    parameters,
+                )
+                return tuple(
+                    decode_outbox_message(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
+    def record_job_disposition(
+        self,
+        disposition: JobDispositionRecord,
+    ) -> JobDispositionRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                message = self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=disposition.outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                if (
+                    disposition.case_id != message.case_id
+                    or disposition.job_kind is not message.job_kind
+                    or disposition.operation != message.operation
+                    or disposition.expected_authority_epoch
+                    != message.expected_authority_epoch
+                ):
+                    raise InvalidAuthorityTransition(
+                        "job disposition does not bind its outbox message"
+                    )
+                if disposition.disposition is JobDisposition.COMPLETED:
+                    if message.job_kind is AsyncJobKind.MESSAGE_BINDING:
+                        if (
+                            disposition.observed_authority_epoch
+                            != message.expected_authority_epoch
+                        ):
+                            raise InvalidAuthorityTransition(
+                                "message binding disposition changed its "
+                                "ordered mailbox authority"
+                            )
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT authority_epoch
+                            FROM waje_vnext.case_mailbox_heads
+                            WHERE case_id = %s
+                            """,
+                            (message.case_id,),
+                        )
+                        current_epoch = cursor.fetchone()[
+                            "authority_epoch"
+                        ]
+                        if (
+                            disposition.observed_authority_epoch
+                            != current_epoch
+                        ):
+                            raise InvalidAuthorityTransition(
+                                "completed disposition observed stale "
+                                "authority"
+                            )
+                if disposition.fencing_token is not None:
+                    cursor.execute(
+                        "SELECT clock_timestamp() AS database_now"
+                    )
+                    database_now = cursor.fetchone()["database_now"]
+                    cursor.execute(
+                        """
+                        SELECT *
+                        FROM waje_vnext.outbox_delivery_leases
+                        WHERE outbox_message_id = %s
+                        FOR UPDATE
+                        """,
+                        (disposition.outbox_message_id,),
+                    )
+                    lease = cursor.fetchone()
+                    if (
+                        lease is None
+                        or not lease["active"]
+                        or lease["owner_id"] != disposition.owner_id
+                        or lease["fencing_token"]
+                        != disposition.fencing_token
+                        or lease["expires_at"] <= database_now
+                    ):
+                        raise LeaseFenceLost(
+                            "job disposition uses a stale delivery fence"
+                        )
+                payload = encode_record(disposition)
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="job_disposition_records",
+                        id_column="job_disposition_record_id",
+                        record_id=(
+                            disposition.job_disposition_record_id
+                        ),
+                        columns=(
+                            "outbox_message_id",
+                            "case_id",
+                            "disposition",
+                            "owner_id",
+                            "fencing_token",
+                            "payload",
+                        ),
+                        values=(
+                            disposition.outbox_message_id,
+                            disposition.case_id,
+                            disposition.disposition.value,
+                            disposition.owner_id,
+                            disposition.fencing_token,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="job disposition",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "outbox job already has another terminal disposition"
+                    ) from error
+                return disposition
+
+    def get_job_disposition(
+        self,
+        outbox_message_id: str,
+    ) -> JobDispositionRecord | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="outbox_messages",
+                    id_column="outbox_message_id",
+                    record_id=outbox_message_id,
+                    label="outbox message",
+                    decoder=decode_outbox_message,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.job_disposition_records
+                    WHERE outbox_message_id = %s
+                    """,
+                    (outbox_message_id,),
+                )
+                row = cursor.fetchone()
+                return (
+                    None
+                    if row is None
+                    else decode_job_disposition(row["payload"])
+                )
+
+    def list_job_dispositions(
+        self,
+        case_id: str,
+    ) -> tuple[JobDispositionRecord, ...]:
+        return self._list_payloads(
+            table="job_disposition_records",
+            case_id=case_id,
+            order_by=("job_disposition_record_id",),
+            decoder=decode_job_disposition,
+        )
+
+    def advance_dispatcher_recovery_cursor(
+        self,
+        recovery_cursor: DispatcherRecoveryCursor,
+    ) -> DispatcherRecoveryCursor:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO waje_vnext.dispatcher_recovery_cursors (
+                        dispatcher_id,
+                        last_outbox_created_at,
+                        last_source_event_cursor,
+                        last_outbox_message_id,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (dispatcher_id) DO UPDATE
+                    SET last_outbox_created_at =
+                            EXCLUDED.last_outbox_created_at,
+                        last_outbox_message_id =
+                            EXCLUDED.last_outbox_message_id,
+                        last_source_event_cursor =
+                            EXCLUDED.last_source_event_cursor,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE
+                        (
+                            waje_vnext.dispatcher_recovery_cursors
+                                .last_outbox_created_at IS NULL
+                            AND EXCLUDED.last_outbox_created_at IS NOT NULL
+                        )
+                        OR (
+                            (
+                                waje_vnext.dispatcher_recovery_cursors
+                                    .last_outbox_created_at,
+                                waje_vnext.dispatcher_recovery_cursors
+                                    .last_source_event_cursor,
+                                waje_vnext.dispatcher_recovery_cursors
+                                    .last_outbox_message_id
+                            )
+                            < (
+                                EXCLUDED.last_outbox_created_at,
+                                EXCLUDED.last_source_event_cursor,
+                                EXCLUDED.last_outbox_message_id
+                            )
+                        )
+                    RETURNING *
+                    """,
+                    (
+                        recovery_cursor.dispatcher_id,
+                        recovery_cursor.last_outbox_created_at,
+                        recovery_cursor.last_source_event_cursor,
+                        recovery_cursor.last_outbox_message_id,
+                        recovery_cursor.updated_at,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    return _dispatcher_recovery_cursor_from_row(row)
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.dispatcher_recovery_cursors
+                    WHERE dispatcher_id = %s
+                    """,
+                    (recovery_cursor.dispatcher_id,),
+                )
+                persisted = _dispatcher_recovery_cursor_from_row(
+                    cursor.fetchone()
+                )
+                if persisted.position == recovery_cursor.position:
+                    return persisted
+                raise InvalidAuthorityTransition(
+                    "dispatcher recovery cursor cannot move backwards"
+                )
+
+    def get_dispatcher_recovery_cursor(
+        self,
+        dispatcher_id: str,
+    ) -> DispatcherRecoveryCursor | None:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.dispatcher_recovery_cursors
+                    WHERE dispatcher_id = %s
+                    """,
+                    (dispatcher_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return _dispatcher_recovery_cursor_from_row(row)
+
     def acquire_job_lease(
         self,
         *,
@@ -2210,6 +4485,18 @@ class PostgresAuthorityStore:
                         "outbox message {!r} does not exist".format(
                             outbox_message_id
                         )
+                    )
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM waje_vnext.job_disposition_records
+                    WHERE outbox_message_id = %s
+                    """,
+                    (outbox_message_id,),
+                )
+                if cursor.fetchone() is not None:
+                    raise LeaseConflict(
+                        "terminally disposed job cannot be claimed"
                     )
                 cursor.execute(
                     "SELECT clock_timestamp() AS database_now"
@@ -2361,6 +4648,43 @@ class PostgresAuthorityStore:
                     raise LeaseFenceLost(
                         "job delivery lease fencing token was lost"
                     )
+
+    def assert_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        checked_at: datetime,
+    ) -> JobLease:
+        del checked_at
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    "SELECT clock_timestamp() AS database_now"
+                )
+                database_now = cursor.fetchone()["database_now"]
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM waje_vnext.outbox_delivery_leases
+                    WHERE outbox_message_id = %s
+                    FOR UPDATE
+                    """,
+                    (lease.outbox_message_id,),
+                )
+                row = cursor.fetchone()
+                if (
+                    row is None
+                    or not row["active"]
+                    or row["owner_id"] != lease.owner_id
+                    or row["fencing_token"] != lease.fencing_token
+                    or row["heartbeat_at"] != lease.heartbeat_at
+                    or row["expires_at"] != lease.expires_at
+                    or row["expires_at"] <= database_now
+                ):
+                    raise LeaseFenceLost(
+                        "job delivery lease is stale, expired, or superseded"
+                    )
+                return _job_lease_from_row(row)
 
     def record_decision_request(
         self,
@@ -2691,7 +5015,7 @@ class PostgresAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
-        operation: OperationIdentity | None = None,
+        operation: OperationIdentity,
     ) -> EventJournalEntry:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -2771,6 +5095,96 @@ class PostgresAuthorityStore:
                 )
             )
         return case
+
+    def _authority_snapshot_from_cursor(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        case_id: str,
+    ) -> AuthoritySnapshot:
+        case = self._get_case(cursor, case_id)
+        cursor.execute(
+            """
+            SELECT authority_epoch
+            FROM waje_vnext.case_mailbox_heads
+            WHERE case_id = %s
+            """,
+            (case_id,),
+        )
+        mailbox = cursor.fetchone()
+        if mailbox is None:
+            raise AuthorityNotFound("case mailbox head does not exist")
+        cursor.execute(
+            """
+            SELECT
+                h.candidate_generation,
+                h.proposed_frame_content_sha256
+            FROM waje_vnext.active_frame_candidate_heads h
+            WHERE h.case_id = %s
+            """,
+            (case_id,),
+        )
+        active_candidate = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT
+                (
+                    SELECT count(*)
+                    FROM waje_vnext.resolved_evidence_obligations
+                    WHERE case_id = %s
+                ) + (
+                    SELECT count(*)
+                    FROM waje_vnext.obligation_satisfaction_records s
+                    JOIN waje_vnext.resolved_evidence_obligations o
+                      ON o.obligation_id = s.obligation_id
+                    WHERE o.case_id = %s
+                ) AS obligation_version,
+                (
+                    SELECT count(*)
+                    FROM waje_vnext.evidence_records
+                    WHERE case_id = %s
+                ) + (
+                    SELECT count(*)
+                    FROM waje_vnext.evidence_validity_records v
+                    JOIN waje_vnext.evidence_records e
+                      ON e.evidence_record_id = v.evidence_record_id
+                    WHERE e.case_id = %s
+                ) AS evidence_version,
+                (
+                    SELECT count(*)
+                    FROM waje_vnext.reviewer_objections
+                    WHERE case_id = %s
+                ) AS contradiction_version
+            """,
+            (case_id, case_id, case_id, case_id, case_id),
+        )
+        versions = cursor.fetchone()
+        return AuthoritySnapshot(
+            case_id=case_id,
+            head_version=case.head_version,
+            mailbox_authority_epoch=mailbox["authority_epoch"],
+            accepted_question_revision_id=(
+                case.accepted_question_revision_id
+            ),
+            accepted_frame_revision_id=case.accepted_frame_revision_id,
+            accepted_plan_revision_id=case.accepted_plan_revision_id,
+            active_frame_candidate_generation=(
+                0
+                if active_candidate is None
+                else active_candidate["candidate_generation"]
+            ),
+            active_frame_candidate_sha256=(
+                None
+                if active_candidate is None
+                else active_candidate[
+                    "proposed_frame_content_sha256"
+                ]
+            ),
+            obligation_state_version=versions["obligation_version"],
+            evidence_admission_state_version=versions["evidence_version"],
+            contradiction_state_version=versions[
+                "contradiction_version"
+            ],
+        )
 
     def _get_authority(
         self,
@@ -3281,7 +5695,17 @@ class PostgresAuthorityStore:
         action_id: str | None,
         authority_ref: str,
         payload: dict[str, object],
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
+        event_operation = (
+            None
+            if operation is None
+            else _causal_event_operation(
+                causal_operation=operation,
+                event_id=event_id,
+                payload=payload,
+            )
+        )
         cursor.execute(
             """
             SELECT last_cursor + 1 AS next_cursor
@@ -3305,6 +5729,7 @@ class PostgresAuthorityStore:
                 "business_event": event_type.value,
                 "authority_ref": authority_ref,
             },
+            operation=event_operation,
         )
 
     def _append_event(
@@ -3498,6 +5923,22 @@ def _derived_event_operation(
     )
 
 
+def _causal_event_operation(
+    *,
+    causal_operation: OperationIdentity,
+    event_id: str,
+    payload: dict[str, object],
+) -> OperationIdentity:
+    return OperationIdentity(
+        operation_id=f"event-operation:{event_id}",
+        idempotency_key=f"event-key:{event_id}",
+        causation_id=causal_operation.operation_id,
+        correlation_id=causal_operation.correlation_id,
+        authority_revision=causal_operation.authority_revision,
+        payload_sha256=content_sha256(payload),
+    )
+
+
 def _mailbox_message_from_row(
     row: Mapping[str, Any],
 ) -> MailboxMessage:
@@ -3539,4 +5980,16 @@ def _job_lease_from_row(row: Mapping[str, Any]) -> JobLease:
         acquired_at=row["acquired_at"],
         heartbeat_at=row["heartbeat_at"],
         expires_at=row["expires_at"],
+    )
+
+
+def _dispatcher_recovery_cursor_from_row(
+    row: Mapping[str, Any],
+) -> DispatcherRecoveryCursor:
+    return DispatcherRecoveryCursor(
+        dispatcher_id=row["dispatcher_id"],
+        last_outbox_created_at=row["last_outbox_created_at"],
+        last_source_event_cursor=row["last_source_event_cursor"],
+        last_outbox_message_id=row["last_outbox_message_id"],
+        updated_at=row["updated_at"],
     )

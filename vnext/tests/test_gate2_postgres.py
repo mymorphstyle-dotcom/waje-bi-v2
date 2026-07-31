@@ -24,14 +24,17 @@ from waje_vnext.controller import (
 from waje_vnext.domain.async_runtime import MailboxMessageKind
 from waje_vnext.domain.controller import ControllerPhase
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.runtime_amendment import DispatcherRecoveryCursor
 from waje_vnext.providers import ScriptedPrimaryAgentProvider
 from waje_vnext.storage import (
+    InvalidAuthorityTransition,
     LeaseConflict,
     LeaseFenceLost,
     PostgresAuthorityStore,
     apply_gate1_migration,
     apply_gate2_migration,
     apply_gate3_1_migration,
+    apply_gate3_2_migration,
 )
 
 
@@ -42,6 +45,7 @@ MIGRATION_2 = ROOT / "storage/migrations/002_gate2_controller.sql"
 MIGRATION_3 = (
     ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
 )
+MIGRATION_4 = ROOT / "storage/migrations/004_gate3_2_runtime_sagas.sql"
 
 
 @unittest.skipUnless(DSN, "WAJE_VNEXT_DATABASE_URL is not configured")
@@ -55,6 +59,10 @@ class PostgresControllerStoreTest(unittest.TestCase):
         if first != second:
             raise AssertionError("Gate 2 migration is not idempotent")
         apply_gate3_1_migration(DSN, migration_path=MIGRATION_3)
+        first = apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
+        second = apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
+        if first != second:
+            raise AssertionError("Gate 3.2 migration is not idempotent")
 
     def setUp(self) -> None:
         assert DSN is not None
@@ -93,8 +101,10 @@ class PostgresControllerStoreTest(unittest.TestCase):
             run_id="run-gate2-pg",
             user_message="月初付费金额是否更高？",
         )
+        controller.deliver_pending_message_binding("case-gate2-pg")
         controller.advance("case-gate2-pg")
         controller.deliver_pending_llm("case-gate2-pg")
+        controller.deliver_pending_frame_review("case-gate2-pg")
         controller.advance("case-gate2-pg")
         controller.deliver_pending_llm("case-gate2-pg")
         waiting = controller.advance("case-gate2-pg")
@@ -484,8 +494,10 @@ class PostgresControllerStoreTest(unittest.TestCase):
 
             def _job_is_stale(self, message):
                 result = super()._job_is_stale(message)
+                if message.job_kind.value != "primary_agent":
+                    return result
                 self.stale_checks += 1
-                if self.stale_checks == 3:
+                if self.stale_checks == 2:
                     final_check.set()
                     if not allow_commit.wait(timeout=5):
                         raise AssertionError("authority test hook timed out")
@@ -517,6 +529,9 @@ class PostgresControllerStoreTest(unittest.TestCase):
                 run_id="run-gate2-fence-linearization",
                 user_message="先按自然日解释收入",
             )
+            worker.deliver_pending_message_binding(
+                "case-gate2-fence-linearization"
+            )
             worker.advance("case-gate2-fence-linearization")
             with ThreadPoolExecutor(max_workers=2) as executor:
                 delivery = executor.submit(
@@ -539,7 +554,7 @@ class PostgresControllerStoreTest(unittest.TestCase):
                 delivered = delivery.result(timeout=5)
                 correction_receipt = correction_future.result(timeout=5)
 
-            self.assertIsNotNone(
+            self.assertIsNone(
                 worker_store.get_case(
                     "case-gate2-fence-linearization"
                 ).accepted_frame_revision_id
@@ -547,10 +562,11 @@ class PostgresControllerStoreTest(unittest.TestCase):
             events = worker_store.list_events(
                 "case-gate2-fence-linearization"
             )
-            frame_cursor = next(
+            review_cursor = next(
                 event.cursor
                 for event in events
-                if event.event_type is JournalEventType.FRAME_ACCEPTED
+                if event.event_type
+                is JournalEventType.REVIEWER_JOB_ENQUEUED
             )
             correction_cursor = next(
                 event.cursor
@@ -558,13 +574,58 @@ class PostgresControllerStoreTest(unittest.TestCase):
                 if event.event_type is JournalEventType.MESSAGE_INGRESSED
                 and event.authority_ref == correction_receipt.message_id
             )
-            self.assertLess(frame_cursor, correction_cursor)
+            self.assertLess(review_cursor, correction_cursor)
             self.assertEqual(1, delivered.authority_epoch)
             self.assertEqual(2, correction_receipt.authority_epoch)
+            superseded = worker.deliver_pending_frame_review(
+                "case-gate2-fence-linearization"
+            )
+            self.assertIsNone(
+                worker_store.get_case(
+                    "case-gate2-fence-linearization"
+                ).accepted_frame_revision_id
+            )
+            self.assertEqual(superseded.authority_epoch, 2)
         finally:
             allow_commit.set()
             worker_store.close()
             correction_store.close()
+
+    def test_dispatcher_recovery_cursor_is_monotonic(self) -> None:
+        first = DispatcherRecoveryCursor(
+            dispatcher_id="pg-dispatcher-a",
+            last_outbox_created_at=NOW,
+            last_source_event_cursor=11,
+            last_outbox_message_id="outbox-001",
+            updated_at=NOW,
+        )
+        later = DispatcherRecoveryCursor(
+            dispatcher_id="pg-dispatcher-a",
+            last_outbox_created_at=NOW,
+            last_source_event_cursor=12,
+            last_outbox_message_id="outbox-002",
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(
+            self.store.advance_dispatcher_recovery_cursor(first).position,
+            first.position,
+        )
+        self.assertEqual(
+            self.store.advance_dispatcher_recovery_cursor(later).position,
+            later.position,
+        )
+        self.assertEqual(
+            self.store.advance_dispatcher_recovery_cursor(later).position,
+            later.position,
+        )
+        with self.assertRaises(InvalidAuthorityTransition):
+            self.store.advance_dispatcher_recovery_cursor(first)
+        self.assertEqual(
+            self.store.get_dispatcher_recovery_cursor(
+                "pg-dispatcher-a"
+            ).position,
+            later.position,
+        )
 
 
 if __name__ == "__main__":

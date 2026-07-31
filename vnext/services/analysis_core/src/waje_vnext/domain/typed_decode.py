@@ -7,7 +7,14 @@ from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    TypeAliasType,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 
 class TypedDecodeError(ValueError):
@@ -31,6 +38,8 @@ def _decode_value(
     value: object,
     path: str,
 ) -> object:
+    if isinstance(expected_type, TypeAliasType):
+        return _decode_value(expected_type.__value__, value, path)
     origin = get_origin(expected_type)
     arguments = get_args(expected_type)
 

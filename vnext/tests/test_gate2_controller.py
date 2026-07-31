@@ -4,7 +4,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event
 
 from gate1_fixtures import make_measurement_design
 from waje_vnext.controller import (
@@ -22,6 +22,7 @@ from waje_vnext.domain.actions import (
     CallCapabilityPayload,
     ProposeAnswerPayload,
     ProposedClaim,
+    ProposedObjectionClosure,
     ReviseFramePayload,
     RevisePlanPayload,
 )
@@ -38,20 +39,108 @@ from waje_vnext.domain.controller import (
     PersistedAction,
 )
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.runtime_amendment import (
+    DispatcherRecoveryCursor,
+    FrameReviewDisposition,
+    FrameReviewProposal,
+    JobDisposition,
+    MeasurementObjectionSeverity,
+    ProposedMeasurementObjection,
+)
 from waje_vnext.providers import (
     ChatCompletionsProviderSettings,
+    ProviderPermanentError,
     ScriptedPrimaryAgentProvider,
 )
 from waje_vnext.storage import (
     AuthorityConflict,
     AuthorityNotFound,
     InMemoryAuthorityStore,
+    InvalidAuthorityTransition,
     LeaseConflict,
     LeaseFenceLost,
 )
 
 
 NOW = datetime(2026, 7, 29, 9, 0, tzinfo=UTC)
+
+
+class RepairingMeasurementProvider(ScriptedPrimaryAgentProvider):
+    """Exercises a blocking review followed by an explicit Frame repair."""
+
+    def __init__(self) -> None:
+        super().__init__(())
+        self._proposal_count = 0
+        self._review_count = 0
+
+    def propose(self, request):
+        self.requests.append(request)
+        self._proposal_count += 1
+        case_id = request.context_packet.case_id
+        if self._proposal_count == 1:
+            return frame_proposal(case_id)
+        review_payload = request.context_packet.latest_frame_review_payload
+        if review_payload is None:
+            raise AssertionError("repair turn is missing the blocking review")
+        objection_id = str(review_payload["objections"][0]["objection_id"])
+        proposal = frame_proposal(case_id)
+        design = proposal.payload.measurement_design
+        repaired_design = replace(
+            design,
+            eligibilities=(
+                replace(
+                    design.eligibilities[0],
+                    minimum_coverage_ratio="1",
+                ),
+            ),
+        )
+        return replace(
+            proposal,
+            payload=replace(
+                proposal.payload,
+                revision_reason_ref="reason:close-review-objection",
+                measurement_design=repaired_design,
+                objection_closures=(
+                    ProposedObjectionClosure(
+                        objection_id=objection_id,
+                        explanation=(
+                            "Require complete coverage before the paired "
+                            "window is eligible."
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def review(self, request):
+        self.review_requests.append(request)
+        self._review_count += 1
+        if self._review_count == 1:
+            return FrameReviewProposal(
+                disposition=FrameReviewDisposition.BLOCK,
+                objections=(
+                    ProposedMeasurementObjection(
+                        code="incomplete_period_policy_ambiguous",
+                        severity=MeasurementObjectionSeverity.BLOCKING,
+                        affected_node_refs=(
+                            (
+                                "measurement_design.eligibilities.0."
+                                "minimum_coverage_ratio"
+                            ),
+                        ),
+                        explanation=(
+                            "The first candidate does not make partial-period "
+                            "eligibility auditable."
+                        ),
+                    ),
+                ),
+                review_summary="Revise the measurement design before admission.",
+            )
+        return FrameReviewProposal(
+            disposition=FrameReviewDisposition.ACCEPT,
+            objections=(),
+            review_summary="The replacement closes the blocking objection.",
+        )
 
 
 def frame_proposal(
@@ -147,13 +236,213 @@ def complete_agent_turn(
     controller: WAJEController,
     case_id: str,
 ):
+    current = controller.resume(case_id)
+    if (
+        current.phase
+        is ControllerPhase.WAITING_FOR_MESSAGE_BINDING
+    ):
+        current = controller.deliver_pending_message_binding(case_id)
+    if current.phase is not ControllerPhase.READY_FOR_AGENT:
+        return current
     waiting = controller.advance(case_id)
     if waiting.phase is not ControllerPhase.WAITING_FOR_LLM:
         return waiting
-    return controller.deliver_pending_llm(case_id)
+    delivered = controller.deliver_pending_llm(case_id)
+    if (
+        delivered.phase
+        is ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW
+    ):
+        return controller.deliver_pending_frame_review(case_id)
+    return delivered
 
 
 class Gate2ControllerTest(unittest.TestCase):
+    def test_blocking_frame_review_requires_explicit_repair_closure(self) -> None:
+        store = InMemoryAuthorityStore()
+        provider = RepairingMeasurementProvider()
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            reviewer_provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-frame-repair",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-frame-repair",
+            thread_id="thread-frame-repair",
+            run_id="run-frame-repair",
+            user_message="比较两个经营时段，并排除不完整周期。",
+        )
+        controller.deliver_pending_message_binding("case-frame-repair")
+        controller.advance("case-frame-repair")
+        first_waiting_review = controller.deliver_pending_llm(
+            "case-frame-repair"
+        )
+        self.assertEqual(
+            first_waiting_review.phase,
+            ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
+        )
+        first_candidate = store.get_active_frame_candidate(
+            "case-frame-repair"
+        )
+        assert first_candidate is not None
+
+        blocked = controller.deliver_pending_frame_review(
+            "case-frame-repair"
+        )
+        self.assertEqual(blocked.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertIsNone(
+            store.get_case("case-frame-repair").accepted_frame_revision_id
+        )
+        first_review = store.get_frame_review_for_candidate(
+            first_candidate.frame_candidate_id
+        )
+        assert first_review is not None
+        self.assertEqual(
+            first_review.disposition,
+            FrameReviewDisposition.BLOCK,
+        )
+
+        controller.advance("case-frame-repair")
+        second_waiting_review = controller.deliver_pending_llm(
+            "case-frame-repair"
+        )
+        self.assertEqual(
+            second_waiting_review.phase,
+            ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
+        )
+        repair_context = provider.requests[-1].context_packet
+        self.assertEqual(
+            repair_context.latest_frame_review_payload[
+                "frame_review_id"
+            ],
+            first_review.frame_review_id,
+        )
+        replacement = store.get_active_frame_candidate(
+            "case-frame-repair"
+        )
+        assert replacement is not None
+        self.assertEqual(
+            replacement.prior_frame_candidate_id,
+            first_candidate.frame_candidate_id,
+        )
+        self.assertEqual(
+            replacement.addressed_objection_ids,
+            (first_review.objections[0].objection_id,),
+        )
+
+        accepted = controller.deliver_pending_frame_review(
+            "case-frame-repair"
+        )
+        self.assertEqual(accepted.phase, ControllerPhase.READY_FOR_AGENT)
+        accepted_frame_id = store.get_case(
+            "case-frame-repair"
+        ).accepted_frame_revision_id
+        self.assertEqual(
+            accepted_frame_id,
+            replacement.proposed_frame_revision_id,
+        )
+        replacement_review = store.get_frame_review_for_candidate(
+            replacement.frame_candidate_id
+        )
+        assert replacement_review is not None
+        self.assertEqual(
+            replacement_review.disposition,
+            FrameReviewDisposition.ACCEPT,
+        )
+        self.assertEqual(len(replacement_review.closure_proof_refs), 1)
+
+    def test_frame_review_commit_crash_resumes_same_candidate(self) -> None:
+        class FailFirstReviewerDispositionStore(InMemoryAuthorityStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.failed = False
+
+            def record_job_disposition(self, disposition):
+                result = super().record_job_disposition(disposition)
+                if (
+                    disposition.job_kind.value == "reviewer"
+                    and not self.failed
+                ):
+                    self.failed = True
+                    raise RuntimeError(
+                        "simulated crash before reviewer commit"
+                    )
+                return result
+
+        store = FailFirstReviewerDispositionStore()
+        provider = ScriptedPrimaryAgentProvider(
+            (frame_proposal("case-review-recovery"),)
+        )
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            reviewer_provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-review-recovery",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-review-recovery",
+            thread_id="thread-review-recovery",
+            run_id="run-review-recovery",
+            user_message="定义可审查的测量口径。",
+        )
+        controller.deliver_pending_message_binding(
+            "case-review-recovery"
+        )
+        controller.advance("case-review-recovery")
+        waiting = controller.deliver_pending_llm(
+            "case-review-recovery"
+        )
+        review_job_id = waiting.pending_job_ids[0]
+        candidate = store.get_active_frame_candidate(
+            "case-review-recovery"
+        )
+        assert candidate is not None
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "simulated crash before reviewer commit",
+        ):
+            controller.deliver_pending_frame_review(
+                "case-review-recovery"
+            )
+        self.assertEqual(
+            controller.resume("case-review-recovery").content_sha256,
+            waiting.content_sha256,
+        )
+        self.assertIsNone(
+            store.get_frame_review_for_candidate(
+                candidate.frame_candidate_id
+            )
+        )
+        self.assertIsNone(store.get_job_disposition(review_job_id))
+        self.assertIsNone(
+            store.get_case(
+                "case-review-recovery"
+            ).accepted_frame_revision_id
+        )
+
+        recovered = controller.deliver_pending_frame_review(
+            "case-review-recovery"
+        )
+        self.assertEqual(recovered.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertEqual(len(provider.review_requests), 1)
+        self.assertEqual(
+            store.get_case(
+                "case-review-recovery"
+            ).accepted_frame_revision_id,
+            candidate.proposed_frame_revision_id,
+        )
+        self.assertEqual(
+            store.get_job_disposition(
+                review_job_id
+            ).disposition,
+            JobDisposition.COMPLETED,
+        )
+
     def test_persisted_action_binds_the_exact_business_proposal(self) -> None:
         proposal = frame_proposal("case-binding")
         action = ActionEnvelope(
@@ -260,7 +549,10 @@ class Gate2ControllerTest(unittest.TestCase):
             run_id="run-gate2",
             user_message="月初付费金额是否更高？",
         )
-        self.assertEqual(state.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertEqual(
+            state.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
 
         state = complete_agent_turn(controller, "case-gate2")
         frame_id = store.get_case("case-gate2").accepted_frame_revision_id
@@ -304,6 +596,17 @@ class Gate2ControllerTest(unittest.TestCase):
             answer.claims[0].verifier_status,
             ClaimVerifierStatus.PENDING,
         )
+        trace = controller.build_run_trace_manifest("case-gate2")
+        self.assertEqual(trace.plan_revision_ids, (plan_id,))
+        self.assertEqual(len(trace.effect_attempt_ids), 2)
+        self.assertEqual(
+            trace.claim_ids,
+            (answer.claims[0].claim_id,),
+        )
+        self.assertEqual(
+            trace.provisional_answer_version_ids,
+            (answer.answer_version_id,),
+        )
 
         replacement = WAJEController(
             store=store,
@@ -346,6 +649,119 @@ class Gate2ControllerTest(unittest.TestCase):
             )
         )
 
+    def test_run_trace_manifest_closes_durable_model_lineage(self) -> None:
+        store = InMemoryAuthorityStore()
+        provider = ScriptedPrimaryAgentProvider(
+            (frame_proposal("case-run-trace"),)
+        )
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            reviewer_provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-run-trace",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-run-trace",
+            thread_id="thread-run-trace",
+            run_id="run-run-trace",
+            user_message="定义可审查的收入测量口径。",
+        )
+        complete_agent_turn(controller, "case-run-trace")
+
+        manifest = controller.build_run_trace_manifest("case-run-trace")
+        self.assertEqual(manifest.run_id, "run-run-trace")
+        self.assertEqual(len(manifest.ingress_record_ids), 1)
+        self.assertEqual(len(manifest.message_binding_ids), 1)
+        self.assertEqual(len(manifest.frame_candidate_ids), 1)
+        self.assertEqual(len(manifest.frame_review_ids), 1)
+        self.assertEqual(len(manifest.logical_model_job_ids), 3)
+        self.assertEqual(
+            len(manifest.provider_attempt_receipt_ids),
+            3,
+        )
+        self.assertEqual(
+            len(manifest.job_disposition_record_ids),
+            3,
+        )
+        self.assertEqual(
+            store.get_run_trace_manifest(
+                manifest.trace_manifest_id
+            ),
+            manifest,
+        )
+        replayed = controller.build_run_trace_manifest("case-run-trace")
+        self.assertEqual(replayed, manifest)
+
+    def test_terminal_case_run_can_start_a_new_replayable_analysis_cycle(
+        self,
+    ) -> None:
+        case_id = "case-multiple-runs"
+        provider = ScriptedPrimaryAgentProvider(
+            (
+                frame_proposal(case_id),
+                plan_proposal(),
+                answer_proposal(),
+            )
+        )
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-multiple-runs",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id=case_id,
+            thread_id="thread-multiple-runs",
+            run_id="run-multiple-runs-1",
+            user_message="先完成第一轮经营分析",
+        )
+        controller.deliver_pending_message_binding(case_id)
+        controller.advance(case_id)
+        controller.deliver_pending_llm(case_id)
+        controller.deliver_pending_frame_review(case_id)
+        controller.advance(case_id)
+        controller.deliver_pending_llm(case_id)
+        controller.advance(case_id)
+        completed = controller.deliver_pending_llm(case_id)
+        self.assertEqual(completed.phase, ControllerPhase.COMPLETED)
+        first_manifest = controller.build_run_trace_manifest(case_id)
+
+        started = controller.start(
+            case_id=case_id,
+            thread_id="thread-multiple-runs",
+            run_id="run-multiple-runs-2",
+            user_message="开始第二轮独立经营问题",
+        )
+        self.assertEqual(
+            started.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        self.assertEqual(started.run_id, "run-multiple-runs-2")
+        ready = controller.deliver_pending_message_binding(case_id)
+        self.assertEqual(ready.phase, ControllerPhase.READY_FOR_AGENT)
+        second_manifest = controller.build_run_trace_manifest(case_id)
+        self.assertGreater(
+            second_manifest.start_event_cursor,
+            first_manifest.terminal_event_cursor,
+        )
+        self.assertEqual(
+            {
+                link.correlation_id
+                for link in second_manifest.event_operation_lineage
+            },
+            {"run-multiple-runs-2"},
+        )
+        self.assertEqual(
+            store.get_run_trace_manifest(
+                first_manifest.trace_manifest_id
+            ),
+            first_manifest,
+        )
+
     def test_ask_user_freeform_resumes_through_decision_record(self) -> None:
         store = InMemoryAuthorityStore()
         provider = ScriptedPrimaryAgentProvider((ask_user_proposal(),))
@@ -368,6 +784,13 @@ class Gate2ControllerTest(unittest.TestCase):
         resumed = controller.submit_user_decision(
             "case-decision",
             freeform_response="按自然月，但排除未结束月份",
+        )
+        self.assertEqual(
+            resumed.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        resumed = controller.deliver_pending_message_binding(
+            "case-decision"
         )
         self.assertEqual(resumed.phase, ControllerPhase.READY_FOR_AGENT)
         decision = store.list_decisions("case-decision")[0]
@@ -409,6 +832,7 @@ class Gate2ControllerTest(unittest.TestCase):
             run_id="run-crash",
             user_message="定义测量",
         )
+        controller.deliver_pending_message_binding("case-crash")
         scheduled = controller.advance("case-crash")
         self.assertEqual(scheduled.phase, ControllerPhase.WAITING_FOR_LLM)
         store.fail_next_checkpoint = True
@@ -439,6 +863,11 @@ class Gate2ControllerTest(unittest.TestCase):
             )
 
         recovered = controller.deliver_pending_llm("case-crash")
+        self.assertEqual(
+            recovered.phase,
+            ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
+        )
+        recovered = controller.deliver_pending_frame_review("case-crash")
         self.assertEqual(recovered.phase, ControllerPhase.READY_FOR_AGENT)
         self.assertIsNotNone(
             store.get_case("case-crash").accepted_frame_revision_id
@@ -553,6 +982,9 @@ class Gate2ControllerTest(unittest.TestCase):
             run_id="run-concurrent-runtime",
             user_message="并发恢复测试",
         )
+        bootstrap.deliver_pending_message_binding(
+            "case-concurrent-runtime"
+        )
         proposal_a = frame_proposal("case-concurrent-runtime")
         proposal_b = replace(
             proposal_a,
@@ -592,12 +1024,28 @@ class Gate2ControllerTest(unittest.TestCase):
             outcomes = tuple(executor.map(deliver, controllers))
 
         self.assertCountEqual(outcomes, ("accepted", "conflict"))
+        active_candidate = store.get_active_frame_candidate(
+            "case-concurrent-runtime"
+        )
+        winner = next(
+            controller
+            for controller in controllers
+            if controller.resume("case-concurrent-runtime").phase
+            is ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW
+        )
+        winner.deliver_pending_frame_review("case-concurrent-runtime")
         frame_events = tuple(
             event
             for event in store.list_events("case-concurrent-runtime")
             if event.event_type is JournalEventType.FRAME_ACCEPTED
         )
         self.assertEqual(len(frame_events), 1)
+        self.assertEqual(
+            store.get_case(
+                "case-concurrent-runtime"
+            ).accepted_frame_revision_id,
+            active_candidate.proposed_frame_revision_id,
+        )
 
     def test_correction_fences_inflight_llm_before_authority_commit(
         self,
@@ -619,6 +1067,9 @@ class Gate2ControllerTest(unittest.TestCase):
             run_id="run-correction-llm",
             user_message="先按自然月分析",
         )
+        controller.deliver_pending_message_binding(
+            "case-correction-llm"
+        )
         waiting = controller.advance("case-correction-llm")
         self.assertEqual(waiting.phase, ControllerPhase.WAITING_FOR_LLM)
 
@@ -632,6 +1083,13 @@ class Gate2ControllerTest(unittest.TestCase):
         )
         resumed = controller.deliver_pending_llm("case-correction-llm")
 
+        self.assertEqual(
+            resumed.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        resumed = controller.deliver_pending_message_binding(
+            "case-correction-llm"
+        )
         self.assertEqual(resumed.phase, ControllerPhase.READY_FOR_AGENT)
         self.assertEqual(resumed.authority_epoch, receipt.authority_epoch)
         self.assertEqual(
@@ -656,6 +1114,76 @@ class Gate2ControllerTest(unittest.TestCase):
                 "改为按业务结算周期分析",
             ),
             tuple(item.content for item in packet.user_messages),
+        )
+
+    def test_correction_fences_pending_measurement_review(self) -> None:
+        store = InMemoryAuthorityStore()
+        provider = ScriptedPrimaryAgentProvider(
+            (frame_proposal("case-correction-review"),)
+        )
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            reviewer_provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-correction-review",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-correction-review",
+            thread_id="thread-correction-review",
+            run_id="run-correction-review",
+            user_message="先按自然月比较。",
+        )
+        controller.deliver_pending_message_binding(
+            "case-correction-review"
+        )
+        controller.advance("case-correction-review")
+        waiting = controller.deliver_pending_llm(
+            "case-correction-review"
+        )
+        review_job_id = waiting.pending_job_ids[0]
+        candidate = store.get_active_frame_candidate(
+            "case-correction-review"
+        )
+        assert candidate is not None
+
+        controller.ingress_message(
+            case_id="case-correction-review",
+            thread_id="thread-correction-review",
+            run_id="run-correction-review",
+            user_message="改成业务结算周期，前一口径作废。",
+            kind=MailboxMessageKind.USER_CORRECTION,
+            idempotency_key="case-correction-review:correction",
+        )
+        reconciled = controller.dispatch_outbox(review_job_id)
+        self.assertEqual(
+            reconciled.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        self.assertEqual(provider.review_requests, [])
+        disposition = store.get_job_disposition(review_job_id)
+        assert disposition is not None
+        self.assertEqual(disposition.disposition, JobDisposition.SUPERSEDED)
+        self.assertIsNone(
+            store.get_case(
+                "case-correction-review"
+            ).accepted_frame_revision_id
+        )
+        self.assertIsNone(
+            store.get_frame_review_for_candidate(
+                candidate.frame_candidate_id
+            )
+        )
+        rebound = controller.deliver_pending_message_binding(
+            "case-correction-review"
+        )
+        self.assertEqual(rebound.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertEqual(
+            store.get_case(
+                "case-correction-review"
+            ).accepted_question_revision_id,
+            "case-correction-review:question:2",
         )
 
     def test_correction_during_effect_preserves_attempt_but_rejects_result(
@@ -712,6 +1240,13 @@ class Gate2ControllerTest(unittest.TestCase):
             "case-correction-effect"
         )
 
+        self.assertEqual(
+            resumed.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        resumed = controller.deliver_pending_message_binding(
+            "case-correction-effect"
+        )
         self.assertEqual(resumed.phase, ControllerPhase.READY_FOR_AGENT)
         self.assertEqual(
             resumed.latest_user_message,
@@ -777,9 +1312,10 @@ class Gate2ControllerTest(unittest.TestCase):
 
     def test_mailbox_burst_preserves_ordered_full_user_lineage(self) -> None:
         store = InMemoryAuthorityStore()
+        binding_provider = ScriptedPrimaryAgentProvider(())
         controller = WAJEController(
             store=store,
-            provider=ScriptedPrimaryAgentProvider(()),
+            provider=binding_provider,
             effect_executor=ScriptedEffectExecutor(()),
             owner_id="worker-mailbox-burst",
             clock=lambda: NOW,
@@ -806,6 +1342,29 @@ class Gate2ControllerTest(unittest.TestCase):
         )
 
         waiting = controller.advance("case-mailbox-burst")
+        self.assertEqual(
+            waiting.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        waiting = controller.deliver_pending_message_binding(
+            "case-mailbox-burst"
+        )
+        waiting = controller.advance("case-mailbox-burst")
+        self.assertEqual(
+            waiting.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        waiting = controller.deliver_pending_message_binding(
+            "case-mailbox-burst"
+        )
+        waiting = controller.advance("case-mailbox-burst")
+        self.assertEqual(
+            waiting.phase,
+            ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
+        )
+        waiting = controller.deliver_pending_message_binding(
+            "case-mailbox-burst"
+        )
         packet = store.get_context_packet(waiting.context_packet_id)
         self.assertEqual(
             (
@@ -819,6 +1378,25 @@ class Gate2ControllerTest(unittest.TestCase):
             item.sequence for item in packet.user_messages
         ))
         self.assertEqual(3, waiting.mailbox_cursor)
+        self.assertEqual(
+            (
+                "解释昨天收入变化",
+                "先排除异常渠道",
+                "同时改用业务结算日",
+            ),
+            tuple(
+                item.message_content
+                for item in binding_provider.binding_requests
+            ),
+        )
+        self.assertEqual(
+            3,
+            len(
+                store.list_message_impact_bindings(
+                    "case-mailbox-burst"
+                )
+            ),
+        )
 
     def test_cross_process_outbox_dispatch_is_discoverable_and_idempotent(
         self,
@@ -844,8 +1422,10 @@ class Gate2ControllerTest(unittest.TestCase):
         waiting = controller.dispatch_outbox(wake.outbox_message_id)
         duplicate_wake = controller.dispatch_outbox(wake.outbox_message_id)
         self.assertEqual(waiting.content_sha256, duplicate_wake.content_sha256)
-        self.assertEqual(waiting.phase, ControllerPhase.WAITING_FOR_LLM)
+        self.assertEqual(waiting.phase, ControllerPhase.READY_FOR_AGENT)
         self.assertNotEqual(initial.content_sha256, waiting.content_sha256)
+        waiting = controller.advance("case-dispatch")
+        self.assertEqual(waiting.phase, ControllerPhase.WAITING_FOR_LLM)
 
         llm_job = next(
             message
@@ -857,6 +1437,21 @@ class Gate2ControllerTest(unittest.TestCase):
         completed = controller.dispatch_outbox(llm_job.outbox_message_id)
         duplicate_completion = controller.dispatch_outbox(
             llm_job.outbox_message_id
+        )
+        self.assertEqual(
+            completed.content_sha256,
+            duplicate_completion.content_sha256,
+        )
+        review_job = next(
+            message
+            for message in store.list_outbox_messages(
+                case_id="case-dispatch"
+            )
+            if message.job_kind.value == "reviewer"
+        )
+        completed = controller.dispatch_outbox(review_job.outbox_message_id)
+        duplicate_completion = controller.dispatch_outbox(
+            review_job.outbox_message_id
         )
         self.assertEqual(
             completed.content_sha256,
@@ -987,6 +1582,462 @@ class Gate2ControllerTest(unittest.TestCase):
             )
         with self.assertRaises(AuthorityNotFound):
             store.get_case("case-ingress-rollback")
+
+    def test_message_binding_commit_recovers_after_process_failure(
+        self,
+    ) -> None:
+        class FailFirstBindingCommitStore(InMemoryAuthorityStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.failed = False
+
+            def record_message_impact_binding(self, binding):
+                result = super().record_message_impact_binding(binding)
+                if not self.failed:
+                    self.failed = True
+                    raise RuntimeError(
+                        "simulated crash during binding commit"
+                    )
+                return result
+
+        store = FailFirstBindingCommitStore()
+        provider = ScriptedPrimaryAgentProvider(())
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-binding-recovery",
+            clock=lambda: NOW,
+        )
+        started = controller.start(
+            case_id="case-binding-recovery",
+            thread_id="thread-binding-recovery",
+            run_id="run-binding-recovery",
+            user_message="调查昨天收入变化。",
+        )
+        binding_job_id = started.pending_job_ids[0]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "simulated crash during binding commit",
+        ):
+            controller.deliver_pending_message_binding(
+                "case-binding-recovery"
+            )
+        self.assertEqual(
+            controller.resume("case-binding-recovery").content_sha256,
+            started.content_sha256,
+        )
+        self.assertIsNone(store.get_job_disposition(binding_job_id))
+        self.assertIsNone(
+            store.get_case(
+                "case-binding-recovery"
+            ).accepted_question_revision_id
+        )
+
+        recovered = controller.deliver_pending_message_binding(
+            "case-binding-recovery"
+        )
+        self.assertEqual(recovered.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertEqual(
+            store.get_case(
+                "case-binding-recovery"
+            ).accepted_question_revision_id,
+            "case-binding-recovery:question:1",
+        )
+        self.assertEqual(len(provider.binding_requests), 1)
+        self.assertEqual(
+            store.get_job_disposition(
+                binding_job_id
+            ).disposition,
+            JobDisposition.COMPLETED,
+        )
+
+    def test_terminal_dispositions_close_every_processed_outbox(self) -> None:
+        store = InMemoryAuthorityStore()
+        proposal = frame_proposal("case-job-disposition")
+        controller = WAJEController(
+            store=store,
+            provider=ScriptedPrimaryAgentProvider((proposal,)),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-job-disposition",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-job-disposition",
+            thread_id="thread-job-disposition",
+            run_id="run-job-disposition",
+            user_message="定义收入测量",
+        )
+        controller.deliver_pending_message_binding(
+            "case-job-disposition"
+        )
+        controller.advance("case-job-disposition")
+        llm_job = next(
+            item
+            for item in store.list_outbox_messages(
+                case_id="case-job-disposition"
+            )
+            if item.job_kind.value == "primary_agent"
+        )
+        controller.deliver_pending_llm("case-job-disposition")
+        review_job = next(
+            item
+            for item in store.list_outbox_messages(
+                case_id="case-job-disposition"
+            )
+            if item.job_kind.value == "reviewer"
+        )
+        controller.deliver_pending_frame_review(
+            "case-job-disposition"
+        )
+
+        dispositions = tuple(
+            store.get_job_disposition(item.outbox_message_id)
+            for item in store.list_outbox_messages(
+                case_id="case-job-disposition"
+            )
+        )
+        self.assertTrue(all(item is not None for item in dispositions))
+        self.assertTrue(
+            all(
+                item.disposition is JobDisposition.COMPLETED
+                for item in dispositions
+                if item is not None
+            )
+        )
+        self.assertEqual(
+            store.get_job_disposition(
+                llm_job.outbox_message_id
+            ).result_sha256,
+            proposal.content_sha256,
+        )
+        self.assertIsNotNone(
+            store.get_job_disposition(review_job.outbox_message_id)
+        )
+        self.assertEqual(
+            store.list_pending_outbox_messages(
+                case_id="case-job-disposition"
+            ),
+            (),
+        )
+        with self.assertRaises(LeaseConflict):
+            store.acquire_job_lease(
+                outbox_message_id=llm_job.outbox_message_id,
+                owner_id="worker-replay",
+                now=NOW,
+                expires_at=NOW + timedelta(minutes=1),
+            )
+
+    def test_heartbeat_failure_blocks_provider_result_commit(self) -> None:
+        heartbeat_attempted = Event()
+
+        class FailingHeartbeatStore(InMemoryAuthorityStore):
+            def heartbeat_job_lease(
+                self,
+                lease,
+                *,
+                heartbeat_at,
+                expires_at,
+            ):
+                heartbeat_attempted.set()
+                raise LeaseFenceLost("simulated heartbeat failure")
+
+        class WaitingProvider:
+            allows_test_role_multiplexing = True
+
+            def bind_message(self, request):
+                return ScriptedPrimaryAgentProvider(()).bind_message(
+                    request
+                )
+
+            def propose(self, request):
+                if not heartbeat_attempted.wait(timeout=1):
+                    raise AssertionError("heartbeat was not attempted")
+                return frame_proposal("case-heartbeat-failure")
+
+            def review(self, request):
+                raise AssertionError("review must not run")
+
+        store = FailingHeartbeatStore()
+        controller = WAJEController(
+            store=store,
+            provider=WaitingProvider(),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-heartbeat-failure",
+            clock=lambda: NOW,
+            lease_duration=timedelta(milliseconds=30),
+        )
+        controller.start(
+            case_id="case-heartbeat-failure",
+            thread_id="thread-heartbeat-failure",
+            run_id="run-heartbeat-failure",
+            user_message="定义收入测量",
+        )
+        controller.deliver_pending_message_binding(
+            "case-heartbeat-failure"
+        )
+        controller.advance("case-heartbeat-failure")
+        llm_job = next(
+            item
+            for item in store.list_pending_outbox_messages(
+                case_id="case-heartbeat-failure"
+            )
+            if item.job_kind.value == "primary_agent"
+        )
+        with self.assertRaisesRegex(
+            LeaseFenceLost,
+            "periodic job heartbeat failed",
+        ):
+            controller.deliver_pending_llm("case-heartbeat-failure")
+        self.assertIsNone(
+            store.get_case(
+                "case-heartbeat-failure"
+            ).accepted_frame_revision_id
+        )
+        self.assertIsNone(
+            store.get_job_disposition(llm_job.outbox_message_id)
+        )
+
+    def test_expired_worker_token_cannot_commit_after_takeover(self) -> None:
+        store = InMemoryAuthorityStore()
+
+        class TakeoverProvider(ScriptedPrimaryAgentProvider):
+            def propose(self, request):
+                self.requests.append(request)
+                job = next(
+                    item
+                    for item in store.list_pending_outbox_messages(
+                        case_id="case-lease-takeover"
+                    )
+                    if item.job_kind.value == "primary_agent"
+                )
+                store.acquire_job_lease(
+                    outbox_message_id=job.outbox_message_id,
+                    owner_id="replacement-worker",
+                    now=NOW + timedelta(minutes=2),
+                    expires_at=NOW + timedelta(minutes=4),
+                )
+                return frame_proposal("case-lease-takeover")
+
+        provider = TakeoverProvider(())
+        controller = WAJEController(
+            store=store,
+            provider=provider,
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="expired-worker",
+            clock=lambda: NOW,
+            lease_duration=timedelta(minutes=1),
+        )
+        controller.start(
+            case_id="case-lease-takeover",
+            thread_id="thread-lease-takeover",
+            run_id="run-lease-takeover",
+            user_message="建立收入测量口径。",
+        )
+        controller.deliver_pending_message_binding(
+            "case-lease-takeover"
+        )
+        waiting = controller.advance("case-lease-takeover")
+        job_id = waiting.pending_job_ids[0]
+        with self.assertRaises(LeaseFenceLost):
+            controller.deliver_pending_llm("case-lease-takeover")
+        self.assertIsNone(
+            store.get_case(
+                "case-lease-takeover"
+            ).accepted_frame_revision_id
+        )
+        self.assertIsNone(
+            store.get_active_frame_candidate("case-lease-takeover")
+        )
+        self.assertIsNone(store.get_job_disposition(job_id))
+
+    def test_dispatcher_recovery_cursor_is_durable_and_monotonic(
+        self,
+    ) -> None:
+        store = InMemoryAuthorityStore()
+        initial = DispatcherRecoveryCursor(
+            dispatcher_id="dispatcher-a",
+            last_outbox_created_at=None,
+            last_source_event_cursor=None,
+            last_outbox_message_id=None,
+            updated_at=NOW,
+        )
+        first = DispatcherRecoveryCursor(
+            dispatcher_id="dispatcher-a",
+            last_outbox_created_at=NOW,
+            last_source_event_cursor=11,
+            last_outbox_message_id="outbox-001",
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        later = DispatcherRecoveryCursor(
+            dispatcher_id="dispatcher-a",
+            last_outbox_created_at=NOW,
+            last_source_event_cursor=12,
+            last_outbox_message_id="outbox-002",
+            updated_at=NOW + timedelta(seconds=2),
+        )
+
+        self.assertIsNone(
+            store.get_dispatcher_recovery_cursor("dispatcher-a")
+        )
+        self.assertEqual(
+            store.advance_dispatcher_recovery_cursor(initial),
+            initial,
+        )
+        self.assertEqual(
+            store.advance_dispatcher_recovery_cursor(first),
+            first,
+        )
+        self.assertEqual(
+            store.advance_dispatcher_recovery_cursor(later),
+            later,
+        )
+        self.assertEqual(
+            store.advance_dispatcher_recovery_cursor(
+                replace(
+                    later,
+                    updated_at=NOW + timedelta(seconds=3),
+                )
+            ),
+            later,
+        )
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "cannot move backwards",
+        ):
+            store.advance_dispatcher_recovery_cursor(first)
+        self.assertEqual(
+            store.get_dispatcher_recovery_cursor("dispatcher-a"),
+            later,
+        )
+
+    def test_permanent_provider_failure_has_terminal_disposition(
+        self,
+    ) -> None:
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=ScriptedPrimaryAgentProvider(()),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-provider-failure",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-provider-failure",
+            thread_id="thread-provider-failure",
+            run_id="run-provider-failure",
+            user_message="建立收入测量口径",
+        )
+        controller.deliver_pending_message_binding(
+            "case-provider-failure"
+        )
+        waiting = controller.advance("case-provider-failure")
+        job_id = waiting.pending_job_ids[0]
+
+        blocked = controller.deliver_pending_llm(
+            "case-provider-failure"
+        )
+
+        self.assertEqual(blocked.phase, ControllerPhase.BLOCKED)
+        self.assertEqual(blocked.pending_job_ids, ())
+        disposition = store.get_job_disposition(job_id)
+        self.assertIsNotNone(disposition)
+        self.assertEqual(
+            disposition.disposition,
+            JobDisposition.TERMINAL_FAILURE,
+        )
+        receipts = store.list_provider_attempt_receipts(job_id)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            receipts[0].disposition.value,
+            "terminal_failure",
+        )
+        self.assertTrue(
+            any(
+                event.event_type
+                is JournalEventType.JOB_TERMINALLY_FAILED
+                for event in store.list_events("case-provider-failure")
+            )
+        )
+        self.assertEqual(
+            store.list_pending_outbox_messages(
+                case_id="case-provider-failure"
+            ),
+            (),
+        )
+
+    def test_binding_provider_failure_is_terminally_disposed(self) -> None:
+        class FailingBindingProvider(ScriptedPrimaryAgentProvider):
+            def bind_message(self, request):
+                self.binding_requests.append(request)
+                raise ProviderPermanentError("invalid binding response")
+
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=FailingBindingProvider(()),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-binding-failure",
+            clock=lambda: NOW,
+        )
+        waiting = controller.start(
+            case_id="case-binding-failure",
+            thread_id="thread-binding-failure",
+            run_id="run-binding-failure",
+            user_message="分析昨天收入",
+        )
+        job_id = waiting.pending_job_ids[0]
+
+        blocked = controller.deliver_pending_message_binding(
+            "case-binding-failure"
+        )
+
+        self.assertEqual(blocked.phase, ControllerPhase.BLOCKED)
+        self.assertEqual(
+            store.get_job_disposition(job_id).disposition,
+            JobDisposition.TERMINAL_FAILURE,
+        )
+
+    def test_reviewer_provider_failure_is_terminally_disposed(self) -> None:
+        class FailingReviewerProvider(ScriptedPrimaryAgentProvider):
+            def review(self, request):
+                self.review_requests.append(request)
+                raise ProviderPermanentError("invalid review response")
+
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=FailingReviewerProvider(
+                (frame_proposal("case-reviewer-failure"),)
+            ),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-reviewer-failure",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-reviewer-failure",
+            thread_id="thread-reviewer-failure",
+            run_id="run-reviewer-failure",
+            user_message="建立收入测量口径",
+        )
+        controller.deliver_pending_message_binding(
+            "case-reviewer-failure"
+        )
+        controller.advance("case-reviewer-failure")
+        waiting = controller.deliver_pending_llm(
+            "case-reviewer-failure"
+        )
+        job_id = waiting.pending_job_ids[0]
+
+        blocked = controller.deliver_pending_frame_review(
+            "case-reviewer-failure"
+        )
+
+        self.assertEqual(blocked.phase, ControllerPhase.BLOCKED)
+        self.assertEqual(
+            store.get_job_disposition(job_id).disposition,
+            JobDisposition.TERMINAL_FAILURE,
+        )
 
 
 if __name__ == "__main__":

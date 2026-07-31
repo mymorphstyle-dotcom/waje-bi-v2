@@ -169,6 +169,8 @@
         "operation",
         "expected_head_version",
         "expected_authority_epoch",
+        "authority_snapshot",
+        "authority_snapshot_sha256",
         "idempotency_key",
         "destination",
         "contract_ref",
@@ -220,6 +222,12 @@
           "type": "integer",
           "minimum": 1
         },
+        "authority_snapshot": {
+          "$ref": "#/$defs/authoritySnapshot"
+        },
+        "authority_snapshot_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "idempotency_key": {
           "$ref": "#/$defs/id"
         },
@@ -237,6 +245,92 @@
         },
         "created_at": {
           "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "authoritySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "head_version",
+        "mailbox_authority_epoch",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id",
+        "accepted_plan_revision_id",
+        "active_frame_candidate_generation",
+        "active_frame_candidate_sha256",
+        "obligation_state_version",
+        "evidence_admission_state_version",
+        "contradiction_state_version"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "head_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mailbox_authority_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accepted_question_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_frame_candidate_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_frame_candidate_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "obligation_state_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_admission_state_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contradiction_state_version": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

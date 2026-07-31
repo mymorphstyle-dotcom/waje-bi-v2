@@ -58,6 +58,7 @@ export interface ReviseFramePayload {
   question_revision_id: string;
   revision_reason_ref: string;
   measurement_design: MeasurementDesign;
+  objection_closures: ProposedObjectionClosure[];
 }
 export interface MeasurementDesign {
   question_grounding: QuestionGrounding;
@@ -383,6 +384,20 @@ export interface EstimandSpec {
     | "association"
     | "causal_effect"
     | "diagnostic_set";
+  claim_target_spec:
+    | DefinitionTargetSpec
+    | DataQualityTargetSpec
+    | PointQuantityTargetSpec
+    | DistributionTargetSpec
+    | TemporalPatternTargetSpec
+    | ContrastTargetSpec
+    | CompositionTargetSpec
+    | AccountingDecompositionTargetSpec
+    | CohortOutcomeTargetSpec
+    | FunnelTransitionTargetSpec
+    | AssociationTargetSpec
+    | CausalEffectTargetSpec
+    | DiagnosticSetTargetSpec;
   variable_ids: string[];
   event_ids: string[];
   population_id: string | null;
@@ -405,6 +420,73 @@ export interface EstimandSpec {
   scope_ceiling_id: string;
   claim_strength_ceiling:
     "boundary_only" | "descriptive" | "accounting" | "associational" | "causal";
+}
+export interface DefinitionTargetSpec {
+  defined_concept_ref: string;
+  definition_contract_ref: string;
+}
+export interface DataQualityTargetSpec {
+  assessed_object_ref: string;
+  quality_predicate_refs: string[];
+  decision_rule_ref: string;
+}
+export interface PointQuantityTargetSpec {
+  quantity_operator_ref: string;
+  scalar_result_contract_ref: string;
+}
+export interface DistributionTargetSpec {
+  distribution_operator_ref: string;
+  support_contract_ref: string;
+  statistic_parameter_refs: string[];
+}
+export interface TemporalPatternTargetSpec {
+  cadence_ref: string;
+  pattern_operator_ref: string;
+  minimum_cycle_count: number;
+}
+export interface ContrastTargetSpec {
+  contrast_id: string;
+  effect_scale_ref: string;
+}
+export interface CompositionTargetSpec {
+  whole_variable_id: string;
+  component_variable_ids: string[];
+  completeness_rule_ref: string;
+  exclusivity_rule_ref: string;
+}
+export interface AccountingDecompositionTargetSpec {
+  reconciliation_id: string;
+  residual_policy_ref: string;
+}
+export interface CohortOutcomeTargetSpec {
+  cohort_risk_set_id: string;
+  horizon_ref: string;
+  maturity_policy_ref: string;
+  censoring_policy_ref: string;
+}
+export interface FunnelTransitionTargetSpec {
+  sequence_id: string;
+  stage_order_ref: string;
+  transition_denominator_ref: string;
+}
+export interface AssociationTargetSpec {
+  relationship_id: string;
+  association_measure_ref: string;
+  adjustment_set_ref: string;
+}
+export interface CausalEffectTargetSpec {
+  relationship_id: string;
+  identification_id: string;
+  causal_contrast_ref: string;
+}
+export interface DiagnosticSetTargetSpec {
+  member_estimand_ids: string[];
+  ranking_rule_ref: string;
+  joint_stop_rule_ref: string;
+}
+export interface ProposedObjectionClosure {
+  objection_id: string;
+  explanation: string;
 }
 export interface RevisePlanPayload {
   revision_reason: string;

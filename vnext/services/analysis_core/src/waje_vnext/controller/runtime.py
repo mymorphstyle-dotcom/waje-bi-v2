@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from waje_vnext.domain.actions import (
@@ -22,6 +23,7 @@ from waje_vnext.domain.actions import (
     RunSensitivityPayload,
     StopPayload,
 )
+from waje_vnext.domain.action_codec import decode_agent_action_proposal
 from waje_vnext.domain.admission import admit_action
 from waje_vnext.domain.async_runtime import (
     AsyncJobKind,
@@ -68,14 +70,64 @@ from waje_vnext.domain.measurement import (
     QuestionRevision,
     SourceMessageRef,
 )
+from waje_vnext.domain.measurement_resolver import (
+    validate_executable_design,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
     OutboxMessage,
 )
-from waje_vnext.providers.base import PrimaryAgentProvider
+from waje_vnext.domain.runtime_amendment import (
+    FrameAdmissionProof,
+    DurableModelResult,
+    FrameCandidateRecord,
+    FrameCandidateSupersessionRecord,
+    DeterministicFrameValidationFinding,
+    FrameReviewDisposition,
+    FrameReviewProposal,
+    FrameReviewRecord,
+    FrameReviewRequest,
+    JobDisposition,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageBindingDisposition,
+    MessageBindingRequest,
+    MessageImpactBinding,
+    MessageImpactKind,
+    MessageImpactProposal,
+    MeasurementObjectionSeverity,
+    MeasurementReviewObjection,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptDisposition,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceEventLink,
+    RunTraceManifest,
+    RunTraceProfile,
+    SemanticAmbiguity,
+    SemanticAssertion,
+    SemanticSourceSpan,
+    TypedSemanticBinding,
+    derive_changed_measurement_node_ids,
+    measurement_paths_overlap,
+)
+from waje_vnext.domain.typed_decode import decode_typed_dataclass
+from waje_vnext.providers.base import (
+    MeasurementReviewerProvider,
+    MessageBindingProvider,
+    PrimaryAgentProvider,
+    ProviderError,
+    ProviderTransientError,
+)
 from waje_vnext.storage.codec import decode_controller_state, encode_record
-from waje_vnext.storage.ports import AuthorityStore, LeaseConflict
+from waje_vnext.storage.ports import (
+    AuthorityStore,
+    LeaseConflict,
+    LeaseFenceLost,
+)
 
 from .effects import (
     EffectExecutionResult,
@@ -83,6 +135,7 @@ from .effects import (
     EffectPermanentError,
     EffectTransientError,
 )
+from .supervision import JobHeartbeatSupervisor
 
 
 ACTION_CONTRACT_REF = "waje-vnext://contracts/domain/actions.v3"
@@ -93,6 +146,21 @@ ACTION_RESULT_SCHEMA_REF = "waje-vnext://runtime/action-result.v1"
 EFFECT_CONTRACT_REF = "waje-vnext://runtime/effect-request.v1"
 PRIMARY_AGENT_JOB_CONTRACT_REF = (
     "waje-vnext://runtime/primary-agent-job.v1"
+)
+FRAME_REVIEW_JOB_CONTRACT_REF = (
+    "waje-vnext://runtime/frame-review-job.v1"
+)
+FRAME_REVIEW_CONTRACT_REF = (
+    "waje-vnext://contracts/domain/measurement-review.v1"
+)
+FRAME_REVIEW_INDEPENDENCE_POLICY_REF = (
+    "waje-vnext://runtime/reviewer-role-separation.v1"
+)
+MESSAGE_BINDING_CONTRACT_REF = (
+    "waje-vnext://contracts/domain/message-impact-binding.v1"
+)
+MESSAGE_BINDING_JOB_CONTRACT_REF = (
+    "waje-vnext://runtime/message-binding-job.v1"
 )
 CONTROLLER_WAKE_CONTRACT_REF = "waje-vnext://runtime/controller-wake.v1"
 ANSWER_VERIFIER_POLICY = "answer-verifier.v1"
@@ -108,6 +176,106 @@ class ControllerConflict(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _LocalProviderTrace:
+    disposition: str
+    provider_response_id: str | None
+    output_sha256: str | None
+    finish_reason: str | None
+    usage_payload: dict[str, object]
+    completed_at: datetime
+
+
+class _DurableProviderAttemptObserver:
+    def __init__(
+        self,
+        *,
+        store: AuthorityStore,
+        model_job: LogicalModelJob,
+        result_kind: str,
+        result_contract_ref: str,
+    ) -> None:
+        self._store = store
+        self._model_job = model_job
+        self._result_kind = result_kind
+        self._result_contract_ref = result_contract_ref
+        self._prior_attempt_id: str | None = None
+        self._attempt_ids: dict[int, str] = {}
+
+    def before_attempt(self, attempt_number: int) -> None:
+        attempt_id = _stable_id(
+            "provider-attempt",
+            self._model_job.logical_model_job_id,
+            str(attempt_number),
+        )
+        self._store.record_provider_attempt_request(
+            ProviderAttemptRequest(
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=(
+                    self._model_job.logical_model_job_id
+                ),
+                attempt_number=attempt_number,
+                prior_provider_attempt_id=self._prior_attempt_id,
+                request_sha256=self._model_job.input_sha256,
+                requested_at=self._model_job.created_at,
+            )
+        )
+        self._attempt_ids[attempt_number] = attempt_id
+        self._prior_attempt_id = attempt_id
+
+    def after_attempt(self, attempt_number: int, trace) -> None:
+        attempt_id = self._attempt_ids[attempt_number]
+        self._store.record_provider_attempt_receipt(
+            ProviderAttemptReceipt(
+                provider_attempt_receipt_id=_stable_id(
+                    "provider-attempt-receipt",
+                    attempt_id,
+                ),
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=(
+                    self._model_job.logical_model_job_id
+                ),
+                disposition=ProviderAttemptDisposition(
+                    trace.disposition
+                ),
+                provider_response_id=trace.provider_response_id,
+                output_sha256=trace.output_sha256,
+                finish_reason=trace.finish_reason,
+                usage_payload=dict(trace.usage_payload),
+                completed_at=trace.completed_at,
+            )
+        )
+
+    def after_result(self, attempt_number: int, result) -> None:
+        result_payload = to_jsonable(result)
+        if not isinstance(result_payload, dict):
+            raise ControllerConflict(
+                "typed provider result must encode as an object"
+            )
+        self._store.record_durable_model_result(
+            DurableModelResult(
+                durable_model_result_id=_stable_id(
+                    "durable-model-result",
+                    self._model_job.logical_model_job_id,
+                ),
+                logical_model_job_id=(
+                    self._model_job.logical_model_job_id
+                ),
+                provider_attempt_id=self._attempt_ids[attempt_number],
+                result_kind=self._result_kind,
+                result_contract_ref=self._result_contract_ref,
+                result_payload=result_payload,
+                output_sha256=content_sha256(result_payload),
+                recorded_at=self._store.get_provider_attempt_receipt(
+                    _stable_id(
+                        "provider-attempt-receipt",
+                        self._attempt_ids[attempt_number],
+                    )
+                ).completed_at,
+            )
+        )
+
+
 class WAJEController:
     """Owns the accepted action loop, state transitions, and recovery."""
 
@@ -116,6 +284,8 @@ class WAJEController:
         *,
         store: AuthorityStore,
         provider: PrimaryAgentProvider,
+        binding_provider: MessageBindingProvider | None = None,
+        reviewer_provider: MeasurementReviewerProvider | None = None,
         effect_executor: EffectExecutor,
         owner_id: str,
         clock: Callable[[], datetime] | None = None,
@@ -127,6 +297,53 @@ class WAJEController:
             raise ValueError("lease_duration must be positive")
         self._store = store
         self._provider = provider
+        self._binding_provider = binding_provider or provider
+        if reviewer_provider is None:
+            if not getattr(
+                provider,
+                "allows_test_role_multiplexing",
+                False,
+            ):
+                raise ValueError(
+                    "reviewer_provider requires an independent configuration"
+                )
+            reviewer_provider = provider
+        if not getattr(provider, "allows_test_role_multiplexing", False):
+            primary_configuration_ref = getattr(
+                provider,
+                "configuration_ref",
+                None,
+            )
+            reviewer_configuration_ref = getattr(
+                reviewer_provider,
+                "configuration_ref",
+                None,
+            )
+            if (
+                reviewer_provider is provider
+                or primary_configuration_ref is None
+                or reviewer_configuration_ref is None
+                or primary_configuration_ref == reviewer_configuration_ref
+            ):
+                raise ValueError(
+                    "primary and Reviewer providers require distinct, "
+                    "auditable configurations"
+                )
+            for role_name, configured_provider in (
+                ("primary", provider),
+                ("binding", self._binding_provider),
+                ("reviewer", reviewer_provider),
+            ):
+                if not getattr(
+                    configured_provider,
+                    "supports_durable_attempt_observer",
+                    False,
+                ):
+                    raise ValueError(
+                        "{} provider must durably journal every outbound "
+                        "attempt".format(role_name)
+                    )
+        self._reviewer_provider = reviewer_provider
         self._effect_executor = effect_executor
         self._owner_id = owner_id
         self._clock = clock or (lambda: datetime.now(tz=UTC))
@@ -171,19 +388,66 @@ class WAJEController:
             raise ValueError("user_message must be non-empty")
         now = self._now()
         with self._store.atomic():
+            case_open_payload = {"thread_id": thread_id}
             self._store.open_case(
                 case_id=case_id,
                 thread_id=thread_id,
                 event_id=_stable_id("event", case_id, "opened"),
                 opened_at=now,
+                operation=OperationIdentity(
+                    operation_id=_stable_id(
+                        "operation",
+                        case_id,
+                        "opened",
+                    ),
+                    idempotency_key=_stable_id(
+                        "operation-key",
+                        case_id,
+                        "opened",
+                    ),
+                    causation_id=run_id,
+                    correlation_id=run_id,
+                    authority_revision=0,
+                    payload_sha256=content_sha256(case_open_payload),
+                ),
             )
             existing = self._store.latest_checkpoint(case_id)
+            starts_new_run = False
+            prior_state = None
             if existing is not None:
-                state = decode_controller_state(existing.state_payload)
-                if state.run_id != run_id:
-                    raise ControllerConflict(
-                        "case already belongs to another controller run"
+                prior_state = decode_controller_state(
+                    existing.state_payload
+                )
+                if prior_state.run_id != run_id:
+                    if prior_state.phase not in {
+                        ControllerPhase.COMPLETED,
+                        ControllerPhase.STOPPED,
+                    }:
+                        raise ControllerConflict(
+                            "active case run must reach a terminal "
+                            "checkpoint before a new run starts"
+                        )
+                    if self._store.get_case(
+                        case_id
+                    ).lifecycle is not CaseLifecycle.OPEN:
+                        raise ControllerConflict(
+                            "stopped or closed case authority cannot be "
+                            "reopened as a new run"
+                        )
+                    unfinished = tuple(
+                        item
+                        for item
+                        in self._store.list_pending_outbox_messages(
+                            case_id=case_id
+                        )
+                        if item.operation.correlation_id
+                        == prior_state.run_id
                     )
+                    if unfinished:
+                        raise ControllerConflict(
+                            "prior run has unfinished durable jobs"
+                        )
+                    starts_new_run = True
             prior_message = next(
                 (
                     candidate
@@ -229,7 +493,7 @@ class WAJEController:
                 idempotency_key=idempotency_key,
                 causation_id=message_id,
                 correlation_id=run_id,
-                authority_revision=mailbox_head.authority_epoch,
+                authority_revision=mailbox_head.authority_epoch + 1,
                 payload_sha256=content_sha256(message_payload),
             )
             message = self._store.append_mailbox_message(
@@ -279,107 +543,138 @@ class WAJEController:
                     payload=event_payload,
                 ),
             )
-            current_case = self._store.get_case(case_id)
-            if (
-                kind is MailboxMessageKind.USER_MESSAGE
-                and current_case.accepted_question_revision_id is None
-            ):
-                question_event_id = _stable_id(
-                    "event",
+            ingress_record = MessageIngressRecord(
+                ingress_record_id=_stable_id(
+                    "message-ingress-record",
                     message.message_id,
-                    "question-accepted",
-                )
-                question = QuestionRevision(
-                    question_revision_id=f"{case_id}:question:1",
-                    case_id=case_id,
-                    revision_number=1,
-                    prior_question_revision_id=None,
-                    source_messages=(
-                        SourceMessageRef(
-                            message_id=message.message_id,
-                            role=MessageRole.USER,
-                            sequence=message.sequence,
-                            content=user_message,
-                            content_sha256=content_sha256(user_message),
-                        ),
-                    ),
-                    explicit_scope_refs=(),
-                    explicit_constraint_refs=(),
-                    explicit_correction_refs=(),
-                    explicit_challenge_refs=(),
-                    accepted_clarification_refs=(),
-                    acceptance_event_id=question_event_id,
-                    accepted_head_version=current_case.head_version + 1,
-                    analysis_cycle_id=f"{case_id}:cycle:1",
-                    created_at=now,
-                )
-                self._store.accept_question(
-                    question,
-                    expected_head_version=current_case.head_version,
-                    event_id=question_event_id,
-                    recorded_at=now,
-                )
-            wake_payload = {
-                "case_id": case_id,
-                "run_id": run_id,
-                "mailbox_sequence": message.sequence,
-                "authority_epoch": message.authority_epoch,
+                ),
+                case_id=case_id,
+                run_id=run_id,
+                message_id=message.message_id,
+                mailbox_sequence=message.sequence,
+                authority_epoch=message.authority_epoch,
+                operation=message.operation,
+                message_payload_sha256=(
+                    message.operation.payload_sha256
+                ),
+                created_at=now,
+            )
+            self._store.record_message_ingress(ingress_record)
+            binding_job_id = _stable_id(
+                "outbox",
+                case_id,
+                "message-binding",
+                str(message.sequence),
+            )
+            pending = PendingUserMessage(
+                pending_message_id=_stable_id(
+                    "pending-user-message",
+                    message.message_id,
+                ),
+                ingress_record_id=ingress_record.ingress_record_id,
+                case_id=case_id,
+                message_id=message.message_id,
+                binding_job_id=binding_job_id,
+                authority_epoch=message.authority_epoch,
+                source_operation_id=message.operation.operation_id,
+                created_at=now,
+            )
+            self._store.record_pending_user_message(pending)
+            binding_payload = {
+                "pending_message_id": pending.pending_message_id,
+                "message_id": message.message_id,
+                "binding_contract_ref": MESSAGE_BINDING_CONTRACT_REF,
             }
-            wake_idempotency_key = _stable_id(
-                "wake-key",
+            binding_idempotency_key = _stable_id(
+                "message-binding-key",
                 message.operation.idempotency_key,
             )
-            wake_operation = OperationIdentity(
-                operation_id=_stable_id(
-                    "operation",
-                    case_id,
-                    "wake",
-                    str(message.sequence),
-                ),
-                idempotency_key=wake_idempotency_key,
+            binding_operation = OperationIdentity(
+                operation_id=_stable_id("operation", binding_job_id),
+                idempotency_key=binding_idempotency_key,
                 causation_id=message.operation.operation_id,
                 correlation_id=run_id,
                 authority_revision=message.authority_epoch,
-                payload_sha256=content_sha256(wake_payload),
+                payload_sha256=content_sha256(binding_payload),
             )
+            binding_event_payload = {
+                "outbox_message_id": binding_job_id,
+                "pending_message_id": pending.pending_message_id,
+                "message_id": message.message_id,
+                "binding_contract_ref": MESSAGE_BINDING_CONTRACT_REF,
+            }
+            binding_event_id = _stable_id(
+                "event",
+                binding_job_id,
+                "enqueued",
+            )
+            binding_event = self._store.append_event(
+                case_id=case_id,
+                expected_next_cursor=self._last_cursor(case_id) + 1,
+                event_id=binding_event_id,
+                event_type=(
+                    JournalEventType.MESSAGE_BINDING_JOB_ENQUEUED
+                ),
+                recorded_at=now,
+                action_id=None,
+                authority_ref=pending.pending_message_id,
+                payload=binding_event_payload,
+                customer_projection={
+                    "state": "understanding_business_request"
+                },
+                operation=_event_operation(
+                    event_id=binding_event_id,
+                    idempotency_key=_stable_id(
+                        "event-key",
+                        binding_idempotency_key,
+                        "enqueued",
+                    ),
+                    causation_id=binding_operation.operation_id,
+                    correlation_id=run_id,
+                    authority_revision=message.authority_epoch,
+                    payload=binding_event_payload,
+                ),
+            )
+            binding_snapshot = self._store.get_authority_snapshot(case_id)
             self._store.enqueue_outbox(
                 OutboxMessage(
-                    outbox_message_id=_stable_id(
-                        "outbox",
-                        case_id,
-                        "wake",
-                        str(message.sequence),
-                    ),
+                    outbox_message_id=binding_job_id,
                     case_id=case_id,
-                    source_event_cursor=ingress_event.cursor,
+                    source_event_cursor=binding_event.cursor,
                     action_id=None,
-                    job_kind=AsyncJobKind.CONTROLLER_WAKE,
-                    operation=wake_operation,
-                    expected_head_version=self._store.get_case(
-                        case_id
-                    ).head_version,
+                    job_kind=AsyncJobKind.MESSAGE_BINDING,
+                    operation=binding_operation,
+                    expected_head_version=binding_snapshot.head_version,
                     expected_authority_epoch=message.authority_epoch,
-                    idempotency_key=wake_idempotency_key,
-                    destination="case-controller",
-                    contract_ref=CONTROLLER_WAKE_CONTRACT_REF,
-                    payload=wake_payload,
-                    payload_sha256=content_sha256(wake_payload),
+                    authority_snapshot=binding_snapshot,
+                    authority_snapshot_sha256=(
+                        binding_snapshot.content_sha256
+                    ),
+                    idempotency_key=binding_idempotency_key,
+                    destination="message-binding-provider",
+                    contract_ref=MESSAGE_BINDING_JOB_CONTRACT_REF,
+                    payload=binding_payload,
+                    payload_sha256=content_sha256(binding_payload),
                     created_at=now,
                 )
             )
-            if existing is None:
+            if existing is None or starts_new_run:
                 self._checkpoint(
                     run_id=run_id,
                     case_id=case_id,
-                    phase=ControllerPhase.READY_FOR_AGENT,
+                    phase=ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
                     step_number=0,
                     latest_user_message=user_message,
                     pending_action_id=None,
-                    pending_job_ids=(),
+                    pending_job_ids=(binding_job_id,),
                     pending_decision_request_id=None,
                     consecutive_rejections=0,
                     authority_epoch=message.authority_epoch,
-                    mailbox_cursor=0,
+                    mailbox_cursor=(
+                        0
+                        if prior_state is None
+                        else prior_state.mailbox_cursor
+                    ),
                     context_user_messages=(
                         ContextUserMessageItem.from_message(message),
                     ),
@@ -401,17 +696,314 @@ class WAJEController:
             raise ControllerConflict("case has no durable controller checkpoint")
         return decode_controller_state(checkpoint.state_payload)
 
+    def build_run_trace_manifest(
+        self,
+        case_id: str,
+    ) -> RunTraceManifest:
+        """Materialize and verify the durable lineage known for one run."""
+
+        state = self.resume(case_id)
+        all_events = self._store.list_events(case_id)
+        events = tuple(
+            event
+            for event in all_events
+            if event.operation.correlation_id == state.run_id
+        )
+        if not events:
+            raise ControllerConflict("run has no correlated journal events")
+        expected_cursors = tuple(
+            range(events[0].cursor, events[-1].cursor + 1)
+        )
+        if tuple(event.cursor for event in events) != expected_cursors:
+            raise ControllerConflict(
+                "run journal is interleaved with another correlation"
+            )
+        ingress_records = tuple(
+            item
+            for item in self._store.list_message_ingress_records(case_id)
+            if item.run_id == state.run_id
+        )
+        outbox = tuple(
+            item
+            for item in self._store.list_outbox_messages(case_id=case_id)
+            if item.operation.correlation_id == state.run_id
+        )
+        outbox_by_id = {
+            item.outbox_message_id: item for item in outbox
+        }
+        outbox_ids = set(outbox_by_id)
+        operation_ids = {
+            event.operation.operation_id for event in events
+        } | {
+            item.operation.operation_id for item in outbox
+        }
+        action_ids = {
+            event.action_id
+            for event in events
+            if event.action_id is not None
+        }
+        bindings = tuple(
+            item
+            for item in self._store.list_message_impact_bindings(case_id)
+            if item.logical_model_job_id in outbox_ids
+        )
+        candidates = tuple(
+            item
+            for item in self._store.list_frame_candidates(case_id)
+            if item.source_action_id in action_ids
+        )
+        candidate_supersessions = (
+            tuple(
+                item
+                for item
+                in self._store.list_frame_candidate_supersessions(case_id)
+                if item.source_operation_id in operation_ids
+            )
+        )
+        candidate_ids = {
+            item.frame_candidate_id for item in candidates
+        }
+        reviews = tuple(
+            item
+            for item in self._store.list_frame_reviews(case_id)
+            if item.frame_candidate_id in candidate_ids
+        )
+        dispositions = tuple(
+            item
+            for item in self._store.list_job_dispositions(case_id)
+            if item.outbox_message_id in outbox_ids
+        )
+        model_jobs = tuple(
+            item
+            for item in self._store.list_logical_model_jobs(case_id)
+            if item.job_id in outbox_ids
+        )
+        receipts = tuple(
+            receipt
+            for job in model_jobs
+            for receipt in self._store.list_provider_attempt_receipts(
+                job.logical_model_job_id
+            )
+        )
+        durable_model_results = tuple(
+            result
+            for job in model_jobs
+            if (
+                result := self._store.get_durable_model_result(
+                    job.logical_model_job_id
+                )
+            )
+            is not None
+        )
+        for job in model_jobs:
+            message = outbox_by_id.get(job.job_id)
+            if (
+                message is None
+                or message.operation.operation_id != job.operation_id
+                or message.authority_snapshot_sha256
+                != job.authority_snapshot_sha256
+            ):
+                raise ControllerConflict(
+                    "logical model job lineage does not match its outbox job"
+                )
+            disposition = self._store.get_job_disposition(job.job_id)
+            if (
+                disposition is not None
+                and disposition.disposition is JobDisposition.COMPLETED
+                and not any(
+                    receipt.logical_model_job_id
+                    == job.logical_model_job_id
+                    and receipt.disposition
+                    is ProviderAttemptDisposition.SUCCEEDED
+                    for receipt in receipts
+                )
+            ):
+                raise ControllerConflict(
+                    "completed model job lacks a successful provider receipt"
+                )
+        for disposition in dispositions:
+            message = outbox_by_id.get(disposition.outbox_message_id)
+            if (
+                message is None
+                or disposition.operation != message.operation
+                or disposition.case_id != case_id
+            ):
+                raise ControllerConflict(
+                    "job disposition lineage does not match durable outbox"
+                )
+
+        plan_revision_ids = _event_authority_refs(
+            events,
+            JournalEventType.PLAN_ACCEPTED,
+        )
+        resolution_outcome_ids = _event_authority_refs(
+            events,
+            JournalEventType.MEASUREMENT_RESOLUTION_RECORDED,
+        )
+        obligation_ids = _event_authority_refs(
+            events,
+            JournalEventType.EVIDENCE_OBLIGATION_RECORDED,
+        )
+        answer_ids = _event_authority_refs(
+            events,
+            JournalEventType.ANSWER_ACCEPTED,
+        )
+        answers = tuple(
+            self._store.get_answer(answer_id)
+            for answer_id in answer_ids
+        )
+        provisional_answer_ids = tuple(
+            answer.answer_version_id
+            for answer in answers
+            if answer.status is AnswerStatus.PROVISIONAL
+        )
+        claim_ids = _ordered_unique(
+            claim.claim_id
+            for answer in answers
+            for claim in answer.claims
+        )
+        effect_attempt_ids = _ordered_unique(
+            attempt.effect_attempt_id
+            for message in outbox
+            for attempt in self._store.list_effect_attempts(
+                message.outbox_message_id
+            )
+        )
+        evidence_ids = _event_authority_refs(
+            events,
+            JournalEventType.EVIDENCE_RECORDED,
+        )
+        event_operation_lineage = tuple(
+            RunTraceEventLink(
+                cursor=event.cursor,
+                event_id=event.event_id,
+                operation_id=event.operation.operation_id,
+                causation_id=event.operation.causation_id,
+                correlation_id=event.operation.correlation_id,
+                authority_revision=event.operation.authority_revision,
+                payload_sha256=event.operation.payload_sha256,
+            )
+            for event in events
+        )
+        lineage = {
+            "case_id": case_id,
+            "run_id": state.run_id,
+            "trace_profile": (
+                RunTraceProfile.CASE_AUTHORITY_LANE.value
+            ),
+            "start_event_cursor": events[0].cursor,
+            "terminal_event_cursor": events[-1].cursor,
+            "event_operation_lineage": event_operation_lineage,
+            "ingress_record_ids": tuple(
+                item.ingress_record_id for item in ingress_records
+            ),
+            "message_binding_ids": tuple(
+                item.binding_id for item in bindings
+            ),
+            "frame_candidate_ids": tuple(
+                item.frame_candidate_id for item in candidates
+            ),
+            "frame_candidate_supersession_ids": tuple(
+                item.supersession_record_id
+                for item in candidate_supersessions
+            ),
+            "frame_review_ids": tuple(
+                item.frame_review_id for item in reviews
+            ),
+            "job_disposition_record_ids": tuple(
+                item.job_disposition_record_id for item in dispositions
+            ),
+            "logical_model_job_ids": tuple(
+                item.logical_model_job_id for item in model_jobs
+            ),
+            "provider_attempt_receipt_ids": tuple(
+                item.provider_attempt_receipt_id for item in receipts
+            ),
+            "durable_model_result_ids": tuple(
+                item.durable_model_result_id
+                for item in durable_model_results
+            ),
+            "plan_revision_ids": plan_revision_ids,
+            "resolution_outcome_ids": resolution_outcome_ids,
+            "obligation_ids": obligation_ids,
+            "effect_attempt_ids": effect_attempt_ids,
+            "evidence_record_ids": evidence_ids,
+            "claim_ids": claim_ids,
+            "provisional_answer_version_ids": provisional_answer_ids,
+        }
+        lineage_sha256 = content_sha256(lineage)
+        manifest = RunTraceManifest(
+            trace_manifest_id=_stable_id(
+                "run-trace-manifest",
+                case_id,
+                state.run_id,
+                lineage_sha256,
+            ),
+            case_id=case_id,
+            run_id=state.run_id,
+            trace_profile=RunTraceProfile.CASE_AUTHORITY_LANE,
+            start_event_cursor=events[0].cursor,
+            terminal_event_cursor=events[-1].cursor,
+            event_operation_lineage=event_operation_lineage,
+            ingress_record_ids=lineage["ingress_record_ids"],
+            message_binding_ids=lineage["message_binding_ids"],
+            frame_candidate_ids=lineage["frame_candidate_ids"],
+            frame_candidate_supersession_ids=(
+                lineage["frame_candidate_supersession_ids"]
+            ),
+            frame_review_ids=lineage["frame_review_ids"],
+            job_disposition_record_ids=(
+                lineage["job_disposition_record_ids"]
+            ),
+            logical_model_job_ids=lineage["logical_model_job_ids"],
+            provider_attempt_receipt_ids=(
+                lineage["provider_attempt_receipt_ids"]
+            ),
+            durable_model_result_ids=(
+                lineage["durable_model_result_ids"]
+            ),
+            plan_revision_ids=plan_revision_ids,
+            resolution_outcome_ids=resolution_outcome_ids,
+            obligation_ids=obligation_ids,
+            effect_attempt_ids=effect_attempt_ids,
+            evidence_record_ids=evidence_ids,
+            claim_ids=claim_ids,
+            provisional_answer_version_ids=provisional_answer_ids,
+            lineage_sha256=lineage_sha256,
+            built_at=self._now(),
+        )
+        return self._store.record_run_trace_manifest(manifest)
+
     def dispatch_outbox(self, message_id: str) -> ControllerState:
         """Idempotently route a durable outbox delivery to its worker handler."""
 
         message = self._store.get_outbox_message(message_id)
         state = self.resume(message.case_id)
+        if self._store.get_job_disposition(message_id) is not None:
+            return state
+        if (
+            message.job_kind is AsyncJobKind.MESSAGE_BINDING
+            and self._store.get_mailbox_head(message.case_id).last_sequence
+            > state.mailbox_cursor
+            and message.outbox_message_id not in state.pending_job_ids
+        ):
+            state = self._reconcile_mailbox(state)
         if message.job_kind is AsyncJobKind.CONTROLLER_WAKE:
             return self.advance(message.case_id)
         if message.outbox_message_id not in state.pending_job_ids:
             return state
         if message.job_kind is AsyncJobKind.PRIMARY_AGENT:
             return self.deliver_pending_llm(message.case_id)
+        if message.job_kind is AsyncJobKind.MESSAGE_BINDING:
+            return self.deliver_pending_message_binding(
+                message.case_id,
+                job_id=message.outbox_message_id,
+            )
+        if message.job_kind is AsyncJobKind.REVIEWER:
+            return self.deliver_pending_frame_review(
+                message.case_id,
+                job_id=message.outbox_message_id,
+            )
         if message.job_kind in {
             AsyncJobKind.SEMANTIC_INSPECTION,
             AsyncJobKind.DATA_PROBE,
@@ -462,12 +1054,14 @@ class WAJEController:
         message = self._store.get_outbox_message(snapshot.pending_job_ids[0])
         if message.job_kind is not AsyncJobKind.PRIMARY_AGENT:
             raise ControllerConflict("pending job is not a primary agent job")
-        if self._job_is_stale(message):
-            return self._supersede_job(snapshot, message)
         job_lease = self._acquire_job(message)
         try:
             if self._job_is_stale(message):
-                return self._supersede_job(snapshot, message)
+                return self._supersede_job(
+                    snapshot,
+                    message,
+                    job_lease=job_lease,
+                )
             packet = self._store.get_context_packet(
                 str(message.payload["context_packet_id"])
             )
@@ -484,10 +1078,887 @@ class WAJEController:
                 ),
                 requested_at=message.created_at,
             )
-            proposal = self._provider.propose(request)
-            return self._commit_proposal(snapshot, proposal, message)
+            model_job = self._record_logical_model_job(
+                message=message,
+                provider=self._provider,
+                role="primary_agent",
+                prompt_contract_ref=ACTION_CONTRACT_REF,
+                request=request,
+            )
+            recovered_proposal = self._load_durable_model_result(
+                model_job=model_job,
+                result_kind="primary_agent",
+                result_contract_ref=ACTION_CONTRACT_REF,
+            )
+            if recovered_proposal is not None:
+                return self._commit_proposal(
+                    snapshot,
+                    recovered_proposal,
+                    message,
+                    job_lease,
+                    model_job=model_job,
+                    provider_attempts=(
+                        self._persisted_provider_attempt_records(
+                            model_job.logical_model_job_id
+                        )
+                    ),
+                )
+            observer_installed = (
+                self._install_provider_attempt_observer(
+                    provider=self._provider,
+                    model_job=model_job,
+                    result_kind="primary_agent",
+                    result_contract_ref=ACTION_CONTRACT_REF,
+                )
+            )
+            heartbeat = JobHeartbeatSupervisor(
+                store=self._store,
+                lease=job_lease,
+                clock=self._clock,
+                lease_duration=self._lease_duration,
+            )
+            heartbeat.start()
+            try:
+                proposal = self._provider.propose(request)
+            except ProviderError as error:
+                self._clear_provider_attempt_observer(
+                    self._provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                    raise
+                provider_attempts = self._provider_failure_attempt_records(
+                    model_job=model_job,
+                    provider=self._provider,
+                    error=error,
+                    completed_at=self._now(),
+                )
+                return self._commit_provider_failure(
+                    snapshot=snapshot,
+                    message=message,
+                    job_lease=job_lease,
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                    error=error,
+                )
+            except BaseException:
+                self._clear_provider_attempt_observer(
+                    self._provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                raise
+            self._clear_provider_attempt_observer(
+                self._provider,
+                observer_installed,
+            )
+            result_recorded_at = self._now()
+            provider_attempts = self._provider_attempt_records(
+                model_job=model_job,
+                provider=self._provider,
+                output=proposal,
+                completed_at=result_recorded_at,
+            )
+            self._persist_successful_model_result(
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+                result=proposal,
+                result_kind="primary_agent",
+                result_contract_ref=ACTION_CONTRACT_REF,
+                recorded_at=result_recorded_at,
+            )
+            try:
+                job_lease = heartbeat.stop_and_get()
+            except LeaseFenceLost:
+                job_lease = heartbeat.current_lease
+                raise
+            return self._commit_proposal(
+                snapshot,
+                proposal,
+                message,
+                job_lease,
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+            )
         finally:
-            self._store.release_job_lease(job_lease)
+            self._release_job_lease(job_lease)
+
+    def deliver_pending_message_binding(
+        self,
+        case_id: str,
+        *,
+        job_id: str | None = None,
+    ) -> ControllerState:
+        snapshot = self.resume(case_id)
+        if (
+            snapshot.phase
+            is not ControllerPhase.WAITING_FOR_MESSAGE_BINDING
+        ):
+            raise ControllerConflict(
+                "case has no pending message-binding job"
+            )
+        selected_job_id = job_id or snapshot.pending_job_ids[0]
+        if selected_job_id not in snapshot.pending_job_ids:
+            raise ControllerConflict(
+                "message-binding job is not pending for this case"
+            )
+        message = self._store.get_outbox_message(selected_job_id)
+        if message.job_kind is not AsyncJobKind.MESSAGE_BINDING:
+            raise ControllerConflict(
+                "pending job is not a message-binding job"
+            )
+        job_lease = self._acquire_job(message)
+        try:
+            pending = self._store.get_pending_user_message(
+                str(message.payload["pending_message_id"])
+            )
+            mailbox_message = next(
+                item
+                for item in self._store.list_mailbox_messages(case_id)
+                if item.message_id == pending.message_id
+            )
+            case = self._store.get_case(case_id)
+            prior_question = (
+                None
+                if case.accepted_question_revision_id is None
+                else self._store.get_question(
+                    case.accepted_question_revision_id
+                )
+            )
+            request = MessageBindingRequest(
+                logical_model_job_id=message.outbox_message_id,
+                case_id=case_id,
+                message_id=mailbox_message.message_id,
+                message_content=str(
+                    mailbox_message.payload["message"]
+                ),
+                prior_question_text=(
+                    None
+                    if prior_question is None
+                    else "\n".join(
+                        source.content
+                        for source in prior_question.source_messages
+                    )
+                ),
+                has_accepted_frame=(
+                    case.accepted_frame_revision_id is not None
+                ),
+                binding_contract_ref=str(
+                    message.payload["binding_contract_ref"]
+                ),
+                requested_at=message.created_at,
+            )
+            bind_method = getattr(
+                self._binding_provider,
+                "bind_message",
+                None,
+            )
+            if bind_method is None:
+                raise ControllerConflict(
+                    "message-binding provider is not configured"
+                )
+            model_job = self._record_logical_model_job(
+                message=message,
+                provider=self._binding_provider,
+                role="message_binding",
+                prompt_contract_ref=MESSAGE_BINDING_CONTRACT_REF,
+                request=request,
+            )
+            recovered_proposal = self._load_durable_model_result(
+                model_job=model_job,
+                result_kind="message_binding",
+                result_contract_ref=MESSAGE_BINDING_CONTRACT_REF,
+            )
+            if recovered_proposal is not None:
+                return self._commit_message_binding(
+                    snapshot=snapshot,
+                    message=message,
+                    pending=pending,
+                    mailbox_message=mailbox_message,
+                    proposal=recovered_proposal,
+                    job_lease=job_lease,
+                    model_job=model_job,
+                    provider_attempts=(
+                        self._persisted_provider_attempt_records(
+                            model_job.logical_model_job_id
+                        )
+                    ),
+                )
+            observer_installed = (
+                self._install_provider_attempt_observer(
+                    provider=self._binding_provider,
+                    model_job=model_job,
+                    result_kind="message_binding",
+                    result_contract_ref=(
+                        MESSAGE_BINDING_CONTRACT_REF
+                    ),
+                )
+            )
+            heartbeat = JobHeartbeatSupervisor(
+                store=self._store,
+                lease=job_lease,
+                clock=self._clock,
+                lease_duration=self._lease_duration,
+            )
+            heartbeat.start()
+            try:
+                proposal = bind_method(request)
+            except ProviderError as error:
+                self._clear_provider_attempt_observer(
+                    self._binding_provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                    raise
+                provider_attempts = self._provider_failure_attempt_records(
+                    model_job=model_job,
+                    provider=self._binding_provider,
+                    error=error,
+                    completed_at=self._now(),
+                )
+                return self._commit_provider_failure(
+                    snapshot=snapshot,
+                    message=message,
+                    job_lease=job_lease,
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                    error=error,
+                )
+            except BaseException:
+                self._clear_provider_attempt_observer(
+                    self._binding_provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                raise
+            self._clear_provider_attempt_observer(
+                self._binding_provider,
+                observer_installed,
+            )
+            result_recorded_at = self._now()
+            provider_attempts = self._provider_attempt_records(
+                model_job=model_job,
+                provider=self._binding_provider,
+                output=proposal,
+                completed_at=result_recorded_at,
+            )
+            self._persist_successful_model_result(
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+                result=proposal,
+                result_kind="message_binding",
+                result_contract_ref=MESSAGE_BINDING_CONTRACT_REF,
+                recorded_at=result_recorded_at,
+            )
+            try:
+                job_lease = heartbeat.stop_and_get()
+            except LeaseFenceLost:
+                job_lease = heartbeat.current_lease
+                raise
+            return self._commit_message_binding(
+                snapshot=snapshot,
+                message=message,
+                pending=pending,
+                mailbox_message=mailbox_message,
+                proposal=proposal,
+                job_lease=job_lease,
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+            )
+        finally:
+            self._release_job_lease(job_lease)
+
+    def _commit_message_binding(
+        self,
+        *,
+        snapshot: ControllerState,
+        message: OutboxMessage,
+        pending: PendingUserMessage,
+        mailbox_message,
+        proposal,
+        job_lease,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
+    ) -> ControllerState:
+        now = self._now()
+        content = str(mailbox_message.payload["message"])
+        source_spans: dict[
+            tuple[int, int],
+            SemanticSourceSpan,
+        ] = {}
+
+        def span_for(start: int, end: int) -> SemanticSourceSpan:
+            if start < 0 or end <= start or end > len(content):
+                raise ControllerConflict(
+                    "message binding contains an invalid source span"
+                )
+            key = (start, end)
+            span = source_spans.get(key)
+            if span is None:
+                span = SemanticSourceSpan(
+                    span_id=_stable_id(
+                        "semantic-span",
+                        mailbox_message.message_id,
+                        str(start),
+                        str(end),
+                    ),
+                    message_id=mailbox_message.message_id,
+                    start_codepoint=start,
+                    end_codepoint=end,
+                    selected_text_sha256=content_sha256(
+                        content[start:end]
+                    ),
+                )
+                source_spans[key] = span
+            return span
+
+        assertions = []
+        for index, item in enumerate(proposal.assertions, start=1):
+            value = _decode_binding_object(
+                item.value_json,
+                "semantic assertion value",
+            )
+            source = span_for(
+                item.source_start_codepoint,
+                item.source_end_codepoint,
+            )
+            assertions.append(
+                SemanticAssertion(
+                    assertion_id=_stable_id(
+                        "semantic-assertion",
+                        mailbox_message.message_id,
+                        str(index),
+                        item.kind.value,
+                        content_sha256(value),
+                    ),
+                    kind=item.kind,
+                    value=value,
+                    source_span_ids=(source.span_id,),
+                    decision_record_ids=(),
+                    material=item.material,
+                )
+            )
+        ambiguities = []
+        for index, item in enumerate(proposal.ambiguities, start=1):
+            recommended = _decode_binding_object(
+                item.recommended_interpretation_json,
+                "recommended interpretation",
+            )
+            source = span_for(
+                item.source_start_codepoint,
+                item.source_end_codepoint,
+            )
+            ambiguities.append(
+                SemanticAmbiguity(
+                    ambiguity_id=_stable_id(
+                        "semantic-ambiguity",
+                        mailbox_message.message_id,
+                        str(index),
+                        item.question,
+                    ),
+                    question=item.question,
+                    material=item.material,
+                    recommended_interpretation=recommended,
+                    source_span_ids=(source.span_id,),
+                )
+            )
+        semantic_binding = TypedSemanticBinding(
+            binding_contract_version=MESSAGE_BINDING_CONTRACT_REF,
+            source_spans=tuple(source_spans.values()),
+            assertions=tuple(assertions),
+            ambiguities=tuple(ambiguities),
+            decision_ledger_refs=(),
+        )
+        controller_lease = self._acquire(snapshot)
+        try:
+            with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=now,
+                )
+                current = self.resume(snapshot.case_id)
+                _require_same_checkpoint(snapshot, current)
+                if mailbox_message.sequence != current.mailbox_cursor + 1:
+                    return self._supersede_job_locked(
+                        current,
+                        message,
+                        now=now,
+                        job_lease=job_lease,
+                    )
+                self._persist_provider_attempt_records(
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                )
+                case = self._store.get_case(current.case_id)
+                prior_question = (
+                    None
+                    if case.accepted_question_revision_id is None
+                    else self._store.get_question(
+                        case.accepted_question_revision_id
+                    )
+                )
+                authority_changing = (
+                    proposal.disposition
+                    is MessageBindingDisposition.ACCEPTED
+                    and proposal.impact_kind
+                    in {
+                        MessageImpactKind.QUESTION_REVISION,
+                        MessageImpactKind.FRAME_REVISION,
+                        MessageImpactKind.CHALLENGE,
+                    }
+                )
+                if prior_question is None and not authority_changing:
+                    raise ControllerConflict(
+                        "the first accepted message must establish a question"
+                    )
+                question_id = (
+                    "{}:question:{}".format(
+                        current.case_id,
+                        (
+                            1
+                            if prior_question is None
+                            else prior_question.revision_number + 1
+                        ),
+                    )
+                    if authority_changing
+                    else None
+                )
+                binding = MessageImpactBinding(
+                    binding_id=_stable_id(
+                        "message-impact-binding",
+                        pending.pending_message_id,
+                        proposal.content_sha256,
+                    ),
+                    pending_message_id=pending.pending_message_id,
+                    case_id=current.case_id,
+                    message_id=mailbox_message.message_id,
+                    authority_epoch=mailbox_message.authority_epoch,
+                    source_payload_sha256=(
+                        mailbox_message.operation.payload_sha256
+                    ),
+                    impact_kind=proposal.impact_kind,
+                    disposition=proposal.disposition,
+                    bound_question_revision_id=question_id,
+                    prior_frame_revision_id=(
+                        case.accepted_frame_revision_id
+                    ),
+                    decision_record_ids=(),
+                    semantic_binding=semantic_binding,
+                    semantic_binding_sha256=(
+                        semantic_binding.content_sha256
+                    ),
+                    logical_model_job_id=message.outbox_message_id,
+                    created_at=now,
+                )
+                self._store.record_message_impact_binding(binding)
+                event_payload = {
+                    "outbox_message_id": message.outbox_message_id,
+                    "binding_id": binding.binding_id,
+                    "impact_kind": binding.impact_kind.value,
+                    "disposition": binding.disposition.value,
+                    "semantic_binding_sha256": (
+                        binding.semantic_binding_sha256
+                    ),
+                }
+                self._append_event(
+                    case_id=current.case_id,
+                    event_id=_stable_id(
+                        "event",
+                        binding.binding_id,
+                        "completed",
+                    ),
+                    event_type=JournalEventType.MESSAGE_BINDING_COMPLETED,
+                    action_id=None,
+                    authority_ref=binding.binding_id,
+                    payload=event_payload,
+                    customer_projection={
+                        "state": "business_request_understood",
+                        "impact_kind": binding.impact_kind.value,
+                        "needs_user_decision": (
+                            binding.disposition
+                            is MessageBindingDisposition.NEEDS_USER_DECISION
+                        ),
+                    },
+                    causal_operation=message.operation,
+                    now=now,
+                )
+                if authority_changing:
+                    assert question_id is not None
+                    revision_number = (
+                        1
+                        if prior_question is None
+                        else prior_question.revision_number + 1
+                    )
+                    source_messages = tuple(
+                        SourceMessageRef(
+                            message_id=item.message_id,
+                            role=MessageRole.USER,
+                            sequence=item.sequence,
+                            content=str(item.payload["message"]),
+                            content_sha256=content_sha256(
+                                str(item.payload["message"])
+                            ),
+                        )
+                        for item in self._store.list_mailbox_messages(
+                            current.case_id
+                        )
+                        if item.sequence <= mailbox_message.sequence
+                    )
+                    acceptance_event_id = _stable_id(
+                        "event",
+                        question_id,
+                        "accepted",
+                    )
+                    question = QuestionRevision(
+                        question_revision_id=question_id,
+                        case_id=current.case_id,
+                        revision_number=revision_number,
+                        prior_question_revision_id=(
+                            None
+                            if prior_question is None
+                            else prior_question.question_revision_id
+                        ),
+                        source_messages=source_messages,
+                        explicit_scope_refs=(),
+                        explicit_constraint_refs=(
+                            (
+                                ()
+                                if prior_question is None
+                                else prior_question.explicit_constraint_refs
+                            )
+                            + (binding.binding_id,)
+                        ),
+                        explicit_correction_refs=(
+                            (binding.binding_id,)
+                            if prior_question is not None
+                            and binding.impact_kind
+                            in {
+                                MessageImpactKind.QUESTION_REVISION,
+                                MessageImpactKind.FRAME_REVISION,
+                            }
+                            else ()
+                        ),
+                        explicit_challenge_refs=(
+                            (binding.binding_id,)
+                            if binding.impact_kind
+                            is MessageImpactKind.CHALLENGE
+                            else ()
+                        ),
+                        accepted_clarification_refs=(),
+                        acceptance_event_id=acceptance_event_id,
+                        accepted_head_version=case.head_version + 1,
+                        analysis_cycle_id="{}:cycle:{}".format(
+                            current.case_id,
+                            revision_number,
+                        ),
+                        created_at=now,
+                    )
+                    self._store.accept_question(
+                        question,
+                        expected_head_version=case.head_version,
+                        event_id=acceptance_event_id,
+                        recorded_at=now,
+                        operation=message.operation,
+                    )
+                    active_candidate = (
+                        self._store.get_active_frame_candidate(
+                            current.case_id
+                        )
+                    )
+                    if (
+                        active_candidate is not None
+                        and active_candidate.question_revision_id
+                        != question.question_revision_id
+                    ):
+                        self._store.supersede_active_frame_candidate(
+                            FrameCandidateSupersessionRecord(
+                                supersession_record_id=_stable_id(
+                                    "frame-candidate-supersession",
+                                    active_candidate.frame_candidate_id,
+                                    question.question_revision_id,
+                                ),
+                                case_id=current.case_id,
+                                frame_candidate_id=(
+                                    active_candidate.frame_candidate_id
+                                ),
+                                superseded_by_question_revision_id=(
+                                    question.question_revision_id
+                                ),
+                                source_operation_id=(
+                                    message.operation.operation_id
+                                ),
+                                authority_epoch=(
+                                    mailbox_message.authority_epoch
+                                ),
+                                reason_code=(
+                                    "accepted_question_authority_changed"
+                                ),
+                                created_at=now,
+                            )
+                        )
+                context_user_messages = tuple(
+                    ContextUserMessageItem.from_message(item)
+                    for item in self._store.list_mailbox_messages(
+                        current.case_id
+                    )
+                    if item.sequence <= mailbox_message.sequence
+                )
+                if (
+                    proposal.disposition
+                    is MessageBindingDisposition.NEEDS_USER_DECISION
+                ):
+                    next_state = self._apply_binding_clarification(
+                        current=current,
+                        binding=binding,
+                        proposal=proposal,
+                        context_user_messages=context_user_messages,
+                        now=now,
+                    )
+                elif (
+                    proposal.disposition
+                    is MessageBindingDisposition.ACCEPTED
+                    and proposal.impact_kind
+                    is MessageImpactKind.STOP_REQUEST
+                ):
+                    next_state = self._apply_binding_stop(
+                        current=current,
+                        binding=binding,
+                        context_user_messages=context_user_messages,
+                        now=now,
+                    )
+                else:
+                    next_state = self._checkpoint(
+                        run_id=current.run_id,
+                        case_id=current.case_id,
+                        phase=ControllerPhase.READY_FOR_AGENT,
+                        step_number=current.step_number,
+                        latest_user_message=content,
+                        pending_action_id=None,
+                        pending_job_ids=(),
+                        pending_decision_request_id=None,
+                        consecutive_rejections=(
+                            current.consecutive_rejections + 1
+                            if proposal.disposition
+                            is MessageBindingDisposition.REJECTED
+                            else 0
+                        ),
+                        authority_epoch=mailbox_message.authority_epoch,
+                        mailbox_cursor=mailbox_message.sequence,
+                        context_user_messages=context_user_messages,
+                        now=now,
+                    )
+                self._record_job_disposition(
+                    message=message,
+                    disposition=JobDisposition.COMPLETED,
+                    result_sha256=binding.content_sha256,
+                    reason_code="message_binding_committed",
+                    now=now,
+                    job_lease=job_lease,
+                    observed_authority_epoch=(
+                        mailbox_message.authority_epoch
+                    ),
+                )
+                return next_state
+        finally:
+            self._store.release_lease(controller_lease)
+
+    def _apply_binding_clarification(
+        self,
+        *,
+        current: ControllerState,
+        binding: MessageImpactBinding,
+        proposal,
+        context_user_messages: tuple[ContextUserMessageItem, ...],
+        now: datetime,
+    ) -> ControllerState:
+        material = tuple(
+            item for item in proposal.ambiguities if item.material
+        )
+        if not material:
+            raise ControllerConflict(
+                "binding clarification requires material ambiguity"
+            )
+        payload = AskUserPayload(
+            question=material[0].question,
+            options=proposal.clarification_options,
+            recommended_option_id=proposal.recommended_option_id or "",
+            allow_freeform=True,
+        )
+        action = self._binding_action(
+            current=current,
+            binding=binding,
+            kind=ActionKind.ASK_USER,
+            payload=payload,
+            now=now,
+        )
+        self._store.record_action(
+            PersistedAction(
+                action=action,
+                proposal_sha256=AgentActionProposal(
+                    kind=action.kind,
+                    payload=action.payload,
+                ).content_sha256,
+                recorded_at=now,
+            )
+        )
+        self._append_action_event(
+            action=action,
+            accepted=True,
+            reason_code="typed_message_ambiguity",
+            now=now,
+        )
+        state, _ = self._apply_action(
+            current=current,
+            action=action,
+            admission_cursor=self._last_cursor(current.case_id),
+            now=now,
+        )
+        return self._checkpoint_with_user_context(
+            state,
+            context_user_messages=context_user_messages,
+            authority_epoch=binding.authority_epoch,
+            mailbox_cursor=next(
+                item.sequence
+                for item in context_user_messages
+                if item.message_id == binding.message_id
+            ),
+            now=now,
+        )
+
+    def _apply_binding_stop(
+        self,
+        *,
+        current: ControllerState,
+        binding: MessageImpactBinding,
+        context_user_messages: tuple[ContextUserMessageItem, ...],
+        now: datetime,
+    ) -> ControllerState:
+        payload = StopPayload(
+            reason="user_requested_stop",
+            terminal_state="stopped",
+        )
+        action = self._binding_action(
+            current=current,
+            binding=binding,
+            kind=ActionKind.STOP,
+            payload=payload,
+            now=now,
+        )
+        self._store.record_action(
+            PersistedAction(
+                action=action,
+                proposal_sha256=AgentActionProposal(
+                    kind=action.kind,
+                    payload=action.payload,
+                ).content_sha256,
+                recorded_at=now,
+            )
+        )
+        self._append_action_event(
+            action=action,
+            accepted=True,
+            reason_code="typed_stop_request",
+            now=now,
+        )
+        state, _ = self._apply_action(
+            current=current,
+            action=action,
+            admission_cursor=self._last_cursor(current.case_id),
+            now=now,
+        )
+        return self._checkpoint_with_user_context(
+            state,
+            context_user_messages=context_user_messages,
+            authority_epoch=binding.authority_epoch,
+            mailbox_cursor=next(
+                item.sequence
+                for item in context_user_messages
+                if item.message_id == binding.message_id
+            ),
+            now=now,
+        )
+
+    def _binding_action(
+        self,
+        *,
+        current: ControllerState,
+        binding: MessageImpactBinding,
+        kind: ActionKind,
+        payload,
+        now: datetime,
+    ) -> ActionEnvelope:
+        proposal = AgentActionProposal(kind=kind, payload=payload)
+        action_id = _stable_id(
+            "action",
+            binding.binding_id,
+            kind.value,
+        )
+        idempotency_key = _stable_id(
+            "action-key",
+            binding.binding_id,
+            kind.value,
+        )
+        return ActionEnvelope(
+            action_id=action_id,
+            case_id=current.case_id,
+            kind=kind,
+            expected_head_version=self._store.get_case(
+                current.case_id
+            ).head_version,
+            idempotency_key=idempotency_key,
+            issued_at=now,
+            payload=payload,
+            operation=OperationIdentity(
+                operation_id=_stable_id("operation", action_id),
+                idempotency_key=idempotency_key,
+                causation_id=binding.binding_id,
+                correlation_id=current.run_id,
+                authority_revision=binding.authority_epoch,
+                payload_sha256=proposal.content_sha256,
+            ),
+        )
+
+    def _checkpoint_with_user_context(
+        self,
+        state: ControllerState,
+        *,
+        context_user_messages: tuple[ContextUserMessageItem, ...],
+        authority_epoch: int,
+        mailbox_cursor: int,
+        now: datetime,
+    ) -> ControllerState:
+        return self._checkpoint(
+            run_id=state.run_id,
+            case_id=state.case_id,
+            phase=state.phase,
+            step_number=state.step_number,
+            latest_user_message=context_user_messages[-1].content,
+            pending_action_id=state.pending_action_id,
+            pending_job_ids=state.pending_job_ids,
+            pending_decision_request_id=(
+                state.pending_decision_request_id
+            ),
+            consecutive_rejections=state.consecutive_rejections,
+            authority_epoch=authority_epoch,
+            mailbox_cursor=mailbox_cursor,
+            context_user_messages=context_user_messages,
+            now=now,
+        )
 
     def run_until_boundary(
         self,
@@ -499,15 +1970,29 @@ class WAJEController:
             raise ValueError("max_agent_steps must be positive")
         state = self.resume(case_id)
         for _ in range(max_agent_steps):
+            if (
+                state.phase
+                is ControllerPhase.WAITING_FOR_MESSAGE_BINDING
+            ):
+                state = self.deliver_pending_message_binding(case_id)
+                continue
             if state.phase is ControllerPhase.READY_FOR_AGENT:
                 state = self.advance(case_id)
                 continue
             if state.phase is ControllerPhase.WAITING_FOR_LLM:
                 state = self.deliver_pending_llm(case_id)
                 continue
+            if (
+                state.phase
+                is ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW
+            ):
+                state = self.deliver_pending_frame_review(case_id)
+                continue
             if state.phase not in {
+                ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
                 ControllerPhase.READY_FOR_AGENT,
                 ControllerPhase.WAITING_FOR_LLM,
+                ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
             }:
                 return state
         raise ControllerConflict(
@@ -584,18 +2069,24 @@ class WAJEController:
                         "recorded",
                     ),
                 )
+                binding_job_id = _stable_id(
+                    "outbox",
+                    case_id,
+                    "message-binding",
+                    str(receipt.mailbox_sequence),
+                )
                 return self._checkpoint(
                     run_id=current.run_id,
                     case_id=case_id,
-                    phase=ControllerPhase.READY_FOR_AGENT,
+                    phase=ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
                     step_number=current.step_number,
                     latest_user_message=selected_message,
                     pending_action_id=None,
-                    pending_job_ids=(),
+                    pending_job_ids=(binding_job_id,),
                     pending_decision_request_id=None,
                     consecutive_rejections=0,
                     authority_epoch=receipt.authority_epoch,
-                    mailbox_cursor=receipt.mailbox_sequence,
+                    mailbox_cursor=current.mailbox_cursor,
                     context_user_messages=(
                         self._store.get_context_packet(
                             current.context_packet_id
@@ -632,14 +2123,30 @@ class WAJEController:
         if selected_job_id not in snapshot.pending_job_ids:
             raise ControllerConflict("effect job is not pending for this case")
         message = self._store.get_outbox_message(selected_job_id)
-        if self._job_is_stale(message):
-            return self._supersede_job(snapshot, message)
         job_lease = self._acquire_job(message)
         try:
+            if self._job_is_stale(message):
+                return self._supersede_job(
+                    snapshot,
+                    message,
+                    job_lease=job_lease,
+                )
             started_at = self._now()
+            heartbeat = JobHeartbeatSupervisor(
+                store=self._store,
+                lease=job_lease,
+                clock=self._clock,
+                lease_duration=self._lease_duration,
+            )
+            heartbeat.start()
             try:
                 result = self._effect_executor.execute(message)
             except EffectTransientError as error:
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                    raise
                 return self._commit_effect_attempt(
                     snapshot=snapshot,
                     message=message,
@@ -648,8 +2155,14 @@ class WAJEController:
                     error_code="transient_effect_failure",
                     error_message=str(error),
                     started_at=started_at,
+                    job_lease=job_lease,
                 )
             except EffectPermanentError as error:
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                    raise
                 return self._commit_effect_attempt(
                     snapshot=snapshot,
                     message=message,
@@ -658,7 +2171,19 @@ class WAJEController:
                     error_code="permanent_effect_failure",
                     error_message=str(error),
                     started_at=started_at,
+                    job_lease=job_lease,
                 )
+            except BaseException:
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                raise
+            try:
+                job_lease = heartbeat.stop_and_get()
+            except LeaseFenceLost:
+                job_lease = heartbeat.current_lease
+                raise
             return self._commit_effect_attempt(
                 snapshot=snapshot,
                 message=message,
@@ -667,15 +2192,467 @@ class WAJEController:
                 error_code=None,
                 error_message=None,
                 started_at=started_at,
+                job_lease=job_lease,
             )
         finally:
-            self._store.release_job_lease(job_lease)
+            self._release_job_lease(job_lease)
+
+    def deliver_pending_frame_review(
+        self,
+        case_id: str,
+        *,
+        job_id: str | None = None,
+    ) -> ControllerState:
+        snapshot = self.resume(case_id)
+        if (
+            snapshot.phase
+            is not ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW
+        ):
+            raise ControllerConflict(
+                "case has no pending measurement review"
+            )
+        selected_job_id = job_id or snapshot.pending_job_ids[0]
+        if selected_job_id not in snapshot.pending_job_ids:
+            raise ControllerConflict(
+                "measurement review job is not pending"
+            )
+        message = self._store.get_outbox_message(selected_job_id)
+        if message.job_kind is not AsyncJobKind.REVIEWER:
+            raise ControllerConflict("pending job is not a Reviewer job")
+        job_lease = self._acquire_job(message)
+        try:
+            if self._job_is_stale(message):
+                return self._supersede_job(
+                    snapshot,
+                    message,
+                    job_lease=job_lease,
+                )
+            candidate = self._store.get_frame_candidate(
+                str(message.payload["frame_candidate_id"])
+            )
+            logical_model_job_id = message.outbox_message_id
+            question = self._store.get_question(
+                candidate.question_revision_id
+            )
+            bindings = tuple(
+                self._store.get_message_impact_binding(binding_id)
+                for binding_id in question.explicit_constraint_refs
+            )
+            prior_review = (
+                None
+                if candidate.prior_frame_candidate_id is None
+                else self._store.get_frame_review_for_candidate(
+                    candidate.prior_frame_candidate_id
+                )
+            )
+            objection_closures = tuple(
+                self._store.get_objection_closure(
+                    _stable_id(
+                        "objection-closure",
+                        objection_id,
+                        candidate.frame_candidate_id,
+                    )
+                )
+                for objection_id in candidate.addressed_objection_ids
+            )
+            deterministic_findings = tuple(
+                DeterministicFrameValidationFinding(
+                    code=finding.code,
+                    node_refs=finding.node_refs,
+                )
+                for finding in validate_executable_design(
+                    candidate.proposed_frame.measurement_design
+                )
+            )
+            reviewer_configuration_ref = getattr(
+                self._reviewer_provider,
+                "configuration_ref",
+                "{}:{}".format(
+                    getattr(
+                        self._reviewer_provider,
+                        "provider_ref",
+                        type(self._reviewer_provider).__module__,
+                    ),
+                    getattr(
+                        self._reviewer_provider,
+                        "model_ref",
+                        type(self._reviewer_provider).__qualname__,
+                    ),
+                ),
+            )
+            request = FrameReviewRequest(
+                logical_model_job_id=logical_model_job_id,
+                case_id=case_id,
+                frame_candidate=candidate,
+                accepted_question=question,
+                accepted_message_bindings=bindings,
+                prior_frame_review=prior_review,
+                objection_closures=objection_closures,
+                deterministic_validation_findings=(
+                    deterministic_findings
+                ),
+                review_contract_ref=str(
+                    message.payload["review_contract_ref"]
+                ),
+                reviewer_configuration_ref=(
+                    reviewer_configuration_ref
+                ),
+                independence_policy_ref=(
+                    FRAME_REVIEW_INDEPENDENCE_POLICY_REF
+                ),
+                requested_at=message.created_at,
+            )
+            review_method = getattr(
+                self._reviewer_provider,
+                "review",
+                None,
+            )
+            if review_method is None:
+                raise ControllerConflict(
+                    "measurement Reviewer provider is not configured"
+                )
+            model_job = self._record_logical_model_job(
+                message=message,
+                provider=self._reviewer_provider,
+                role="measurement_reviewer",
+                prompt_contract_ref=FRAME_REVIEW_CONTRACT_REF,
+                request=request,
+            )
+            recovered_proposal = self._load_durable_model_result(
+                model_job=model_job,
+                result_kind="measurement_reviewer",
+                result_contract_ref=FRAME_REVIEW_CONTRACT_REF,
+            )
+            if recovered_proposal is not None:
+                return self._commit_frame_review(
+                    snapshot=snapshot,
+                    message=message,
+                    candidate=candidate,
+                    proposal=recovered_proposal,
+                    deterministic_findings=deterministic_findings,
+                    logical_model_job_id=logical_model_job_id,
+                    job_lease=job_lease,
+                    model_job=model_job,
+                    provider_attempts=(
+                        self._persisted_provider_attempt_records(
+                            model_job.logical_model_job_id
+                        )
+                    ),
+                )
+            observer_installed = (
+                self._install_provider_attempt_observer(
+                    provider=self._reviewer_provider,
+                    model_job=model_job,
+                    result_kind="measurement_reviewer",
+                    result_contract_ref=FRAME_REVIEW_CONTRACT_REF,
+                )
+            )
+            heartbeat = JobHeartbeatSupervisor(
+                store=self._store,
+                lease=job_lease,
+                clock=self._clock,
+                lease_duration=self._lease_duration,
+            )
+            heartbeat.start()
+            try:
+                proposal = review_method(request)
+            except ProviderError as error:
+                self._clear_provider_attempt_observer(
+                    self._reviewer_provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                    raise
+                provider_attempts = self._provider_failure_attempt_records(
+                    model_job=model_job,
+                    provider=self._reviewer_provider,
+                    error=error,
+                    completed_at=self._now(),
+                )
+                return self._commit_provider_failure(
+                    snapshot=snapshot,
+                    message=message,
+                    job_lease=job_lease,
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                    error=error,
+                )
+            except BaseException:
+                self._clear_provider_attempt_observer(
+                    self._reviewer_provider,
+                    observer_installed,
+                )
+                try:
+                    job_lease = heartbeat.stop_and_get()
+                except LeaseFenceLost:
+                    job_lease = heartbeat.current_lease
+                raise
+            self._clear_provider_attempt_observer(
+                self._reviewer_provider,
+                observer_installed,
+            )
+            result_recorded_at = self._now()
+            provider_attempts = self._provider_attempt_records(
+                model_job=model_job,
+                provider=self._reviewer_provider,
+                output=proposal,
+                completed_at=result_recorded_at,
+            )
+            self._persist_successful_model_result(
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+                result=proposal,
+                result_kind="measurement_reviewer",
+                result_contract_ref=FRAME_REVIEW_CONTRACT_REF,
+                recorded_at=result_recorded_at,
+            )
+            try:
+                job_lease = heartbeat.stop_and_get()
+            except LeaseFenceLost:
+                job_lease = heartbeat.current_lease
+                raise
+            return self._commit_frame_review(
+                snapshot=snapshot,
+                message=message,
+                candidate=candidate,
+                proposal=proposal,
+                deterministic_findings=deterministic_findings,
+                logical_model_job_id=logical_model_job_id,
+                job_lease=job_lease,
+                model_job=model_job,
+                provider_attempts=provider_attempts,
+            )
+        finally:
+            self._release_job_lease(job_lease)
+
+    def _commit_frame_review(
+        self,
+        *,
+        snapshot: ControllerState,
+        message: OutboxMessage,
+        candidate: FrameCandidateRecord,
+        proposal,
+        deterministic_findings: tuple[
+            DeterministicFrameValidationFinding,
+            ...,
+        ],
+        logical_model_job_id: str,
+        job_lease,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
+    ) -> ControllerState:
+        now = self._now()
+        reviewer_objections = tuple(
+            MeasurementReviewObjection(
+                objection_id=_stable_id(
+                    "measurement-objection",
+                    candidate.frame_candidate_id,
+                    str(index),
+                    item.code,
+                    item.explanation,
+                ),
+                code=item.code,
+                severity=item.severity,
+                affected_node_ids=item.affected_node_refs,
+                explanation=item.explanation,
+            )
+            for index, item in enumerate(proposal.objections, start=1)
+        )
+        deterministic_objections = tuple(
+            MeasurementReviewObjection(
+                objection_id=_stable_id(
+                    "deterministic-measurement-objection",
+                    candidate.frame_candidate_id,
+                    finding.code,
+                    *finding.node_refs,
+                ),
+                code="deterministic:{}".format(finding.code),
+                severity=MeasurementObjectionSeverity.BLOCKING,
+                affected_node_ids=finding.node_refs,
+                explanation=(
+                    "Deterministic measurement validation rejected this "
+                    "candidate."
+                ),
+            )
+            for finding in deterministic_findings
+        )
+        objections = reviewer_objections + deterministic_objections
+        effective_disposition = (
+            FrameReviewDisposition.BLOCK
+            if deterministic_findings
+            else proposal.disposition
+        )
+        closure_record_ids = tuple(
+            _stable_id(
+                "objection-closure",
+                objection_id,
+                candidate.frame_candidate_id,
+            )
+            for objection_id in candidate.addressed_objection_ids
+        )
+        review = FrameReviewRecord(
+            frame_review_id=_stable_id(
+                "frame-review",
+                candidate.frame_candidate_id,
+                proposal.content_sha256,
+            ),
+            frame_candidate_id=candidate.frame_candidate_id,
+            reviewer_job_id=message.outbox_message_id,
+            authority_epoch=message.expected_authority_epoch,
+            disposition=effective_disposition,
+            objections=objections,
+            closure_proof_refs=closure_record_ids,
+            reviewed_frame_content_sha256=(
+                candidate.proposed_frame_content_sha256
+            ),
+            logical_model_job_id=logical_model_job_id,
+            created_at=now,
+        )
+        controller_lease = self._acquire(snapshot)
+        try:
+            with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=now,
+                )
+                current = self.resume(snapshot.case_id)
+                _require_same_checkpoint(snapshot, current)
+                if self._job_is_stale(message):
+                    return self._supersede_job_locked(
+                        current,
+                        message,
+                        now=now,
+                        job_lease=job_lease,
+                    )
+                self._persist_provider_attempt_records(
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                )
+                self._store.record_frame_review(review)
+                event_payload = {
+                    "outbox_message_id": message.outbox_message_id,
+                    "frame_candidate_id": candidate.frame_candidate_id,
+                    "frame_review_id": review.frame_review_id,
+                    "disposition": review.disposition.value,
+                    "objection_count": len(review.objections),
+                }
+                self._append_event(
+                    case_id=current.case_id,
+                    event_id=_stable_id(
+                        "event",
+                        review.frame_review_id,
+                        "completed",
+                    ),
+                    event_type=JournalEventType.REVIEWER_JOB_COMPLETED,
+                    action_id=message.action_id,
+                    authority_ref=review.frame_review_id,
+                    payload=event_payload,
+                    customer_projection={
+                        "state": "measurement_review_completed",
+                        "disposition": review.disposition.value,
+                    },
+                    causal_operation=message.operation,
+                    now=now,
+                )
+                if review.disposition is FrameReviewDisposition.ACCEPT:
+                    authority_snapshot = (
+                        self._store.get_authority_snapshot(
+                            current.case_id
+                        )
+                    )
+                    proof = FrameAdmissionProof(
+                        frame_admission_proof_id=_stable_id(
+                            "frame-admission-proof",
+                            review.frame_review_id,
+                        ),
+                        case_id=current.case_id,
+                        frame_candidate_id=(
+                            candidate.frame_candidate_id
+                        ),
+                        candidate_generation=(
+                            candidate.candidate_generation
+                        ),
+                        frame_revision_id=(
+                            candidate.proposed_frame_revision_id
+                        ),
+                        frame_content_sha256=(
+                            candidate.proposed_frame_content_sha256
+                        ),
+                        frame_review_id=review.frame_review_id,
+                        frame_review_content_sha256=(
+                            review.content_sha256
+                        ),
+                        objection_closure_record_ids=(
+                            closure_record_ids
+                        ),
+                        authority_snapshot=authority_snapshot,
+                        authority_snapshot_sha256=(
+                            authority_snapshot.content_sha256
+                        ),
+                        created_at=now,
+                    )
+                    self._store.record_frame_admission_proof(proof)
+                    self._store.accept_frame(
+                        candidate.proposed_frame,
+                        frame_admission_proof_id=(
+                            proof.frame_admission_proof_id
+                        ),
+                        expected_head_version=current.head_version,
+                        event_id=_stable_id(
+                            "event",
+                            candidate.proposed_frame_revision_id,
+                            "accepted",
+                        ),
+                        recorded_at=now,
+                        operation=message.operation,
+                    )
+                next_state = self._checkpoint(
+                    run_id=current.run_id,
+                    case_id=current.case_id,
+                    phase=ControllerPhase.READY_FOR_AGENT,
+                    step_number=current.step_number,
+                    latest_user_message=current.latest_user_message,
+                    pending_action_id=None,
+                    pending_job_ids=(),
+                    pending_decision_request_id=None,
+                    consecutive_rejections=(
+                        0
+                        if review.disposition
+                        is FrameReviewDisposition.ACCEPT
+                        else current.consecutive_rejections + 1
+                    ),
+                    now=now,
+                )
+                self._record_job_disposition(
+                    message=message,
+                    disposition=JobDisposition.COMPLETED,
+                    result_sha256=review.content_sha256,
+                    reason_code="measurement_review_committed",
+                    now=now,
+                    job_lease=job_lease,
+                )
+                return next_state
+        finally:
+            self._store.release_lease(controller_lease)
 
     def _commit_proposal(
         self,
         snapshot: ControllerState,
         proposal: AgentActionProposal,
         message: OutboxMessage,
+        job_lease,
+        *,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
     ) -> ControllerState:
         now = self._now()
         action_id = _stable_id(
@@ -710,6 +2687,10 @@ class WAJEController:
         lease = self._acquire(snapshot)
         try:
             with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=now,
+                )
                 current = self.resume(snapshot.case_id)
                 _require_same_checkpoint(snapshot, current)
                 if self._job_is_stale(message):
@@ -717,7 +2698,12 @@ class WAJEController:
                         current,
                         message,
                         now=now,
+                        job_lease=job_lease,
                     )
+                self._persist_provider_attempt_records(
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                )
                 completed_payload = {
                     "outbox_message_id": message.outbox_message_id,
                     "proposal_sha256": proposal.content_sha256,
@@ -794,6 +2780,14 @@ class WAJEController:
                         result_code=admission.reason_code,
                         now=now,
                     )
+                    self._record_job_disposition(
+                        message=message,
+                        disposition=JobDisposition.COMPLETED,
+                        result_sha256=proposal.content_sha256,
+                        reason_code="proposal_admission_rejected",
+                        now=now,
+                        job_lease=job_lease,
+                    )
                     return next_state
                 next_state, outcome_cursor = self._apply_action(
                     current=current,
@@ -807,6 +2801,14 @@ class WAJEController:
                     state=next_state,
                     result_code="accepted",
                     now=now,
+                )
+                self._record_job_disposition(
+                    message=message,
+                    disposition=JobDisposition.COMPLETED,
+                    result_sha256=proposal.content_sha256,
+                    reason_code="proposal_committed",
+                    now=now,
+                    job_lease=job_lease,
                 )
                 return next_state
         finally:
@@ -854,13 +2856,220 @@ class WAJEController:
                 revision_reason_ref=payload.revision_reason_ref,
                 measurement_design=payload.measurement_design,
             )
-            case = self._store.accept_frame(
-                frame,
-                expected_head_version=case.head_version,
-                event_id=_stable_id("event", frame.frame_revision_id, "accepted"),
-                recorded_at=now,
+            prior_candidate = self._store.get_active_frame_candidate(
+                case.case_id
             )
-            outcome_cursor = self._last_cursor(case.case_id)
+            prior_review = (
+                None
+                if prior_candidate is None
+                else self._store.get_frame_review_for_candidate(
+                    prior_candidate.frame_candidate_id
+                )
+            )
+            closure_by_objection_id = {
+                item.objection_id: item
+                for item in payload.objection_closures
+            }
+            changed_node_ids = (
+                ()
+                if prior_candidate is None
+                else derive_changed_measurement_node_ids(
+                    prior_candidate.proposed_frame.measurement_design,
+                    frame.measurement_design,
+                )
+            )
+            generation = (
+                1
+                if prior_candidate is None
+                else prior_candidate.candidate_generation + 1
+            )
+            candidate_id = _stable_id(
+                "frame-candidate",
+                action.action_id,
+                frame.content_sha256,
+            )
+            review_job_id = _stable_id(
+                "outbox",
+                candidate_id,
+                "measurement-review",
+            )
+            context_packet = self._store.get_context_packet(
+                current.context_packet_id
+            )
+            candidate = FrameCandidateRecord(
+                frame_candidate_id=candidate_id,
+                case_id=case.case_id,
+                message_binding_id=str(
+                    (
+                        context_packet.accepted_message_binding_payload
+                        or {}
+                    ).get("binding_id", "")
+                ),
+                question_revision_id=frame.question_revision_id,
+                proposed_frame_revision_id=frame.frame_revision_id,
+                proposed_frame_content_sha256=frame.content_sha256,
+                proposed_frame=frame,
+                candidate_generation=generation,
+                prior_frame_candidate_id=(
+                    None
+                    if prior_candidate is None
+                    else prior_candidate.frame_candidate_id
+                ),
+                addressed_objection_ids=(
+                    payload.addressed_objection_ids
+                ),
+                authority_epoch=current.authority_epoch,
+                source_action_id=action.action_id,
+                source_operation_id=action.operation.operation_id,
+                review_job_id=review_job_id,
+                created_at=now,
+            )
+            self._store.record_frame_candidate(candidate)
+            if prior_candidate is not None:
+                if prior_review is None:
+                    raise ControllerConflict(
+                        "replacement Frame has no prior review"
+                    )
+                objection_by_id = {
+                    objection.objection_id: objection
+                    for objection in prior_review.objections
+                }
+                for objection_id in candidate.addressed_objection_ids:
+                    objection = objection_by_id[objection_id]
+                    proposal_closure = closure_by_objection_id[
+                        objection_id
+                    ]
+                    relevant_changed_node_ids = tuple(
+                        node_id
+                        for node_id in changed_node_ids
+                        if any(
+                            measurement_paths_overlap(
+                                node_id,
+                                affected_node_id,
+                            )
+                            for affected_node_id
+                            in objection.affected_node_ids
+                        )
+                    )
+                    closure_material = {
+                        "kind": "objection-closure-derivation.v1",
+                        "objection_id": objection_id,
+                        "source_frame_review_id": (
+                            prior_review.frame_review_id
+                        ),
+                        "source_frame_candidate_id": (
+                            prior_candidate.frame_candidate_id
+                        ),
+                        "replacement_frame_candidate_id": (
+                            candidate.frame_candidate_id
+                        ),
+                        "objection_content_sha256": content_sha256(
+                            objection
+                        ),
+                        "changed_node_ids": (
+                            relevant_changed_node_ids
+                        ),
+                        "closure_explanation": (
+                            proposal_closure.explanation
+                        ),
+                        "created_by_action_id": action.action_id,
+                    }
+                    self._store.record_objection_closure(
+                        ObjectionClosureRecord(
+                            objection_closure_id=_stable_id(
+                                "objection-closure",
+                                objection_id,
+                                candidate.frame_candidate_id,
+                            ),
+                            objection_id=objection_id,
+                            source_frame_review_id=(
+                                prior_review.frame_review_id
+                            ),
+                            source_frame_candidate_id=(
+                                prior_candidate.frame_candidate_id
+                            ),
+                            replacement_frame_candidate_id=(
+                                candidate.frame_candidate_id
+                            ),
+                            objection_content_sha256=content_sha256(
+                                objection
+                            ),
+                            changed_node_ids=(
+                                relevant_changed_node_ids
+                            ),
+                            closure_explanation=(
+                                proposal_closure.explanation
+                            ),
+                            derivation_proof_sha256=content_sha256(
+                                closure_material
+                            ),
+                            created_by_action_id=action.action_id,
+                            created_at=now,
+                        )
+                    )
+            review_payload = {
+                "frame_candidate_id": candidate.frame_candidate_id,
+                "frame_content_sha256": frame.content_sha256,
+                "candidate_generation": generation,
+                "review_contract_ref": FRAME_REVIEW_CONTRACT_REF,
+            }
+            review_event_id = _stable_id(
+                "event",
+                review_job_id,
+                "enqueued",
+            )
+            review_event = self._append_event(
+                case_id=case.case_id,
+                event_id=review_event_id,
+                event_type=JournalEventType.REVIEWER_JOB_ENQUEUED,
+                action_id=action.action_id,
+                authority_ref=candidate.frame_candidate_id,
+                payload=review_payload,
+                customer_projection={
+                    "state": "reviewing_measurement_design",
+                },
+                causal_operation=action.operation,
+                now=now,
+            )
+            review_operation = OperationIdentity(
+                operation_id=_stable_id("operation", review_job_id),
+                idempotency_key=_stable_id(
+                    "review-job-key",
+                    candidate.frame_candidate_id,
+                ),
+                causation_id=action.operation.operation_id,
+                correlation_id=action.operation.correlation_id,
+                authority_revision=current.authority_epoch,
+                payload_sha256=content_sha256(review_payload),
+            )
+            authority_snapshot = self._store.get_authority_snapshot(
+                case.case_id
+            )
+            self._store.enqueue_outbox(
+                OutboxMessage(
+                    outbox_message_id=review_job_id,
+                    case_id=case.case_id,
+                    source_event_cursor=review_event.cursor,
+                    action_id=action.action_id,
+                    job_kind=AsyncJobKind.REVIEWER,
+                    operation=review_operation,
+                    expected_head_version=case.head_version,
+                    expected_authority_epoch=current.authority_epoch,
+                    authority_snapshot=authority_snapshot,
+                    authority_snapshot_sha256=(
+                        authority_snapshot.content_sha256
+                    ),
+                    idempotency_key=review_operation.idempotency_key,
+                    destination="measurement-reviewer-provider",
+                    contract_ref=FRAME_REVIEW_JOB_CONTRACT_REF,
+                    payload=review_payload,
+                    payload_sha256=content_sha256(review_payload),
+                    created_at=now,
+                )
+            )
+            phase = ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW
+            pending_job_ids = (review_job_id,)
+            outcome_cursor = review_event.cursor
         elif action.kind is ActionKind.REVISE_PLAN:
             assert isinstance(payload, RevisePlanPayload)
             prior = self._latest_plan(case.case_id)
@@ -886,6 +3095,7 @@ class WAJEController:
                 expected_head_version=case.head_version,
                 event_id=_stable_id("event", plan.plan_revision_id, "accepted"),
                 recorded_at=now,
+                operation=action.operation,
             )
             outcome_cursor = self._last_cursor(case.case_id)
         elif action.kind is ActionKind.RECORD_INTERPRETATION:
@@ -952,6 +3162,7 @@ class WAJEController:
                     ),
                     "recommended_option_id": request.recommended_option_id,
                 },
+                causal_operation=action.operation,
                 now=now,
             )
             outcome_cursor = event.cursor
@@ -997,6 +3208,7 @@ class WAJEController:
                 expected_head_version=case.head_version,
                 event_id=_stable_id("event", answer.answer_version_id, "accepted"),
                 recorded_at=now,
+                operation=action.operation,
             )
             outcome_cursor = self._last_cursor(case.case_id)
             phase = ControllerPhase.COMPLETED
@@ -1014,6 +3226,7 @@ class WAJEController:
                 ),
                 action_id=action.action_id,
                 recorded_at=now,
+                operation=action.operation,
             )
             outcome_cursor = self._last_cursor(case.case_id)
             phase = (
@@ -1041,6 +3254,7 @@ class WAJEController:
                     "state": "investigating",
                     "action_kind": action.kind.value,
                 },
+                causal_operation=action.operation,
                 now=now,
             )
             outbox = replace(outbox, source_event_cursor=event.cursor)
@@ -1063,6 +3277,7 @@ class WAJEController:
                 in {
                     ControllerPhase.WAITING_FOR_USER,
                     ControllerPhase.WAITING_FOR_EFFECT,
+                    ControllerPhase.WAITING_FOR_MEASUREMENT_REVIEW,
                 }
                 else None
             ),
@@ -1083,11 +3298,16 @@ class WAJEController:
         error_code: str | None,
         error_message: str | None,
         started_at: datetime,
+        job_lease,
     ) -> ControllerState:
         completed_at = self._now()
         lease = self._acquire(snapshot)
         try:
             with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=completed_at,
+                )
                 current = self.resume(snapshot.case_id)
                 _require_same_checkpoint(snapshot, current)
                 attempts = self._store.list_effect_attempts(
@@ -1130,6 +3350,7 @@ class WAJEController:
                         current,
                         message,
                         now=completed_at,
+                        job_lease=job_lease,
                     )
                 remaining_job_ids = tuple(
                     job_id
@@ -1199,8 +3420,28 @@ class WAJEController:
                         ),
                     },
                     customer_projection=projection,
+                    causal_operation=message.operation,
                     now=completed_at,
                 )
+                if status is EffectAttemptStatus.SUCCEEDED:
+                    assert result is not None
+                    self._record_job_disposition(
+                        message=message,
+                        disposition=JobDisposition.COMPLETED,
+                        result_sha256=result.content_sha256,
+                        reason_code="effect_result_committed",
+                        now=completed_at,
+                        job_lease=job_lease,
+                    )
+                elif status is EffectAttemptStatus.TERMINAL_FAILURE:
+                    self._record_job_disposition(
+                        message=message,
+                        disposition=JobDisposition.TERMINAL_FAILURE,
+                        result_sha256=None,
+                        reason_code=error_code or "terminal_effect_failure",
+                        now=completed_at,
+                        job_lease=job_lease,
+                    )
                 return self._checkpoint(
                     run_id=current.run_id,
                     case_id=current.case_id,
@@ -1378,6 +3619,21 @@ class WAJEController:
             if case.accepted_answer_version_id is None
             else self._store.get_answer(case.accepted_answer_version_id)
         )
+        binding = (
+            None
+            if question is None or not question.explicit_constraint_refs
+            else self._store.get_message_impact_binding(
+                question.explicit_constraint_refs[-1]
+            )
+        )
+        frame_candidate = self._store.get_active_frame_candidate(case_id)
+        frame_review = (
+            None
+            if frame_candidate is None
+            else self._store.get_frame_review_for_candidate(
+                frame_candidate.frame_candidate_id
+            )
+        )
         events = self._store.list_events(case_id)
         event_end = events[-1].cursor
         event_start = max(1, event_end - MAX_CONTEXT_EVENTS + 1)
@@ -1410,6 +3666,9 @@ class WAJEController:
             accepted_frame=frame,
             accepted_plan=plan,
             accepted_answer=answer,
+            accepted_message_binding=binding,
+            active_frame_candidate=frame_candidate,
+            latest_frame_review=frame_review,
             recent_events=business_events,
             evidence_index=tuple(
                 ContextEvidenceItem.from_record(record)
@@ -1454,6 +3713,7 @@ class WAJEController:
                 "request_sha256": action.content_sha256,
             },
             customer_projection=None,
+            causal_operation=action.operation,
             now=now,
         )
 
@@ -1467,6 +3727,7 @@ class WAJEController:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
+        causal_operation: OperationIdentity,
         now: datetime,
     ):
         return self._store.append_event(
@@ -1485,8 +3746,8 @@ class WAJEController:
                     "event-key",
                     event_id,
                 ),
-                causation_id=action_id or authority_ref or event_id,
-                correlation_id=case_id,
+                causation_id=causal_operation.operation_id,
+                correlation_id=causal_operation.correlation_id,
                 authority_revision=self._store.get_mailbox_head(
                     case_id
                 ).authority_epoch,
@@ -1506,6 +3767,9 @@ class WAJEController:
             "expected_head_version": action.expected_head_version,
         }
         idempotency_key = _stable_id("effect-key", action.action_id)
+        authority_snapshot = self._store.get_authority_snapshot(
+            action.case_id
+        )
         return OutboxMessage(
             outbox_message_id=_stable_id("outbox", action.action_id),
             case_id=action.case_id,
@@ -1526,6 +3790,10 @@ class WAJEController:
             ),
             expected_head_version=action.expected_head_version,
             expected_authority_epoch=action.operation.authority_revision,
+            authority_snapshot=authority_snapshot,
+            authority_snapshot_sha256=(
+                authority_snapshot.content_sha256
+            ),
             idempotency_key=idempotency_key,
             destination=_effect_destination(action),
             contract_ref=EFFECT_CONTRACT_REF,
@@ -1608,6 +3876,9 @@ class WAJEController:
                         payload=event_payload,
                     ),
                 )
+                authority_snapshot = (
+                    self._store.get_authority_snapshot(current.case_id)
+                )
                 self._store.enqueue_outbox(
                     OutboxMessage(
                         outbox_message_id=message_id,
@@ -1618,6 +3889,10 @@ class WAJEController:
                         operation=operation,
                         expected_head_version=current.head_version,
                         expected_authority_epoch=current.authority_epoch,
+                        authority_snapshot=authority_snapshot,
+                        authority_snapshot_sha256=(
+                            authority_snapshot.content_sha256
+                        ),
                         idempotency_key=idempotency_key,
                         destination="primary-agent-provider",
                         contract_ref=PRIMARY_AGENT_JOB_CONTRACT_REF,
@@ -1641,30 +3916,502 @@ class WAJEController:
         finally:
             self._store.release_lease(lease)
 
+    def _record_logical_model_job(
+        self,
+        *,
+        message: OutboxMessage,
+        provider,
+        role: str,
+        prompt_contract_ref: str,
+        request,
+    ) -> LogicalModelJob:
+        provider_ref = getattr(
+            provider,
+            "provider_ref",
+            "python-provider:{}.{}".format(
+                type(provider).__module__,
+                type(provider).__qualname__,
+            ),
+        )
+        model_ref = getattr(
+            provider,
+            "model_ref",
+            "provider-owned-model",
+        )
+        record = LogicalModelJob(
+            logical_model_job_id=message.outbox_message_id,
+            case_id=message.case_id,
+            job_id=message.outbox_message_id,
+            operation_id=message.operation.operation_id,
+            role=role,
+            provider_ref=str(provider_ref),
+            model_ref=str(model_ref),
+            prompt_contract_ref=prompt_contract_ref,
+            input_sha256=content_sha256(request),
+            authority_snapshot_sha256=(
+                message.authority_snapshot_sha256
+            ),
+            created_at=message.created_at,
+        )
+        return self._store.record_logical_model_job(record)
+
+    def _install_provider_attempt_observer(
+        self,
+        *,
+        provider,
+        model_job: LogicalModelJob,
+        result_kind: str,
+        result_contract_ref: str,
+    ) -> bool:
+        install = getattr(provider, "install_attempt_observer", None)
+        if install is not None:
+            install(
+                _DurableProviderAttemptObserver(
+                    store=self._store,
+                    model_job=model_job,
+                    result_kind=result_kind,
+                    result_contract_ref=result_contract_ref,
+                )
+            )
+            return True
+        self._store.record_provider_attempt_request(
+            ProviderAttemptRequest(
+                provider_attempt_id=_stable_id(
+                    "provider-attempt",
+                    model_job.logical_model_job_id,
+                    "1",
+                ),
+                logical_model_job_id=model_job.logical_model_job_id,
+                attempt_number=1,
+                prior_provider_attempt_id=None,
+                request_sha256=model_job.input_sha256,
+                requested_at=model_job.created_at,
+            )
+        )
+        return False
+
+    @staticmethod
+    def _clear_provider_attempt_observer(
+        provider,
+        installed: bool,
+    ) -> None:
+        if not installed:
+            return
+        clear = getattr(provider, "clear_attempt_observer", None)
+        if clear is None:
+            raise ControllerConflict(
+                "provider cannot clear its durable attempt observer"
+            )
+        clear()
+
+    def _persist_successful_model_result(
+        self,
+        *,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
+        result,
+        result_kind: str,
+        result_contract_ref: str,
+        recorded_at: datetime,
+    ) -> DurableModelResult:
+        self._persist_provider_attempt_records(
+            model_job=model_job,
+            provider_attempts=provider_attempts,
+        )
+        existing = self._store.get_durable_model_result(
+            model_job.logical_model_job_id
+        )
+        if existing is not None:
+            if (
+                existing.result_kind != result_kind
+                or existing.result_contract_ref != result_contract_ref
+                or existing.output_sha256 != content_sha256(result)
+            ):
+                raise ControllerConflict(
+                    "durable model result changed before authority admission"
+                )
+            return existing
+        successful = tuple(
+            (request, receipt)
+            for request, receipt in provider_attempts
+            if receipt.disposition
+            is ProviderAttemptDisposition.SUCCEEDED
+        )
+        if len(successful) != 1:
+            raise ControllerConflict(
+                "typed provider result requires one successful attempt"
+            )
+        result_payload = to_jsonable(result)
+        if not isinstance(result_payload, dict):
+            raise ControllerConflict(
+                "typed provider result must encode as an object"
+            )
+        request, receipt = successful[0]
+        return self._store.record_durable_model_result(
+            DurableModelResult(
+                durable_model_result_id=_stable_id(
+                    "durable-model-result",
+                    model_job.logical_model_job_id,
+                ),
+                logical_model_job_id=model_job.logical_model_job_id,
+                provider_attempt_id=request.provider_attempt_id,
+                result_kind=result_kind,
+                result_contract_ref=result_contract_ref,
+                result_payload=result_payload,
+                output_sha256=content_sha256(result_payload),
+                recorded_at=recorded_at,
+            )
+        )
+
+    def _load_durable_model_result(
+        self,
+        *,
+        model_job: LogicalModelJob,
+        result_kind: str,
+        result_contract_ref: str,
+    ):
+        record = self._store.get_durable_model_result(
+            model_job.logical_model_job_id
+        )
+        if record is None:
+            return None
+        if (
+            record.result_kind != result_kind
+            or record.result_contract_ref != result_contract_ref
+        ):
+            raise ControllerConflict(
+                "durable model result contract does not match its job"
+            )
+        payload = to_jsonable(record.result_payload)
+        if not isinstance(payload, dict):
+            raise ControllerConflict(
+                "durable model result payload is not an object"
+            )
+        if result_kind == "primary_agent":
+            return decode_agent_action_proposal(payload)
+        if result_kind == "message_binding":
+            return decode_typed_dataclass(
+                MessageImpactProposal,
+                payload,
+            )
+        if result_kind == "measurement_reviewer":
+            return decode_typed_dataclass(
+                FrameReviewProposal,
+                payload,
+            )
+        raise ControllerConflict("unknown durable model result kind")
+
+    def _persisted_provider_attempt_records(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[
+        tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+        ...,
+    ]:
+        return tuple(
+            (
+                self._store.get_provider_attempt_request(
+                    receipt.provider_attempt_id
+                ),
+                receipt,
+            )
+            for receipt in self._store.list_provider_attempt_receipts(
+                logical_model_job_id
+            )
+        )
+
+    def _provider_attempt_records(
+        self,
+        *,
+        model_job: LogicalModelJob,
+        provider,
+        output,
+        completed_at: datetime,
+    ) -> tuple[
+        tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+        ...,
+    ]:
+        take_trace = getattr(
+            provider,
+            "take_last_attempt_trace",
+            None,
+        )
+        traces = () if take_trace is None else tuple(take_trace())
+        output_sha = content_sha256(output)
+        if not traces:
+            traces = (
+                _LocalProviderTrace(
+                    disposition="succeeded",
+                    provider_response_id=(
+                        "local-result:{}".format(output_sha[:24])
+                    ),
+                    output_sha256=output_sha,
+                    finish_reason="typed_result",
+                    usage_payload={},
+                    completed_at=completed_at,
+                ),
+            )
+        records = []
+        prior_attempt_id = None
+        for attempt_number, trace in enumerate(traces, start=1):
+            disposition = ProviderAttemptDisposition(
+                trace.disposition
+            )
+            if (
+                disposition is ProviderAttemptDisposition.SUCCEEDED
+                and trace.output_sha256 != output_sha
+            ):
+                raise ControllerConflict(
+                    "provider trace output does not match typed result"
+                )
+            attempt_id = _stable_id(
+                "provider-attempt",
+                model_job.logical_model_job_id,
+                str(attempt_number),
+            )
+            request = ProviderAttemptRequest(
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=(
+                    model_job.logical_model_job_id
+                ),
+                attempt_number=attempt_number,
+                prior_provider_attempt_id=prior_attempt_id,
+                request_sha256=model_job.input_sha256,
+                requested_at=model_job.created_at,
+            )
+            receipt = ProviderAttemptReceipt(
+                provider_attempt_receipt_id=_stable_id(
+                    "provider-attempt-receipt",
+                    attempt_id,
+                ),
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=(
+                    model_job.logical_model_job_id
+                ),
+                disposition=disposition,
+                provider_response_id=trace.provider_response_id,
+                output_sha256=trace.output_sha256,
+                finish_reason=trace.finish_reason,
+                usage_payload=dict(trace.usage_payload),
+                completed_at=trace.completed_at,
+            )
+            records.append((request, receipt))
+            prior_attempt_id = attempt_id
+        return tuple(records)
+
+    def _provider_failure_attempt_records(
+        self,
+        *,
+        model_job: LogicalModelJob,
+        provider,
+        error: ProviderError,
+        completed_at: datetime,
+    ) -> tuple[
+        tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+        ...,
+    ]:
+        take_trace = getattr(
+            provider,
+            "take_last_attempt_trace",
+            None,
+        )
+        traces = () if take_trace is None else tuple(take_trace())
+        if not traces:
+            traces = (
+                _LocalProviderTrace(
+                    disposition=(
+                        "retryable_failure"
+                        if isinstance(error, ProviderTransientError)
+                        else "terminal_failure"
+                    ),
+                    provider_response_id=None,
+                    output_sha256=None,
+                    finish_reason=None,
+                    usage_payload={},
+                    completed_at=completed_at,
+                ),
+            )
+        records = []
+        prior_attempt_id = None
+        for attempt_number, trace in enumerate(traces, start=1):
+            disposition = ProviderAttemptDisposition(
+                trace.disposition
+            )
+            if disposition is ProviderAttemptDisposition.SUCCEEDED:
+                raise ControllerConflict(
+                    "failed provider call cannot contain a successful attempt"
+                )
+            attempt_id = _stable_id(
+                "provider-attempt",
+                model_job.logical_model_job_id,
+                str(attempt_number),
+            )
+            request = ProviderAttemptRequest(
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=model_job.logical_model_job_id,
+                attempt_number=attempt_number,
+                prior_provider_attempt_id=prior_attempt_id,
+                request_sha256=model_job.input_sha256,
+                requested_at=model_job.created_at,
+            )
+            receipt = ProviderAttemptReceipt(
+                provider_attempt_receipt_id=_stable_id(
+                    "provider-attempt-receipt",
+                    attempt_id,
+                ),
+                provider_attempt_id=attempt_id,
+                logical_model_job_id=model_job.logical_model_job_id,
+                disposition=disposition,
+                provider_response_id=trace.provider_response_id,
+                output_sha256=trace.output_sha256,
+                finish_reason=trace.finish_reason,
+                usage_payload=dict(trace.usage_payload),
+                completed_at=trace.completed_at,
+            )
+            records.append((request, receipt))
+            prior_attempt_id = attempt_id
+        return tuple(records)
+
+    def _persist_provider_attempt_records(
+        self,
+        *,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
+    ) -> None:
+        persisted = self._store.get_logical_model_job(
+            model_job.logical_model_job_id
+        )
+        if persisted != model_job:
+            raise ControllerConflict(
+                "logical model job changed before result admission"
+            )
+        for request, receipt in provider_attempts:
+            self._store.record_provider_attempt_request(request)
+            self._store.record_provider_attempt_receipt(receipt)
+
+    def _commit_provider_failure(
+        self,
+        *,
+        snapshot: ControllerState,
+        message: OutboxMessage,
+        job_lease,
+        model_job: LogicalModelJob,
+        provider_attempts: tuple[
+            tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
+            ...,
+        ],
+        error: ProviderError,
+    ) -> ControllerState:
+        now = self._now()
+        reason_code = (
+            "provider_attempts_exhausted"
+            if isinstance(error, ProviderTransientError)
+            else "permanent_provider_failure"
+        )
+        controller_lease = self._acquire(snapshot)
+        try:
+            with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=now,
+                )
+                current = self.resume(snapshot.case_id)
+                _require_same_checkpoint(snapshot, current)
+                if self._job_is_stale(message):
+                    return self._supersede_job_locked(
+                        current,
+                        message,
+                        now=now,
+                        job_lease=job_lease,
+                    )
+                self._persist_provider_attempt_records(
+                    model_job=model_job,
+                    provider_attempts=provider_attempts,
+                )
+                event_payload = {
+                    "outbox_message_id": message.outbox_message_id,
+                    "job_kind": message.job_kind.value,
+                    "logical_model_job_id": (
+                        model_job.logical_model_job_id
+                    ),
+                    "reason_code": reason_code,
+                    "attempt_count": len(provider_attempts),
+                }
+                self._append_event(
+                    case_id=message.case_id,
+                    event_id=_stable_id(
+                        "event",
+                        message.outbox_message_id,
+                        "terminal-failure",
+                    ),
+                    event_type=JournalEventType.JOB_TERMINALLY_FAILED,
+                    action_id=message.action_id,
+                    authority_ref=message.outbox_message_id,
+                    payload=event_payload,
+                    customer_projection={
+                        "state": "blocked",
+                        "reason": "analysis_provider_unavailable",
+                    },
+                    causal_operation=message.operation,
+                    now=now,
+                )
+                self._record_job_disposition(
+                    message=message,
+                    disposition=JobDisposition.TERMINAL_FAILURE,
+                    result_sha256=None,
+                    reason_code=reason_code,
+                    now=now,
+                    job_lease=job_lease,
+                )
+                return self._checkpoint(
+                    run_id=current.run_id,
+                    case_id=current.case_id,
+                    phase=ControllerPhase.BLOCKED,
+                    step_number=current.step_number,
+                    latest_user_message=current.latest_user_message,
+                    pending_action_id=None,
+                    pending_job_ids=(),
+                    pending_decision_request_id=None,
+                    consecutive_rejections=current.consecutive_rejections,
+                    now=now,
+                )
+        finally:
+            self._store.release_lease(controller_lease)
+
     def _job_is_stale(self, message: OutboxMessage) -> bool:
-        case = self._store.get_case(message.case_id)
-        mailbox = self._store.get_mailbox_head(message.case_id)
         return (
-            case.head_version != message.expected_head_version
-            or mailbox.authority_epoch
-            != message.expected_authority_epoch
+            self._store.get_authority_snapshot(message.case_id)
+            != message.authority_snapshot
         )
 
     def _supersede_job(
         self,
         snapshot: ControllerState,
         message: OutboxMessage,
+        *,
+        job_lease,
     ) -> ControllerState:
         now = self._now()
         lease = self._acquire(snapshot)
         try:
             with self._store.atomic():
+                self._store.assert_job_lease(
+                    job_lease,
+                    checked_at=now,
+                )
                 current = self.resume(snapshot.case_id)
                 _require_same_checkpoint(snapshot, current)
                 return self._supersede_job_locked(
                     current,
                     message,
                     now=now,
+                    job_lease=job_lease,
                 )
         finally:
             self._store.release_lease(lease)
@@ -1675,8 +4422,17 @@ class WAJEController:
         message: OutboxMessage,
         *,
         now: datetime,
+        job_lease=None,
     ) -> ControllerState:
         self._append_job_superseded_event(message, now=now)
+        self._record_job_disposition(
+            message=message,
+            disposition=JobDisposition.SUPERSEDED,
+            result_sha256=None,
+            reason_code="authority_fence_changed",
+            now=now,
+            job_lease=job_lease,
+        )
         return self._reconcile_mailbox_locked(current, now=now)
 
     def _append_job_superseded_event(
@@ -1732,6 +4488,55 @@ class WAJEController:
             ),
         )
 
+    def _record_job_disposition(
+        self,
+        *,
+        message: OutboxMessage,
+        disposition: JobDisposition,
+        result_sha256: str | None,
+        reason_code: str,
+        now: datetime,
+        job_lease=None,
+        observed_authority_epoch: int | None = None,
+    ) -> JobDispositionRecord:
+        observed_epoch = (
+            self._store.get_mailbox_head(
+                message.case_id
+            ).authority_epoch
+            if observed_authority_epoch is None
+            else observed_authority_epoch
+        )
+        record = JobDispositionRecord(
+            job_disposition_record_id=_stable_id(
+                "job-disposition",
+                message.outbox_message_id,
+                disposition.value,
+            ),
+            outbox_message_id=message.outbox_message_id,
+            case_id=message.case_id,
+            job_kind=message.job_kind,
+            disposition=disposition,
+            owner_id=(
+                "authority-controller:{}".format(self._owner_id)
+                if job_lease is None
+                else job_lease.owner_id
+            ),
+            fencing_token=(
+                None
+                if job_lease is None
+                else job_lease.fencing_token
+            ),
+            expected_authority_epoch=(
+                message.expected_authority_epoch
+            ),
+            observed_authority_epoch=observed_epoch,
+            result_sha256=result_sha256,
+            reason_code=reason_code,
+            operation=message.operation,
+            completed_at=now,
+        )
+        return self._store.record_job_disposition(record)
+
     def _reconcile_mailbox(
         self,
         snapshot: ControllerState,
@@ -1753,23 +4558,58 @@ class WAJEController:
         now: datetime,
     ) -> ControllerState:
         head = self._store.get_mailbox_head(current.case_id)
-        superseded_refs = {
-            event.authority_ref
-            for event in self._store.list_events(current.case_id)
-            if event.event_type is JournalEventType.JOB_SUPERSEDED
-        }
-        for job_id in current.pending_job_ids:
-            if job_id not in superseded_refs:
-                self._append_job_superseded_event(
-                    self._store.get_outbox_message(job_id),
-                    now=now,
-                )
         pending_messages = self._store.list_mailbox_messages(
             current.case_id,
             after_sequence=current.mailbox_cursor,
         )
         if not pending_messages:
             return current
+        sequence_by_message_id = {
+            item.message_id: item.sequence
+            for item in pending_messages
+        }
+        binding_jobs = tuple(
+            item
+            for item in self._store.list_pending_outbox_messages(
+                case_id=current.case_id
+            )
+            if item.job_kind is AsyncJobKind.MESSAGE_BINDING
+            and str(item.payload.get("message_id", ""))
+            in sequence_by_message_id
+        )
+        if not binding_jobs:
+            raise ControllerConflict(
+                "mailbox advance has no durable message-binding job"
+            )
+        selected_binding = min(
+            binding_jobs,
+            key=lambda item: sequence_by_message_id[
+                str(item.payload["message_id"])
+            ],
+        )
+        superseded_refs = {
+            event.authority_ref
+            for event in self._store.list_events(current.case_id)
+            if event.event_type is JournalEventType.JOB_SUPERSEDED
+        }
+        supersede_ids = set(current.pending_job_ids)
+        supersede_ids.discard(selected_binding.outbox_message_id)
+        for job_id in sorted(supersede_ids):
+            if self._store.get_job_disposition(job_id) is not None:
+                continue
+            message = self._store.get_outbox_message(job_id)
+            if job_id not in superseded_refs:
+                self._append_job_superseded_event(
+                    message,
+                    now=now,
+                )
+            self._record_job_disposition(
+                message=message,
+                disposition=JobDisposition.SUPERSEDED,
+                result_sha256=None,
+                reason_code="mailbox_authority_advanced",
+                now=now,
+            )
         messages = self._store.list_mailbox_messages(current.case_id)
         context_user_messages = tuple(
             ContextUserMessageItem.from_message(message)
@@ -1779,15 +4619,15 @@ class WAJEController:
         return self._checkpoint(
             run_id=current.run_id,
             case_id=current.case_id,
-            phase=ControllerPhase.READY_FOR_AGENT,
+            phase=ControllerPhase.WAITING_FOR_MESSAGE_BINDING,
             step_number=current.step_number,
             latest_user_message=latest_user_message,
             pending_action_id=None,
-            pending_job_ids=(),
+            pending_job_ids=(selected_binding.outbox_message_id,),
             pending_decision_request_id=None,
             consecutive_rejections=0,
             authority_epoch=head.authority_epoch,
-            mailbox_cursor=head.last_sequence,
+            mailbox_cursor=current.mailbox_cursor,
             context_user_messages=context_user_messages,
             now=now,
         )
@@ -1863,6 +4703,14 @@ class WAJEController:
                 "job already has an active worker"
             ) from error
 
+    def _release_job_lease(self, lease) -> None:
+        try:
+            self._store.release_job_lease(lease)
+        except LeaseFenceLost:
+            # A lost worker is already fenced at the authority commit boundary.
+            # Releasing its obsolete token has no remaining state transition.
+            return
+
     def _now(self) -> datetime:
         value = self._clock()
         if value.tzinfo is None or value.utcoffset() is None:
@@ -1888,6 +4736,8 @@ def _allowed_actions(case) -> tuple[ActionKind, ...]:
             ActionKind.STOP,
         )
     return tuple(ActionKind)
+
+
 
 
 def _effect_destination(action: ActionEnvelope) -> str:
@@ -1952,3 +4802,40 @@ def _require_same_checkpoint(
 def _stable_id(prefix: str, *parts: str) -> str:
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return "{}-{}".format(prefix, digest[:24])
+
+
+def _event_authority_refs(
+    events,
+    event_type: JournalEventType,
+) -> tuple[str, ...]:
+    return _ordered_unique(
+        event.authority_ref
+        for event in events
+        if event.event_type is event_type
+        and event.authority_ref is not None
+    )
+
+
+def _ordered_unique(values) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return tuple(ordered)
+
+
+def _decode_binding_object(raw: str, label: str) -> dict[str, object]:
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ControllerConflict(
+            "{} must contain valid JSON".format(label)
+        ) from error
+    if not isinstance(decoded, dict) or not decoded:
+        raise ControllerConflict(
+            "{} must decode to a non-empty object".format(label)
+        )
+    return decoded

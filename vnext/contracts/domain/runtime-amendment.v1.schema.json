@@ -1,40 +1,52 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:waje-vnext:domain:authority:v3",
-  "title": "WAJE vNext epoch-3 authority and trust records",
+  "$id": "urn:waje-vnext:domain:runtime-amendment:v1",
+  "title": "WAJE vNext Gate 3 durable runtime amendment",
   "oneOf": [
     {
-      "$ref": "#/$defs/InvestigationCase"
+      "$ref": "#/$defs/MessageIngressRecord"
     },
     {
-      "$ref": "#/$defs/QuestionRevision"
+      "$ref": "#/$defs/PendingUserMessage"
     },
     {
-      "$ref": "#/$defs/AnalysisFrameRevision"
+      "$ref": "#/$defs/MessageBindingRequest"
     },
     {
-      "$ref": "#/$defs/WorkPlanRevision"
+      "$ref": "#/$defs/MessageImpactProposal"
     },
     {
-      "$ref": "#/$defs/EvidenceRecord"
+      "$ref": "#/$defs/MessageImpactBinding"
     },
     {
-      "$ref": "#/$defs/AnswerVersion"
+      "$ref": "#/$defs/FrameCandidateRecord"
     },
     {
-      "$ref": "#/$defs/MeasurementResolutionOutcome"
+      "$ref": "#/$defs/ObjectionClosureRecord"
     },
     {
-      "$ref": "#/$defs/ResolvedEvidenceObligation"
+      "$ref": "#/$defs/FrameReviewRecord"
     },
     {
-      "$ref": "#/$defs/EvidenceValidityRecord"
+      "$ref": "#/$defs/FrameAdmissionProof"
     },
     {
-      "$ref": "#/$defs/ObligationSatisfactionRecord"
+      "$ref": "#/$defs/JobDispositionRecord"
     },
     {
-      "$ref": "#/$defs/SettlementPreconditionReport"
+      "$ref": "#/$defs/DispatcherRecoveryCursor"
+    },
+    {
+      "$ref": "#/$defs/LogicalModelJob"
+    },
+    {
+      "$ref": "#/$defs/ProviderAttemptRequest"
+    },
+    {
+      "$ref": "#/$defs/ProviderAttemptReceipt"
+    },
+    {
+      "$ref": "#/$defs/RunTraceManifest"
     }
   ],
   "$defs": {
@@ -69,222 +81,655 @@
         }
       ]
     },
-    "InvestigationCase": {
+    "MessageIngressRecord": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "ingress_record_id",
         "case_id",
-        "thread_id",
-        "lifecycle",
-        "head_version",
-        "accepted_question_revision_id",
-        "accepted_frame_revision_id",
-        "accepted_plan_revision_id",
-        "accepted_answer_version_id",
-        "analysis_cycle_id",
-        "opened_at",
-        "updated_at"
+        "run_id",
+        "message_id",
+        "mailbox_sequence",
+        "authority_epoch",
+        "operation",
+        "message_payload_sha256",
+        "created_at"
       ],
       "properties": {
+        "ingress_record_id": {
+          "type": "string"
+        },
         "case_id": {
           "type": "string"
         },
-        "thread_id": {
+        "run_id": {
           "type": "string"
         },
-        "lifecycle": {
-          "type": "string",
-          "enum": [
-            "open",
-            "waiting_for_user",
-            "stopped",
-            "closed"
-          ]
+        "message_id": {
+          "type": "string"
         },
-        "head_version": {
+        "mailbox_sequence": {
           "type": "integer"
         },
-        "accepted_question_revision_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "authority_epoch": {
+          "type": "integer"
         },
-        "accepted_frame_revision_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "operation": {
+          "$ref": "#/$defs/OperationIdentity"
         },
-        "accepted_plan_revision_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "accepted_answer_version_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "analysis_cycle_id": {
-          "type": "string"
-        },
-        "opened_at": {
+        "message_payload_sha256": {
           "type": "string",
-          "format": "date-time"
+          "pattern": "^[0-9a-f]{64}$"
         },
-        "updated_at": {
+        "created_at": {
           "type": "string",
           "format": "date-time"
         }
       }
     },
-    "QuestionRevision": {
+    "OperationIdentity": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "question_revision_id",
-        "case_id",
-        "revision_number",
-        "prior_question_revision_id",
-        "source_messages",
-        "explicit_scope_refs",
-        "explicit_constraint_refs",
-        "explicit_correction_refs",
-        "explicit_challenge_refs",
-        "accepted_clarification_refs",
-        "acceptance_event_id",
-        "accepted_head_version",
-        "analysis_cycle_id",
-        "created_at",
-        "schema_epoch"
+        "operation_id",
+        "idempotency_key",
+        "causation_id",
+        "correlation_id",
+        "authority_revision",
+        "payload_sha256"
       ],
       "properties": {
-        "question_revision_id": {
+        "operation_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "causation_id": {
+          "type": "string"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "authority_revision": {
+          "type": "integer"
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "PendingUserMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pending_message_id",
+        "ingress_record_id",
+        "case_id",
+        "message_id",
+        "binding_job_id",
+        "authority_epoch",
+        "source_operation_id",
+        "created_at"
+      ],
+      "properties": {
+        "pending_message_id": {
+          "type": "string"
+        },
+        "ingress_record_id": {
           "type": "string"
         },
         "case_id": {
           "type": "string"
         },
-        "revision_number": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "prior_question_revision_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "source_messages": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/SourceMessageRef"
-          }
-        },
-        "explicit_scope_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "explicit_constraint_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "explicit_correction_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "explicit_challenge_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "accepted_clarification_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "acceptance_event_id": {
+        "message_id": {
           "type": "string"
         },
-        "accepted_head_version": {
-          "type": "integer",
-          "minimum": 1
+        "binding_job_id": {
+          "type": "string"
         },
-        "analysis_cycle_id": {
+        "authority_epoch": {
+          "type": "integer"
+        },
+        "source_operation_id": {
           "type": "string"
         },
         "created_at": {
           "type": "string",
           "format": "date-time"
-        },
-        "schema_epoch": {
-          "const": 3
         }
       }
     },
-    "SourceMessageRef": {
+    "MessageBindingRequest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "logical_model_job_id",
+        "case_id",
         "message_id",
-        "role",
-        "sequence",
-        "content",
-        "content_sha256"
+        "message_content",
+        "prior_question_text",
+        "has_accepted_frame",
+        "binding_contract_ref",
+        "requested_at"
       ],
       "properties": {
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
         "message_id": {
           "type": "string"
         },
-        "role": {
-          "type": "string",
-          "enum": [
-            "user",
-            "assistant",
-            "system_decision"
-          ]
-        },
-        "sequence": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "content": {
+        "message_content": {
           "type": "string"
         },
-        "content_sha256": {
+        "prior_question_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_accepted_frame": {
+          "type": "boolean"
+        },
+        "binding_contract_ref": {
+          "type": "string"
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "MessageImpactProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "impact_kind",
+        "disposition",
+        "assertions",
+        "ambiguities",
+        "clarification_options",
+        "recommended_option_id"
+      ],
+      "properties": {
+        "impact_kind": {
+          "type": "string",
+          "enum": [
+            "context_only",
+            "question_revision",
+            "frame_revision",
+            "challenge",
+            "stop_request"
+          ]
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "needs_user_decision",
+            "superseded",
+            "rejected"
+          ]
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposedSemanticAssertion"
+          }
+        },
+        "ambiguities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposedSemanticAmbiguity"
+          }
+        },
+        "clarification_options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionOption"
+          }
+        },
+        "recommended_option_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ProposedSemanticAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value_json",
+        "source_start_codepoint",
+        "source_end_codepoint",
+        "material"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "metric",
+            "population",
+            "observation_unit",
+            "time_semantic",
+            "window",
+            "comparison",
+            "exposure",
+            "business_constraint",
+            "claim_strength"
+          ]
+        },
+        "value_json": {
+          "type": "string"
+        },
+        "source_start_codepoint": {
+          "type": "integer"
+        },
+        "source_end_codepoint": {
+          "type": "integer"
+        },
+        "material": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ProposedSemanticAmbiguity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "recommended_interpretation_json",
+        "source_start_codepoint",
+        "source_end_codepoint",
+        "material"
+      ],
+      "properties": {
+        "question": {
+          "type": "string"
+        },
+        "recommended_interpretation_json": {
+          "type": "string"
+        },
+        "source_start_codepoint": {
+          "type": "integer"
+        },
+        "source_end_codepoint": {
+          "type": "integer"
+        },
+        "material": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DecisionOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "option_id",
+        "label",
+        "impact"
+      ],
+      "properties": {
+        "option_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "impact": {
+          "type": "string"
+        }
+      }
+    },
+    "MessageImpactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_id",
+        "pending_message_id",
+        "case_id",
+        "message_id",
+        "authority_epoch",
+        "source_payload_sha256",
+        "impact_kind",
+        "disposition",
+        "bound_question_revision_id",
+        "prior_frame_revision_id",
+        "decision_record_ids",
+        "semantic_binding",
+        "semantic_binding_sha256",
+        "logical_model_job_id",
+        "created_at"
+      ],
+      "properties": {
+        "binding_id": {
+          "type": "string"
+        },
+        "pending_message_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "authority_epoch": {
+          "type": "integer"
+        },
+        "source_payload_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "impact_kind": {
+          "type": "string",
+          "enum": [
+            "context_only",
+            "question_revision",
+            "frame_revision",
+            "challenge",
+            "stop_request"
+          ]
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "needs_user_decision",
+            "superseded",
+            "rejected"
+          ]
+        },
+        "bound_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prior_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "semantic_binding": {
+          "$ref": "#/$defs/TypedSemanticBinding"
+        },
+        "semantic_binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "TypedSemanticBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_contract_version",
+        "source_spans",
+        "assertions",
+        "ambiguities",
+        "decision_ledger_refs"
+      ],
+      "properties": {
+        "binding_contract_version": {
+          "type": "string"
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticSourceSpan"
+          }
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticAssertion"
+          }
+        },
+        "ambiguities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticAmbiguity"
+          }
+        },
+        "decision_ledger_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "SemanticSourceSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "span_id",
+        "message_id",
+        "start_codepoint",
+        "end_codepoint",
+        "selected_text_sha256"
+      ],
+      "properties": {
+        "span_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "start_codepoint": {
+          "type": "integer"
+        },
+        "end_codepoint": {
+          "type": "integer"
+        },
+        "selected_text_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "SemanticAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertion_id",
+        "kind",
+        "value",
+        "source_span_ids",
+        "decision_record_ids",
+        "material"
+      ],
+      "properties": {
+        "assertion_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "metric",
+            "population",
+            "observation_unit",
+            "time_semantic",
+            "window",
+            "comparison",
+            "exposure",
+            "business_constraint",
+            "claim_strength"
+          ]
+        },
+        "value": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "source_span_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decision_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "material": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SemanticAmbiguity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ambiguity_id",
+        "question",
+        "material",
+        "recommended_interpretation",
+        "source_span_ids"
+      ],
+      "properties": {
+        "ambiguity_id": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "material": {
+          "type": "boolean"
+        },
+        "recommended_interpretation": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "source_span_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "FrameCandidateRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_candidate_id",
+        "case_id",
+        "message_binding_id",
+        "question_revision_id",
+        "proposed_frame_revision_id",
+        "proposed_frame_content_sha256",
+        "proposed_frame",
+        "candidate_generation",
+        "prior_frame_candidate_id",
+        "addressed_objection_ids",
+        "authority_epoch",
+        "source_action_id",
+        "source_operation_id",
+        "review_job_id",
+        "created_at"
+      ],
+      "properties": {
+        "frame_candidate_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "message_binding_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "proposed_frame_revision_id": {
+          "type": "string"
+        },
+        "proposed_frame_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "proposed_frame": {
+          "$ref": "#/$defs/AnalysisFrameRevision"
+        },
+        "candidate_generation": {
+          "type": "integer"
+        },
+        "prior_frame_candidate_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "addressed_objection_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authority_epoch": {
+          "type": "integer"
+        },
+        "source_action_id": {
+          "type": "string"
+        },
+        "source_operation_id": {
+          "type": "string"
+        },
+        "review_job_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     },
@@ -2404,343 +2849,53 @@
         }
       }
     },
-    "WorkPlanRevision": {
+    "ObjectionClosureRecord": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "plan_revision_id",
-        "case_id",
-        "frame_revision_id",
-        "revision_number",
-        "prior_plan_revision_id",
-        "created_by_action_id",
-        "created_at",
-        "revision_reason",
-        "tasks"
-      ],
-      "properties": {
-        "plan_revision_id": {
-          "type": "string"
-        },
-        "case_id": {
-          "type": "string"
-        },
-        "frame_revision_id": {
-          "type": "string"
-        },
-        "revision_number": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "prior_plan_revision_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "created_by_action_id": {
-          "type": "string"
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "revision_reason": {
-          "type": "string"
-        },
-        "tasks": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/WorkTask"
-          }
-        }
-      }
-    },
-    "WorkTask": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "task_id",
-        "business_purpose",
-        "capability_intent",
-        "target_claim_ids",
-        "depends_on_task_ids",
-        "success_conditions",
-        "stop_conditions"
-      ],
-      "properties": {
-        "task_id": {
-          "type": "string"
-        },
-        "business_purpose": {
-          "type": "string"
-        },
-        "capability_intent": {
-          "type": "string"
-        },
-        "target_claim_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "depends_on_task_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "success_conditions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "stop_conditions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "EvidenceRecord": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "evidence_record_id",
-        "case_id",
-        "frame_revision_id",
-        "plan_revision_id",
-        "task_id",
-        "capability_name",
-        "query_spec_ref",
-        "semantic_contract_refs",
-        "snapshot_release_ref",
-        "grain",
-        "evidence_type",
-        "strength",
-        "business_summary",
-        "limitations",
-        "provenance",
-        "payload_sha256",
-        "inline_payload",
-        "result_handle",
-        "created_at"
-      ],
-      "properties": {
-        "evidence_record_id": {
-          "type": "string"
-        },
-        "case_id": {
-          "type": "string"
-        },
-        "frame_revision_id": {
-          "type": "string"
-        },
-        "plan_revision_id": {
-          "type": "string"
-        },
-        "task_id": {
-          "type": "string"
-        },
-        "capability_name": {
-          "type": "string"
-        },
-        "query_spec_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "semantic_contract_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "snapshot_release_ref": {
-          "type": "string"
-        },
-        "grain": {
-          "type": "string"
-        },
-        "evidence_type": {
-          "type": "string",
-          "enum": [
-            "accounting",
-            "descriptive",
-            "association",
-            "candidate_mechanism",
-            "causal",
-            "data_quality",
-            "boundary"
-          ]
-        },
-        "strength": {
-          "type": "string",
-          "enum": [
-            "none",
-            "contextual",
-            "directional",
-            "quantified",
-            "causal"
-          ]
-        },
-        "business_summary": {
-          "type": "string"
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "provenance": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/jsonValue"
-          }
-        },
-        "payload_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "inline_payload": {
-          "anyOf": [
-            {
-              "type": "object",
-              "additionalProperties": {
-                "$ref": "#/$defs/jsonValue"
-              }
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "result_handle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ResultHandle"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      }
-    },
-    "ResultHandle": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "handle_id",
-        "content_sha256",
-        "schema_ref",
-        "row_count",
-        "storage_ref"
-      ],
-      "properties": {
-        "handle_id": {
-          "type": "string"
-        },
-        "content_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "schema_ref": {
-          "type": "string"
-        },
-        "row_count": {
-          "type": "integer"
-        },
-        "storage_ref": {
-          "type": "string"
-        }
-      }
-    },
-    "AnswerVersion": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "answer_version_id",
-        "case_id",
-        "frame_revision_id",
-        "plan_revision_id",
-        "version_number",
-        "prior_answer_version_id",
-        "status",
-        "claims",
-        "narrative_markdown",
-        "verifier_policy_version",
-        "unresolved_blocking_objection_ids",
-        "settlement_fingerprint",
+        "objection_closure_id",
+        "objection_id",
+        "source_frame_review_id",
+        "source_frame_candidate_id",
+        "replacement_frame_candidate_id",
+        "objection_content_sha256",
+        "changed_node_ids",
+        "closure_explanation",
+        "derivation_proof_sha256",
         "created_by_action_id",
         "created_at"
       ],
       "properties": {
-        "answer_version_id": {
+        "objection_closure_id": {
           "type": "string"
         },
-        "case_id": {
+        "objection_id": {
           "type": "string"
         },
-        "frame_revision_id": {
+        "source_frame_review_id": {
           "type": "string"
         },
-        "plan_revision_id": {
+        "source_frame_candidate_id": {
           "type": "string"
         },
-        "version_number": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "prior_answer_version_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "status": {
-          "const": "provisional"
-        },
-        "claims": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/AnswerClaim"
-          }
-        },
-        "narrative_markdown": {
+        "replacement_frame_candidate_id": {
           "type": "string"
         },
-        "verifier_policy_version": {
+        "objection_content_sha256": {
           "type": "string"
         },
-        "unresolved_blocking_objection_ids": {
+        "changed_node_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "settlement_fingerprint": {
-          "type": "null"
+        "closure_explanation": {
+          "type": "string"
+        },
+        "derivation_proof_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "created_by_action_id": {
           "type": "string"
@@ -2751,678 +2906,317 @@
         }
       }
     },
-    "AnswerClaim": {
+    "FrameReviewRecord": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "claim_id",
-        "statement",
-        "applicability",
-        "evidence_record_ids",
-        "boundary_ref",
-        "limitations",
-        "verifier_status",
-        "reviewer_objection_ids"
+        "frame_review_id",
+        "frame_candidate_id",
+        "reviewer_job_id",
+        "authority_epoch",
+        "disposition",
+        "objections",
+        "closure_proof_refs",
+        "reviewed_frame_content_sha256",
+        "logical_model_job_id",
+        "created_at"
       ],
       "properties": {
-        "claim_id": {
+        "frame_review_id": {
           "type": "string"
         },
-        "statement": {
+        "frame_candidate_id": {
           "type": "string"
         },
-        "applicability": {
+        "reviewer_job_id": {
           "type": "string"
         },
-        "evidence_record_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "authority_epoch": {
+          "type": "integer"
         },
-        "boundary_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "verifier_status": {
+        "disposition": {
           "type": "string",
           "enum": [
-            "pending",
-            "accepted",
-            "boundary_only",
-            "rejected"
+            "accept",
+            "revise",
+            "block"
           ]
         },
-        "reviewer_objection_ids": {
+        "objections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MeasurementReviewObjection"
+          }
+        },
+        "closure_proof_refs": {
           "type": "array",
           "items": {
             "type": "string"
           }
-        }
-      }
-    },
-    "MeasurementResolutionOutcome": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "resolution_outcome_id",
-        "case_id",
-        "question_revision_id",
-        "frame_revision_id",
-        "estimand_id",
-        "semantic_measurement_id",
-        "authority_binding_id",
-        "kind",
-        "resolved_instance",
-        "boundary",
-        "requirement_boundaries",
-        "created_at",
-        "schema_epoch"
-      ],
-      "properties": {
-        "resolution_outcome_id": {
+        },
+        "reviewed_frame_content_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "case_id": {
+        "logical_model_job_id": {
           "type": "string"
-        },
-        "question_revision_id": {
-          "type": "string"
-        },
-        "frame_revision_id": {
-          "type": "string"
-        },
-        "estimand_id": {
-          "type": "string"
-        },
-        "semantic_measurement_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "authority_binding_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "resolved_instance",
-            "typed_resolution_boundary"
-          ]
-        },
-        "resolved_instance": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ResolvedMeasurementInstance"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "boundary": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TypedResolutionBoundary"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "requirement_boundaries": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/RequirementResolutionBoundary"
-          }
         },
         "created_at": {
           "type": "string",
           "format": "date-time"
-        },
-        "schema_epoch": {
-          "const": 3
         }
       }
     },
-    "ResolvedMeasurementInstance": {
+    "MeasurementReviewObjection": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "resolution_id",
-        "semantic_measurement_id",
-        "authority_binding_id",
-        "frame_revision_id",
-        "estimand_id",
-        "context",
-        "target_period_ref",
-        "windows",
-        "expected_scope_id",
-        "expected_grain_ref",
-        "expected_unit_ref",
-        "expected_exposure_id",
-        "eligibility_id",
-        "resolver_contract_ref",
-        "resolver_input_bundle_sha256",
-        "field_derivation_proof_sha256"
+        "objection_id",
+        "code",
+        "severity",
+        "affected_node_ids",
+        "explanation"
       ],
       "properties": {
-        "resolution_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "semantic_measurement_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "authority_binding_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "frame_revision_id": {
+        "objection_id": {
           "type": "string"
         },
-        "estimand_id": {
+        "code": {
           "type": "string"
         },
-        "context": {
-          "$ref": "#/$defs/ResolutionContext"
-        },
-        "target_period_ref": {
-          "type": "string"
-        },
-        "windows": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ResolvedWindow"
-          }
-        },
-        "expected_scope_id": {
-          "type": "string"
-        },
-        "expected_grain_ref": {
-          "type": "string"
-        },
-        "expected_unit_ref": {
-          "type": "string"
-        },
-        "expected_exposure_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "eligibility_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "resolver_contract_ref": {
-          "type": "string"
-        },
-        "resolver_input_bundle_sha256": {
-          "type": "string"
-        },
-        "field_derivation_proof_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
-    },
-    "ResolutionContext": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "as_of_instant",
-        "timezone",
-        "business_day_cutoff",
-        "ambiguous_local_time_policy",
-        "calendar_version_ref",
-        "holiday_version_ref",
-        "fiscal_version_ref",
-        "data_contract_version_ref",
-        "snapshot_release_ref",
-        "coverage_watermark_ref",
-        "late_arrival_policy_ref"
-      ],
-      "properties": {
-        "as_of_instant": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "timezone": {
-          "type": "string"
-        },
-        "business_day_cutoff": {
-          "type": "string"
-        },
-        "ambiguous_local_time_policy": {
+        "severity": {
           "type": "string",
           "enum": [
-            "earliest_fold",
-            "latest_fold",
-            "reject"
+            "advisory",
+            "material",
+            "blocking"
           ]
         },
-        "calendar_version_ref": {
-          "type": "string"
-        },
-        "holiday_version_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "fiscal_version_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "data_contract_version_ref": {
-          "type": "string"
-        },
-        "snapshot_release_ref": {
-          "type": "string"
-        },
-        "coverage_watermark_ref": {
-          "type": "string"
-        },
-        "late_arrival_policy_ref": {
-          "type": "string"
-        }
-      }
-    },
-    "ResolvedWindow": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "operand_id",
-        "window_rule_id",
-        "anchor_date",
-        "period_offset",
-        "actual_start",
-        "actual_end",
-        "start_instant",
-        "end_instant",
-        "elapsed_seconds",
-        "actual_calendar_days",
-        "selected_calendar_dates_count",
-        "observed_calendar_dates_count",
-        "valid_calendar_dates_count",
-        "selected_calendar_dates_sha256",
-        "calendar_coverage_receipt_sha256",
-        "exposure_facts"
-      ],
-      "properties": {
-        "operand_id": {
-          "type": "string"
-        },
-        "window_rule_id": {
-          "type": "string"
-        },
-        "anchor_date": {
-          "type": "string",
-          "format": "date"
-        },
-        "period_offset": {
-          "type": "integer"
-        },
-        "actual_start": {
-          "type": "string",
-          "format": "date"
-        },
-        "actual_end": {
-          "type": "string",
-          "format": "date"
-        },
-        "start_instant": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "end_instant": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "elapsed_seconds": {
-          "type": "integer"
-        },
-        "actual_calendar_days": {
-          "type": "integer"
-        },
-        "selected_calendar_dates_count": {
-          "type": "integer"
-        },
-        "observed_calendar_dates_count": {
-          "type": "integer"
-        },
-        "valid_calendar_dates_count": {
-          "type": "integer"
-        },
-        "selected_calendar_dates_sha256": {
-          "type": "string"
-        },
-        "calendar_coverage_receipt_sha256": {
-          "type": "string"
-        },
-        "exposure_facts": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ResolvedExposureFact"
-          }
-        }
-      }
-    },
-    "ResolvedExposureFact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "exposure_id",
-        "basis",
-        "unit_ref",
-        "expected_exposure_decimal",
-        "observed_exposure_decimal",
-        "valid_exposure_decimal",
-        "invalid_exposure_decimal",
-        "missing_exposure_decimal",
-        "coverage_ratio_decimal",
-        "at_risk_exposure_decimal",
-        "source_kind",
-        "source_receipt_sha256"
-      ],
-      "properties": {
-        "exposure_id": {
-          "type": "string"
-        },
-        "basis": {
-          "type": "string",
-          "enum": [
-            "calendar",
-            "eligible",
-            "observed",
-            "valid",
-            "missing_invalid",
-            "at_risk"
-          ]
-        },
-        "unit_ref": {
-          "type": "string"
-        },
-        "expected_exposure_decimal": {
-          "type": "string"
-        },
-        "observed_exposure_decimal": {
-          "type": "string"
-        },
-        "valid_exposure_decimal": {
-          "type": "string"
-        },
-        "invalid_exposure_decimal": {
-          "type": "string"
-        },
-        "missing_exposure_decimal": {
-          "type": "string"
-        },
-        "coverage_ratio_decimal": {
-          "type": "string"
-        },
-        "at_risk_exposure_decimal": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "source_kind": {
-          "type": "string",
-          "enum": [
-            "contract_catalog",
-            "snapshot_catalog",
-            "calendar_derivation"
-          ]
-        },
-        "source_receipt_sha256": {
-          "type": "string"
-        }
-      }
-    },
-    "TypedResolutionBoundary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "boundary_code",
-        "boundary_policy_ref",
-        "failed_requirement_ids",
-        "failed_contract_refs",
-        "inspection_evidence_refs",
-        "allowed_claim_ceiling",
-        "derivation_proof_sha256"
-      ],
-      "properties": {
-        "boundary_code": {
-          "type": "string"
-        },
-        "boundary_policy_ref": {
-          "type": "string"
-        },
-        "failed_requirement_ids": {
+        "affected_node_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "failed_contract_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "inspection_evidence_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "allowed_claim_ceiling": {
-          "type": "string",
-          "enum": [
-            "boundary_only",
-            "descriptive",
-            "accounting",
-            "associational",
-            "causal"
-          ]
-        },
-        "derivation_proof_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+        "explanation": {
+          "type": "string"
         }
       }
     },
-    "RequirementResolutionBoundary": {
+    "FrameAdmissionProof": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "evidence_requirement_id",
-        "boundary_code",
-        "boundary_policy_ref",
-        "failed_contract_refs",
-        "inspection_evidence_refs",
-        "allowed_claim_ceiling",
-        "derivation_proof_sha256"
-      ],
-      "properties": {
-        "evidence_requirement_id": {
-          "type": "string"
-        },
-        "boundary_code": {
-          "type": "string"
-        },
-        "boundary_policy_ref": {
-          "type": "string"
-        },
-        "failed_contract_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "inspection_evidence_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "allowed_claim_ceiling": {
-          "type": "string",
-          "enum": [
-            "boundary_only",
-            "descriptive",
-            "accounting",
-            "associational",
-            "causal"
-          ]
-        },
-        "derivation_proof_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
-    },
-    "ResolvedEvidenceObligation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "obligation_id",
+        "frame_admission_proof_id",
         "case_id",
+        "frame_candidate_id",
+        "candidate_generation",
         "frame_revision_id",
-        "estimand_id",
-        "evidence_requirement_id",
-        "evidence_requirement_sha256",
-        "resolution_outcome_id",
-        "execution_disposition",
-        "boundary_code",
-        "closure_definition_sha256",
-        "field_derivation_proof_sha256",
-        "created_at",
-        "schema_epoch"
+        "frame_content_sha256",
+        "frame_review_id",
+        "frame_review_content_sha256",
+        "objection_closure_record_ids",
+        "authority_snapshot",
+        "authority_snapshot_sha256",
+        "created_at"
       ],
       "properties": {
-        "obligation_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+        "frame_admission_proof_id": {
+          "type": "string"
         },
         "case_id": {
           "type": "string"
         },
+        "frame_candidate_id": {
+          "type": "string"
+        },
+        "candidate_generation": {
+          "type": "integer"
+        },
         "frame_revision_id": {
           "type": "string"
         },
-        "estimand_id": {
+        "frame_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "frame_review_id": {
           "type": "string"
         },
-        "evidence_requirement_id": {
-          "type": "string"
-        },
-        "evidence_requirement_sha256": {
+        "frame_review_content_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "resolution_outcome_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+        "objection_closure_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
-        "execution_disposition": {
-          "type": "string",
-          "enum": [
-            "executable",
-            "typed_boundary",
-            "blocked"
-          ]
+        "authority_snapshot": {
+          "$ref": "#/$defs/AuthoritySnapshot"
         },
-        "boundary_code": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "closure_definition_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "field_derivation_proof_sha256": {
+        "authority_snapshot_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
         "created_at": {
           "type": "string",
           "format": "date-time"
-        },
-        "schema_epoch": {
-          "const": 3
         }
       }
     },
-    "EvidenceValidityRecord": {
+    "AuthoritySnapshot": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "evidence_validity_record_id",
-        "evidence_record_id",
-        "prior_validity_record_id",
-        "status",
+        "case_id",
+        "head_version",
+        "mailbox_authority_epoch",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id",
+        "accepted_plan_revision_id",
+        "active_frame_candidate_generation",
+        "active_frame_candidate_sha256",
+        "obligation_state_version",
+        "evidence_admission_state_version",
+        "contradiction_state_version"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "head_version": {
+          "type": "integer"
+        },
+        "mailbox_authority_epoch": {
+          "type": "integer"
+        },
+        "accepted_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_frame_candidate_generation": {
+          "type": "integer"
+        },
+        "active_frame_candidate_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "obligation_state_version": {
+          "type": "integer"
+        },
+        "evidence_admission_state_version": {
+          "type": "integer"
+        },
+        "contradiction_state_version": {
+          "type": "integer"
+        }
+      }
+    },
+    "JobDispositionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_disposition_record_id",
+        "outbox_message_id",
+        "case_id",
+        "job_kind",
+        "disposition",
+        "owner_id",
+        "fencing_token",
+        "expected_authority_epoch",
+        "observed_authority_epoch",
+        "result_sha256",
         "reason_code",
-        "source_authority_ref",
-        "verifier_policy_version",
-        "expected_prior_content_sha256",
-        "created_at",
-        "schema_epoch"
+        "operation",
+        "completed_at"
       ],
       "properties": {
-        "evidence_validity_record_id": {
+        "job_disposition_record_id": {
           "type": "string"
         },
-        "evidence_record_id": {
+        "outbox_message_id": {
           "type": "string"
         },
-        "prior_validity_record_id": {
+        "case_id": {
+          "type": "string"
+        },
+        "job_kind": {
+          "type": "string",
+          "enum": [
+            "controller_wake",
+            "message_binding",
+            "primary_agent",
+            "semantic_inspection",
+            "data_probe",
+            "capability",
+            "sensitivity",
+            "reviewer",
+            "obligation",
+            "projection"
+          ]
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "superseded",
+            "terminal_failure"
+          ]
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "fencing_token": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_authority_epoch": {
+          "type": "integer"
+        },
+        "observed_authority_epoch": {
+          "type": "integer"
+        },
+        "result_sha256": {
           "anyOf": [
             {
               "type": "string"
@@ -3430,27 +3224,214 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "admitted_valid",
-            "never_admitted",
-            "superseded",
-            "revoked"
           ]
         },
         "reason_code": {
           "type": "string"
         },
-        "source_authority_ref": {
+        "operation": {
+          "$ref": "#/$defs/OperationIdentity"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "DispatcherRecoveryCursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatcher_id",
+        "last_outbox_created_at",
+        "last_source_event_cursor",
+        "last_outbox_message_id",
+        "updated_at"
+      ],
+      "properties": {
+        "dispatcher_id": {
           "type": "string"
         },
-        "verifier_policy_version": {
+        "last_outbox_created_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_source_event_cursor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_outbox_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "LogicalModelJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_model_job_id",
+        "case_id",
+        "job_id",
+        "operation_id",
+        "role",
+        "provider_ref",
+        "model_ref",
+        "prompt_contract_ref",
+        "input_sha256",
+        "authority_snapshot_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "logical_model_job_id": {
           "type": "string"
         },
-        "expected_prior_content_sha256": {
+        "case_id": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "provider_ref": {
+          "type": "string"
+        },
+        "model_ref": {
+          "type": "string"
+        },
+        "prompt_contract_ref": {
+          "type": "string"
+        },
+        "input_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ProviderAttemptRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_attempt_id",
+        "logical_model_job_id",
+        "attempt_number",
+        "prior_provider_attempt_id",
+        "request_sha256",
+        "requested_at"
+      ],
+      "properties": {
+        "provider_attempt_id": {
+          "type": "string"
+        },
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "attempt_number": {
+          "type": "integer"
+        },
+        "prior_provider_attempt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ProviderAttemptReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_attempt_receipt_id",
+        "provider_attempt_id",
+        "logical_model_job_id",
+        "disposition",
+        "provider_response_id",
+        "output_sha256",
+        "finish_reason",
+        "usage_payload",
+        "completed_at"
+      ],
+      "properties": {
+        "provider_attempt_receipt_id": {
+          "type": "string"
+        },
+        "provider_attempt_id": {
+          "type": "string"
+        },
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "retryable_failure",
+            "terminal_failure",
+            "refusal",
+            "incomplete",
+            "multiple_tool_calls",
+            "superseded"
+          ]
+        },
+        "provider_response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_sha256": {
           "anyOf": [
             {
               "type": "string",
@@ -3461,62 +3442,7 @@
             }
           ]
         },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "schema_epoch": {
-          "const": 3
-        }
-      }
-    },
-    "ObligationSatisfactionRecord": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "satisfaction_record_id",
-        "obligation_id",
-        "status",
-        "evidence_admission_record_ids",
-        "evidence_use_binding_ids",
-        "resolution_boundary_outcome_id",
-        "contradiction_disposition_refs",
-        "verifier_policy_version",
-        "input_set_sha256",
-        "created_at",
-        "schema_epoch"
-      ],
-      "properties": {
-        "satisfaction_record_id": {
-          "type": "string"
-        },
-        "obligation_id": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "open",
-            "satisfied",
-            "boundary",
-            "blocked",
-            "superseded"
-          ]
-        },
-        "evidence_admission_record_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "evidence_use_binding_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "resolution_boundary_outcome_id": {
+        "finish_reason": {
           "anyOf": [
             {
               "type": "string"
@@ -3526,90 +3452,135 @@
             }
           ]
         },
-        "contradiction_disposition_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
+        "usage_payload": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
           }
         },
-        "verifier_policy_version": {
-          "type": "string"
-        },
-        "input_set_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "created_at": {
+        "completed_at": {
           "type": "string",
           "format": "date-time"
-        },
-        "schema_epoch": {
-          "const": 3
         }
       }
     },
-    "SettlementPreconditionReport": {
+    "RunTraceManifest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "settlement_precondition_report_id",
-        "case_id",
-        "question_revision_id",
-        "frame_revision_id",
-        "plan_revision_id",
-        "accepted_head_version",
-        "semantic_measurement_ids",
-        "authority_binding_ids",
-        "resolution_outcome_ids",
-        "logical_execution_ids",
-        "obligation_satisfaction_record_ids",
-        "evidence_compatibility_proof_ids",
-        "objection_disposition_ids",
         "trace_manifest_id",
-        "verifier_policy_version",
-        "status",
-        "fail_reason_codes",
-        "derived_input_sha256",
-        "created_at",
-        "schema_epoch"
+        "case_id",
+        "run_id",
+        "trace_profile",
+        "start_event_cursor",
+        "terminal_event_cursor",
+        "event_operation_lineage",
+        "ingress_record_ids",
+        "message_binding_ids",
+        "frame_candidate_ids",
+        "frame_candidate_supersession_ids",
+        "frame_review_ids",
+        "job_disposition_record_ids",
+        "logical_model_job_ids",
+        "provider_attempt_receipt_ids",
+        "durable_model_result_ids",
+        "plan_revision_ids",
+        "resolution_outcome_ids",
+        "obligation_ids",
+        "effect_attempt_ids",
+        "evidence_record_ids",
+        "claim_ids",
+        "provisional_answer_version_ids",
+        "lineage_sha256",
+        "built_at"
       ],
       "properties": {
-        "settlement_precondition_report_id": {
+        "trace_manifest_id": {
           "type": "string"
         },
         "case_id": {
           "type": "string"
         },
-        "question_revision_id": {
+        "run_id": {
           "type": "string"
         },
-        "frame_revision_id": {
-          "type": "string"
+        "trace_profile": {
+          "type": "string",
+          "enum": [
+            "case_authority_lane"
+          ]
         },
-        "plan_revision_id": {
-          "type": "string"
+        "start_event_cursor": {
+          "type": "integer"
         },
-        "accepted_head_version": {
-          "type": "integer",
-          "minimum": 0
+        "terminal_event_cursor": {
+          "type": "integer"
         },
-        "semantic_measurement_ids": {
+        "event_operation_lineage": {
           "type": "array",
           "items": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "minItems": 1,
-          "uniqueItems": true
+            "$ref": "#/$defs/RunTraceEventLink"
+          }
         },
-        "authority_binding_ids": {
+        "ingress_record_ids": {
           "type": "array",
           "items": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "minItems": 1,
-          "uniqueItems": true
+            "type": "string"
+          }
+        },
+        "message_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frame_candidate_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frame_candidate_supersession_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frame_review_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "job_disposition_record_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "logical_model_job_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider_attempt_receipt_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "durable_model_result_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "plan_revision_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "resolution_outcome_ids": {
           "type": "array",
@@ -3617,59 +3588,80 @@
             "type": "string"
           }
         },
-        "logical_execution_ids": {
+        "obligation_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "obligation_satisfaction_record_ids": {
+        "effect_attempt_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "evidence_compatibility_proof_ids": {
+        "evidence_record_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "objection_disposition_ids": {
+        "claim_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "trace_manifest_id": {
-          "type": "string"
-        },
-        "verifier_policy_version": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "eligible_for_future_settlement",
-            "blocked"
-          ]
-        },
-        "fail_reason_codes": {
+        "provisional_answer_version_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "derived_input_sha256": {
+        "lineage_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "created_at": {
+        "built_at": {
           "type": "string",
           "format": "date-time"
+        }
+      }
+    },
+    "RunTraceEventLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "event_id",
+        "operation_id",
+        "causation_id",
+        "correlation_id",
+        "authority_revision",
+        "payload_sha256"
+      ],
+      "properties": {
+        "cursor": {
+          "type": "integer"
         },
-        "schema_epoch": {
-          "const": 3
+        "event_id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "causation_id": {
+          "type": "string"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "authority_revision": {
+          "type": "integer"
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     }

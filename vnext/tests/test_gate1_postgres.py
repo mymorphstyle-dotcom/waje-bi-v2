@@ -16,6 +16,9 @@ from gate1_fixtures import (
     make_frame,
     make_objection,
     make_plan,
+    make_resolution_admission,
+    make_resolution_verifier,
+    record_reviewed_frame,
 )
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
@@ -23,12 +26,16 @@ from waje_vnext.domain.authority import (
     ReviewerObjectionStatus,
 )
 from waje_vnext.domain.canonical import content_sha256
-from waje_vnext.domain.identity import compute_resolution_outcome_id
+from waje_vnext.domain.identity import (
+    compute_resolution_outcome_id,
+    compute_typed_boundary_derivation_proof,
+)
 from waje_vnext.domain.measurement import (
     ClaimStrengthCeiling,
     EvidenceValidityRecord,
     EvidenceValidityStatus,
     MeasurementResolutionOutcome,
+    ObligationExecutionDisposition,
     ObligationSatisfactionRecord,
     ObligationSatisfactionStatus,
     ResolvedEvidenceObligation,
@@ -43,6 +50,7 @@ from waje_vnext.storage import (
     StaleHead,
     apply_gate1_migration,
     apply_gate3_1_migration,
+    apply_gate3_2_migration,
 )
 
 
@@ -52,6 +60,7 @@ MIGRATION = ROOT / "storage/migrations/001_gate1_authority.sql"
 MIGRATION_3 = (
     ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
 )
+MIGRATION_4 = ROOT / "storage/migrations/004_gate3_2_runtime_sagas.sql"
 
 
 @unittest.skipUnless(DSN, "WAJE_VNEXT_DATABASE_URL is not configured")
@@ -64,10 +73,14 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
         if first != second:
             raise AssertionError("migration checksum changed across idempotent apply")
         apply_gate3_1_migration(DSN, migration_path=MIGRATION_3)
+        apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
 
     def setUp(self) -> None:
         assert DSN is not None
-        self.store = PostgresAuthorityStore.connect(DSN)
+        self.store = PostgresAuthorityStore.connect(
+            DSN,
+            resolution_input_verifier=make_resolution_verifier(),
+        )
 
     def tearDown(self) -> None:
         self.store.close()
@@ -87,12 +100,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             question=question,
             action_id="action-concurrent-a",
         )
-        second = make_frame(
-            frame_id="frame-concurrent-b",
-            case_id="case-concurrent",
-            question=question,
-            action_id="action-concurrent-b",
-        )
+        proof_id = record_reviewed_frame(self.store, first)
         barrier = threading.Barrier(2)
 
         def attempt(frame: AnalysisFrameRevision, event_id: str) -> str:
@@ -102,6 +110,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                 barrier.wait()
                 store.accept_frame(
                     frame,
+                    frame_admission_proof_id=proof_id,
                     expected_head_version=1,
                     event_id=event_id,
                     recorded_at=frame.created_at,
@@ -123,7 +132,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                     ),
                     executor.submit(
                         attempt,
-                        second,
+                        first,
                         "event-concurrent-b",
                     ),
                 )
@@ -148,8 +157,10 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             question=question,
             frame_id="case-g3-derived:frame:1",
         )
+        proof_id = record_reviewed_frame(self.store, frame)
         case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=proof_id,
             expected_head_version=case.head_version,
             event_id="case-g3-derived:event:frame",
             recorded_at=NOW,
@@ -178,7 +189,11 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             kind=ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY,
             resolved_instance=None,
             boundary=TypedResolutionBoundary(
-                boundary_code="snapshot_incomplete",
+                boundary_code="incomplete_period",
+                boundary_policy_ref=(
+                    "waje-vnext://measurement-boundary-policy/"
+                    "registry.v1"
+                ),
                 failed_requirement_ids=(
                     requirement.evidence_requirement_id,
                 ),
@@ -189,16 +204,34 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                 ),
                 derivation_proof_sha256="b" * 64,
             ),
+            requirement_boundaries=(),
             created_at=NOW,
+        )
+        outcome = replace(
+            outcome,
+            boundary=replace(
+                outcome.boundary,
+                derivation_proof_sha256=(
+                    compute_typed_boundary_derivation_proof(outcome)
+                ),
+            ),
         )
         outcome = replace(
             outcome,
             resolution_outcome_id=compute_resolution_outcome_id(outcome),
         )
+        admission = make_resolution_admission(outcome)
         self.store.record_measurement_resolution(
             outcome,
+            admission=admission,
             expected_head_version=case.head_version,
             event_id="case-g3-derived:event:resolution",
+        )
+        self.assertEqual(
+            self.store.get_measurement_resolution_admission(
+                outcome.resolution_outcome_id
+            ),
+            admission,
         )
         obligation = ResolvedEvidenceObligation(
             obligation_id="c" * 64,
@@ -208,6 +241,10 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             evidence_requirement_id=requirement.evidence_requirement_id,
             evidence_requirement_sha256=content_sha256(requirement),
             resolution_outcome_id=outcome.resolution_outcome_id,
+            execution_disposition=(
+                ObligationExecutionDisposition.TYPED_BOUNDARY
+            ),
+            boundary_code="incomplete_period",
             closure_definition_sha256="d" * 64,
             field_derivation_proof_sha256="e" * 64,
             created_at=NOW,
@@ -301,8 +338,10 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
         )
         case, _ = accept_initial_question(self.store, case)
         frame = make_frame()
+        proof_id = record_reviewed_frame(self.store, frame)
         case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=proof_id,
             expected_head_version=case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -361,6 +400,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
 
         retried = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=proof_id,
             expected_head_version=0,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -374,6 +414,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                     frame_id="frame-2",
                     prior_id="frame-1",
                 ),
+                frame_admission_proof_id=proof_id,
                 expected_head_version=0,
                 event_id="event-frame-stale",
                 recorded_at=NOW,
@@ -399,8 +440,10 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             frame_id="frame-2",
             prior_id="frame-1",
         )
+        proof_2_id = record_reviewed_frame(self.store, frame_2)
         case = self.store.accept_frame(
             frame_2,
+            frame_admission_proof_id=proof_2_id,
             expected_head_version=case.head_version,
             event_id="event-frame-2",
             recorded_at=frame_2.created_at,

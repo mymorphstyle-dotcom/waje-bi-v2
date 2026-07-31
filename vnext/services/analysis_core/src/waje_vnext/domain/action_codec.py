@@ -12,6 +12,7 @@ from waje_vnext.domain.actions import (
     CallCapabilityPayload,
     InspectSemanticsPayload,
     ProposedClaim,
+    ProposedObjectionClosure,
     ProposeAnswerPayload,
     RecordInterpretationPayload,
     ReviseFramePayload,
@@ -49,6 +50,7 @@ def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
         "question_revision_id",
         "revision_reason_ref",
         "measurement_design",
+        "objection_closures",
     }
     _require_exact_keys(value, fields, "revise_frame payload")
     return ReviseFramePayload(
@@ -57,6 +59,13 @@ def _decode_revise_frame(value: Mapping[str, Any]) -> ReviseFramePayload:
         measurement_design=decode_typed_dataclass(
             MeasurementDesign,
             _object(value, "measurement_design"),
+        ),
+        objection_closures=tuple(
+            decode_typed_dataclass(
+                ProposedObjectionClosure,
+                _mapping(item, "objection closure"),
+            )
+            for item in _array(value, "objection_closures")
         ),
     )
 
