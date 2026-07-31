@@ -37,6 +37,12 @@
       "$ref": "#/$defs/DispatcherRecoveryCursor"
     },
     {
+      "$ref": "#/$defs/ModelConfigurationIdentity"
+    },
+    {
+      "$ref": "#/$defs/ModelRequestArtifact"
+    },
+    {
       "$ref": "#/$defs/LogicalModelJob"
     },
     {
@@ -44,6 +50,9 @@
     },
     {
       "$ref": "#/$defs/ProviderAttemptReceipt"
+    },
+    {
+      "$ref": "#/$defs/DurableModelResult"
     },
     {
       "$ref": "#/$defs/RunTraceManifest"
@@ -3292,6 +3301,193 @@
         }
       }
     },
+    "ModelConfigurationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_role",
+        "provider_ref",
+        "endpoint_ref",
+        "protocol_ref",
+        "adapter_release_ref",
+        "adapter_release_sha256",
+        "model_ref",
+        "thinking",
+        "stable_parameters",
+        "delivery_policy_ref",
+        "max_attempts",
+        "timeout_seconds",
+        "configuration_sha256"
+      ],
+      "properties": {
+        "execution_role": {
+          "type": "string",
+          "enum": [
+            "primary_business_analysis_agent",
+            "runtime_reviewer",
+            "evaluation_reviewer"
+          ]
+        },
+        "provider_ref": {
+          "type": "string"
+        },
+        "endpoint_ref": {
+          "type": "string"
+        },
+        "protocol_ref": {
+          "type": "string"
+        },
+        "adapter_release_ref": {
+          "type": "string"
+        },
+        "adapter_release_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_ref": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "stable_parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "delivery_policy_ref": {
+          "type": "string"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ModelRequestArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_request_artifact_id",
+        "logical_model_job_id",
+        "execution_role",
+        "logical_job_kind",
+        "input_view_kind",
+        "input_view_ref",
+        "input_view_sha256",
+        "typed_request_contract_ref",
+        "typed_request_sha256",
+        "prompt_bundle_ref",
+        "prompt_bundle_sha256",
+        "tool_bundle_ref",
+        "tool_bundle_sha256",
+        "output_contract_ref",
+        "output_contract_sha256",
+        "decoder_release_ref",
+        "decoder_release_sha256",
+        "provider_request_body",
+        "provider_request_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "model_request_artifact_id": {
+          "type": "string"
+        },
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "execution_role": {
+          "type": "string",
+          "enum": [
+            "primary_business_analysis_agent",
+            "runtime_reviewer",
+            "evaluation_reviewer"
+          ]
+        },
+        "logical_job_kind": {
+          "type": "string"
+        },
+        "input_view_kind": {
+          "type": "string",
+          "enum": [
+            "message_binding_view",
+            "agent_world_view",
+            "measurement_review_view",
+            "evaluation_review_view"
+          ]
+        },
+        "input_view_ref": {
+          "type": "string"
+        },
+        "input_view_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "typed_request_contract_ref": {
+          "type": "string"
+        },
+        "typed_request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "prompt_bundle_ref": {
+          "type": "string"
+        },
+        "prompt_bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "tool_bundle_ref": {
+          "type": "string"
+        },
+        "tool_bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "output_contract_ref": {
+          "type": "string"
+        },
+        "output_contract_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "decoder_release_ref": {
+          "type": "string"
+        },
+        "decoder_release_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider_request_body": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "provider_request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "LogicalModelJob": {
       "type": "object",
       "additionalProperties": false,
@@ -3305,6 +3501,10 @@
         "model_ref",
         "prompt_contract_ref",
         "input_sha256",
+        "configuration_identity",
+        "configuration_sha256",
+        "model_request_artifact",
+        "model_request_artifact_sha256",
         "authority_snapshot_sha256",
         "created_at"
       ],
@@ -3337,6 +3537,20 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
+        "configuration_identity": {
+          "$ref": "#/$defs/ModelConfigurationIdentity"
+        },
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_request_artifact": {
+          "$ref": "#/$defs/ModelRequestArtifact"
+        },
+        "model_request_artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "authority_snapshot_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
@@ -3355,7 +3569,10 @@
         "logical_model_job_id",
         "attempt_number",
         "prior_provider_attempt_id",
+        "provider_idempotency_key",
         "request_sha256",
+        "model_request_artifact_sha256",
+        "configuration_sha256",
         "requested_at"
       ],
       "properties": {
@@ -3378,7 +3595,18 @@
             }
           ]
         },
+        "provider_idempotency_key": {
+          "type": "string"
+        },
         "request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_request_artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "configuration_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
@@ -3462,6 +3690,65 @@
           }
         },
         "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "DurableModelResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "durable_model_result_id",
+        "logical_model_job_id",
+        "provider_attempt_id",
+        "provider_attempt_receipt_id",
+        "result_kind",
+        "result_contract_ref",
+        "result_payload",
+        "output_sha256",
+        "model_request_artifact_sha256",
+        "configuration_sha256",
+        "recorded_at"
+      ],
+      "properties": {
+        "durable_model_result_id": {
+          "type": "string"
+        },
+        "logical_model_job_id": {
+          "type": "string"
+        },
+        "provider_attempt_id": {
+          "type": "string"
+        },
+        "provider_attempt_receipt_id": {
+          "type": "string"
+        },
+        "result_kind": {
+          "type": "string"
+        },
+        "result_contract_ref": {
+          "type": "string"
+        },
+        "result_payload": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_request_artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "recorded_at": {
           "type": "string",
           "format": "date-time"
         }

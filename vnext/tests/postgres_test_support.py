@@ -14,6 +14,7 @@ from waje_vnext.storage import (
     apply_gate3_2_migration,
     apply_gate3_4_migration,
     apply_gate3_5_migration,
+    apply_gate3_6_migration,
 )
 
 
@@ -44,6 +45,11 @@ MIGRATIONS: tuple[tuple[MigrationApplier, Path], ...] = (
         apply_gate3_5_migration,
         ROOT
         / "storage/migrations/006_gate3_5_evidence_answer_projection.sql",
+    ),
+    (
+        apply_gate3_6_migration,
+        ROOT
+        / "storage/migrations/007_gate3_6_provider_invocation_authority.sql",
     ),
 )
 

@@ -113,6 +113,8 @@ from waje_vnext.domain.runtime_amendment import (
     MessageImpactBinding,
     MessageImpactKind,
     MessageImpactProposal,
+    ModelExecutionRole,
+    ModelInputViewKind,
     MeasurementObjectionSeverity,
     MeasurementReviewObjection,
     MessageIngressRecord,
@@ -137,6 +139,7 @@ from waje_vnext.providers.base import (
     MessageBindingProvider,
     PrimaryAgentProvider,
     ProviderError,
+    ProviderPermanentError,
     ProviderTransientError,
 )
 from waje_vnext.storage.codec import (
@@ -229,7 +232,73 @@ class _DurableProviderAttemptObserver:
         self._prior_attempt_id: str | None = None
         self._attempt_ids: dict[int, str] = {}
 
-    def before_attempt(self, attempt_number: int) -> None:
+    def attempt_numbers(self, max_attempts: int) -> tuple[int, ...]:
+        if max_attempts != self._model_job.configuration_identity.max_attempts:
+            raise ControllerConflict(
+                "provider retry budget differs from durable configuration"
+            )
+        receipts = {
+            receipt.provider_attempt_id: receipt
+            for receipt in self._store.list_provider_attempt_receipts(
+                self._model_job.logical_model_job_id
+            )
+        }
+        completed_attempts = 0
+        prior_attempt_id: str | None = None
+        for attempt_number in range(1, max_attempts + 1):
+            attempt_id = _stable_id(
+                "provider-attempt",
+                self._model_job.logical_model_job_id,
+                str(attempt_number),
+            )
+            try:
+                request = self._store.get_provider_attempt_request(
+                    attempt_id
+                )
+            except AuthorityNotFound:
+                break
+            receipt = receipts.get(attempt_id)
+            if receipt is None:
+                raise ControllerConflict(
+                    "provider attempt outcome is unknown; automatic retry is fenced"
+                )
+            completed_attempts = attempt_number
+            prior_attempt_id = request.provider_attempt_id
+            if receipt.disposition is ProviderAttemptDisposition.SUCCEEDED:
+                raise ControllerConflict(
+                    "successful provider attempt lacks its durable result"
+                )
+            if (
+                receipt.disposition
+                is not ProviderAttemptDisposition.RETRYABLE_FAILURE
+            ):
+                raise ProviderPermanentError(
+                    "durable provider attempt already reached a terminal failure"
+                )
+        self._prior_attempt_id = prior_attempt_id
+        if completed_attempts >= max_attempts:
+            raise ProviderTransientError(
+                "durable provider retry budget is exhausted"
+            )
+        return tuple(range(completed_attempts + 1, max_attempts + 1))
+
+    def dispatch_parameters(self) -> tuple[str, float | None]:
+        configuration = self._model_job.configuration_identity
+        return configuration.endpoint_ref, configuration.timeout_seconds
+
+    def before_attempt(
+        self,
+        attempt_number: int,
+        provider_request_body,
+    ) -> str:
+        request_sha256 = content_sha256(provider_request_body)
+        if (
+            request_sha256
+            != self._model_job.model_request_artifact.provider_request_sha256
+        ):
+            raise ControllerConflict(
+                "outbound provider request drifted from durable authority"
+            )
         attempt_id = _stable_id(
             "provider-attempt",
             self._model_job.logical_model_job_id,
@@ -243,14 +312,26 @@ class _DurableProviderAttemptObserver:
                 ),
                 attempt_number=attempt_number,
                 prior_provider_attempt_id=self._prior_attempt_id,
-                request_sha256=self._model_job.input_sha256,
+                provider_idempotency_key=attempt_id,
+                request_sha256=request_sha256,
+                model_request_artifact_sha256=(
+                    self._model_job.model_request_artifact_sha256
+                ),
+                configuration_sha256=(
+                    self._model_job.configuration_sha256
+                ),
                 requested_at=self._model_job.created_at,
             )
         )
         self._attempt_ids[attempt_number] = attempt_id
         self._prior_attempt_id = attempt_id
+        return attempt_id
 
     def after_attempt(self, attempt_number: int, trace) -> None:
+        if trace.disposition == "succeeded":
+            raise ControllerConflict(
+                "successful provider attempt requires atomic result commit"
+            )
         attempt_id = self._attempt_ids[attempt_number]
         self._store.record_provider_attempt_receipt(
             ProviderAttemptReceipt(
@@ -273,33 +354,53 @@ class _DurableProviderAttemptObserver:
             )
         )
 
-    def after_result(self, attempt_number: int, result) -> None:
+    def after_success(self, attempt_number: int, trace, result) -> None:
         result_payload = to_jsonable(result)
         if not isinstance(result_payload, dict):
             raise ControllerConflict(
                 "typed provider result must encode as an object"
             )
-        self._store.record_durable_model_result(
-            DurableModelResult(
-                durable_model_result_id=_stable_id(
-                    "durable-model-result",
-                    self._model_job.logical_model_job_id,
-                ),
-                logical_model_job_id=(
-                    self._model_job.logical_model_job_id
-                ),
-                provider_attempt_id=self._attempt_ids[attempt_number],
-                result_kind=self._result_kind,
-                result_contract_ref=self._result_contract_ref,
-                result_payload=result_payload,
-                output_sha256=content_sha256(result_payload),
-                recorded_at=self._store.get_provider_attempt_receipt(
-                    _stable_id(
-                        "provider-attempt-receipt",
-                        self._attempt_ids[attempt_number],
-                    )
-                ).completed_at,
-            )
+        attempt_id = self._attempt_ids[attempt_number]
+        receipt_id = _stable_id(
+            "provider-attempt-receipt",
+            attempt_id,
+        )
+        receipt = ProviderAttemptReceipt(
+            provider_attempt_receipt_id=receipt_id,
+            provider_attempt_id=attempt_id,
+            logical_model_job_id=self._model_job.logical_model_job_id,
+            disposition=ProviderAttemptDisposition.SUCCEEDED,
+            provider_response_id=trace.provider_response_id,
+            output_sha256=trace.output_sha256,
+            finish_reason=trace.finish_reason,
+            usage_payload=dict(trace.usage_payload),
+            completed_at=trace.completed_at,
+        )
+        durable_result = DurableModelResult(
+            durable_model_result_id=_stable_id(
+                "durable-model-result",
+                self._model_job.logical_model_job_id,
+            ),
+            logical_model_job_id=(
+                self._model_job.logical_model_job_id
+            ),
+            provider_attempt_id=attempt_id,
+            provider_attempt_receipt_id=receipt_id,
+            result_kind=self._result_kind,
+            result_contract_ref=self._result_contract_ref,
+            result_payload=result_payload,
+            output_sha256=content_sha256(result_payload),
+            model_request_artifact_sha256=(
+                self._model_job.model_request_artifact_sha256
+            ),
+            configuration_sha256=(
+                self._model_job.configuration_sha256
+            ),
+            recorded_at=trace.completed_at,
+        )
+        self._store.commit_provider_attempt_success(
+            receipt=receipt,
+            result=durable_result,
         )
 
 
@@ -336,21 +437,20 @@ class WAJEController:
                 )
             reviewer_provider = provider
         if not getattr(provider, "allows_test_role_multiplexing", False):
-            primary_configuration_ref = getattr(
+            primary_configuration = _provider_configuration_identity(
                 provider,
-                "configuration_ref",
-                None,
+                ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT,
             )
-            reviewer_configuration_ref = getattr(
+            reviewer_configuration = _provider_configuration_identity(
                 reviewer_provider,
-                "configuration_ref",
-                None,
+                ModelExecutionRole.RUNTIME_REVIEWER,
             )
             if (
                 reviewer_provider is provider
-                or primary_configuration_ref is None
-                or reviewer_configuration_ref is None
-                or primary_configuration_ref == reviewer_configuration_ref
+                or primary_configuration is None
+                or reviewer_configuration is None
+                or primary_configuration.operational_configuration_sha256
+                == reviewer_configuration.operational_configuration_sha256
             ):
                 raise ValueError(
                     "primary and Reviewer providers require distinct, "
@@ -839,16 +939,52 @@ class WAJEController:
                     "logical model job lineage does not match its outbox job"
                 )
             disposition = self._store.get_job_disposition(job.job_id)
+            job_receipts = tuple(
+                receipt
+                for receipt in receipts
+                if receipt.logical_model_job_id
+                == job.logical_model_job_id
+            )
+            success_receipts = tuple(
+                receipt
+                for receipt in job_receipts
+                if receipt.disposition
+                is ProviderAttemptDisposition.SUCCEEDED
+            )
+            durable_result = self._store.get_durable_model_result(
+                job.logical_model_job_id
+            )
+            if len(success_receipts) > 1:
+                raise ControllerConflict(
+                    "logical model job has multiple successful attempts"
+                )
+            if bool(success_receipts) != (durable_result is not None):
+                raise ControllerConflict(
+                    "provider success receipt and typed result are incomplete"
+                )
+            if success_receipts and durable_result is not None:
+                success_receipt = success_receipts[0]
+                if (
+                    durable_result.provider_attempt_receipt_id
+                    != success_receipt.provider_attempt_receipt_id
+                    or durable_result.provider_attempt_id
+                    != success_receipt.provider_attempt_id
+                    or durable_result.output_sha256
+                    != success_receipt.output_sha256
+                    or durable_result.configuration_sha256
+                    != job.configuration_sha256
+                    or durable_result.model_request_artifact_sha256
+                    != job.model_request_artifact_sha256
+                    or durable_result.result_contract_ref
+                    != job.model_request_artifact.output_contract_ref
+                ):
+                    raise ControllerConflict(
+                        "provider success pair drifted from logical job"
+                    )
             if (
                 disposition is not None
                 and disposition.disposition is JobDisposition.COMPLETED
-                and not any(
-                    receipt.logical_model_job_id
-                    == job.logical_model_job_id
-                    and receipt.disposition
-                    is ProviderAttemptDisposition.SUCCEEDED
-                    for receipt in receipts
-                )
+                and not success_receipts
             ):
                 raise ControllerConflict(
                     "completed model job lacks a successful provider receipt"
@@ -1115,7 +1251,10 @@ class WAJEController:
                 message=message,
                 provider=self._provider,
                 role="primary_agent",
-                prompt_contract_ref=ACTION_CONTRACT_REF,
+                typed_request_contract_ref=(
+                    PRIMARY_AGENT_JOB_CONTRACT_REF
+                ),
+                output_contract_ref=ACTION_CONTRACT_REF,
                 request=request,
             )
             recovered_proposal = self._load_durable_model_result(
@@ -1300,7 +1439,10 @@ class WAJEController:
                 message=message,
                 provider=self._binding_provider,
                 role="message_binding",
-                prompt_contract_ref=MESSAGE_BINDING_CONTRACT_REF,
+                typed_request_contract_ref=(
+                    MESSAGE_BINDING_JOB_CONTRACT_REF
+                ),
+                output_contract_ref=MESSAGE_BINDING_CONTRACT_REF,
                 request=request,
             )
             recovered_proposal = self._load_durable_model_result(
@@ -2362,21 +2504,9 @@ class WAJEController:
                     candidate.proposed_frame.measurement_design
                 )
             )
-            reviewer_configuration_ref = getattr(
+            reviewer_configuration_ref = _provider_configuration_ref(
                 self._reviewer_provider,
-                "configuration_ref",
-                "{}:{}".format(
-                    getattr(
-                        self._reviewer_provider,
-                        "provider_ref",
-                        type(self._reviewer_provider).__module__,
-                    ),
-                    getattr(
-                        self._reviewer_provider,
-                        "model_ref",
-                        type(self._reviewer_provider).__qualname__,
-                    ),
-                ),
+                ModelExecutionRole.RUNTIME_REVIEWER,
             )
             request = FrameReviewRequest(
                 logical_model_job_id=logical_model_job_id,
@@ -2413,7 +2543,10 @@ class WAJEController:
                 message=message,
                 provider=self._reviewer_provider,
                 role="measurement_reviewer",
-                prompt_contract_ref=FRAME_REVIEW_CONTRACT_REF,
+                typed_request_contract_ref=(
+                    FRAME_REVIEW_JOB_CONTRACT_REF
+                ),
+                output_contract_ref=FRAME_REVIEW_CONTRACT_REF,
                 request=request,
             )
             recovered_proposal = self._load_durable_model_result(
@@ -4540,21 +4673,36 @@ class WAJEController:
         message: OutboxMessage,
         provider,
         role: str,
-        prompt_contract_ref: str,
+        typed_request_contract_ref: str,
+        output_contract_ref: str,
         request,
     ) -> LogicalModelJob:
-        provider_ref = getattr(
-            provider,
-            "provider_ref",
-            "python-provider:{}.{}".format(
-                type(provider).__module__,
-                type(provider).__qualname__,
-            ),
+        describe = getattr(provider, "describe_invocation", None)
+        if describe is None:
+            raise ControllerConflict(
+                "model provider lacks exact invocation authority"
+            )
+        prepared = describe(
+            logical_model_job_id=message.outbox_message_id,
+            logical_job_kind=role,
+            request=request,
+            typed_request_contract_ref=typed_request_contract_ref,
+            output_contract_ref=output_contract_ref,
+            created_at=message.created_at,
         )
-        model_ref = getattr(
-            provider,
-            "model_ref",
-            "provider-owned-model",
+        configuration = prepared.configuration_identity
+        artifact = prepared.request_artifact
+        _validate_provider_configuration_source(
+            provider=provider,
+            configuration=configuration,
+        )
+        _validate_prepared_invocation_authority(
+            role=role,
+            request=request,
+            typed_request_contract_ref=typed_request_contract_ref,
+            output_contract_ref=output_contract_ref,
+            configuration=configuration,
+            artifact=artifact,
         )
         record = LogicalModelJob(
             logical_model_job_id=message.outbox_message_id,
@@ -4562,10 +4710,16 @@ class WAJEController:
             job_id=message.outbox_message_id,
             operation_id=message.operation.operation_id,
             role=role,
-            provider_ref=str(provider_ref),
-            model_ref=str(model_ref),
-            prompt_contract_ref=prompt_contract_ref,
+            provider_ref=configuration.provider_ref,
+            model_ref=configuration.model_ref,
+            prompt_contract_ref=artifact.prompt_bundle_ref,
             input_sha256=content_sha256(request),
+            configuration_identity=configuration,
+            configuration_sha256=(
+                configuration.configuration_sha256
+            ),
+            model_request_artifact=artifact,
+            model_request_artifact_sha256=artifact.content_sha256,
             authority_snapshot_sha256=(
                 message.authority_snapshot_sha256
             ),
@@ -4602,7 +4756,18 @@ class WAJEController:
                 logical_model_job_id=model_job.logical_model_job_id,
                 attempt_number=1,
                 prior_provider_attempt_id=None,
-                request_sha256=model_job.input_sha256,
+                provider_idempotency_key=_stable_id(
+                    "provider-attempt",
+                    model_job.logical_model_job_id,
+                    "1",
+                ),
+                request_sha256=(
+                    model_job.model_request_artifact.provider_request_sha256
+                ),
+                model_request_artifact_sha256=(
+                    model_job.model_request_artifact_sha256
+                ),
+                configuration_sha256=model_job.configuration_sha256,
                 requested_at=model_job.created_at,
             )
         )
@@ -4635,10 +4800,6 @@ class WAJEController:
         result_contract_ref: str,
         recorded_at: datetime,
     ) -> DurableModelResult:
-        self._persist_provider_attempt_records(
-            model_job=model_job,
-            provider_attempts=provider_attempts,
-        )
         existing = self._store.get_durable_model_result(
             model_job.logical_model_job_id
         )
@@ -4668,20 +4829,36 @@ class WAJEController:
                 "typed provider result must encode as an object"
             )
         request, receipt = successful[0]
-        return self._store.record_durable_model_result(
-            DurableModelResult(
-                durable_model_result_id=_stable_id(
-                    "durable-model-result",
-                    model_job.logical_model_job_id,
-                ),
-                logical_model_job_id=model_job.logical_model_job_id,
-                provider_attempt_id=request.provider_attempt_id,
-                result_kind=result_kind,
-                result_contract_ref=result_contract_ref,
-                result_payload=result_payload,
-                output_sha256=content_sha256(result_payload),
-                recorded_at=recorded_at,
-            )
+        for prior_request, prior_receipt in provider_attempts:
+            self._store.record_provider_attempt_request(prior_request)
+            if (
+                prior_receipt.disposition
+                is not ProviderAttemptDisposition.SUCCEEDED
+            ):
+                self._store.record_provider_attempt_receipt(prior_receipt)
+        durable_result = DurableModelResult(
+            durable_model_result_id=_stable_id(
+                "durable-model-result",
+                model_job.logical_model_job_id,
+            ),
+            logical_model_job_id=model_job.logical_model_job_id,
+            provider_attempt_id=request.provider_attempt_id,
+            provider_attempt_receipt_id=(
+                receipt.provider_attempt_receipt_id
+            ),
+            result_kind=result_kind,
+            result_contract_ref=result_contract_ref,
+            result_payload=result_payload,
+            output_sha256=content_sha256(result_payload),
+            model_request_artifact_sha256=(
+                model_job.model_request_artifact_sha256
+            ),
+            configuration_sha256=model_job.configuration_sha256,
+            recorded_at=recorded_at,
+        )
+        return self._store.commit_provider_attempt_success(
+            receipt=receipt,
+            result=durable_result,
         )
 
     def _load_durable_model_result(
@@ -4752,6 +4929,16 @@ class WAJEController:
         tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
         ...,
     ]:
+        if getattr(
+            provider,
+            "supports_durable_attempt_observer",
+            False,
+        ):
+            persisted = self._persisted_provider_attempt_records(
+                model_job.logical_model_job_id
+            )
+            if persisted:
+                return persisted
         take_trace = getattr(
             provider,
             "take_last_attempt_trace",
@@ -4797,7 +4984,14 @@ class WAJEController:
                 ),
                 attempt_number=attempt_number,
                 prior_provider_attempt_id=prior_attempt_id,
-                request_sha256=model_job.input_sha256,
+                provider_idempotency_key=attempt_id,
+                request_sha256=(
+                    model_job.model_request_artifact.provider_request_sha256
+                ),
+                model_request_artifact_sha256=(
+                    model_job.model_request_artifact_sha256
+                ),
+                configuration_sha256=model_job.configuration_sha256,
                 requested_at=model_job.created_at,
             )
             receipt = ProviderAttemptReceipt(
@@ -4831,6 +5025,16 @@ class WAJEController:
         tuple[ProviderAttemptRequest, ProviderAttemptReceipt],
         ...,
     ]:
+        if getattr(
+            provider,
+            "supports_durable_attempt_observer",
+            False,
+        ):
+            persisted = self._persisted_provider_attempt_records(
+                model_job.logical_model_job_id
+            )
+            if persisted:
+                return persisted
         take_trace = getattr(
             provider,
             "take_last_attempt_trace",
@@ -4872,7 +5076,14 @@ class WAJEController:
                 logical_model_job_id=model_job.logical_model_job_id,
                 attempt_number=attempt_number,
                 prior_provider_attempt_id=prior_attempt_id,
-                request_sha256=model_job.input_sha256,
+                provider_idempotency_key=attempt_id,
+                request_sha256=(
+                    model_job.model_request_artifact.provider_request_sha256
+                ),
+                model_request_artifact_sha256=(
+                    model_job.model_request_artifact_sha256
+                ),
+                configuration_sha256=model_job.configuration_sha256,
                 requested_at=model_job.created_at,
             )
             receipt = ProviderAttemptReceipt(
@@ -4911,6 +5122,22 @@ class WAJEController:
             )
         for request, receipt in provider_attempts:
             self._store.record_provider_attempt_request(request)
+            if receipt.disposition is ProviderAttemptDisposition.SUCCEEDED:
+                result = self._store.get_durable_model_result(
+                    model_job.logical_model_job_id
+                )
+                if (
+                    result is None
+                    or result.provider_attempt_id
+                    != receipt.provider_attempt_id
+                    or result.provider_attempt_receipt_id
+                    != receipt.provider_attempt_receipt_id
+                    or result.output_sha256 != receipt.output_sha256
+                ):
+                    raise ControllerConflict(
+                        "successful provider attempt lacks atomic typed result"
+                    )
+                continue
             self._store.record_provider_attempt_receipt(receipt)
 
     def _commit_provider_failure(
@@ -5344,6 +5571,264 @@ class WAJEController:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("controller clock must return timezone-aware time")
         return value
+
+
+def _validate_prepared_invocation_authority(
+    *,
+    role: str,
+    request,
+    typed_request_contract_ref: str,
+    output_contract_ref: str,
+    configuration,
+    artifact,
+) -> None:
+    if role == "primary_agent" and isinstance(request, PrimaryAgentRequest):
+        expected_execution_role = (
+            ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+        )
+        expected_view_kind = ModelInputViewKind.AGENT_WORLD_VIEW
+        expected_view_ref = request.context_packet.packet_id
+        expected_view_sha256 = request.context_packet.content_sha256
+        expected_tool_choice = "required"
+    elif role == "message_binding" and isinstance(
+        request,
+        MessageBindingRequest,
+    ):
+        expected_execution_role = (
+            ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+        )
+        expected_view_kind = ModelInputViewKind.MESSAGE_BINDING_VIEW
+        expected_view_ref = request.message_id
+        expected_view_sha256 = content_sha256(request)
+        expected_tool_choice = {
+            "type": "function",
+            "function": {"name": "submit_message_impact"},
+        }
+    elif role == "measurement_reviewer" and isinstance(
+        request,
+        FrameReviewRequest,
+    ):
+        expected_execution_role = ModelExecutionRole.RUNTIME_REVIEWER
+        expected_view_kind = ModelInputViewKind.MEASUREMENT_REVIEW_VIEW
+        expected_view_ref = request.frame_candidate.frame_candidate_id
+        expected_view_sha256 = content_sha256(request)
+        expected_tool_choice = {
+            "type": "function",
+            "function": {"name": "submit_measurement_review"},
+        }
+    else:
+        raise ControllerConflict(
+            "logical model job kind does not match its typed request"
+        )
+    if (
+        configuration.execution_role is not expected_execution_role
+        or artifact.execution_role is not expected_execution_role
+        or artifact.logical_job_kind != role
+        or artifact.input_view_kind is not expected_view_kind
+        or artifact.input_view_ref != expected_view_ref
+        or artifact.input_view_sha256 != expected_view_sha256
+        or artifact.typed_request_contract_ref
+        != typed_request_contract_ref
+        or artifact.typed_request_sha256 != content_sha256(request)
+        or artifact.output_contract_ref != output_contract_ref
+    ):
+        raise ControllerConflict(
+            "prepared model invocation crosses its typed authority"
+        )
+    body = to_jsonable(artifact.provider_request_body)
+    if not isinstance(body, dict):
+        raise ControllerConflict("provider request artifact is not an object")
+    if configuration.protocol_ref == "python-typed-test-double.v1":
+        if body != {
+            "protocol": "python-typed-test-double.v1",
+            "typed_request": to_jsonable(request),
+        }:
+            raise ControllerConflict(
+                "test provider request differs from its typed input"
+            )
+        return
+    if configuration.protocol_ref != "openai-compatible-chat-completions.v1":
+        raise ControllerConflict("provider protocol lacks an exact verifier")
+    expected_stable_parameter_keys = {
+        "temperature",
+        "top_p",
+        "tool_choice_policy",
+        "parallel_tool_calls",
+    }
+    if "seed" in configuration.stable_parameters:
+        expected_stable_parameter_keys.add("seed")
+    if (
+        set(configuration.stable_parameters)
+        != expected_stable_parameter_keys
+        or configuration.stable_parameters["tool_choice_policy"]
+        != "contract_selected"
+    ):
+        raise ControllerConflict(
+            "provider configuration contains unbound stable parameters"
+        )
+    from waje_vnext.providers.chat_completions import (
+        compile_trusted_chat_invocation,
+    )
+
+    trusted_material = compile_trusted_chat_invocation(
+        logical_job_kind=role,
+        request=request,
+        configuration=configuration,
+    )
+    trusted_prompt_sha256 = content_sha256(
+        {
+            "messages": (
+                {
+                    "role": "system",
+                    "content": trusted_material.system_instruction,
+                },
+            )
+        }
+    )
+    trusted_tool_sha256 = content_sha256(trusted_material.tools)
+    if (
+        body != to_jsonable(trusted_material.payload)
+        or artifact.input_view_kind
+        is not trusted_material.input_view_kind
+        or artifact.input_view_ref != trusted_material.input_view_ref
+        or artifact.input_view_sha256
+        != trusted_material.input_view_sha256
+        or artifact.prompt_bundle_ref
+        != trusted_material.prompt_bundle_ref
+        or artifact.prompt_bundle_sha256 != trusted_prompt_sha256
+        or artifact.tool_bundle_ref != trusted_material.tool_bundle_ref
+        or artifact.tool_bundle_sha256 != trusted_tool_sha256
+        or artifact.decoder_release_ref
+        != trusted_material.decoder_release_ref
+    ):
+        raise ControllerConflict(
+            "provider request differs from the trusted invocation contract"
+        )
+    allowed_body_fields = {
+        "model",
+        "thinking",
+        "temperature",
+        "top_p",
+        "messages",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+    }
+    if "seed" in configuration.stable_parameters:
+        allowed_body_fields.add("seed")
+    if set(body) != allowed_body_fields:
+        raise ControllerConflict(
+            "provider request body contains unbound fields"
+        )
+    messages = body.get("messages")
+    tools = body.get("tools")
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 2
+        or messages[0].get("role") != "system"
+        or messages[1].get("role") != "user"
+        or not isinstance(tools, list)
+    ):
+        raise ControllerConflict(
+            "provider request message or tool structure drifted"
+        )
+    try:
+        rendered_typed_request = json.loads(messages[1]["content"])
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ControllerConflict(
+            "provider user message is not the typed request"
+        ) from error
+    if rendered_typed_request != to_jsonable(request):
+        raise ControllerConflict(
+            "provider user message differs from its typed request"
+        )
+    expected_prompt_sha256 = content_sha256(
+        {"messages": (messages[0],)}
+    )
+    expected_tool_sha256 = content_sha256(tools)
+    expected_output_sha256 = content_sha256(
+        {
+            "output_contract_ref": output_contract_ref,
+            "tool_bundle_sha256": expected_tool_sha256,
+            "decoder_release_ref": artifact.decoder_release_ref,
+            "decoder_release_sha256": artifact.decoder_release_sha256,
+        }
+    )
+    if (
+        artifact.prompt_bundle_sha256 != expected_prompt_sha256
+        or artifact.tool_bundle_sha256 != expected_tool_sha256
+        or artifact.output_contract_sha256 != expected_output_sha256
+        or artifact.decoder_release_sha256
+        != configuration.adapter_release_sha256
+        or body["model"] != configuration.model_ref
+        or body["thinking"] != {"type": configuration.thinking}
+        or body["temperature"]
+        != configuration.stable_parameters["temperature"]
+        or body["top_p"] != configuration.stable_parameters["top_p"]
+        or body["parallel_tool_calls"]
+        != configuration.stable_parameters["parallel_tool_calls"]
+        or body["tool_choice"] != expected_tool_choice
+        or (
+            "seed" in configuration.stable_parameters
+            and body["seed"] != configuration.stable_parameters["seed"]
+        )
+    ):
+        raise ControllerConflict(
+            "provider request body differs from its invocation authority"
+        )
+
+
+def _validate_provider_configuration_source(
+    *,
+    provider,
+    configuration,
+) -> None:
+    if configuration.protocol_ref == "python-typed-test-double.v1":
+        return
+    if configuration.protocol_ref != "openai-compatible-chat-completions.v1":
+        raise ControllerConflict(
+            "provider protocol lacks a sealed configuration verifier"
+        )
+    from waje_vnext.providers.chat_completions import (
+        ChatCompletionsProvider,
+    )
+
+    if type(provider) is not ChatCompletionsProvider:
+        raise ControllerConflict(
+            "provider concrete adapter release is not registered"
+        )
+    sealed = ChatCompletionsProvider.configuration_identity(
+        provider,
+        configuration.execution_role,
+    )
+    if configuration != sealed:
+        raise ControllerConflict(
+            "provider configuration differs from sealed adapter settings"
+        )
+
+
+def _provider_configuration_ref(
+    provider,
+    execution_role: ModelExecutionRole,
+) -> str | None:
+    identity = _provider_configuration_identity(provider, execution_role)
+    if identity is not None:
+        return identity.configuration_sha256
+    return getattr(provider, "configuration_ref", None)
+
+
+def _provider_configuration_identity(
+    provider,
+    execution_role: ModelExecutionRole,
+):
+    identity_factory = getattr(
+        provider,
+        "configuration_identity",
+        None,
+    )
+    if identity_factory is not None:
+        return identity_factory(execution_role)
+    return None
 
 
 def _allowed_actions(case) -> tuple[ActionKind, ...]:

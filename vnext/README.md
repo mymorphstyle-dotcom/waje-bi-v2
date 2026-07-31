@@ -83,6 +83,20 @@ design 只作非穷尽示例。execution-universe compiler 当前从 36 个 Epis
 variants、1,172 个 exact coordinates 和 2,011 个 Episode relation groups；201 个 paraphrase
 authority slots 与 38 个 operator scenarios（19 类 × 至少 2 个独立业务世界）仍待 author/review，所以真实 provider lanes、
 protected execution 和 full matrix 尚未开放。
+
+G3.6.1 runtime provider invocation foundation 已将 execution role、provider endpoint/protocol、
+model/thinking、稳定生成参数、adapter release、input view、typed request、prompt、tool、output
+contract、decoder 和实际发送的规范 request bytes 绑定到 durable logical job。provider attempt
+使用稳定 `Idempotency-Key`；migration 007 与 storage adapter 在同一事务提交成功 receipt 和
+typed result，并拒绝 request/config drift、跨 job retry chain 和同一 job 的第二个成功结果。
+retryable receipt 后从 durable `N+1` 继续且总预算不重置；只有 request、没有 receipt 时进入
+`outcome_unknown` 并停止自动重发。controller 使用受信 invocation compiler 重算 prompt/tool/
+body，并以 role-neutral operational fingerprint 检查 Primary/Reviewer 独立性；transport 的
+endpoint/timeout 直接取 durable configuration。
+OpenAI-compatible job 只接受与 sealed adapter settings 完全一致的 configuration；任意 endpoint
+替换或未登记 adapter 会在 transport 前失败。
+当前 eval invocation 还没有消费这条 runtime artifact chain，protected execution 与完整 trace
+对账继续 fail closed。
 完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6 完成产品验收。
 
 真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：

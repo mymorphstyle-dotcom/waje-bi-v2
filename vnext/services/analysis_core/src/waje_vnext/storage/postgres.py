@@ -342,6 +342,21 @@ def apply_gate3_5_migration(
     )
 
 
+def apply_gate3_6_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply exact provider invocation and atomic success authority."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=7,
+        name="gate3_6_provider_invocation_authority",
+    )
+
+
 def _apply_migration(
     dsn: str,
     *,
@@ -963,12 +978,20 @@ class PostgresAuthorityStore:
                             "case_id",
                             "job_id",
                             "authority_snapshot_sha256",
+                            "configuration_sha256",
+                            "model_request_artifact_sha256",
+                            "provider_request_sha256",
+                            "output_contract_ref",
                             "payload",
                         ),
                         values=(
                             record.case_id,
                             record.job_id,
                             record.authority_snapshot_sha256,
+                            record.configuration_sha256,
+                            record.model_request_artifact_sha256,
+                            record.model_request_artifact.provider_request_sha256,
+                            record.model_request_artifact.output_contract_ref,
                             Jsonb(payload),
                         ),
                         payload=payload,
@@ -1020,7 +1043,7 @@ class PostgresAuthorityStore:
         payload = encode_record(record)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                self._get_payload(
+                model_job = self._get_payload(
                     cursor,
                     table="logical_model_jobs",
                     id_column="logical_model_job_id",
@@ -1028,6 +1051,62 @@ class PostgresAuthorityStore:
                     label="logical model job",
                     decoder=decode_logical_model_job,
                 )
+                if (
+                    record.request_sha256
+                    != model_job.model_request_artifact.provider_request_sha256
+                    or record.model_request_artifact_sha256
+                    != model_job.model_request_artifact_sha256
+                    or record.configuration_sha256
+                    != model_job.configuration_sha256
+                ):
+                    raise InvalidAuthorityTransition(
+                        "provider attempt request drifted from logical job"
+                    )
+                cursor.execute(
+                    """
+                    SELECT attempt_number, provider_attempt_id
+                    FROM waje_vnext.provider_attempt_requests
+                    WHERE logical_model_job_id = %s
+                    ORDER BY attempt_number DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (record.logical_model_job_id,),
+                )
+                prior_row = cursor.fetchone()
+                expected_number = (
+                    1 if prior_row is None else prior_row["attempt_number"] + 1
+                )
+                expected_prior = (
+                    None
+                    if prior_row is None
+                    else prior_row["provider_attempt_id"]
+                )
+                if (
+                    record.attempt_number != expected_number
+                    or record.prior_provider_attempt_id != expected_prior
+                ):
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.provider_attempt_requests
+                        WHERE provider_attempt_id = %s
+                        """,
+                        (record.provider_attempt_id,),
+                    )
+                    existing_row = cursor.fetchone()
+                    existing = (
+                        None
+                        if existing_row is None
+                        else decode_provider_attempt_request(
+                            existing_row["payload"]
+                        )
+                    )
+                    if existing == record:
+                        return existing
+                    raise InvalidAuthorityTransition(
+                        "provider attempt does not extend logical job history"
+                    )
                 try:
                     self._insert_idempotent_immutable(
                         cursor,
@@ -1038,12 +1117,20 @@ class PostgresAuthorityStore:
                             "logical_model_job_id",
                             "attempt_number",
                             "prior_provider_attempt_id",
+                            "provider_idempotency_key",
+                            "request_sha256",
+                            "model_request_artifact_sha256",
+                            "configuration_sha256",
                             "payload",
                         ),
                         values=(
                             record.logical_model_job_id,
                             record.attempt_number,
                             record.prior_provider_attempt_id,
+                            record.provider_idempotency_key,
+                            record.request_sha256,
+                            record.model_request_artifact_sha256,
+                            record.configuration_sha256,
                             Jsonb(payload),
                         ),
                         payload=payload,
@@ -1062,6 +1149,10 @@ class PostgresAuthorityStore:
         payload = encode_record(record)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
+                if record.disposition is ProviderAttemptDisposition.SUCCEEDED:
+                    raise InvalidAuthorityTransition(
+                        "successful provider receipt requires atomic result commit"
+                    )
                 request = self._get_payload(
                     cursor,
                     table="provider_attempt_requests",
@@ -1087,12 +1178,16 @@ class PostgresAuthorityStore:
                             "provider_attempt_id",
                             "logical_model_job_id",
                             "disposition",
+                            "provider_response_id",
+                            "output_sha256",
                             "payload",
                         ),
                         values=(
                             record.provider_attempt_id,
                             record.logical_model_job_id,
                             record.disposition.value,
+                            record.provider_response_id,
+                            record.output_sha256,
                             Jsonb(payload),
                         ),
                         payload=payload,
@@ -1103,6 +1198,121 @@ class PostgresAuthorityStore:
                         "provider attempt already has another receipt"
                     ) from error
                 return record
+
+    def commit_provider_attempt_success(
+        self,
+        *,
+        receipt: ProviderAttemptReceipt,
+        result: DurableModelResult,
+    ) -> DurableModelResult:
+        receipt_payload = encode_record(receipt)
+        result_payload = encode_record(result)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                if receipt.disposition is not ProviderAttemptDisposition.SUCCEEDED:
+                    raise InvalidAuthorityTransition(
+                        "provider success commit requires a successful receipt"
+                    )
+                request = self._get_payload(
+                    cursor,
+                    table="provider_attempt_requests",
+                    id_column="provider_attempt_id",
+                    record_id=receipt.provider_attempt_id,
+                    label="provider attempt request",
+                    decoder=decode_provider_attempt_request,
+                )
+                model_job = self._get_payload(
+                    cursor,
+                    table="logical_model_jobs",
+                    id_column="logical_model_job_id",
+                    record_id=receipt.logical_model_job_id,
+                    label="logical model job",
+                    decoder=decode_logical_model_job,
+                )
+                if (
+                    receipt.provider_attempt_receipt_id
+                    != result.provider_attempt_receipt_id
+                    or receipt.provider_attempt_id
+                    != result.provider_attempt_id
+                    or receipt.logical_model_job_id
+                    != result.logical_model_job_id
+                    or receipt.output_sha256 != result.output_sha256
+                    or request.logical_model_job_id
+                    != receipt.logical_model_job_id
+                    or request.model_request_artifact_sha256
+                    != result.model_request_artifact_sha256
+                    or request.configuration_sha256
+                    != result.configuration_sha256
+                    or model_job.model_request_artifact_sha256
+                    != result.model_request_artifact_sha256
+                    or model_job.configuration_sha256
+                    != result.configuration_sha256
+                    or model_job.model_request_artifact.output_contract_ref
+                    != result.result_contract_ref
+                ):
+                    raise InvalidAuthorityTransition(
+                        "provider success receipt and result identity differ"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="provider_attempt_receipts",
+                        id_column="provider_attempt_receipt_id",
+                        record_id=receipt.provider_attempt_receipt_id,
+                        columns=(
+                            "provider_attempt_id",
+                            "logical_model_job_id",
+                            "disposition",
+                            "provider_response_id",
+                            "output_sha256",
+                            "payload",
+                        ),
+                        values=(
+                            receipt.provider_attempt_id,
+                            receipt.logical_model_job_id,
+                            receipt.disposition.value,
+                            receipt.provider_response_id,
+                            receipt.output_sha256,
+                            Jsonb(receipt_payload),
+                        ),
+                        payload=receipt_payload,
+                        label="provider attempt receipt",
+                    )
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="durable_model_results",
+                        id_column="durable_model_result_id",
+                        record_id=result.durable_model_result_id,
+                        columns=(
+                            "logical_model_job_id",
+                            "provider_attempt_id",
+                            "provider_attempt_receipt_id",
+                            "output_sha256",
+                            "model_request_artifact_sha256",
+                            "configuration_sha256",
+                            "result_contract_ref",
+                            "payload",
+                            "recorded_at",
+                        ),
+                        values=(
+                            result.logical_model_job_id,
+                            result.provider_attempt_id,
+                            result.provider_attempt_receipt_id,
+                            result.output_sha256,
+                            result.model_request_artifact_sha256,
+                            result.configuration_sha256,
+                            result.result_contract_ref,
+                            Jsonb(result_payload),
+                            result.recorded_at,
+                        ),
+                        payload=result_payload,
+                        label="durable model result",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "logical model job already has another success outcome"
+                    ) from error
+                return result
 
     def get_provider_attempt_request(
         self,
@@ -1157,78 +1367,6 @@ class PostgresAuthorityStore:
                     decode_provider_attempt_receipt(row["payload"])
                     for row in cursor.fetchall()
                 )
-
-    def record_durable_model_result(
-        self,
-        record: DurableModelResult,
-    ) -> DurableModelResult:
-        payload = encode_record(record)
-        with self._lock, self._connection.transaction():
-            with self._cursor() as cursor:
-                request = self._get_payload(
-                    cursor,
-                    table="provider_attempt_requests",
-                    id_column="provider_attempt_id",
-                    record_id=record.provider_attempt_id,
-                    label="provider attempt request",
-                    decoder=decode_provider_attempt_request,
-                )
-                cursor.execute(
-                    """
-                    SELECT payload
-                    FROM waje_vnext.provider_attempt_receipts
-                    WHERE provider_attempt_id = %s
-                    """,
-                    (record.provider_attempt_id,),
-                )
-                receipt_row = cursor.fetchone()
-                if receipt_row is None:
-                    raise InvalidAuthorityTransition(
-                        "durable model result lacks a provider receipt"
-                    )
-                receipt = decode_provider_attempt_receipt(
-                    receipt_row["payload"]
-                )
-                if (
-                    request.logical_model_job_id
-                    != record.logical_model_job_id
-                    or receipt.logical_model_job_id
-                    != record.logical_model_job_id
-                    or receipt.disposition
-                    is not ProviderAttemptDisposition.SUCCEEDED
-                    or receipt.output_sha256 != record.output_sha256
-                ):
-                    raise InvalidAuthorityTransition(
-                        "durable model result lacks its successful attempt"
-                    )
-                try:
-                    self._insert_idempotent_immutable(
-                        cursor,
-                        table="durable_model_results",
-                        id_column="durable_model_result_id",
-                        record_id=record.durable_model_result_id,
-                        columns=(
-                            "logical_model_job_id",
-                            "provider_attempt_id",
-                            "output_sha256",
-                            "payload",
-                            "recorded_at",
-                        ),
-                        values=(
-                            record.logical_model_job_id,
-                            record.provider_attempt_id,
-                            record.output_sha256,
-                            Jsonb(payload),
-                            record.recorded_at,
-                        ),
-                        payload=payload,
-                        label="durable model result",
-                    )
-                except errors.UniqueViolation as error:
-                    raise AuthorityConflict(
-                        "logical model job already has a different result"
-                    ) from error
-                return record
 
     def get_durable_model_result(
         self,

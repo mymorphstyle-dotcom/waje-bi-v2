@@ -30,8 +30,8 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 | G36-RT-02 | low-risk inference 无法进入 DecisionLedger | typed inference → immutable DecisionRecord → Frame refs |
 | G36-RT-03 | accepted Frame 后无 production resolution/obligation stage | 建立 durable resolution worker，harness 只供 source authority |
 | G36-RT-04 | provisional Answer Reviewer outbox 路由到 Frame Reviewer | typed AnswerReview worker 和独立 dispatch route |
-| G36-RT-05 | provider config/thinking/prompt 不在 durable job identity | ModelConfigurationIdentity 进入 job/outbox/attempt/result/trace |
-| G36-RT-06 | success receipt 与 typed result 分事务产生 crash window | 原子 provider success commit 或可取回幂等 response |
+| G36-RT-05 | provider config/thinking/prompt 不在 durable job identity | runtime 已由 ModelConfigurationIdentity + ModelRequestArtifact 关闭；eval bridge 仍 open |
+| G36-RT-06 | success receipt 与 typed result 分事务产生 crash window | 本地事务已关闭；provider 端 outcome unknown 仍需幂等/response lookup 证明 |
 | G36-RT-07 | test realm 由 caller DSN/字符串自报 | registry-issued RunRealmContext + store attestation |
 | G36-RT-08 | parallel obligation/projector/sensitivity worker 不完整 | 独立 workers、selected sensitivity identity、safety+liveness |
 | G36-TR-01 | trace_complete 和任意 hash 可自证 | storage-backed artifact/trace/invocation exact verifier |
@@ -93,11 +93,37 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
   与全量 compiler/property/shrink tests 分离，避免所有期望都由被测编译器反推；
 - 19 类专项 operator 每类至少覆盖 2 个独立业务世界，共 38 个 authoring slots；measurement
   mutation 同时要求 semantic/frame 与 full-authority lane，其他类型要求 full-authority lane。
+- runtime logical job 已绑定 execution role、provider endpoint/protocol、model/thinking、稳定参数、
+  adapter release、input view、typed request、prompt、tool、output contract、decoder 和实际
+  provider request bytes；controller 会从 typed state 重算整套 identity 并在 transport 前拒绝
+  drift 或隐藏字段；
+- provider attempt 使用稳定幂等键，InMemory/PostgreSQL 会在同一事务提交 success receipt 与
+  typed result，并拒绝跨 job prior、request/config drift、第二个成功结果和单边 success；
+- retryable receipt 后恢复从 durable `N+1` 继续，总预算不随进程重启增加；terminal receipt
+  直接完成失败，unreceipted request 进入 `outcome_unknown` 且不会自动重发；
+- prompt/tool/input/output/decoder/provider body 由 controller 侧受信 compiler 重算；stable
+  parameter exact set、role-neutral operational independence 和 durable endpoint/timeout dispatch
+  已纳入攻击测试；
+- OpenAI-compatible configuration 必须与 sealed adapter settings 完全相等；伪造 endpoint、
+  timeout、model 或 adapter identity 都会在 transport 前失败，未登记 adapter 不进入 job；
+- 三角色 provider factory 已固化用户确认的三组临时配置，三个 configuration hash 独立；
+- migration 007、482 个 Python tests、26 个 eval execution tests、contract checks 和 26 个
+  disposable PostgreSQL migration/storage/race tests 已通过。
 
 复审确认仍 open 的 Blocking：
 
-- production durable model job 尚未绑定 thinking、exact prompt/tool/request/config identity；
-- provider success receipt 与 typed result 尚未原子持久，crash window 未关闭；
+- runtime exact invocation foundation 已落地；eval `request_sha256`、logical job、attempt 与
+  causation 仍由 synthetic dossier 自报，尚未引用并重算 runtime job/request/receipt artifacts；
+- registry 中的 quality-probe prompt identity 与 production runtime prompt identity 仍混在同一
+  配置概念中；eval 需采用 runtime 已实现的 configuration identity 与 per-job invocation
+  contract 两层结构；
+- TraceArtifactIndex 尚未绑定 artifact kind、stage、producer logical job、provider attempt、
+  configuration 和 output contract，typed output 仍可能指向错误阶段 artifact；
+- 本地 success pair 已原子提交，稳定幂等键会保留给后续 provider 对账；当前 unreceipted
+  request 会停在 `outcome_unknown`。provider 幂等承诺或按键查询能力仍缺真实证明；
+- 内置 request compiler 和 durable dispatch 参数已封闭应用层 drift；transport release、实际
+  sent-bytes receipt、签名代码加载与 oracle-store 权限仍依赖 protected executor。任意同进程
+  恶意代码可以修改 Python 模块状态，该威胁不能靠同一解释器内的对象校验封闭；
 - local hard/relation observations 仍由 runner 产生，需 protected executor 从 artifact bytes 重算；
 - scenario subject 仍缺可重算的 `ScenarioApplicationReceipt`；当前
   `operator_scenario_executor_unverified` 永久阻断 development full run，后续只有独立 resolver
@@ -109,15 +135,16 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
   target 语义拆分仍 open；
 - opaque held-out expansion、frozen run-cell 全链和 protected execution receipt verifier 尚未形成
   正向可满足路径；
-- Primary invocation 仍未绑定可重算的 request artifact 与 AgentWorldView 类型，oracle isolation
-  尚无执行证明；该项留在 G3.6.1；
+- Primary runtime invocation 已绑定可重算 request artifact 与 AgentWorldView 类型，并会拒绝
+  clean-view label 下的隐藏 oracle；protected principal 和 eval-side execution proof 仍未形成；
 - Evaluation Reviewer 仍能看到 illustrative valid-design examples，存在锚定风险；正式输入收敛
   取决于预注册 A/B 探针，当前不能宣称 Reviewer 对替代设计无偏；
 - Lane A/B 尚未接入 production durable runtime，因此 full matrix 禁止启动。
 
-最终冻结快照继续确认：`request_sha256`、provider response/receipt 和 causation 仍可由同一
-synthetic dossier 自报；hard-check/relation observation 仍未从真实 artifact bytes 重算；
-append-only attempt 历史尚未与 PostgreSQL journal 对账。以上限制由
+最终冻结快照继续确认：runtime request bytes、attempt 和原子 success pair 已可重算；eval
+`request_sha256`、provider response/receipt 和 causation 仍可由同一 synthetic dossier 自报；
+hard-check/relation observation 仍未从真实 artifact bytes 重算；eval append-only attempt 历史
+尚未与 PostgreSQL journal 对账。以上限制由
 `local_evidence_trust=runner_self_attested` 和 formal fail-closed 明示，不得把本地合同测试
 解读为真实模型运行证据。
 
@@ -127,6 +154,7 @@ append-only attempt 历史尚未与 PostgreSQL journal 对账。以上限制由
 ## 审查决定
 
 本 Gate 无需新增用户决策。所有 open finding 都属于已确认目标下的通用工程闭环。实施顺序
-采用：corpus/manifest authority → AgentWorldView/DecisionLedger/resolution → provider atomic
-recovery → Answer/obligation/projector/sensitivity workers → trusted realm/trace → Lane A/B →
+采用：corpus/manifest authority → AgentWorldView/DecisionLedger/resolution → provider invocation
+authority → eval/runtime artifact bridge → Answer/obligation/projector/sensitivity workers →
+trusted realm/trace → Lane A/B →
 Reviewer calibration/full matrix。

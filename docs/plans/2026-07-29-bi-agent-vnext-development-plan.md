@@ -575,7 +575,14 @@ Exit evidence：
   36 个 Episodes 派生 156 个 case variants、1,172 个 exact coordinates、2,011 个 Episode
   relation groups，并把 201 个 paraphrase authority 与 38 个 operator scenario（19 类 × 至少
   2 个独立业务世界）缺口写入
-  fail-closed readiness；真实 provider lanes 和 full matrix 尚未开放。
+  fail-closed readiness。G3.6.1 runtime foundation 已把三角色 configuration、exact input view/
+  prompt/tool/request/output/decoder identity、稳定 provider idempotency key、attempt 和原子
+  success receipt/result 写入同一 durable authority chain；migration 007 与 InMemory/PostgreSQL
+  parity 已通过。durable retry 从全局 `N+1` 恢复，unreceipted request fail closed 为
+  `outcome_unknown`；trusted compiler、role-neutral independence fingerprint 与 durable
+  endpoint/timeout dispatch 已封闭应用层配置漂移。eval invocation 仍需消费真实 runtime artifacts，trace wrong-stage 防护、
+  protected executor 和 provider-side outcome recovery 尚未关闭；真实 provider lanes 和 full
+  matrix 继续保持关闭。
 
 **交付物**
 
@@ -947,3 +954,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-31 | 开始 G3.6 通用测量行为评测 | 本 Gate 无需用户决策；先封闭运行权威，再开放真实 provider lane | execution manifest 固定运行坐标与三角色配置；attempt、trace、relation、hard-check、cell/suite 形成严格派生链；本地运行与 formal admission 分离，typed corpus/runtime 前置未满足前保持 blocked |
 | 2026-07-31 | G3.6 typed/open-world corpus epoch | 本 Gate 无需用户决策；ClaimTargetKind registry 与 outcome authority 是机器权威 | 144 个 base 与 12 个 replacement targets 全部 typed；36 Episodes 归并为 20 个独立 authority worlds；13 类各有至少 3 个 candidate worlds；同源 snapshot 不重复计数；authored design 只作非穷尽示例；formal admission 仍等待 source/truth/双审/calibration/held-out/runtime lane |
 | 2026-07-31 | G3.6 exact execution universe epoch | 本 Gate 无需用户决策；policy compiler 拥有运行完整性，业务语义仍由 Episode、Agent 与 Reviewer 判断 | 156 个 case variants 编译为 1,172 个 execution coordinates 与 2,011 个 Episode relation groups；manifest 绑定 exact-set hashes；201 个 paraphrase authorities 和 38 个 operator scenarios 未齐前 development full run fail closed；readiness 纳入 G3.E0 evaluated/verifier release |
+| 2026-07-31 | G3.6.1 runtime provider invocation authority | 本 Gate 无需用户决策；实际发送请求必须从 typed state 重算并与 durable job 完全一致 | 三角色 configuration、input view、typed request、prompt/tool/output/decoder、canonical provider bytes、attempt/idempotency key 和原子 success pair 已进入 runtime authority；eval bridge、wrong-stage trace、protected principal 与 provider-side outcome proof 仍 open |

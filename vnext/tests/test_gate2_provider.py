@@ -15,6 +15,7 @@ from waje_vnext.domain.runtime_amendment import (
     MessageImpactKind,
     MessageImpactProposal,
     JobDisposition,
+    ModelExecutionRole,
     ProviderAttemptDisposition,
     ProposedSemanticAssertion,
     SemanticAssertionKind,
@@ -249,7 +250,9 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             review_request["reviewer_configuration_ref"],
-            reviewer_provider.configuration_ref,
+            reviewer_provider.configuration_identity(
+                ModelExecutionRole.RUNTIME_REVIEWER
+            ).configuration_sha256,
         )
         self.assertNotIn("secret-value", repr(settings))
 

@@ -15,9 +15,12 @@ export type WAJEVNextGate3DurableRuntimeAmendment =
   | FrameAdmissionProof
   | JobDispositionRecord
   | DispatcherRecoveryCursor
+  | ModelConfigurationIdentity
+  | ModelRequestArtifact
   | LogicalModelJob
   | ProviderAttemptRequest
   | ProviderAttemptReceipt
+  | DurableModelResult
   | RunTraceManifest;
 export type JsonValue =
   | null
@@ -718,6 +721,51 @@ export interface DispatcherRecoveryCursor {
   last_outbox_message_id: string | null;
   updated_at: string;
 }
+export interface ModelConfigurationIdentity {
+  execution_role: "primary_business_analysis_agent" | "runtime_reviewer" | "evaluation_reviewer";
+  provider_ref: string;
+  endpoint_ref: string;
+  protocol_ref: string;
+  adapter_release_ref: string;
+  adapter_release_sha256: string;
+  model_ref: string;
+  thinking: string;
+  stable_parameters: {
+    [k: string]: JsonValue;
+  };
+  delivery_policy_ref: string;
+  max_attempts: number;
+  timeout_seconds: number | null;
+  configuration_sha256: string;
+}
+export interface ModelRequestArtifact {
+  model_request_artifact_id: string;
+  logical_model_job_id: string;
+  execution_role: "primary_business_analysis_agent" | "runtime_reviewer" | "evaluation_reviewer";
+  logical_job_kind: string;
+  input_view_kind:
+    | "message_binding_view"
+    | "agent_world_view"
+    | "measurement_review_view"
+    | "evaluation_review_view";
+  input_view_ref: string;
+  input_view_sha256: string;
+  typed_request_contract_ref: string;
+  typed_request_sha256: string;
+  prompt_bundle_ref: string;
+  prompt_bundle_sha256: string;
+  tool_bundle_ref: string;
+  tool_bundle_sha256: string;
+  output_contract_ref: string;
+  output_contract_sha256: string;
+  decoder_release_ref: string;
+  decoder_release_sha256: string;
+  provider_request_body: {
+    [k: string]: JsonValue;
+  };
+  provider_request_sha256: string;
+  created_at: string;
+}
 export interface LogicalModelJob {
   logical_model_job_id: string;
   case_id: string;
@@ -728,6 +776,10 @@ export interface LogicalModelJob {
   model_ref: string;
   prompt_contract_ref: string;
   input_sha256: string;
+  configuration_identity: ModelConfigurationIdentity;
+  configuration_sha256: string;
+  model_request_artifact: ModelRequestArtifact;
+  model_request_artifact_sha256: string;
   authority_snapshot_sha256: string;
   created_at: string;
 }
@@ -736,7 +788,10 @@ export interface ProviderAttemptRequest {
   logical_model_job_id: string;
   attempt_number: number;
   prior_provider_attempt_id: string | null;
+  provider_idempotency_key: string;
   request_sha256: string;
+  model_request_artifact_sha256: string;
+  configuration_sha256: string;
   requested_at: string;
 }
 export interface ProviderAttemptReceipt {
@@ -758,6 +813,21 @@ export interface ProviderAttemptReceipt {
     [k: string]: JsonValue;
   };
   completed_at: string;
+}
+export interface DurableModelResult {
+  durable_model_result_id: string;
+  logical_model_job_id: string;
+  provider_attempt_id: string;
+  provider_attempt_receipt_id: string;
+  result_kind: string;
+  result_contract_ref: string;
+  result_payload: {
+    [k: string]: JsonValue;
+  };
+  output_sha256: string;
+  model_request_artifact_sha256: string;
+  configuration_sha256: string;
+  recorded_at: string;
 }
 export interface RunTraceManifest {
   trace_manifest_id: string;

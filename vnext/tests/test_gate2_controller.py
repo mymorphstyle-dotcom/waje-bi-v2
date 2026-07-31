@@ -1887,7 +1887,7 @@ class Gate2ControllerTest(unittest.TestCase):
                 heartbeat_attempted.set()
                 raise LeaseFenceLost("simulated heartbeat failure")
 
-        class WaitingProvider:
+        class WaitingProvider(ScriptedPrimaryAgentProvider):
             allows_test_role_multiplexing = True
 
             def bind_message(self, request):
@@ -1906,7 +1906,7 @@ class Gate2ControllerTest(unittest.TestCase):
         store = FailingHeartbeatStore()
         controller = WAJEController(
             store=store,
-            provider=WaitingProvider(),
+            provider=WaitingProvider(()),
             effect_executor=ScriptedEffectExecutor(()),
             owner_id="worker-heartbeat-failure",
             clock=lambda: NOW,

@@ -3,7 +3,7 @@
 > 日期：2026-07-31
 > 分支：`codex/gate3-6-universal-measurement-eval`
 > 基线：`origin/main@ff9f3278`
-> 状态：G3.6.0 in progress；real-provider full matrix 尚未开放
+> 状态：G3.6.1 in progress；runtime provider invocation foundation 已完成，real-provider full matrix 尚未开放
 
 ## 1. Gate entry
 
@@ -25,10 +25,13 @@
 - 现有 per-cell result validator 能阻止三层互相抵消，也能绑定 frozen run cell 与 runner
   artifact index。现有 run manifest 没有表达 lane、paraphrase、repeat、seed、角色配置、
   trace profile、每轮输入 view 和整套完成证明。
-- 现有真实 provider adapter 使用同一生产 typed-action 路径，支持 durable provider attempt
-  observer 和 Primary/Binding/Reviewer 独立配置。G3.6.0 已让 `thinking` 进入通用 provider
-  settings、request 与 configuration identity；durable logical job 仍未绑定 exact prompt/tool/
-  request identity。
+- 现有真实 provider adapter 使用同一生产 typed-action 路径。G3.6.1 已让 `thinking`、稳定生成
+  参数、endpoint、adapter release、prompt、tool、typed input/output contract、decoder 和实际
+  provider request bytes 进入 durable configuration/request identity；Primary、Runtime Reviewer、
+  Evaluation Reviewer 由独立角色配置构造。
+- provider attempt 使用 durable idempotency key；成功 receipt 与 typed result 在同一短事务
+  原子提交。该本地保证仍需 provider 端幂等语义或响应查询能力的外部证明，才能关闭网络
+  outcome unknown 风险。
 - G3.6.0 execution-universe compiler 已从当前 policy 与 36 个 Episodes 派生 156 个
   base/counterfactual case variants、1,172 个必跑坐标和 2,011 个 Episode relation groups。
   当前缺 201 个 reviewed paraphrase slots 与 38 个专项 operator scenarios（19 类 × 至少 2 个
@@ -559,6 +562,38 @@ Exit：
 - TraceBundle 与 PostgreSQL journal、artifact bytes、RunTraceManifest 和 invocation receipts
   exact 对账。
 
+实施状态（2026-07-31）：
+
+- 已完成 runtime `ModelConfigurationIdentity`、`ModelRequestArtifact`、logical job、attempt、
+  success receipt 和 typed result 的逐层 hash/identity 绑定；实际 HTTP body 使用规范字节编码，
+  provider observer 会在发送前拒绝 request drift；
+- 已完成稳定 `Idempotency-Key`、同一 logical job 单成功结果、attempt 连续性和
+  InMemory/PostgreSQL 原子 success pair；migration 007 直接替换开发期旧模型调用合同；
+- retryable/terminal receipt 后的进程恢复会读取 durable attempt history；已知 retry 从全局
+  `N+1` 继续且不重置预算，terminal failure 直接收口。request 已存在而 receipt 缺失时进入
+  `outcome_unknown`，禁止自动重发；
+- 已完成三个角色 profile factory：Primary=`deepseek-v4-pro + thinking`、Runtime
+  Reviewer=`deepseek-v4-pro + no thinking`、Evaluation Reviewer=`deepseek-v4-flash + thinking`；
+- controller 会从受信 invocation compiler 重算 input view、typed request、prompt、tool、output
+  contract、decoder 和 provider body；伪造 clean-view label、隐藏 oracle、额外 request 字段、
+  未落到请求的 stable parameter 或发送前 prompt drift 都会在 transport 前失败；
+- role-aware configuration identity 之外另有 role-neutral operational fingerprint，Primary 与
+  Runtime Reviewer 不能只靠角色标签伪装成独立配置；实际 endpoint/timeout 由 durable
+  configuration 驱动；OpenAI-compatible job admission 要求 configuration 与已通过 HTTPS/
+  credential/query/fragment 校验的 sealed adapter settings 完全相等，任意 endpoint 替换会在
+  transport 前失败；
+- 482 个 Python tests 通过（35 skipped），Gate 3 eval execution 26 个 tests、contract check、
+  G3.E0 fail-closed 检查以及 26 个 disposable PostgreSQL migration/storage/race tests 通过；
+- 尚未完成 eval execution manifest/model invocation 与 runtime artifact 的可信桥接；
+  TraceArtifactIndex 仍需绑定 artifact kind、stage、producer logical job、provider attempt、
+  configuration 与 output contract，防止引用错误阶段输出；
+- 受保护 executor/principal、provider 端幂等去重或 response lookup 仍需真实环境验收。
+- transport implementation release、实际 dispatch receipt 与同进程代码不可变性仍需受保护
+  executor 证明；同一 Python 解释器内不把任意恶意 provider 代码视为可安全隔离对象。
+
+因此 G3.6.1 的 runtime foundation 已完成，整节 Exit 尚未满足，Lane A/B 和 full matrix 继续
+保持关闭。
+
 ### G3.6.2 Lane A
 
 交付：
@@ -744,8 +779,10 @@ failure classes 已进入实施顺序：
 7. relation、pairwise/higher-order 与 suite 统计缺一等 authority；
 8. AgentWorldView、DecisionLedger inference、resolution worker、Answer Reviewer、trusted realm
    和并行 workers 未闭合；
-9. provider configuration identity 与成功响应持久化存在恢复窗口；
-10. trace、invocation、artifact index 尚未与 durable PostgreSQL facts exact 对账。
+9. runtime provider configuration、exact request 和成功响应原子持久化已关闭；eval manifest
+   仍可自报 invocation hash，provider 端 outcome unknown 仍待外部幂等证明；
+10. trace、eval invocation、artifact index 尚未与 durable PostgreSQL facts exact 对账，
+    wrong-stage artifact 仍可能通过现有 eval validator。
 
 G3.6.0 的冻结快照又验证了两项已关闭的合同漏洞：动态调查不会因同一角色多次成功调用被
 误拒绝；terminal artifact root 必须等于 TraceArtifactIndex 的规范 hash。真实 artifact bytes、

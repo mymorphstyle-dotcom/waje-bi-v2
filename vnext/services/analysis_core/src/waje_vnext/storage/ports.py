@@ -317,6 +317,13 @@ class AuthorityStore(Protocol):
         record: ProviderAttemptReceipt,
     ) -> ProviderAttemptReceipt: ...
 
+    def commit_provider_attempt_success(
+        self,
+        *,
+        receipt: ProviderAttemptReceipt,
+        result: DurableModelResult,
+    ) -> DurableModelResult: ...
+
     def get_provider_attempt_receipt(
         self,
         provider_attempt_receipt_id: str,
@@ -326,11 +333,6 @@ class AuthorityStore(Protocol):
         self,
         logical_model_job_id: str,
     ) -> tuple[ProviderAttemptReceipt, ...]: ...
-
-    def record_durable_model_result(
-        self,
-        record: DurableModelResult,
-    ) -> DurableModelResult: ...
 
     def get_durable_model_result(
         self,
