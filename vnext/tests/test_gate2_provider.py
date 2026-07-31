@@ -15,6 +15,7 @@ from waje_vnext.domain.runtime_amendment import (
     MessageImpactKind,
     MessageImpactProposal,
     JobDisposition,
+    ModelExecutionRole,
     ProviderAttemptDisposition,
     ProposedSemanticAssertion,
     SemanticAssertionKind,
@@ -218,6 +219,10 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
         self.assertNotIn("max_tokens", request_payload)
         self.assertNotIn("response_format", request_payload)
         self.assertFalse(request_payload["parallel_tool_calls"])
+        self.assertEqual(
+            request_payload["thinking"],
+            {"type": "disabled"},
+        )
         self.assertTrue(
             all(
                 tool["function"]["strict"]
@@ -245,9 +250,48 @@ class Gate2ProviderAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             review_request["reviewer_configuration_ref"],
-            reviewer_provider.configuration_ref,
+            reviewer_provider.configuration_identity(
+                ModelExecutionRole.RUNTIME_REVIEWER
+            ).configuration_sha256,
         )
         self.assertNotIn("secret-value", repr(settings))
+
+    def test_thinking_mode_is_requested_and_part_of_configuration_identity(
+        self,
+    ) -> None:
+        disabled = ChatCompletionsProviderSettings.from_env(
+            {
+                "WAJE_VNEXT_LLM_PROVIDER": "deepseek",
+                "WAJE_VNEXT_LLM_BASE_URL": "https://provider.example/v1",
+                "WAJE_VNEXT_LLM_API_KEY": "secret",
+                "WAJE_VNEXT_LLM_MODEL": "deepseek-v4-pro",
+                "WAJE_VNEXT_LLM_THINKING": "disabled",
+            }
+        )
+        enabled = ChatCompletionsProviderSettings.from_env(
+            {
+                "WAJE_VNEXT_LLM_PROVIDER": "deepseek",
+                "WAJE_VNEXT_LLM_BASE_URL": "https://provider.example/v1",
+                "WAJE_VNEXT_LLM_API_KEY": "secret",
+                "WAJE_VNEXT_LLM_MODEL": "deepseek-v4-pro",
+                "WAJE_VNEXT_LLM_THINKING": "enabled",
+            }
+        )
+        self.assertNotEqual(
+            ChatCompletionsProvider(disabled).configuration_ref,
+            ChatCompletionsProvider(enabled).configuration_ref,
+        )
+        with self.assertRaisesRegex(
+            ProviderConfigurationError,
+            "thinking must be enabled or disabled",
+        ):
+            ChatCompletionsProviderSettings(
+                provider_name="deepseek",
+                base_url="https://provider.example/v1",
+                api_key="secret",
+                model="deepseek-v4-pro",
+                thinking="sometimes",
+            )
 
     def test_transient_retry_is_centralized_in_provider(self) -> None:
         transport = RecordingTransport(

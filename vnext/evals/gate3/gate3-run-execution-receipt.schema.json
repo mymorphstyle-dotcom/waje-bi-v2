@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/run-execution-receipt.v1.schema.json",
+  "title": "WAJE Gate 3 Protected Run Execution Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "issuer",
+    "candidate_release_sha256",
+    "runner_release_sha256",
+    "grader_release_sha256",
+    "execution_manifest_sha256",
+    "artifact_index_root_sha256",
+    "attempt_journal_root_sha256",
+    "provider_receipt_set_sha256",
+    "cell_result_set_sha256",
+    "suite_result_sha256",
+    "protected_held_out_expansion_sha256",
+    "issued_at",
+    "signature_bundle"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_run_execution_receipt"},
+    "artifact_version": {"const": "gate3.run-execution-receipt.v1"},
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "repository_id",
+        "workflow_ref",
+        "workflow_sha256",
+        "run_id",
+        "run_attempt"
+      ],
+      "properties": {
+        "provider": {"const": "github_actions_sigstore"},
+        "repository_id": {"type": "integer", "minimum": 1},
+        "workflow_ref": {"type": "string", "minLength": 1},
+        "workflow_sha256": {"$ref": "#/$defs/sha256"},
+        "run_id": {"type": "integer", "minimum": 1},
+        "run_attempt": {"type": "integer", "minimum": 1}
+      }
+    },
+    "candidate_release_sha256": {"$ref": "#/$defs/sha256"},
+    "runner_release_sha256": {"$ref": "#/$defs/sha256"},
+    "grader_release_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "artifact_index_root_sha256": {"$ref": "#/$defs/sha256"},
+    "attempt_journal_root_sha256": {"$ref": "#/$defs/sha256"},
+    "provider_receipt_set_sha256": {"$ref": "#/$defs/sha256"},
+    "cell_result_set_sha256": {"$ref": "#/$defs/sha256"},
+    "suite_result_sha256": {"$ref": "#/$defs/sha256"},
+    "protected_held_out_expansion_sha256": {"$ref": "#/$defs/sha256"},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "signature_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_type", "bundle_ref", "bundle_sha256"],
+      "properties": {
+        "media_type": {"const": "application/vnd.dev.sigstore.bundle+json"},
+        "bundle_ref": {"type": "string", "minLength": 1},
+        "bundle_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

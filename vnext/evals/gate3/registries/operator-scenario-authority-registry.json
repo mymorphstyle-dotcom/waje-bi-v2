@@ -1,0 +1,14 @@
+{
+  "artifact_type": "gate3_operator_scenario_authority_registry",
+  "artifact_version": "gate3.operator-scenario-authority.v1",
+  "registry_epoch": 1,
+  "status": "candidate_authoring",
+  "executor_binding": {
+    "status": "unavailable",
+    "resolver_registry_ref": null,
+    "resolver_registry_sha256": null,
+    "application_receipt_contract_sha256": null,
+    "authorized_resolvers": []
+  },
+  "scenarios": []
+}

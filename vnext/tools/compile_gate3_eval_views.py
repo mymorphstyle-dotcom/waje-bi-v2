@@ -31,6 +31,7 @@ FORBIDDEN_AGENT_FIELD_NAMES = {
     "suite_binding",
     "data_source_bindings",
     "source_record_ref",
+    "business_world_independence_key",
     "product_grader_profile_ref",
     "authority_profile_ref",
     "authority_expectation",
@@ -419,6 +420,9 @@ def compile_views(
         "view_version": "gate3.evaluator-oracle-view.v2",
         "episode_id": episode["episode_id"],
         "episode_core_sha256": corpus_entry["episode_core_sha256"],
+        "business_world_independence_key": episode[
+            "business_world_independence_key"
+        ],
         "complete_message_plan": episode["user_episode"]["messages"],
         "truth_facts": world["truth_facts"],
         "scheduled_events": world.get("scheduled_events", []),

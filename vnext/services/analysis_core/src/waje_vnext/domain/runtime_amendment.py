@@ -31,6 +31,7 @@ from .canonical import (
     require_sha256,
     to_jsonable,
 )
+from .events import JournalEventType
 
 
 class MessageBindingDisposition(StrEnum):
@@ -127,6 +128,192 @@ class ProviderAttemptDisposition(StrEnum):
 
 class RunTraceProfile(StrEnum):
     CASE_AUTHORITY_LANE = "case_authority_lane"
+
+
+class ModelExecutionRole(StrEnum):
+    PRIMARY_BUSINESS_ANALYSIS_AGENT = "primary_business_analysis_agent"
+    RUNTIME_REVIEWER = "runtime_reviewer"
+    EVALUATION_REVIEWER = "evaluation_reviewer"
+
+
+class ModelInputViewKind(StrEnum):
+    MESSAGE_BINDING_VIEW = "message_binding_view"
+    AGENT_WORLD_VIEW = "agent_world_view"
+    MEASUREMENT_REVIEW_VIEW = "measurement_review_view"
+    EVALUATION_REVIEW_VIEW = "evaluation_review_view"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelConfigurationIdentity:
+    execution_role: ModelExecutionRole
+    provider_ref: str
+    endpoint_ref: str
+    protocol_ref: str
+    adapter_release_ref: str
+    adapter_release_sha256: str
+    model_ref: str
+    thinking: str
+    stable_parameters: Mapping[str, FrozenJson]
+    delivery_policy_ref: str
+    max_attempts: int
+    timeout_seconds: float | None
+    configuration_sha256: str
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        execution_role: ModelExecutionRole,
+        provider_ref: str,
+        endpoint_ref: str,
+        protocol_ref: str,
+        adapter_release_ref: str,
+        adapter_release_sha256: str,
+        model_ref: str,
+        thinking: str,
+        stable_parameters: Mapping[str, FrozenJson],
+        delivery_policy_ref: str,
+        max_attempts: int,
+        timeout_seconds: float | None,
+    ) -> "ModelConfigurationIdentity":
+        content = {
+            "execution_role": execution_role.value,
+            "provider_ref": provider_ref,
+            "endpoint_ref": endpoint_ref,
+            "protocol_ref": protocol_ref,
+            "adapter_release_ref": adapter_release_ref,
+            "adapter_release_sha256": adapter_release_sha256,
+            "model_ref": model_ref,
+            "thinking": thinking,
+            "stable_parameters": stable_parameters,
+            "delivery_policy_ref": delivery_policy_ref,
+            "max_attempts": max_attempts,
+            "timeout_seconds": timeout_seconds,
+        }
+        return cls(
+            execution_role=execution_role,
+            provider_ref=provider_ref,
+            endpoint_ref=endpoint_ref,
+            protocol_ref=protocol_ref,
+            adapter_release_ref=adapter_release_ref,
+            adapter_release_sha256=adapter_release_sha256,
+            model_ref=model_ref,
+            thinking=thinking,
+            stable_parameters=stable_parameters,
+            delivery_policy_ref=delivery_policy_ref,
+            max_attempts=max_attempts,
+            timeout_seconds=timeout_seconds,
+            configuration_sha256=content_sha256(content),
+        )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.execution_role, ModelExecutionRole):
+            raise TypeError("execution_role must be ModelExecutionRole")
+        for field_name in (
+            "provider_ref",
+            "endpoint_ref",
+            "protocol_ref",
+            "adapter_release_ref",
+            "model_ref",
+            "thinking",
+            "delivery_policy_ref",
+        ):
+            require_nonempty(getattr(self, field_name), field_name)
+        require_sha256(
+            self.adapter_release_sha256,
+            "adapter_release_sha256",
+        )
+        if self.thinking not in {"enabled", "disabled"}:
+            raise ValueError("thinking must be enabled or disabled")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError(
+                "timeout_seconds must be positive when configured"
+            )
+        stable = _freeze_object(
+            self.stable_parameters,
+            "stable_parameters",
+        )
+        object.__setattr__(self, "stable_parameters", stable)
+        require_sha256(
+            self.configuration_sha256,
+            "configuration_sha256",
+        )
+        if self.configuration_sha256 != content_sha256(
+            _model_configuration_content(self)
+        ):
+            raise ValueError("configuration_sha256 is stale")
+
+    @property
+    def operational_configuration_sha256(self) -> str:
+        return content_sha256(
+            _model_configuration_operational_content(self)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequestArtifact:
+    model_request_artifact_id: str
+    logical_model_job_id: str
+    execution_role: ModelExecutionRole
+    logical_job_kind: str
+    input_view_kind: ModelInputViewKind
+    input_view_ref: str
+    input_view_sha256: str
+    typed_request_contract_ref: str
+    typed_request_sha256: str
+    prompt_bundle_ref: str
+    prompt_bundle_sha256: str
+    tool_bundle_ref: str
+    tool_bundle_sha256: str
+    output_contract_ref: str
+    output_contract_sha256: str
+    decoder_release_ref: str
+    decoder_release_sha256: str
+    provider_request_body: Mapping[str, FrozenJson]
+    provider_request_sha256: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.execution_role, ModelExecutionRole):
+            raise TypeError("execution_role must be ModelExecutionRole")
+        if not isinstance(self.input_view_kind, ModelInputViewKind):
+            raise TypeError("input_view_kind must be ModelInputViewKind")
+        for field_name in (
+            "model_request_artifact_id",
+            "logical_model_job_id",
+            "logical_job_kind",
+            "input_view_ref",
+            "typed_request_contract_ref",
+            "prompt_bundle_ref",
+            "tool_bundle_ref",
+            "output_contract_ref",
+            "decoder_release_ref",
+        ):
+            require_nonempty(getattr(self, field_name), field_name)
+        for field_name in (
+            "input_view_sha256",
+            "typed_request_sha256",
+            "prompt_bundle_sha256",
+            "tool_bundle_sha256",
+            "output_contract_sha256",
+            "decoder_release_sha256",
+            "provider_request_sha256",
+        ):
+            require_sha256(getattr(self, field_name), field_name)
+        body = _freeze_object(
+            self.provider_request_body,
+            "provider_request_body",
+        )
+        object.__setattr__(self, "provider_request_body", body)
+        if content_sha256(body) != self.provider_request_sha256:
+            raise ValueError("provider request body hash is stale")
+        require_aware_datetime(self.created_at, "created_at")
+
+    @property
+    def content_sha256(self) -> str:
+        return content_sha256(self)
 
 
 class SemanticAssertionKind(StrEnum):
@@ -1225,6 +1412,10 @@ class LogicalModelJob:
     model_ref: str
     prompt_contract_ref: str
     input_sha256: str
+    configuration_identity: ModelConfigurationIdentity
+    configuration_sha256: str
+    model_request_artifact: ModelRequestArtifact
+    model_request_artifact_sha256: str
     authority_snapshot_sha256: str
     created_at: datetime
 
@@ -1241,6 +1432,50 @@ class LogicalModelJob:
         ):
             require_nonempty(getattr(self, name), name)
         require_sha256(self.input_sha256, "input_sha256")
+        if not isinstance(
+            self.configuration_identity,
+            ModelConfigurationIdentity,
+        ):
+            raise TypeError(
+                "configuration_identity must be ModelConfigurationIdentity"
+            )
+        if not isinstance(
+            self.model_request_artifact,
+            ModelRequestArtifact,
+        ):
+            raise TypeError(
+                "model_request_artifact must be ModelRequestArtifact"
+            )
+        require_sha256(
+            self.configuration_sha256,
+            "configuration_sha256",
+        )
+        require_sha256(
+            self.model_request_artifact_sha256,
+            "model_request_artifact_sha256",
+        )
+        if (
+            self.configuration_identity.configuration_sha256
+            != self.configuration_sha256
+        ):
+            raise ValueError("logical job configuration identity drifted")
+        artifact = self.model_request_artifact
+        if (
+            artifact.logical_model_job_id != self.logical_model_job_id
+            or artifact.logical_job_kind != self.role
+            or artifact.typed_request_sha256 != self.input_sha256
+            or artifact.prompt_bundle_ref != self.prompt_contract_ref
+            or artifact.content_sha256
+            != self.model_request_artifact_sha256
+        ):
+            raise ValueError("logical job request artifact identity drifted")
+        if (
+            self.provider_ref != self.configuration_identity.provider_ref
+            or self.model_ref != self.configuration_identity.model_ref
+            or artifact.execution_role
+            is not self.configuration_identity.execution_role
+        ):
+            raise ValueError("logical job provider configuration drifted")
         require_sha256(
             self.authority_snapshot_sha256,
             "authority_snapshot_sha256",
@@ -1258,13 +1493,17 @@ class ProviderAttemptRequest:
     logical_model_job_id: str
     attempt_number: int
     prior_provider_attempt_id: str | None
+    provider_idempotency_key: str
     request_sha256: str
+    model_request_artifact_sha256: str
+    configuration_sha256: str
     requested_at: datetime
 
     def __post_init__(self) -> None:
         for field_name in (
             "provider_attempt_id",
             "logical_model_job_id",
+            "provider_idempotency_key",
         ):
             require_nonempty(getattr(self, field_name), field_name)
         if self.attempt_number < 1:
@@ -1275,6 +1514,14 @@ class ProviderAttemptRequest:
         elif self.prior_provider_attempt_id is None:
             raise ValueError("later attempt requires a prior attempt")
         require_sha256(self.request_sha256, "request_sha256")
+        require_sha256(
+            self.model_request_artifact_sha256,
+            "model_request_artifact_sha256",
+        )
+        require_sha256(
+            self.configuration_sha256,
+            "configuration_sha256",
+        )
         require_aware_datetime(self.requested_at, "requested_at")
 
 
@@ -1327,10 +1574,13 @@ class DurableModelResult:
     durable_model_result_id: str
     logical_model_job_id: str
     provider_attempt_id: str
+    provider_attempt_receipt_id: str
     result_kind: str
     result_contract_ref: str
     result_payload: Mapping[str, FrozenJson]
     output_sha256: str
+    model_request_artifact_sha256: str
+    configuration_sha256: str
     recorded_at: datetime
 
     def __post_init__(self) -> None:
@@ -1338,6 +1588,7 @@ class DurableModelResult:
             "durable_model_result_id",
             "logical_model_job_id",
             "provider_attempt_id",
+            "provider_attempt_receipt_id",
             "result_kind",
             "result_contract_ref",
         ):
@@ -1348,6 +1599,14 @@ class DurableModelResult:
         )
         object.__setattr__(self, "result_payload", frozen)
         require_sha256(self.output_sha256, "output_sha256")
+        require_sha256(
+            self.model_request_artifact_sha256,
+            "model_request_artifact_sha256",
+        )
+        require_sha256(
+            self.configuration_sha256,
+            "configuration_sha256",
+        )
         if content_sha256(self.result_payload) != self.output_sha256:
             raise ValueError("durable model result hash is stale")
         require_aware_datetime(self.recorded_at, "recorded_at")
@@ -1357,11 +1616,16 @@ class DurableModelResult:
 class RunTraceEventLink:
     cursor: int
     event_id: str
+    event_type: JournalEventType
+    recorded_at: datetime
     operation_id: str
     causation_id: str
     correlation_id: str
     authority_revision: int
+    action_id: str | None
+    authority_ref: str | None
     payload_sha256: str
+    event_content_sha256: str
 
     def __post_init__(self) -> None:
         if self.cursor < 1:
@@ -1373,11 +1637,22 @@ class RunTraceEventLink:
             "correlation_id",
         ):
             require_nonempty(getattr(self, field_name), field_name)
+        if not isinstance(self.event_type, JournalEventType):
+            raise TypeError("run trace event_type must be JournalEventType")
+        require_aware_datetime(self.recorded_at, "recorded_at")
+        for field_name in ("action_id", "authority_ref"):
+            value = getattr(self, field_name)
+            if value is not None:
+                require_nonempty(value, field_name)
         if self.authority_revision < 0:
             raise ValueError(
                 "run trace authority revision cannot be negative"
             )
         require_sha256(self.payload_sha256, "payload_sha256")
+        require_sha256(
+            self.event_content_sha256,
+            "event_content_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1396,6 +1671,7 @@ class RunTraceManifest:
     frame_review_ids: tuple[str, ...]
     job_disposition_record_ids: tuple[str, ...]
     logical_model_job_ids: tuple[str, ...]
+    provider_attempt_request_ids: tuple[str, ...]
     provider_attempt_receipt_ids: tuple[str, ...]
     durable_model_result_ids: tuple[str, ...]
     plan_revision_ids: tuple[str, ...]
@@ -1456,6 +1732,7 @@ class RunTraceManifest:
             "frame_review_ids",
             "job_disposition_record_ids",
             "logical_model_job_ids",
+            "provider_attempt_request_ids",
             "provider_attempt_receipt_ids",
             "durable_model_result_ids",
             "plan_revision_ids",
@@ -1473,6 +1750,11 @@ class RunTraceManifest:
         if self.lineage_sha256 != compute_run_trace_lineage_sha256(self):
             raise ValueError("run trace lineage hash is stale or forged")
         require_aware_datetime(self.built_at, "built_at")
+        if any(
+            event.recorded_at > self.built_at
+            for event in self.event_operation_lineage
+        ):
+            raise ValueError("run trace event postdates manifest build")
 
 
 def run_trace_lineage_material(
@@ -1496,6 +1778,9 @@ def run_trace_lineage_material(
             record.job_disposition_record_ids
         ),
         "logical_model_job_ids": record.logical_model_job_ids,
+        "provider_attempt_request_ids": (
+            record.provider_attempt_request_ids
+        ),
         "provider_attempt_receipt_ids": (
             record.provider_attempt_receipt_ids
         ),
@@ -1516,6 +1801,33 @@ def compute_run_trace_lineage_sha256(
     record: RunTraceManifest,
 ) -> str:
     return content_sha256(run_trace_lineage_material(record))
+
+
+def _model_configuration_content(
+    identity: ModelConfigurationIdentity,
+) -> Mapping[str, object]:
+    return {
+        "execution_role": identity.execution_role.value,
+        **_model_configuration_operational_content(identity),
+    }
+
+
+def _model_configuration_operational_content(
+    identity: ModelConfigurationIdentity,
+) -> Mapping[str, object]:
+    return {
+        "provider_ref": identity.provider_ref,
+        "endpoint_ref": identity.endpoint_ref,
+        "protocol_ref": identity.protocol_ref,
+        "adapter_release_ref": identity.adapter_release_ref,
+        "adapter_release_sha256": identity.adapter_release_sha256,
+        "model_ref": identity.model_ref,
+        "thinking": identity.thinking,
+        "stable_parameters": identity.stable_parameters,
+        "delivery_policy_ref": identity.delivery_policy_ref,
+        "max_attempts": identity.max_attempts,
+        "timeout_seconds": identity.timeout_seconds,
+    }
 
 
 def _freeze_object(

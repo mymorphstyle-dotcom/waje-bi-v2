@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import urllib.error
@@ -12,19 +13,28 @@ from datetime import UTC, datetime
 from threading import local
 from typing import Any, Mapping, Protocol
 from urllib.parse import urlparse
+from pathlib import Path
 
 from waje_vnext.domain.actions import ActionKind, AgentActionProposal
 from waje_vnext.domain.action_codec import (
     ActionProposalDecodeError,
     decode_agent_action_proposal,
 )
-from waje_vnext.domain.canonical import content_sha256, to_jsonable
+from waje_vnext.domain.canonical import (
+    canonical_json_bytes,
+    content_sha256,
+    to_jsonable,
+)
 from waje_vnext.domain.controller import PrimaryAgentRequest
 from waje_vnext.domain.runtime_amendment import (
     FrameReviewProposal,
     FrameReviewRequest,
     MessageBindingRequest,
     MessageImpactProposal,
+    ModelConfigurationIdentity,
+    ModelExecutionRole,
+    ModelInputViewKind,
+    ModelRequestArtifact,
 )
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
@@ -32,6 +42,7 @@ from .base import (
     ProviderConfigurationError,
     ProviderAttemptTrace,
     ProviderPermanentError,
+    PreparedModelInvocation,
     ProviderTransientError,
 )
 from .tool_contract import (
@@ -42,6 +53,12 @@ from .tool_contract import (
 
 
 ENV_PREFIX = "WAJE_VNEXT_LLM_"
+PROTOCOL_REF = "openai-compatible-chat-completions.v1"
+ADAPTER_RELEASE_REF = "waje-vnext://providers/chat-completions.v1"
+DELIVERY_POLICY_REF = "waje-vnext://providers/retry-policy.v1"
+_ADAPTER_RELEASE_SHA256 = hashlib.sha256(
+    Path(__file__).read_bytes()
+).hexdigest()
 
 
 class ChatTransport(Protocol):
@@ -61,6 +78,10 @@ class ChatCompletionsProviderSettings:
     base_url: str
     api_key: str = field(repr=False)
     model: str
+    thinking: str = "disabled"
+    temperature: float = 1.0
+    top_p: float = 1.0
+    seed: int | None = None
     max_attempts: int = 3
     timeout_seconds: float | None = None
 
@@ -82,6 +103,22 @@ class ChatCompletionsProviderSettings:
             )
         if self.max_attempts < 1:
             raise ProviderConfigurationError("max_attempts must be positive")
+        if self.thinking not in {"enabled", "disabled"}:
+            raise ProviderConfigurationError(
+                "thinking must be enabled or disabled"
+            )
+        if not 0 <= self.temperature <= 2:
+            raise ProviderConfigurationError(
+                "temperature must be between 0 and 2"
+            )
+        if not 0 < self.top_p <= 1:
+            raise ProviderConfigurationError(
+                "top_p must be greater than 0 and at most 1"
+            )
+        if self.seed is not None and self.seed < 0:
+            raise ProviderConfigurationError(
+                "seed must be non-negative when configured"
+            )
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ProviderConfigurationError(
                 "timeout_seconds must be positive when configured"
@@ -100,11 +137,27 @@ class ChatCompletionsProviderSettings:
             timeout = parsed_timeout
         attempts_raw = source.get(ENV_PREFIX + "MAX_ATTEMPTS", "").strip()
         attempts = 3 if not attempts_raw else _positive_int(attempts_raw)
+        temperature_raw = source.get(
+            ENV_PREFIX + "TEMPERATURE",
+            "1.0",
+        ).strip()
+        top_p_raw = source.get(ENV_PREFIX + "TOP_P", "1.0").strip()
+        seed_raw = source.get(ENV_PREFIX + "SEED", "").strip()
         return cls(
             provider_name=source.get(ENV_PREFIX + "PROVIDER", "").strip(),
             base_url=source.get(ENV_PREFIX + "BASE_URL", "").strip(),
             api_key=source.get(ENV_PREFIX + "API_KEY", "").strip(),
             model=source.get(ENV_PREFIX + "MODEL", "").strip(),
+            thinking=(
+                source.get(ENV_PREFIX + "THINKING", "disabled").strip()
+                or "disabled"
+            ),
+            temperature=_float_value(
+                temperature_raw,
+                "temperature",
+            ),
+            top_p=_float_value(top_p_raw, "top_p"),
+            seed=None if not seed_raw else _nonnegative_int(seed_raw),
             max_attempts=attempts,
             timeout_seconds=timeout,
         )
@@ -112,6 +165,132 @@ class ChatCompletionsProviderSettings:
     @property
     def endpoint(self) -> str:
         return self.base_url.rstrip("/") + "/chat/completions"
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledChatInvocation:
+    execution_role: ModelExecutionRole
+    input_view_kind: ModelInputViewKind
+    input_view_ref: str
+    input_view_sha256: str
+    prompt_bundle_ref: str
+    system_instruction: str
+    tool_bundle_ref: str
+    tools: list[dict[str, object]]
+    payload: dict[str, object]
+    decoder_release_ref: str
+
+
+def compile_trusted_chat_invocation(
+    *,
+    logical_job_kind: str,
+    request: object,
+    configuration: ModelConfigurationIdentity,
+) -> CompiledChatInvocation:
+    if logical_job_kind == "primary_agent" and isinstance(
+        request,
+        PrimaryAgentRequest,
+    ):
+        execution_role = ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+        input_view_kind = ModelInputViewKind.AGENT_WORLD_VIEW
+        input_view_ref = request.context_packet.packet_id
+        input_view_sha256 = request.context_packet.content_sha256
+        prompt_bundle_ref = (
+            "waje-vnext://prompts/primary-business-analysis-agent.v1"
+        )
+        system_instruction = _SYSTEM_INSTRUCTION
+        tool_bundle_ref = "waje-vnext://tools/primary-agent-actions.v3"
+        tools = action_tools(
+            request.allowed_actions,
+            controller_bound_fields=frozenset(
+                {"question_revision_id"}
+            ),
+        )
+        tool_choice: object = "required"
+        decoder_release_ref = (
+            "waje-vnext://decoders/agent-action-proposal.v3"
+        )
+    elif logical_job_kind == "message_binding" and isinstance(
+        request,
+        MessageBindingRequest,
+    ):
+        execution_role = ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+        input_view_kind = ModelInputViewKind.MESSAGE_BINDING_VIEW
+        input_view_ref = request.message_id
+        input_view_sha256 = content_sha256(request)
+        prompt_bundle_ref = "waje-vnext://prompts/message-binding.v1"
+        system_instruction = _BINDING_SYSTEM_INSTRUCTION
+        tool_bundle_ref = "waje-vnext://tools/message-binding.v1"
+        tools = _binding_tools()
+        tool_choice = {
+            "type": "function",
+            "function": {"name": "submit_message_impact"},
+        }
+        decoder_release_ref = "waje-vnext://decoders/message-impact.v1"
+    elif logical_job_kind == "measurement_reviewer" and isinstance(
+        request,
+        FrameReviewRequest,
+    ):
+        execution_role = ModelExecutionRole.RUNTIME_REVIEWER
+        input_view_kind = ModelInputViewKind.MEASUREMENT_REVIEW_VIEW
+        input_view_ref = request.frame_candidate.frame_candidate_id
+        input_view_sha256 = content_sha256(request)
+        prompt_bundle_ref = "waje-vnext://prompts/measurement-reviewer.v1"
+        system_instruction = _REVIEWER_SYSTEM_INSTRUCTION
+        tool_bundle_ref = "waje-vnext://tools/measurement-review.v1"
+        tools = _review_tools()
+        tool_choice = {
+            "type": "function",
+            "function": {"name": "submit_measurement_review"},
+        }
+        decoder_release_ref = (
+            "waje-vnext://decoders/measurement-review.v1"
+        )
+    else:
+        raise ProviderConfigurationError(
+            "unsupported logical job kind or typed request"
+        )
+    if configuration.execution_role is not execution_role:
+        raise ProviderConfigurationError(
+            "model configuration role differs from invocation contract"
+        )
+    payload: dict[str, object] = {
+        "model": configuration.model_ref,
+        "thinking": {"type": configuration.thinking},
+        "temperature": configuration.stable_parameters["temperature"],
+        "top_p": configuration.stable_parameters["top_p"],
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    to_jsonable(request),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            },
+        ],
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "parallel_tool_calls": configuration.stable_parameters[
+            "parallel_tool_calls"
+        ],
+    }
+    if "seed" in configuration.stable_parameters:
+        payload["seed"] = configuration.stable_parameters["seed"]
+    return CompiledChatInvocation(
+        execution_role=execution_role,
+        input_view_kind=input_view_kind,
+        input_view_ref=input_view_ref,
+        input_view_sha256=input_view_sha256,
+        prompt_bundle_ref=prompt_bundle_ref,
+        system_instruction=system_instruction,
+        tool_bundle_ref=tool_bundle_ref,
+        tools=tools,
+        payload=payload,
+        decoder_release_ref=decoder_release_ref,
+    )
 
 
 class UrllibChatTransport:
@@ -125,11 +304,7 @@ class UrllibChatTransport:
     ) -> Mapping[str, Any]:
         request = urllib.request.Request(
             url,
-            data=json.dumps(
-                payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8"),
+            data=canonical_json_bytes(payload),
             headers=dict(headers),
             method="POST",
         )
@@ -191,14 +366,110 @@ class ChatCompletionsProvider:
 
     @property
     def configuration_ref(self) -> str:
-        return content_sha256(
+        return self.configuration_identity(
+            ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+        ).configuration_sha256
+
+    def configuration_identity(
+        self,
+        execution_role: ModelExecutionRole,
+    ) -> ModelConfigurationIdentity:
+        stable_parameters: dict[str, object] = {
+            "temperature": self._settings.temperature,
+            "top_p": self._settings.top_p,
+            "tool_choice_policy": "contract_selected",
+            "parallel_tool_calls": False,
+        }
+        if self._settings.seed is not None:
+            stable_parameters["seed"] = self._settings.seed
+        return ModelConfigurationIdentity.build(
+            execution_role=execution_role,
+            provider_ref=self._settings.provider_name,
+            endpoint_ref=self._settings.endpoint,
+            protocol_ref=PROTOCOL_REF,
+            adapter_release_ref=ADAPTER_RELEASE_REF,
+            adapter_release_sha256=_ADAPTER_RELEASE_SHA256,
+            model_ref=self._settings.model,
+            thinking=self._settings.thinking,
+            stable_parameters=stable_parameters,
+            delivery_policy_ref=DELIVERY_POLICY_REF,
+            max_attempts=self._settings.max_attempts,
+            timeout_seconds=self._settings.timeout_seconds,
+        )
+
+    def describe_invocation(
+        self,
+        *,
+        logical_model_job_id: str,
+        logical_job_kind: str,
+        request: object,
+        typed_request_contract_ref: str,
+        output_contract_ref: str,
+        created_at: datetime,
+    ) -> PreparedModelInvocation:
+        (
+            execution_role,
+            input_view_kind,
+            input_view_ref,
+            input_view_sha256,
+            prompt_bundle_ref,
+            system_instruction,
+            tool_bundle_ref,
+            tools,
+            payload,
+            decoder_release_ref,
+        ) = self._invocation_material(
+            logical_job_kind=logical_job_kind,
+            request=request,
+        )
+        prompt_bundle_sha256 = content_sha256(
             {
-                "provider_name": self._settings.provider_name,
-                "base_url": self._settings.base_url,
-                "model": self._settings.model,
-                "max_attempts": self._settings.max_attempts,
-                "timeout_seconds": self._settings.timeout_seconds,
+                "messages": (
+                    {
+                        "role": "system",
+                        "content": system_instruction,
+                    },
+                )
             }
+        )
+        tool_bundle_sha256 = content_sha256(tools)
+        output_contract_sha256 = content_sha256(
+            {
+                "output_contract_ref": output_contract_ref,
+                "tool_bundle_sha256": tool_bundle_sha256,
+                "decoder_release_ref": decoder_release_ref,
+                "decoder_release_sha256": _ADAPTER_RELEASE_SHA256,
+            }
+        )
+        artifact = ModelRequestArtifact(
+            model_request_artifact_id=(
+                "model-request:{}".format(logical_model_job_id)
+            ),
+            logical_model_job_id=logical_model_job_id,
+            execution_role=execution_role,
+            logical_job_kind=logical_job_kind,
+            input_view_kind=input_view_kind,
+            input_view_ref=input_view_ref,
+            input_view_sha256=input_view_sha256,
+            typed_request_contract_ref=typed_request_contract_ref,
+            typed_request_sha256=content_sha256(request),
+            prompt_bundle_ref=prompt_bundle_ref,
+            prompt_bundle_sha256=prompt_bundle_sha256,
+            tool_bundle_ref=tool_bundle_ref,
+            tool_bundle_sha256=tool_bundle_sha256,
+            output_contract_ref=output_contract_ref,
+            output_contract_sha256=output_contract_sha256,
+            decoder_release_ref=decoder_release_ref,
+            decoder_release_sha256=_ADAPTER_RELEASE_SHA256,
+            provider_request_body=payload,
+            provider_request_sha256=content_sha256(payload),
+            created_at=created_at,
+        )
+        return PreparedModelInvocation(
+            configuration_identity=self.configuration_identity(
+                execution_role
+            ),
+            request_artifact=artifact,
         )
 
     def take_last_attempt_trace(
@@ -219,32 +490,7 @@ class ChatCompletionsProvider:
         self._trace_local.attempt_observer = None
 
     def propose(self, request: PrimaryAgentRequest) -> AgentActionProposal:
-        payload = {
-            "model": self._settings.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": _SYSTEM_INSTRUCTION,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        to_jsonable(request),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                },
-            ],
-            "tools": action_tools(
-                request.allowed_actions,
-                controller_bound_fields=frozenset(
-                    {"question_revision_id"}
-                ),
-            ),
-            "tool_choice": "required",
-            "parallel_tool_calls": False,
-        }
+        payload = self._primary_payload(request)
         return self._invoke(
             payload,
             lambda response: _decode_action_tool_response(
@@ -255,101 +501,136 @@ class ChatCompletionsProvider:
         )
 
     def review(self, request: FrameReviewRequest) -> FrameReviewProposal:
-        payload = {
-            "model": self._settings.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": _REVIEWER_SYSTEM_INSTRUCTION,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        to_jsonable(request),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                },
-            ],
-            "tools": [
-                strict_record_tool(
-                    name="submit_measurement_review",
-                    description=(
-                        "Submit one structured objection-only "
-                        "measurement review."
-                    ),
-                    record_type=FrameReviewProposal,
-                )
-            ],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "submit_measurement_review"},
-            },
-            "parallel_tool_calls": False,
-        }
+        payload = self._review_payload(request)
         return self._invoke(payload, _decode_review_tool_response)
 
     def bind_message(
         self,
         request: MessageBindingRequest,
     ) -> MessageImpactProposal:
-        payload = {
-            "model": self._settings.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": _BINDING_SYSTEM_INSTRUCTION,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        to_jsonable(request),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                },
-            ],
-            "tools": [
-                strict_record_tool(
-                    name="submit_message_impact",
-                    description=(
-                        "Bind one user message to typed business semantics."
-                    ),
-                    record_type=MessageImpactProposal,
-                )
-            ],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "submit_message_impact"},
-            },
-            "parallel_tool_calls": False,
-        }
+        payload = self._binding_payload(request)
         return self._invoke(payload, _decode_binding_tool_response)
+
+    def _invocation_material(
+        self,
+        *,
+        logical_job_kind: str,
+        request: object,
+    ):
+        if logical_job_kind in {"primary_agent", "message_binding"}:
+            execution_role = (
+                ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+            )
+        elif logical_job_kind == "measurement_reviewer":
+            execution_role = ModelExecutionRole.RUNTIME_REVIEWER
+        else:
+            raise ProviderConfigurationError(
+                "unsupported logical job kind or typed request"
+            )
+        material = compile_trusted_chat_invocation(
+            logical_job_kind=logical_job_kind,
+            request=request,
+            configuration=self.configuration_identity(execution_role),
+        )
+        return (
+            material.execution_role,
+            material.input_view_kind,
+            material.input_view_ref,
+            material.input_view_sha256,
+            material.prompt_bundle_ref,
+            material.system_instruction,
+            material.tool_bundle_ref,
+            material.tools,
+            material.payload,
+            material.decoder_release_ref,
+        )
+
+    def _primary_payload(
+        self,
+        request: PrimaryAgentRequest,
+    ) -> dict[str, object]:
+        return compile_trusted_chat_invocation(
+            logical_job_kind="primary_agent",
+            request=request,
+            configuration=self.configuration_identity(
+                ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+            ),
+        ).payload
+
+    def _review_payload(
+        self,
+        request: FrameReviewRequest,
+    ) -> dict[str, object]:
+        return compile_trusted_chat_invocation(
+            logical_job_kind="measurement_reviewer",
+            request=request,
+            configuration=self.configuration_identity(
+                ModelExecutionRole.RUNTIME_REVIEWER
+            ),
+        ).payload
+
+    def _binding_payload(
+        self,
+        request: MessageBindingRequest,
+    ) -> dict[str, object]:
+        return compile_trusted_chat_invocation(
+            logical_job_kind="message_binding",
+            request=request,
+            configuration=self.configuration_identity(
+                ModelExecutionRole.PRIMARY_BUSINESS_ANALYSIS_AGENT
+            ),
+        ).payload
 
     def _invoke(self, payload, decoder):
         last_error: ProviderTransientError | None = None
         attempts: list[ProviderAttemptTrace] = []
-        for attempt in range(1, self._settings.max_attempts + 1):
-            observer = getattr(
-                self._trace_local,
-                "attempt_observer",
-                None,
+        observer = getattr(
+            self._trace_local,
+            "attempt_observer",
+            None,
+        )
+        attempt_numbers = tuple(
+            range(1, self._settings.max_attempts + 1)
+        )
+        durable_attempt_plan = (
+            None
+            if observer is None
+            else getattr(observer, "attempt_numbers", None)
+        )
+        if durable_attempt_plan is not None:
+            attempt_numbers = tuple(
+                durable_attempt_plan(self._settings.max_attempts)
             )
-            if observer is not None:
-                observer.before_attempt(attempt)
+        dispatch_url = self._settings.endpoint
+        dispatch_timeout = self._settings.timeout_seconds
+        durable_dispatch_parameters = (
+            None
+            if observer is None
+            else getattr(observer, "dispatch_parameters", None)
+        )
+        if durable_dispatch_parameters is not None:
+            dispatch_url, dispatch_timeout = durable_dispatch_parameters()
+        for attempt in attempt_numbers:
+            idempotency_key = (
+                "provider-request:{}:{}".format(
+                    content_sha256(payload),
+                    attempt,
+                )
+                if observer is None
+                else observer.before_attempt(attempt, payload)
+            )
             try:
                 response = self._transport.post_json(
-                    url=self._settings.endpoint,
+                    url=dispatch_url,
                     headers={
                         "Authorization": "Bearer {}".format(
                             self._settings.api_key
                         ),
                         "Content-Type": "application/json",
+                        "Idempotency-Key": idempotency_key,
                     },
                     payload=payload,
-                    timeout_seconds=self._settings.timeout_seconds,
+                    timeout_seconds=dispatch_timeout,
                 )
                 try:
                     decoded = decoder(response)
@@ -372,8 +653,7 @@ class ChatCompletionsProvider:
                 )
                 attempts.append(trace)
                 if observer is not None:
-                    observer.after_attempt(attempt, trace)
-                    observer.after_result(attempt, decoded)
+                    observer.after_success(attempt, trace, decoded)
                 self._trace_local.attempts = tuple(attempts)
                 return decoded
             except ProviderTransientError as error:
@@ -389,7 +669,7 @@ class ChatCompletionsProvider:
                 attempts.append(trace)
                 if observer is not None:
                     observer.after_attempt(attempt, trace)
-                if attempt == self._settings.max_attempts:
+                if attempt == attempt_numbers[-1]:
                     break
                 time.sleep(min(0.25 * (2 ** (attempt - 1)), 2.0))
         self._trace_local.attempts = tuple(attempts)
@@ -499,6 +779,28 @@ def _decode_binding_tool_response(
         raise ProviderPermanentError(
             "message impact violates its typed contract"
         ) from error
+
+
+def _review_tools() -> list[dict[str, object]]:
+    return [
+        strict_record_tool(
+            name="submit_measurement_review",
+            description=(
+                "Submit one structured objection-only measurement review."
+            ),
+            record_type=FrameReviewProposal,
+        )
+    ]
+
+
+def _binding_tools() -> list[dict[str, object]]:
+    return [
+        strict_record_tool(
+            name="submit_message_impact",
+            description="Bind one user message to typed business semantics.",
+            record_type=MessageImpactProposal,
+        )
+    ]
 
 
 def _decode_single_tool_call(
@@ -617,6 +919,25 @@ def _positive_float(value: str) -> float:
         ) from error
     if parsed <= 0:
         raise ProviderConfigurationError("timeout must be positive")
+    return parsed
+
+
+def _float_value(value: str, field_name: str) -> float:
+    try:
+        return float(value)
+    except ValueError as error:
+        raise ProviderConfigurationError(
+            "{} must be numeric".format(field_name)
+        ) from error
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ProviderConfigurationError("seed must be an integer") from error
+    if parsed < 0:
+        raise ProviderConfigurationError("seed must be non-negative")
     return parsed
 
 

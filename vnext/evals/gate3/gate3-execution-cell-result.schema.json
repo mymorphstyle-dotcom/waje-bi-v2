@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/execution-cell-result.v1.schema.json",
+  "title": "WAJE Gate 3 Execution Cell Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_cell_id",
+    "execution_manifest_sha256",
+    "layer_verdicts",
+    "evaluation_review",
+    "trace_complete",
+    "artifact_index_sha256",
+    "trace_bundle_sha256",
+    "trace_artifact_index_sha256",
+    "runtime_model_execution_set_sha256",
+    "hard_check_result_sha256",
+    "attempt_journal_sha256",
+    "terminal_attempt_id",
+    "critical_vetoes",
+    "derived_final_verdict"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_execution_cell_result"},
+    "artifact_version": {"const": "gate3.execution-cell-result.v1"},
+    "execution_cell_id": {"type": "string", "minLength": 1},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "layer_verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_behavior",
+        "authority_conformance",
+        "implementation"
+      ],
+      "properties": {
+        "product_behavior": {"$ref": "#/$defs/verdict"},
+        "authority_conformance": {"$ref": "#/$defs/verdict"},
+        "implementation": {"$ref": "#/$defs/verdict"}
+      }
+    },
+    "evaluation_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewer_profile_ref",
+        "evaluated_predicate_ids",
+        "dimension_scores",
+        "critical_failure_codes",
+        "reviewer_disposition",
+        "claim_findings",
+        "concise_reason",
+        "artifact_refs",
+        "confidence",
+        "abstention_reason"
+      ],
+      "properties": {
+        "reviewer_profile_ref": {"type": "string", "minLength": 1},
+        "evaluated_predicate_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+        },
+        "dimension_scores": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question_and_measurement",
+            "investigation",
+            "evidence_and_claims",
+            "authority_consistency",
+            "answer_value"
+          ],
+          "properties": {
+            "question_and_measurement": {"type": "integer", "minimum": 0, "maximum": 3},
+            "investigation": {"type": "integer", "minimum": 0, "maximum": 3},
+            "evidence_and_claims": {"type": "integer", "minimum": 0, "maximum": 3},
+            "authority_consistency": {"type": "integer", "minimum": 0, "maximum": 3},
+            "answer_value": {"type": "integer", "minimum": 0, "maximum": 3}
+          }
+        },
+        "critical_failure_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+        },
+        "reviewer_disposition": {"enum": ["pass", "fail", "needs_review"]},
+        "claim_findings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "claim_ref",
+              "status",
+              "responsibility_stage",
+              "repair_target",
+              "evidence_refs"
+            ],
+            "properties": {
+              "claim_ref": {"type": "string", "minLength": 1},
+              "status": {"enum": ["approve", "repair_required", "unsupported"]},
+              "responsibility_stage": {
+                "enum": [
+                  "binding",
+                  "frame",
+                  "review",
+                  "resolution",
+                  "plan",
+                  "effect",
+                  "evidence",
+                  "claim",
+                  "answer",
+                  "unknown"
+                ]
+              },
+              "repair_target": {
+                "enum": ["frame", "plan", "evidence", "answer", "user", "stop", "none"]
+              },
+              "evidence_refs": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        "concise_reason": {"type": "string", "minLength": 1},
+        "artifact_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "abstention_reason": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ]
+        }
+      }
+    },
+    "trace_complete": {"type": "boolean"},
+    "artifact_index_sha256": {"$ref": "#/$defs/sha256"},
+    "trace_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "trace_artifact_index_sha256": {"$ref": "#/$defs/sha256"},
+    "runtime_model_execution_set_sha256": {"$ref": "#/$defs/sha256"},
+    "hard_check_result_sha256": {"$ref": "#/$defs/sha256"},
+    "attempt_journal_sha256": {"$ref": "#/$defs/sha256"},
+    "terminal_attempt_id": {"type": "string", "minLength": 1},
+    "external_execution_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "critical_vetoes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+    },
+    "derived_final_verdict": {"$ref": "#/$defs/verdict"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["pass", "fail", "blocked", "invalid"]}
+  }
+}

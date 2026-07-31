@@ -363,6 +363,11 @@ class InMemoryAuthorityStore:
                 self._restore(snapshot)
                 raise
 
+    @contextmanager
+    def consistent_read(self) -> Iterator[None]:
+        with self._lock:
+            yield
+
     def open_case(
         self,
         *,
@@ -817,7 +822,37 @@ class InMemoryAuthorityStore:
         record: ProviderAttemptRequest,
     ) -> ProviderAttemptRequest:
         with self._lock:
-            self.get_logical_model_job(record.logical_model_job_id)
+            model_job = self.get_logical_model_job(
+                record.logical_model_job_id
+            )
+            if (
+                record.request_sha256
+                != model_job.model_request_artifact.provider_request_sha256
+                or record.model_request_artifact_sha256
+                != model_job.model_request_artifact_sha256
+                or record.configuration_sha256
+                != model_job.configuration_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "provider attempt request drifted from logical job"
+                )
+            idempotency_owner = next(
+                (
+                    item
+                    for item in self._provider_attempt_requests.values()
+                    if item.provider_idempotency_key
+                    == record.provider_idempotency_key
+                ),
+                None,
+            )
+            if (
+                idempotency_owner is not None
+                and idempotency_owner.provider_attempt_id
+                != record.provider_attempt_id
+            ):
+                raise AuthorityConflict(
+                    "provider idempotency key belongs to another attempt"
+                )
             prior_attempts = tuple(
                 item
                 for item in self._provider_attempt_requests.values()
@@ -859,6 +894,10 @@ class InMemoryAuthorityStore:
         record: ProviderAttemptReceipt,
     ) -> ProviderAttemptReceipt:
         with self._lock:
+            if record.disposition is ProviderAttemptDisposition.SUCCEEDED:
+                raise InvalidAuthorityTransition(
+                    "successful provider receipt requires atomic result commit"
+                )
             request = _get(
                 self._provider_attempt_requests,
                 record.provider_attempt_id,
@@ -892,6 +931,87 @@ class InMemoryAuthorityStore:
             )
             return record
 
+    def commit_provider_attempt_success(
+        self,
+        *,
+        receipt: ProviderAttemptReceipt,
+        result: DurableModelResult,
+    ) -> DurableModelResult:
+        with self.atomic():
+            if receipt.disposition is not ProviderAttemptDisposition.SUCCEEDED:
+                raise InvalidAuthorityTransition(
+                    "provider success commit requires a successful receipt"
+                )
+            request = self.get_provider_attempt_request(
+                receipt.provider_attempt_id
+            )
+            model_job = self.get_logical_model_job(
+                receipt.logical_model_job_id
+            )
+            if (
+                receipt.provider_attempt_receipt_id
+                != result.provider_attempt_receipt_id
+                or receipt.provider_attempt_id != result.provider_attempt_id
+                or receipt.logical_model_job_id
+                != result.logical_model_job_id
+                or receipt.output_sha256 != result.output_sha256
+                or request.logical_model_job_id
+                != receipt.logical_model_job_id
+                or request.model_request_artifact_sha256
+                != result.model_request_artifact_sha256
+                or request.configuration_sha256
+                != result.configuration_sha256
+                or model_job.model_request_artifact_sha256
+                != result.model_request_artifact_sha256
+                or model_job.configuration_sha256
+                != result.configuration_sha256
+                or model_job.model_request_artifact.output_contract_ref
+                != result.result_contract_ref
+            ):
+                raise InvalidAuthorityTransition(
+                    "provider success receipt and result identity differ"
+                )
+            existing_receipt = next(
+                (
+                    item
+                    for item in self._provider_attempt_receipts.values()
+                    if item.provider_attempt_id
+                    == receipt.provider_attempt_id
+                ),
+                None,
+            )
+            existing_result = self._durable_model_results.get(
+                result.logical_model_job_id
+            )
+            if existing_receipt is not None or existing_result is not None:
+                if existing_receipt == receipt and existing_result == result:
+                    return existing_result
+                raise AuthorityConflict(
+                    "logical model job already has another success outcome"
+                )
+            if any(
+                item.disposition is ProviderAttemptDisposition.SUCCEEDED
+                and item.logical_model_job_id
+                == receipt.logical_model_job_id
+                for item in self._provider_attempt_receipts.values()
+            ):
+                raise AuthorityConflict(
+                    "logical model job already has a successful attempt"
+                )
+            _put_idempotent_immutable(
+                self._provider_attempt_receipts,
+                receipt.provider_attempt_receipt_id,
+                receipt,
+                "provider attempt receipt",
+            )
+            _put_idempotent_immutable(
+                self._durable_model_results,
+                result.logical_model_job_id,
+                result,
+                "durable model result",
+            )
+            return result
+
     def get_provider_attempt_request(
         self,
         provider_attempt_id: str,
@@ -901,6 +1021,23 @@ class InMemoryAuthorityStore:
                 self._provider_attempt_requests,
                 provider_attempt_id,
                 "provider attempt request",
+            )
+
+    def list_provider_attempt_requests(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptRequest, ...]:
+        with self._lock:
+            self.get_logical_model_job(logical_model_job_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._provider_attempt_requests.values()
+                        if item.logical_model_job_id == logical_model_job_id
+                    ),
+                    key=lambda item: item.attempt_number,
+                )
             )
 
     def get_provider_attempt_receipt(
@@ -936,52 +1073,6 @@ class InMemoryAuthorityStore:
                 )
             )
 
-    def record_durable_model_result(
-        self,
-        record: DurableModelResult,
-    ) -> DurableModelResult:
-        with self._lock:
-            self.get_logical_model_job(record.logical_model_job_id)
-            request = self.get_provider_attempt_request(
-                record.provider_attempt_id
-            )
-            receipt = next(
-                (
-                    item
-                    for item in self._provider_attempt_receipts.values()
-                    if item.provider_attempt_id
-                    == record.provider_attempt_id
-                ),
-                None,
-            )
-            if (
-                request.logical_model_job_id
-                != record.logical_model_job_id
-                or receipt is None
-                or receipt.disposition
-                is not ProviderAttemptDisposition.SUCCEEDED
-                or receipt.output_sha256 != record.output_sha256
-            ):
-                raise InvalidAuthorityTransition(
-                    "durable model result lacks its successful attempt"
-                )
-            prior = self._durable_model_results.get(
-                record.logical_model_job_id
-            )
-            if prior is not None:
-                if prior == record:
-                    return prior
-                raise AuthorityConflict(
-                    "logical model job already has a different result"
-                )
-            _put_idempotent_immutable(
-                self._durable_model_results,
-                record.logical_model_job_id,
-                record,
-                "durable model result",
-            )
-            return record
-
     def get_durable_model_result(
         self,
         logical_model_job_id: str,
@@ -989,6 +1080,36 @@ class InMemoryAuthorityStore:
         with self._lock:
             self.get_logical_model_job(logical_model_job_id)
             return self._durable_model_results.get(logical_model_job_id)
+
+    def read_model_execution_records(self, logical_model_job_id: str):
+        with self._lock:
+            job = self.get_logical_model_job(logical_model_job_id)
+            requests = self.list_provider_attempt_requests(
+                logical_model_job_id
+            )
+            receipts = self.list_provider_attempt_receipts(
+                logical_model_job_id
+            )
+            result = self._durable_model_results.get(logical_model_job_id)
+            return job, requests, receipts, result
+
+    def read_model_execution_trace_records(
+        self,
+        logical_model_job_id: str,
+        trace_manifest_id: str,
+    ):
+        with self._lock:
+            job = self.get_logical_model_job(logical_model_job_id)
+            requests = self.list_provider_attempt_requests(
+                logical_model_job_id
+            )
+            receipts = self.list_provider_attempt_receipts(
+                logical_model_job_id
+            )
+            result = self._durable_model_results.get(logical_model_job_id)
+            trace_manifest = self.get_run_trace_manifest(trace_manifest_id)
+            validate_run_trace_manifest_references(self, trace_manifest)
+            return job, requests, receipts, result, trace_manifest
 
     def record_obligation_schedule(
         self,

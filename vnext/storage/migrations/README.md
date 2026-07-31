@@ -32,6 +32,24 @@ version 6 保留 Question、Frame、Plan adoption、QueryBinding、resolution、
 execution 与 journal 的外键连续性。旧占位表只要存在一行，迁移就会以 SQLSTATE `55000`
 拒绝，并要求重置 disposable development database；没有旧合同读取或兼容分支。
 
+Gate 3.6 migration version 7 直接替换开发期的模型调用持久化合同。若 logical job、provider
+attempt/receipt 或 durable result 已有记录，迁移会以 SQLSTATE `55000` 拒绝，并要求重置
+disposable development database。version 7 新增：
+
+- logical job 的 configuration、model request artifact、实际 provider request 与 output contract
+  identity；
+- attempt 的稳定 provider idempotency key、request/config/artifact identity 和同 job prior chain；
+- 每个 logical job 最多一个成功 receipt；
+- success receipt 与 typed result 的 deferred exact-pair constraint，要求二者在同一事务内共同
+  出现并保持 job、attempt 和 output hash 一致；
+- attempt number 与 prior attempt 必须形成同 job 连续序列；
+- succeeded receipt 必须携带 response ID 和 output hash；
+- typed result 通过复合外键绑定 logical job 的 configuration/artifact/output contract，以及
+  success receipt 的 job/attempt/output identity。
+
+version 7 没有旧模型调用记录的兼容读取或转换路径。provider 端是否遵守幂等键仍由真实
+provider acceptance 验证，数据库约束只证明 WAJE 本地 authority mutation 的原子性。
+
 Gate 3 数据库硬边界：
 
 - production Evidence admission 在 Gate 4 trusted registry 开放前只能写

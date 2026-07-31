@@ -1,0 +1,407 @@
+{
+  "artifact_type": "gate3_claim_target_authority_registry",
+  "artifact_version": "gate3.claim-target-authority.v1",
+  "registry_epoch": 2,
+  "status": "candidate_authoring",
+  "episode_bindings": [
+    {
+      "episode_id": "G3-USER-001",
+      "base_claim_target_kinds": {
+        "primary_paid_amount_change_claim": "contrast",
+        "behavior_contribution_claim": "accounting_decomposition",
+        "seven_day_sensitivity_claim": "contrast",
+        "prior_week_sensitivity_claim": "contrast"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-002",
+      "base_claim_target_kinds": {
+        "weekly_pattern_claim": "temporal_pattern",
+        "monthly_pattern_claim": "temporal_pattern",
+        "intraday_pattern_claim": "temporal_pattern",
+        "segment_pattern_driver_claim": "composition",
+        "gameplay_pattern_driver_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-003",
+      "base_claim_target_kinds": {
+        "activity_effect_claim": "association",
+        "budget_effect_claim": "association",
+        "joint_activity_budget_effect_claim": "association",
+        "creative_effect_claim": "causal_effect",
+        "version_effect_claim": "causal_effect",
+        "payment_outage_attempt_claim": "point_quantity",
+        "payment_outage_loss_claim": "accounting_decomposition",
+        "external_event_effect_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-004",
+      "base_claim_target_kinds": {
+        "sustainable_payer_base_claim": "cohort_outcome",
+        "payer_concentration_claim": "distribution",
+        "business_segment_concentration_claim": "composition",
+        "activity_dependency_claim": "association",
+        "revenue_quality_claim": "diagnostic_set",
+        "revenue_stability_claim": "temporal_pattern",
+        "overall_health_judgment_claim": "diagnostic_set",
+        "priority_risk_claim": "diagnostic_set"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-005",
+      "base_claim_target_kinds": {
+        "per_dimension_leader_claim": "accounting_decomposition",
+        "largest_observed_slice_claim": "composition",
+        "behavior_factor_top_three_claim": "accounting_decomposition",
+        "gameplay_dimension_boundary_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-006",
+      "base_claim_target_kinds": {
+        "daily_anomaly_claim": "temporal_pattern",
+        "intraday_process_anomaly_claim": "temporal_pattern",
+        "segment_localization_claim": "composition",
+        "full_day_residual_impact_claim": "accounting_decomposition",
+        "mechanism_explanation_claim": "causal_effect",
+        "gameplay_localization_boundary_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-007",
+      "base_claim_target_kinds": {
+        "prior_day_contrast_claim": "contrast",
+        "seven_day_mean_contrast_claim": "contrast",
+        "prior_week_same_day_claim": "contrast",
+        "conditional_normal_deviation_claim": "temporal_pattern",
+        "prior_day_driver_claim": "accounting_decomposition",
+        "seven_day_driver_claim": "accounting_decomposition",
+        "prior_week_driver_claim": "accounting_decomposition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-USER-008",
+      "base_claim_target_kinds": {
+        "provenance_integrity_claim": "data_quality_state",
+        "payment_maturity_quality_claim": "data_quality_state",
+        "deduplication_sensitivity_claim": "data_quality_state",
+        "channel_coverage_quality_claim": "data_quality_state",
+        "high_value_sensitivity_claim": "data_quality_state",
+        "claim_disposition_claim": "diagnostic_set",
+        "repair_republication_claim": "data_quality_state",
+        "prior_total_growth_claim_validity_claim": "data_quality_state",
+        "prior_channel_driver_claim_validity_claim": "data_quality_state"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ADV-002",
+      "base_claim_target_kinds": {
+        "h5_conversion_change_claim": "funnel_transition",
+        "bounded_paid_amount_impact_claim": "accounting_decomposition",
+        "browser_failure_mechanism_claim": "association",
+        "rollback_decision_claim": "diagnostic_set"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-ADV-002-CF02": {
+          "quarterly_mature_net_loss_claim": "accounting_decomposition"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-GF-005",
+      "base_claim_target_kinds": {
+        "overall_payment_rate_claim": "contrast",
+        "within_segment_rate_claim": "contrast",
+        "composition_contribution_claim": "accounting_decomposition",
+        "new_customer_quality_claim": "cohort_outcome"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-GF-005-CF04": {
+          "new_payer_count_change_claim": "accounting_decomposition"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-GF-006",
+      "base_claim_target_kinds": {
+        "net_revenue_direction_claim": "contrast",
+        "gross_paid_amount_auxiliary_claim": "contrast",
+        "refund_release_eligibility_claim": "data_quality_state"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-007",
+      "base_claim_target_kinds": {
+        "mature_d30_retention_claim": "cohort_outcome",
+        "full_april_cohort_direction_claim": "cohort_outcome",
+        "calendar_censoring_artifact_claim": "data_quality_state"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-GF-007-CF03": {
+          "mature_d7_retention_claim": "cohort_outcome"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-EXP-001",
+      "base_claim_target_kinds": {
+        "stable_channel_paid_amount_change": "accounting_decomposition",
+        "stable_channel_ggr_change": "accounting_decomposition",
+        "recharge_activity_effect": "association"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-EXP-001-CF02": {
+          "all_channel_paid_amount_change_claim": "accounting_decomposition",
+          "all_channel_ggr_change_claim": "accounting_decomposition"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-EXP-005",
+      "base_claim_target_kinds": {
+        "aligned_ggr_growth_claim": "contrast",
+        "ggr_factor_contribution_claim": "accounting_decomposition",
+        "gameplay_contribution_ranking_claim": "composition",
+        "ggr_residual_claim": "accounting_decomposition"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-EXP-005-CF02": {
+          "q2_gameplay_composition_claim": "composition"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-EXP-008",
+      "base_claim_target_kinds": {
+        "new_payer_definition_claim": "definition",
+        "dashboard_spike_validity_claim": "data_quality_state",
+        "duplicate_backfill_diagnosis_claim": "data_quality_state"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-EXP-010",
+      "base_claim_target_kinds": {
+        "observed_reactivation_difference_claim": "association",
+        "incremental_reactivation_effect_claim": "causal_effect",
+        "incremental_profit_effect_claim": "causal_effect",
+        "scale_decision_claim": "diagnostic_set",
+        "next_experiment_design_claim": "definition"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-EXP-010-CF02": {
+          "historical_outreach_cost_claim": "point_quantity"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-EXP-012",
+      "base_claim_target_kinds": {
+        "attributed_roas_ranking_claim": "composition",
+        "attribution_sensitivity_claim": "accounting_decomposition",
+        "incremental_channel_return_claim": "causal_effect",
+        "budget_reallocation_decision_claim": "diagnostic_set"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ROOT-001",
+      "base_claim_target_kinds": {
+        "active_user_metric_family_claim": "definition",
+        "growth_active_user_definition_claim": "definition",
+        "gameplay_active_user_definition_claim": "definition",
+        "paid_active_user_definition_claim": "definition",
+        "cross_use_interchangeability_claim": "definition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-001",
+      "base_claim_target_kinds": {
+        "cross_month_daily_intensity_claim": "contrast",
+        "cross_month_raw_total_context_claim": "point_quantity"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-002",
+      "base_claim_target_kinds": {
+        "monthly_resolved_window_claim": "distribution",
+        "paired_year_over_year_month_end_claim": "contrast",
+        "month_end_stability_claim": "temporal_pattern"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-003",
+      "base_claim_target_kinds": {
+        "matched_maturity_mtd_rate_claim": "contrast",
+        "complete_month_rate_claim": "point_quantity"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-004",
+      "base_claim_target_kinds": {
+        "unequal_exposure_raw_total_claim": "contrast",
+        "normalized_operating_intensity_claim": "contrast",
+        "matched_exposure_sensitivity_claim": "contrast"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-008",
+      "base_claim_target_kinds": {
+        "matched_new_user_count_claim": "contrast",
+        "registration_rate_change_claim": "funnel_transition",
+        "first_payment_rate_change_claim": "funnel_transition",
+        "same_day_new_paid_rate_change_claim": "funnel_transition",
+        "user_level_transition_loss_claim": "funnel_transition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-009",
+      "base_claim_target_kinds": {
+        "closed_month_ggr_change_claim": "contrast",
+        "ggr_component_contribution_claim": "accounting_decomposition",
+        "ggr_residual_magnitude_claim": "accounting_decomposition",
+        "ggr_residual_cause_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-010",
+      "base_claim_target_kinds": {
+        "reactivation_unadjusted_association_claim": "contrast",
+        "reactivation_adjusted_association_claim": "association",
+        "reactivation_causal_effect_claim": "causal_effect"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-011",
+      "base_claim_target_kinds": {
+        "income_metric_resolution_claim": "definition",
+        "selected_ggr_change_claim": "contrast",
+        "selected_ggr_driver_claim": "accounting_decomposition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-GF-012",
+      "base_claim_target_kinds": {
+        "lagos_business_day_campaign_claim": "contrast",
+        "utc_source_date_diagnostic_claim": "contrast",
+        "timezone_reassignment_contribution_claim": "accounting_decomposition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-EXP-002",
+      "base_claim_target_kinds": {
+        "overall_weekly_payer_value_claim": "contrast",
+        "fixed_mix_payer_value_claim": "contrast",
+        "payer_mix_contribution_claim": "accounting_decomposition",
+        "payer_value_reversal_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ADV-001",
+      "base_claim_target_kinds": {
+        "recent_gross_payment_health_claim": "temporal_pattern",
+        "payer_mix_driver_claim": "accounting_decomposition",
+        "mature_net_payment_direction_claim": "contrast"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ADV-004",
+      "base_claim_target_kinds": {
+        "high_value_d30_payer_retention_claim": "cohort_outcome",
+        "high_value_d30_paid_amount_retention_claim": "cohort_outcome",
+        "high_value_loss_concentration_claim": "distribution"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-ADV-004-CF02": {
+          "all_payer_d30_payer_retention_claim": "cohort_outcome",
+          "all_payer_d30_paid_amount_retention_claim": "cohort_outcome"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-ADV-005",
+      "base_claim_target_kinds": {
+        "new_user_d30_retention_claim": "cohort_outcome",
+        "new_user_channel_d30_retention_claim": "cohort_outcome"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-ADV-005-CF02": {
+          "all_active_user_quarterly_retention_claim": "cohort_outcome",
+          "all_active_user_channel_retention_claim": "cohort_outcome"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-ADV-006",
+      "base_claim_target_kinds": {
+        "cross_country_all_platform_week1_payment_rate_claim": "funnel_transition",
+        "cross_scope_denominator_quality_claim": "data_quality_state"
+      },
+      "replacement_claim_target_kinds": {
+        "G3-ADV-006-CF02": {
+          "nigeria_all_platform_week1_payment_rate_claim": "funnel_transition"
+        }
+      }
+    },
+    {
+      "episode_id": "G3-ADV-007",
+      "base_claim_target_kinds": {
+        "activity_period_gross_uplift_claim": "contrast",
+        "activity_exposure_normalized_net_claim": "contrast",
+        "activity_effectiveness_claim": "causal_effect",
+        "activity_reference_sensitivity_claim": "association"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ADV-008",
+      "base_claim_target_kinds": {
+        "observed_reactivation_difference_claim": "association",
+        "incremental_reactivated_users_claim": "causal_effect",
+        "recall_scale_decision_claim": "causal_effect"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-ADV-009",
+      "base_claim_target_kinds": {
+        "mature_paid_silence_change_claim": "cohort_outcome",
+        "paid_silence_factor_priority_claim": "association",
+        "prediction_action_scope_claim": "definition"
+      },
+      "replacement_claim_target_kinds": {}
+    },
+    {
+      "episode_id": "G3-EXP-007",
+      "base_claim_target_kinds": {
+        "payment_success_rate_drop_claim": "funnel_transition",
+        "pre_release_failure_diagnosis_boundary_claim": "data_quality_state",
+        "post_release_failure_reason_claim": "distribution"
+      },
+      "replacement_claim_target_kinds": {}
+    }
+  ]
+}

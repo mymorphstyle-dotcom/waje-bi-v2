@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v4",
+  "catalog_version": "gate3.behavior-eval.v5",
   "episodes": [
     {
       "episode_id": "G3-ADV-001",
@@ -236,21 +236,42 @@
             "claim_target_id": "recent_gross_payment_health_claim",
             "estimand_id": "recent_gross_payment_health",
             "target_description": "最近七个完整业务日相对前七个可比业务日的支付成功金额健康度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "temporal_pattern"
           },
           {
             "claim_target_id": "payer_mix_driver_claim",
             "estimand_id": "payer_mix_accounting_driver",
             "target_description": "支付成功金额由 paying users、ARPPU 与用户构成变化带动的会计分解。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           },
           {
             "claim_target_id": "mature_net_payment_direction_claim",
             "estimand_id": "mature_net_payment_direction",
             "target_description": "只在退款回补成熟且合同完整的日期判断成熟净付费金额方向。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -309,7 +330,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_001_cf01",
-            "materialized_sibling_sha256": "28358b3677f499e1f5b405b1dd82b797e008727d922837afac69999b5491cf3c"
+            "materialized_sibling_sha256": "3bba3174bb382eda5e6591593a32019f2354abec39aec3793cd0246e757c9921"
           },
           "affected_claim_target_ids": [
             "recent_gross_payment_health_claim",
@@ -379,7 +400,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_001_cf02",
-            "materialized_sibling_sha256": "0c0c123ec146f3342c6e1307044eb70a41d29cd27158f8407870f8c582bfd2ae"
+            "materialized_sibling_sha256": "4f73ea39a8851d8708cdb98d6a6cdeceaa68febf14204b5d22874b2d25c653db"
           },
           "affected_claim_target_ids": [
             "recent_gross_payment_health_claim",
@@ -466,7 +487,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_001_cf03",
-            "materialized_sibling_sha256": "54566c54dae1f2f021e71b00ae9697629601e68d0436f1f3a03ea6dcee85bf62"
+            "materialized_sibling_sha256": "bca4b2b6af3f47856ea6ad2cdd6418334d925cd40d5009fbbea86ace6e96d4b9"
           },
           "affected_claim_target_ids": [
             "mature_net_payment_direction_claim"
@@ -734,7 +755,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9"
     },
     {
       "episode_id": "G3-ADV-004",
@@ -981,21 +1003,42 @@
             "claim_target_id": "high_value_d30_payer_retention_claim",
             "estimand_id": "high_value_d30_payer_retention",
             "target_description": "首次进入高价值档位且观察成熟的 payer cohort D30 再付费人数留存。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "cohort_outcome"
           },
           {
             "claim_target_id": "high_value_d30_paid_amount_retention_claim",
             "estimand_id": "high_value_d30_paid_amount_retention",
             "target_description": "同一成熟 cohort 的 D30 后续付费金额相对起点金额留存。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "cohort_outcome"
           },
           {
             "claim_target_id": "high_value_loss_concentration_claim",
             "estimand_id": "high_value_loss_concentration",
             "target_description": "大额用户对 cohort 后续付费金额收缩的集中度贡献。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "distribution"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -1054,7 +1097,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_004_cf01",
-            "materialized_sibling_sha256": "7ab3c7e390c6be8ad00688c8ece226deebc08d804410c677d81f5f60c964682d"
+            "materialized_sibling_sha256": "0ac7d66d9983ef1b87a356de827205f2baa6cd962584285084c09cf7ab2904fb"
           },
           "affected_claim_target_ids": [
             "high_value_d30_payer_retention_claim",
@@ -1123,7 +1166,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_004_cf02",
-            "materialized_sibling_sha256": "b26c5563c6c0363b22ae0591464a60da972b2a5b0ae7a815496b4132588f027e"
+            "materialized_sibling_sha256": "416d749b741f22c9cc97c30fc87ca78e017e643ccc23c413ff491bc27ea737ff"
           },
           "affected_claim_target_ids": [
             "high_value_d30_payer_retention_claim",
@@ -1183,13 +1226,15 @@
                 "claim_target_id": "all_payer_d30_payer_retention_claim",
                 "estimand_id": "all_payer_d30_retention",
                 "target_description": "所有成熟 payer cohort 的 D30 再付费人数留存。",
-                "design_claim_ceiling": "descriptive"
+                "design_claim_ceiling": "descriptive",
+                "claim_target_kind": "cohort_outcome"
               },
               {
                 "claim_target_id": "all_payer_d30_paid_amount_retention_claim",
                 "estimand_id": "all_payer_d30_retention",
                 "target_description": "所有成熟 payer cohort 的 D30 后续付费金额留存。",
-                "design_claim_ceiling": "descriptive"
+                "design_claim_ceiling": "descriptive",
+                "claim_target_kind": "cohort_outcome"
               }
             ],
             "variant_claim_cases": [
@@ -1318,7 +1363,7 @@
                 ]
               }
             ],
-            "content_sha256": "438434aea193c93ed8cec2782b3d99291c9ac85c2d9671bc5d4a46647cc040d3"
+            "content_sha256": "fca2385469628b1dbcfe53ac9cb6050c03d104fd14e00249a8a2d8f0b99d0741"
           }
         },
         {
@@ -1345,7 +1390,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_004_cf03",
-            "materialized_sibling_sha256": "027334553e12d89250c4963ccfd827d0b7c92f279bf7eda53ce78f319e9c8d18"
+            "materialized_sibling_sha256": "5b053492985255e754c6d47990878dece420169196e7a687b3ba19ff0ab40d2e"
           },
           "affected_claim_target_ids": [
             "high_value_d30_payer_retention_claim",
@@ -1664,7 +1709,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9"
     },
     {
       "episode_id": "G3-ADV-005",
@@ -1907,15 +1953,35 @@
             "claim_target_id": "new_user_d30_retention_claim",
             "estimand_id": "new_user_d30_retention",
             "target_description": "Q1 与成熟 Q2 新注册 cohort 的 D30 核心行为留存。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "cohort_outcome"
           },
           {
             "claim_target_id": "new_user_channel_d30_retention_claim",
             "estimand_id": "new_user_channel_d30_retention",
             "target_description": "按首个可信获客渠道比较成熟新注册 cohort 的 D30 留存。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "cohort_outcome"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -1974,7 +2040,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_005_cf01",
-            "materialized_sibling_sha256": "34997ab767efc8c0008b73b4b8c25a7006edae58aa34b0e91cb5081332bb07bd"
+            "materialized_sibling_sha256": "1facebf00b7576eb9ab42a42598dd80cc06e533d3a62a601430fc7d927a31859"
           },
           "affected_claim_target_ids": [
             "new_user_d30_retention_claim",
@@ -2033,7 +2099,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_005_cf02",
-            "materialized_sibling_sha256": "3b2881a1f8b79d83de405729ac0fd9438b946b8f7434ee3525060f24218d1e43"
+            "materialized_sibling_sha256": "be746f1099a253202a55409f664f436e86036a8b344b82300cc5afdede415a77"
           },
           "affected_claim_target_ids": [
             "new_user_d30_retention_claim",
@@ -2082,13 +2148,15 @@
                 "claim_target_id": "all_active_user_quarterly_retention_claim",
                 "estimand_id": "all_active_user_quarterly_retention",
                 "target_description": "全量活跃用户季度留存方向。",
-                "design_claim_ceiling": "descriptive"
+                "design_claim_ceiling": "descriptive",
+                "claim_target_kind": "cohort_outcome"
               },
               {
                 "claim_target_id": "all_active_user_channel_retention_claim",
                 "estimand_id": "all_active_user_quarterly_retention",
                 "target_description": "按首获渠道的全量活跃用户季度留存差异。",
-                "design_claim_ceiling": "descriptive"
+                "design_claim_ceiling": "descriptive",
+                "claim_target_kind": "cohort_outcome"
               }
             ],
             "variant_claim_cases": [
@@ -2215,7 +2283,7 @@
                 ]
               }
             ],
-            "content_sha256": "19ebdaa7b12dbaf96d37bfc17ca9084fb76240e184e2ae156e09012c4474499d"
+            "content_sha256": "0e67f2242baa7888e364a768934eee744d36a788126d48982ba119b0b94d8fe4"
           }
         },
         {
@@ -2242,7 +2310,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_005_cf03",
-            "materialized_sibling_sha256": "2687b6905b7dd9a8c96dfbbfbb2ec9e19f9158919a9f5603b6598c4a36dc35d1"
+            "materialized_sibling_sha256": "eed3abf780c1722c52cfb8364bb4b4fe4363baeeef78876434dce36bed2a83ef"
           },
           "affected_claim_target_ids": [
             "new_user_d30_retention_claim",
@@ -2536,7 +2604,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:bb581cbe83ea06b17295cd9c538b0329035c526337452c21704bfebc0fc82c60"
     },
     {
       "episode_id": "G3-ADV-006",
@@ -2787,15 +2856,35 @@
             "claim_target_id": "cross_country_all_platform_week1_payment_rate_claim",
             "estimand_id": "cross_country_all_platform_week1_payment_rate",
             "target_description": "尼日利亚、加纳、肯尼亚全平台新用户首周付费率总体方向。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "funnel_transition"
           },
           {
             "claim_target_id": "cross_scope_denominator_quality_claim",
             "estimand_id": "cross_scope_denominator_quality",
             "target_description": "跨国家平台的新用户 eligibility、支付确认、去重和隐私覆盖可比性。",
-            "design_claim_ceiling": "data_quality_only"
+            "design_claim_ceiling": "data_quality_only",
+            "claim_target_kind": "data_quality_state"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -2855,7 +2944,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_006_cf01",
-            "materialized_sibling_sha256": "1a1477f58df0d3ba6147bd57acbfbf14cf81f76f03d7a7429c69a5d0cc37e337"
+            "materialized_sibling_sha256": "088731bac895a4b5d899a08be8e3e471b2ed0817f60e839dbfb66b4226c38c97"
           },
           "affected_claim_target_ids": [
             "cross_country_all_platform_week1_payment_rate_claim",
@@ -2913,7 +3002,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_006_cf02",
-            "materialized_sibling_sha256": "399d9ab1b61bf81582939a0e5478b70f2ca2940b3b18a1e44811f9fcf5138039"
+            "materialized_sibling_sha256": "ac3c25e3d4d3904cd5af99f5a9ae98fc76d6f97849e20890d590c1359e68d187"
           },
           "affected_claim_target_ids": [
             "cross_country_all_platform_week1_payment_rate_claim",
@@ -2962,7 +3051,8 @@
                 "claim_target_id": "nigeria_all_platform_week1_payment_rate_claim",
                 "estimand_id": "nigeria_all_platform_week1_payment_rate",
                 "target_description": "尼日利亚全平台新用户首周付费率方向。",
-                "design_claim_ceiling": "descriptive"
+                "design_claim_ceiling": "descriptive",
+                "claim_target_kind": "funnel_transition"
               }
             ],
             "variant_claim_cases": [
@@ -3045,7 +3135,7 @@
                 ]
               }
             ],
-            "content_sha256": "64d7d831035c0c53ba2bf2ad82921d0701b4e0f87162bfc649557c9457359b05"
+            "content_sha256": "e1d8230ac235eb3aa47eb3fa99a3bb8f701ec534b764ac9fcb2e59245b08f3e4"
           }
         },
         {
@@ -3078,7 +3168,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_006_cf03",
-            "materialized_sibling_sha256": "91edf854afb4e8efdc8b0db984ac500be464a95b299720e2e5ca45fcb8496e25"
+            "materialized_sibling_sha256": "9704bd82a193c819ec52df609aac03532e7979000dd5762d4bf7b9cb6b969252"
           },
           "affected_claim_target_ids": [
             "cross_country_all_platform_week1_payment_rate_claim",
@@ -3386,7 +3476,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9"
     },
     {
       "episode_id": "G3-ADV-007",
@@ -3623,27 +3714,49 @@
             "claim_target_id": "activity_period_gross_uplift_claim",
             "estimand_id": "activity_period_gross_uplift",
             "target_description": "活动期支付成功金额相对前两周的观测变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "activity_exposure_normalized_net_claim",
             "estimand_id": "activity_exposure_normalized_net",
             "target_description": "每千次合格访问的成熟净付费金额变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "activity_effectiveness_claim",
             "estimand_id": "activity_incremental_effect",
             "target_description": "活动对付费金额的增量效果及因果识别边界。",
-            "design_claim_ceiling": "causal"
+            "design_claim_ceiling": "causal",
+            "claim_target_kind": "causal_effect"
           },
           {
             "claim_target_id": "activity_reference_sensitivity_claim",
             "estimand_id": "activity_reference_sensitivity",
             "target_description": "上次同类赛事与未参与渠道作为非随机参照的敏感性。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -3702,7 +3815,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_007_cf01",
-            "materialized_sibling_sha256": "ae9147d24dd9c74368f99b46532651acd094fe780ce78d25981d951122f24370"
+            "materialized_sibling_sha256": "32dcc5fb586c5808e67b132b166c8405ed6d4825705a47d1eb380ac1dbc0b3ea"
           },
           "affected_claim_target_ids": [
             "activity_period_gross_uplift_claim",
@@ -3783,7 +3896,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_007_cf02",
-            "materialized_sibling_sha256": "af4c2a69699de6e18bf634a092cc768970199abc00f89ee061fa3beafe95ae4c"
+            "materialized_sibling_sha256": "5756c05373812a5f11908db796ed72428cca98436256cfc8eecf2b3d85e2acbc"
           },
           "affected_claim_target_ids": [
             "activity_period_gross_uplift_claim",
@@ -3931,7 +4044,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_007_cf03",
-            "materialized_sibling_sha256": "c56d7f3874d90273b91664eae519f5f375771d5e8c54cae675b92734aadf71a7"
+            "materialized_sibling_sha256": "98f170f18291835ecc28564a7f76c0a29d1c62ca11ec0974878e9793a218aaea"
           },
           "affected_claim_target_ids": [
             "activity_period_gross_uplift_claim",
@@ -4244,7 +4357,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:d3eb2b2c7c28708262af3da0d3bc5bfe060b00520e9f5d3e0bb8d0975becd34f"
     },
     {
       "episode_id": "G3-ADV-008",
@@ -4491,21 +4605,42 @@
             "claim_target_id": "observed_reactivation_difference_claim",
             "estimand_id": "observed_reactivation_difference",
             "target_description": "消息发送后七日内，发送组与未发送组的观测重新付费差异。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           },
           {
             "claim_target_id": "incremental_reactivated_users_claim",
             "estimand_id": "incremental_reactivated_users",
             "target_description": "召回消息导致的增量重新付费用户数。",
-            "design_claim_ceiling": "causal"
+            "design_claim_ceiling": "causal",
+            "claim_target_kind": "causal_effect"
           },
           {
             "claim_target_id": "recall_scale_decision_claim",
             "estimand_id": "recall_scale_decision",
             "target_description": "在选择偏差、污染与成本边界下是否扩大召回。",
-            "design_claim_ceiling": "causal"
+            "design_claim_ceiling": "causal",
+            "claim_target_kind": "causal_effect"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -4565,7 +4700,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_008_cf01",
-            "materialized_sibling_sha256": "cf18fadef177b89865c8210fc90a10bf34ab055f5ea6f2ed899fbab5c2b57422"
+            "materialized_sibling_sha256": "b20be643eff88417858424e24b9197764b005d77d323274bdb86256ea2ce1326"
           },
           "affected_claim_target_ids": [
             "observed_reactivation_difference_claim",
@@ -4635,7 +4770,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_008_cf02",
-            "materialized_sibling_sha256": "aeb7c35e645041f5404b1626728e65590d0f142abbccb8154d48ffe143386ffd"
+            "materialized_sibling_sha256": "8a06df836c6353a2273bf042fc8060560512c8978708b6be0b8b106bcecfc9e7"
           },
           "affected_claim_target_ids": [
             "observed_reactivation_difference_claim",
@@ -4771,7 +4906,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_008_cf03",
-            "materialized_sibling_sha256": "ddaa891ce12702e1e6482550111031f3d5c3aad6f9a3df740ddfe1166e03e096"
+            "materialized_sibling_sha256": "65c53faeabdd84bdd331df8eb0435652d3a58d7560b27359885608e8e69da9ba"
           },
           "affected_claim_target_ids": [
             "observed_reactivation_difference_claim",
@@ -5114,7 +5249,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9"
     },
     {
       "episode_id": "G3-ADV-009",
@@ -5378,21 +5514,42 @@
             "claim_target_id": "mature_paid_silence_change_claim",
             "estimand_id": "mature_paid_silence_change",
             "target_description": "成熟历史付费 cohort 的 30 日再次付费沉默率变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "cohort_outcome"
           },
           {
             "claim_target_id": "paid_silence_factor_priority_claim",
             "estimand_id": "paid_silence_factor_priority",
             "target_description": "支付失败、核心功能使用和充值档位等因素与沉默变化的关联优先级。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           },
           {
             "claim_target_id": "prediction_action_scope_claim",
             "estimand_id": "prediction_action_scope",
             "target_description": "个体预测、名单输出和自动发奖励的产品、权限与隐私边界。",
-            "design_claim_ceiling": "definition_only"
+            "design_claim_ceiling": "definition_only",
+            "claim_target_kind": "definition"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -5452,7 +5609,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_009_cf01",
-            "materialized_sibling_sha256": "523f582b9be60fb36dbdd75c366c5c80e2be3968e6494c6a97c710491aefe6c5"
+            "materialized_sibling_sha256": "b0d7c6d1f5a81c022dea8184a9b2e578da9e07573bd2ce01856f2a51a9021b8b"
           },
           "affected_claim_target_ids": [
             "mature_paid_silence_change_claim",
@@ -5522,7 +5679,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_009_cf02",
-            "materialized_sibling_sha256": "afac4e2b7d5e8671bef39e468a2667a6b4386643138715619e84d0183323f0ee"
+            "materialized_sibling_sha256": "f537438f26bea028452eccd71ba56f3d551184bca941b710f6761b7d2747f5d5"
           },
           "affected_claim_target_ids": [
             "mature_paid_silence_change_claim",
@@ -5621,7 +5778,7 @@
               }
             ],
             "semantic_intervention_id": "g3_adv_009_cf03",
-            "materialized_sibling_sha256": "7196d0c7907fb75babf17680dd97cded78ce658f31b0a11d4971b98ba27838fa"
+            "materialized_sibling_sha256": "9bd4f450b4fecb8dc259689aa2f2410b6ed1cf7d0fd57c409fc493b61a516301"
           },
           "affected_claim_target_ids": [
             "prediction_action_scope_claim"
@@ -6038,7 +6195,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9"
     },
     {
       "episode_id": "G3-EXP-007",
@@ -6215,21 +6373,42 @@
             "claim_target_id": "payment_success_rate_drop_claim",
             "estimand_id": "payment_success_rate_drop",
             "target_description": "昨日最终支付成功率下降及支付方式集中度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "funnel_transition"
           },
           {
             "claim_target_id": "pre_release_failure_diagnosis_boundary_claim",
             "estimand_id": "failure_diagnosis_availability",
             "target_description": "失败诊断合同发布前可证明范围与停止边界。",
-            "design_claim_ceiling": "data_quality_only"
+            "design_claim_ceiling": "data_quality_only",
+            "claim_target_kind": "data_quality_state"
           },
           {
             "claim_target_id": "post_release_failure_reason_claim",
             "estimand_id": "post_release_failure_reason",
             "target_description": "合同和完整 release 发布后失败阶段与原因分布。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "distribution"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -6272,7 +6451,7 @@
               }
             ],
             "semantic_intervention_id": "g3_exp_007_cf01",
-            "materialized_sibling_sha256": "25ef08139cb540c48778427fe632a41419c6c6547cf34be0f6d3ab1192af3723"
+            "materialized_sibling_sha256": "f1ff85f1ad31215fd1f7566fef959f895abdcbe10fd217ad87335d0888f3ec9e"
           },
           "affected_claim_target_ids": [
             "payment_success_rate_drop_claim",
@@ -6341,7 +6520,7 @@
               }
             ],
             "semantic_intervention_id": "g3_exp_007_cf02",
-            "materialized_sibling_sha256": "05522c03bdb047c1e67f27027367bad5ae67eba6908d2f48d4809854bafce1c4"
+            "materialized_sibling_sha256": "768391f87964bf9d40d08d374e04b27654dfb0d6366e17de5c175e3ebbaf93d6"
           },
           "affected_claim_target_ids": [
             "payment_success_rate_drop_claim",
@@ -6477,7 +6656,7 @@
               }
             ],
             "semantic_intervention_id": "g3_exp_007_cf03",
-            "materialized_sibling_sha256": "d816f19fcd74eb66be7f59c1df2696ed66248edfe83fe1e855d0eef412c34214"
+            "materialized_sibling_sha256": "94baa68f8ef8bb29ab06fe07ada59cfa76f0467289d3b80138bf35cba97f49e3"
           },
           "affected_claim_target_ids": [
             "payment_success_rate_drop_claim",
@@ -6713,7 +6892,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:ac49edb55a88bdde655be5d5d1612696d57205674f22c06c2d79fc552901eafa"
     }
   ]
 }

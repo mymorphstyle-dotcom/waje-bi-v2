@@ -5,6 +5,7 @@ from __future__ import annotations
 from waje_vnext.domain.answering import AnswerStatus
 from waje_vnext.domain.events import JournalEventType
 from waje_vnext.domain.runtime_amendment import (
+    ProviderAttemptDisposition,
     RunTraceEventLink,
     RunTraceManifest,
 )
@@ -25,11 +26,16 @@ def validate_run_trace_manifest_references(
         RunTraceEventLink(
             cursor=event.cursor,
             event_id=event.event_id,
+            event_type=event.event_type,
+            recorded_at=event.recorded_at,
             operation_id=event.operation.operation_id,
             causation_id=event.operation.causation_id,
             correlation_id=event.operation.correlation_id,
             authority_revision=event.operation.authority_revision,
+            action_id=event.action_id,
+            authority_ref=event.authority_ref,
             payload_sha256=event.operation.payload_sha256,
+            event_content_sha256=event.content_sha256,
         )
         for event in events
     )
@@ -131,6 +137,17 @@ def validate_run_trace_manifest_references(
         "logical model job",
     )
     _require_exact(
+        record.provider_attempt_request_ids,
+        tuple(
+            request.provider_attempt_id
+            for job in model_jobs
+            for request in store.list_provider_attempt_requests(
+                job.logical_model_job_id
+            )
+        ),
+        "provider attempt request",
+    )
+    _require_exact(
         record.provider_attempt_receipt_ids,
         tuple(
             receipt.provider_attempt_receipt_id
@@ -155,6 +172,40 @@ def validate_run_trace_manifest_references(
         ),
         "durable model result",
     )
+    for job in model_jobs:
+        receipts = store.list_provider_attempt_receipts(
+            job.logical_model_job_id
+        )
+        successes = tuple(
+            item
+            for item in receipts
+            if item.disposition is ProviderAttemptDisposition.SUCCEEDED
+        )
+        result = store.get_durable_model_result(
+            job.logical_model_job_id
+        )
+        if len(successes) > 1 or bool(successes) != (result is not None):
+            raise ValueError(
+                "run trace provider success pair is incomplete"
+            )
+        if successes and result is not None:
+            receipt = successes[0]
+            if (
+                result.provider_attempt_receipt_id
+                != receipt.provider_attempt_receipt_id
+                or result.provider_attempt_id
+                != receipt.provider_attempt_id
+                or result.output_sha256 != receipt.output_sha256
+                or result.configuration_sha256
+                != job.configuration_sha256
+                or result.model_request_artifact_sha256
+                != job.model_request_artifact_sha256
+                or result.result_contract_ref
+                != job.model_request_artifact.output_contract_ref
+            ):
+                raise ValueError(
+                    "run trace provider success pair identity drifted"
+                )
     _require_exact(
         record.plan_revision_ids,
         _event_refs(events, JournalEventType.PLAN_ACCEPTED),

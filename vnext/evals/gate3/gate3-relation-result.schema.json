@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/relation-result.v1.schema.json",
+  "title": "WAJE Gate 3 Relation Evaluation Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_manifest_sha256",
+    "relation_group_id",
+    "operator_ref",
+    "operator_sha256",
+    "member_cell_ids",
+    "member_results",
+    "expected_relation",
+    "check_results",
+    "artifact_refs",
+    "derived_verdict"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_relation_result"},
+    "artifact_version": {"const": "gate3.relation-result.v1"},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "relation_group_id": {"$ref": "#/$defs/nonEmptyString"},
+    "operator_ref": {"$ref": "#/$defs/nonEmptyString"},
+    "operator_sha256": {"$ref": "#/$defs/sha256"},
+    "member_cell_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "member_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution_cell_id", "cell_result_sha256"],
+        "properties": {
+          "execution_cell_id": {"$ref": "#/$defs/nonEmptyString"},
+          "cell_result_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "expected_relation": {"$ref": "#/$defs/nonEmptyString"},
+    "check_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "verdict", "artifact_refs"],
+        "properties": {
+          "check_id": {"$ref": "#/$defs/nonEmptyString"},
+          "verdict": {"$ref": "#/$defs/verdict"},
+          "artifact_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/nonEmptyString"}
+          }
+        }
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "derived_verdict": {"$ref": "#/$defs/verdict"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["pass", "fail", "blocked", "invalid"]}
+  }
+}

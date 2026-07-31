@@ -1,9 +1,9 @@
 {
-  "catalog_sha256": "adf7e3b007f4d6770010febb0d8833480280b6902b76f29c09a36c07317b799e",
-  "schema_sha256": "0c9f9f15d69c6415b8eb9c084027934b360470fd475b38e01eaa5c4eb55380a9",
-  "policy_sha256": "e38d64bdca237ce5b43189b5f530dc4fbf711148383adf9e2a32dfbc290b6380",
+  "catalog_sha256": "079c35e5d783dcbaefbdf847c78e955646f7460b0046faf1d7c4373fb42d1a89",
+  "schema_sha256": "e9c229546cbab201cbfa4a3dbeff6e09d2f3d314ffca67f7339643fd154f7513",
+  "policy_sha256": "db5ef397c2612d12bda351c64772c6cd24ea49636151f20d3aea79c6bb5d7203",
   "taxonomy_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
-  "policy_version": "gate3.behavior-eval-policy.v4",
+  "policy_version": "gate3.behavior-eval-policy.v5",
   "episode_count": 36,
   "source_pool_counts": {
     "adversarial_conversation": 11,
@@ -111,9 +111,43 @@
       "wrong_business_decision"
     ]
   },
+  "claim_target_kind_world_coverage": {
+    "minimum_independent_worlds_per_kind": 3,
+    "base_episode_world_counts": {
+      "accounting_decomposition": 10,
+      "association": 8,
+      "causal_effect": 5,
+      "cohort_outcome": 5,
+      "composition": 3,
+      "contrast": 16,
+      "data_quality_state": 5,
+      "definition": 3,
+      "diagnostic_set": 3,
+      "distribution": 4,
+      "funnel_transition": 4,
+      "point_quantity": 3,
+      "temporal_pattern": 3
+    },
+    "executable_variant_world_counts": {
+      "accounting_decomposition": 14,
+      "association": 11,
+      "causal_effect": 7,
+      "cohort_outcome": 8,
+      "composition": 4,
+      "contrast": 20,
+      "data_quality_state": 8,
+      "definition": 4,
+      "diagnostic_set": 4,
+      "distribution": 5,
+      "funnel_transition": 6,
+      "point_quantity": 3,
+      "temporal_pattern": 3
+    }
+  },
   "authoring_gaps": {
     "missing_coverage": {},
-    "counterfactual_role_gaps": {}
+    "counterfactual_role_gaps": {},
+    "claim_target_kind_world_gaps": {}
   },
   "promotion_ready": false,
   "promotion_authority": "verify_gate3_e0.py"

@@ -15,6 +15,9 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from build_gate3_eval_corpus import _expected_artifacts, _render
 from compile_gate3_eval_views import validate_all_views
+from compile_gate3_execution_universe import (
+    build_readiness as build_execution_universe_readiness,
+)
 from gate3_admission_authority import (
     AdmissionAuthorityConnector,
     AdmissionExpectation,
@@ -53,6 +56,12 @@ POLICY_PATH = EVAL_ROOT / "gate3-eval-policy.json"
 SOURCE_REGISTRY_PATH = EVAL_ROOT / "registries" / "source-registry.json"
 REVIEW_REGISTRY_PATH = EVAL_ROOT / "registries" / "review-registry.json"
 CORPUS_REGISTRY_PATH = EVAL_ROOT / "registries" / "corpus-registry.json"
+CLAIM_TARGET_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "claim-target-authority-registry.json"
+)
+CLAIM_TARGET_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "claim-target-authority-registry.schema.json"
+)
 GRADER_REGISTRY_PATH = EVAL_ROOT / "registries" / "grader-registry.json"
 GRADER_RUBRIC_PATH = EVAL_ROOT / "grader-rubric.json"
 AUTHORITY_PROFILES_PATH = (
@@ -78,6 +87,27 @@ VIEW_SCHEMA_PATH = EVAL_ROOT / "evaluation-views.schema.json"
 RESULT_SCHEMA_PATH = EVAL_ROOT / "evaluation-run-result.schema.json"
 RUNNER_ARTIFACT_INDEX_SCHEMA_PATH = (
     EVAL_ROOT / "runner-artifact-index.schema.json"
+)
+EXECUTION_MANIFEST_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-execution-manifest.schema.json"
+)
+EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-execution-universe-readiness.schema.json"
+)
+EXECUTION_UNIVERSE_READINESS_PATH = (
+    EVAL_ROOT / "manifests" / "execution-universe-readiness.json"
+)
+PARAPHRASE_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-paraphrase-authority.schema.json"
+)
+PARAPHRASE_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "paraphrase-authority-registry.json"
+)
+OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-operator-scenario-authority.schema.json"
+)
+OPERATOR_SCENARIO_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "operator-scenario-authority-registry.json"
 )
 CASE_FILE_AUTHORITY_SCHEMA_PATH = (
     EVAL_ROOT / "case-files" / "case-file-authority.schema.json"
@@ -137,6 +167,9 @@ VERIFIER_CODE_PATHS = (
     ROOT / "tools" / "github_gate3_admission.py",
     ROOT / "tools" / "build_gate3_github_admission_request.py",
     ROOT / "tools" / "verify_github_workflow_deployment.py",
+    ROOT / "tools" / "compile_gate3_execution_universe.py",
+    ROOT / "tools" / "gate3_execution_authority.py",
+    ROOT / "tools" / "gate3_runtime_projection.py",
 )
 
 GITHUB_AUTHORITY_PATHS = (
@@ -207,6 +240,8 @@ EVALUATED_PATHS = (
     COVERAGE_LEDGER_PATH,
     POLICY_PATH,
     EPISODE_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_PATH,
     POLICY_SCHEMA_PATH,
     GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
     GITHUB_PROVIDER_STATE_SCHEMA_PATH,
@@ -215,6 +250,13 @@ EVALUATED_PATHS = (
     VIEW_SCHEMA_PATH,
     RESULT_SCHEMA_PATH,
     RUNNER_ARTIFACT_INDEX_SCHEMA_PATH,
+    EXECUTION_MANIFEST_SCHEMA_PATH,
+    EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH,
+    EXECUTION_UNIVERSE_READINESS_PATH,
+    PARAPHRASE_AUTHORITY_SCHEMA_PATH,
+    PARAPHRASE_AUTHORITY_PATH,
+    OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH,
+    OPERATOR_SCENARIO_AUTHORITY_PATH,
     CASE_FILE_AUTHORITY_SCHEMA_PATH,
     CASE_FILE_AUTHORITIES_PATH,
     CONTROLLED_BUSINESS_FIXTURE_SCHEMA_PATH,
@@ -240,6 +282,8 @@ VERIFIER_RELEASE_PATHS = (
     ROOT / "tools" / "isolation-policy.json",
     MISSING_CONTRACT_BACKLOG_PATH,
     POLICY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_PATH,
     GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
     GITHUB_PROVIDER_STATE_SCHEMA_PATH,
     TRUST_SCHEMA_PATH,
@@ -247,6 +291,10 @@ VERIFIER_RELEASE_PATHS = (
     VIEW_SCHEMA_PATH,
     RESULT_SCHEMA_PATH,
     RUNNER_ARTIFACT_INDEX_SCHEMA_PATH,
+    EXECUTION_MANIFEST_SCHEMA_PATH,
+    EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH,
+    PARAPHRASE_AUTHORITY_SCHEMA_PATH,
+    OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH,
     CASE_FILE_AUTHORITY_SCHEMA_PATH,
     CASE_FILE_AUTHORITIES_PATH,
     CONTROLLED_BUSINESS_FIXTURE_SCHEMA_PATH,
@@ -2245,6 +2293,41 @@ def compute_readiness(
                 label=path.name,
             )
         )
+    findings.extend(
+        _schema_findings(
+            _load_json(PARAPHRASE_AUTHORITY_PATH),
+            _load_json(PARAPHRASE_AUTHORITY_SCHEMA_PATH),
+            label=PARAPHRASE_AUTHORITY_PATH.name,
+        )
+    )
+    findings.extend(
+        _schema_findings(
+            _load_json(OPERATOR_SCENARIO_AUTHORITY_PATH),
+            _load_json(OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH),
+            label=OPERATOR_SCENARIO_AUTHORITY_PATH.name,
+        )
+    )
+    try:
+        execution_universe_readiness = build_execution_universe_readiness()
+    except Exception as error:
+        findings.append(
+            "execution universe compiler failed closed: {}".format(error)
+        )
+        execution_universe_readiness = None
+    if execution_universe_readiness is not None:
+        findings.extend(
+            _schema_findings(
+                execution_universe_readiness,
+                _load_json(EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH),
+                label=EXECUTION_UNIVERSE_READINESS_PATH.name,
+            )
+        )
+        if not EXECUTION_UNIVERSE_READINESS_PATH.exists():
+            findings.append("execution universe readiness is missing")
+        elif _load_json(
+            EXECUTION_UNIVERSE_READINESS_PATH
+        ) != execution_universe_readiness:
+            findings.append("execution universe readiness is stale")
     for schema_path in (
         GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
         GITHUB_PROVIDER_STATE_SCHEMA_PATH,
@@ -2253,6 +2336,10 @@ def compute_readiness(
         RUNNER_ARTIFACT_INDEX_SCHEMA_PATH,
         CONTROLLED_BUSINESS_FIXTURE_SCHEMA_PATH,
         REAL_SNAPSHOT_MATERIALIZATION_SCHEMA_PATH,
+        EXECUTION_MANIFEST_SCHEMA_PATH,
+        EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH,
+        PARAPHRASE_AUTHORITY_SCHEMA_PATH,
+        OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH,
     ):
         try:
             Draft202012Validator.check_schema(_load_json(schema_path))

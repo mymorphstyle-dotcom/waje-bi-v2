@@ -45,6 +45,11 @@ MIGRATIONS = (
         "006_gate3_5_evidence_answer_projection.sql",
     ),
 )
+GATE36_MIGRATION = (
+    7,
+    "gate3_6_provider_invocation_authority",
+    "007_gate3_6_provider_invocation_authority.sql",
+)
 
 
 def _run(
@@ -471,6 +476,13 @@ def main() -> int:
         _wait_for_postgres(dsn)
         _verify_version6_rejects_superseded_rows(dsn)
         _verify_version6_atomicity(dsn)
+        version, name, filename = GATE36_MIGRATION
+        _apply_migration(
+            dsn,
+            version=version,
+            name=name,
+            path=ROOT / "storage" / "migrations" / filename,
+        )
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": os.pathsep.join(

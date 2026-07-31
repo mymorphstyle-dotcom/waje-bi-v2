@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/claim-target-authority-registry.v1.schema.json",
+  "title": "WAJE Gate 3 Claim Target Authority Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "registry_epoch",
+    "status",
+    "episode_bindings"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_claim_target_authority_registry"},
+    "artifact_version": {"const": "gate3.claim-target-authority.v1"},
+    "registry_epoch": {"const": 2},
+    "status": {"const": "candidate_authoring"},
+    "episode_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/episodeBinding"}
+    }
+  },
+  "$defs": {
+    "claimTargetKind": {
+      "enum": [
+        "definition",
+        "data_quality_state",
+        "point_quantity",
+        "distribution",
+        "temporal_pattern",
+        "contrast",
+        "composition",
+        "accounting_decomposition",
+        "cohort_outcome",
+        "funnel_transition",
+        "association",
+        "causal_effect",
+        "diagnostic_set"
+      ]
+    },
+    "kindMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/claimTargetKind"},
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]+$"}
+    },
+    "episodeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "base_claim_target_kinds",
+        "replacement_claim_target_kinds"
+      ],
+      "properties": {
+        "episode_id": {"type": "string", "pattern": "^G3-[A-Z]+-[0-9]{3}$"},
+        "base_claim_target_kinds": {"$ref": "#/$defs/kindMap"},
+        "replacement_claim_target_kinds": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/kindMap"},
+          "propertyNames": {"pattern": "^[A-Z0-9-]+-CF[0-9]{2}$"}
+        }
+      }
+    }
+  }
+}

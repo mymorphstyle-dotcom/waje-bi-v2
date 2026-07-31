@@ -9,6 +9,7 @@ external registries and manifests.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +21,11 @@ from validate_gate3_eval_catalog import (
     _format_error,
     _validate_episode_semantics,
     _validate_required_suite,
+    business_world_independence_key,
+    canonical_sha256,
+    counterfactual_materialization_core,
+    materialize_counterfactual_episode,
+    replacement_expectation_content_core,
 )
 
 
@@ -27,6 +33,12 @@ ROOT = Path(__file__).resolve().parents[1]
 EVAL_ROOT = ROOT / "evals" / "gate3"
 CANDIDATE_ROOT = EVAL_ROOT / "candidates"
 EPISODE_SCHEMA_PATH = EVAL_ROOT / "evaluation-episode.schema.json"
+CLAIM_TARGET_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "claim-target-authority-registry.schema.json"
+)
+CLAIM_TARGET_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "claim-target-authority-registry.json"
+)
 POLICY_PATH = EVAL_ROOT / "gate3-eval-policy.json"
 TAXONOMY_PATH = EVAL_ROOT / "taxonomy" / "coverage-taxonomy.json"
 CATALOG_PATH = EVAL_ROOT / "catalog" / "gate3-authoring-candidates.json"
@@ -82,6 +94,7 @@ def _episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
             "episode_id",
             "title",
             "source_pool",
+            "business_world_independence_key",
             "suite_binding",
             "data_source_bindings",
             "user_episode",
@@ -101,9 +114,158 @@ def _episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
     return core
 
 
+DESIGN_SPACE_POLICY = {
+    "open_world_acceptance": True,
+    "authored_examples_role": "illustrative_non_exhaustive",
+    "acceptance_authority_refs": [
+        "must_preserve",
+        "must_investigate",
+        "claim_targets",
+        "support_expectation",
+        "forbidden_outcomes",
+    ],
+    "disqualifier_codes": [
+        "must_preserve_violated",
+        "required_investigation_omitted",
+        "claim_ceiling_exceeded",
+        "forbidden_outcome_matched",
+        "evidence_or_authority_boundary_violated",
+    ],
+}
+
+
+def _bind_claim_target_kinds(
+    targets: list[dict[str, Any]],
+    kind_map: Mapping[str, str],
+    *,
+    label: str,
+) -> None:
+    target_ids = [target["claim_target_id"] for target in targets]
+    if len(target_ids) != len(set(target_ids)):
+        raise ValueError("{} repeats a claim target".format(label))
+    if set(target_ids) != set(kind_map):
+        raise ValueError(
+            "{} claim target set differs from typed authority".format(label)
+        )
+    for target in targets:
+        expected_kind = kind_map[target["claim_target_id"]]
+        observed_kind = target.get("claim_target_kind", expected_kind)
+        if observed_kind != expected_kind:
+            raise ValueError(
+                "{} claim target {} kind differs from typed authority".format(
+                    label, target["claim_target_id"]
+                )
+            )
+        target["claim_target_kind"] = expected_kind
+
+
+def _enrich_episode(
+    source_episode: Mapping[str, Any],
+    binding: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    episode_id = source_episode["episode_id"]
+    if binding is None:
+        raise ValueError(
+            "{} lacks claim target authority".format(episode_id)
+        )
+    episode = copy.deepcopy(source_episode)
+    expected_independence_key = business_world_independence_key(episode)
+    observed_independence_key = episode.get(
+        "business_world_independence_key",
+        expected_independence_key,
+    )
+    if observed_independence_key != expected_independence_key:
+        raise ValueError(
+            "{} business-world independence key drifted".format(episode_id)
+        )
+    episode["business_world_independence_key"] = expected_independence_key
+    observed_design_policy = episode["acceptable_outcome"].get(
+        "design_space_policy",
+        DESIGN_SPACE_POLICY,
+    )
+    if observed_design_policy != DESIGN_SPACE_POLICY:
+        raise ValueError(
+            "{} open-world design policy drifted".format(episode_id)
+        )
+    episode["acceptable_outcome"]["design_space_policy"] = copy.deepcopy(
+        DESIGN_SPACE_POLICY
+    )
+    _bind_claim_target_kinds(
+        episode["acceptable_outcome"]["claim_targets"],
+        binding["base_claim_target_kinds"],
+        label=episode_id,
+    )
+
+    observed_replacements: set[str] = set()
+    replacement_maps = binding["replacement_claim_target_kinds"]
+    for sibling in episode["counterfactual_siblings"]:
+        expectation = sibling.get("replacement_expectation")
+        if expectation is None or not expectation["variant_claim_targets"]:
+            continue
+        sibling_id = sibling["sibling_id"]
+        observed_replacements.add(sibling_id)
+        kind_map = replacement_maps.get(sibling_id)
+        if kind_map is None:
+            raise ValueError(
+                "{} lacks replacement claim target authority".format(
+                    sibling_id
+                )
+            )
+        _bind_claim_target_kinds(
+            expectation["variant_claim_targets"],
+            kind_map,
+            label=sibling_id,
+        )
+        expectation["content_sha256"] = canonical_sha256(
+            replacement_expectation_content_core(expectation)
+        )
+    if observed_replacements != set(replacement_maps):
+        raise ValueError(
+            "{} replacement claim target authority set drifted".format(
+                episode_id
+            )
+        )
+
+    for sibling in episode["counterfactual_siblings"]:
+        materialized = materialize_counterfactual_episode(episode, sibling)
+        sibling["mutation_operation"]["materialized_sibling_sha256"] = (
+            canonical_sha256(
+                counterfactual_materialization_core(materialized)
+            )
+        )
+    return episode
+
+
 def _load_candidates() -> list[dict[str, Any]]:
     policy = _load_json_strict(POLICY_PATH)
     schema = _load_json_strict(EPISODE_SCHEMA_PATH)
+    claim_target_schema = _load_json_strict(
+        CLAIM_TARGET_AUTHORITY_SCHEMA_PATH
+    )
+    claim_target_authority = _load_json_strict(
+        CLAIM_TARGET_AUTHORITY_PATH
+    )
+    claim_target_schema_findings = [
+        _format_error(error)
+        for error in Draft202012Validator(
+            claim_target_schema,
+            format_checker=FormatChecker(),
+        ).iter_errors(claim_target_authority)
+    ]
+    if claim_target_schema_findings:
+        raise ValueError(
+            "claim target authority validation failed:\n- {}".format(
+                "\n- ".join(claim_target_schema_findings)
+            )
+        )
+    target_bindings = {
+        binding["episode_id"]: binding
+        for binding in claim_target_authority["episode_bindings"]
+    }
+    if len(target_bindings) != len(
+        claim_target_authority["episode_bindings"]
+    ):
+        raise ValueError("claim target authority repeats an Episode")
     taxonomy = _load_json_strict(TAXONOMY_PATH)
     required_paths = [
         CANDIDATE_ROOT / name
@@ -122,14 +284,31 @@ def _load_candidates() -> list[dict[str, Any]]:
     findings: list[str] = []
     for path in required_paths:
         catalog = _load_json_strict(path)
+        enriched_episodes = [
+            _enrich_episode(
+                episode,
+                target_bindings.get(episode["episode_id"]),
+            )
+            for episode in catalog["episodes"]
+        ]
+        enriched_catalog = {
+            "catalog_version": "gate3.behavior-eval.v5",
+            "episodes": enriched_episodes,
+        }
         findings.extend(
             "{} {}".format(path.name, _format_error(error))
             for error in Draft202012Validator(
                 schema,
                 format_checker=FormatChecker(),
-            ).iter_errors(catalog)
+            ).iter_errors(enriched_catalog)
         )
-        episodes.extend(catalog["episodes"])
+        episodes.extend(enriched_episodes)
+    if set(target_bindings) != {
+        episode["episode_id"] for episode in episodes
+    }:
+        findings.append(
+            "claim target authority Episode set differs from candidates"
+        )
     if not findings:
         for episode in episodes:
             findings.extend(
@@ -168,8 +347,8 @@ def _load_candidates() -> list[dict[str, Any]]:
 def _corpus_registry(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "artifact_type": "corpus_registry",
-        "artifact_version": "gate3.corpus-registry.v1",
-        "registry_epoch": 1,
+        "artifact_version": "gate3.corpus-registry.v2",
+        "registry_epoch": 2,
         "entries": [
             {
                 "episode_id": episode["episode_id"],
@@ -180,6 +359,17 @@ def _corpus_registry(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                 "authoring_batch_id": episode["provenance"][
                     "authoring_batch_id"
                 ],
+                "business_world_independence_key": episode[
+                    "business_world_independence_key"
+                ],
+                "claim_target_kinds": sorted(
+                    {
+                        target["claim_target_kind"]
+                        for target in episode["acceptable_outcome"][
+                            "claim_targets"
+                        ]
+                    }
+                ),
                 "coverage_tags": episode["coverage_tags"],
                 "product_grader_profile_ref": "GRADER-PRODUCT-BEHAVIOR-V1",
                 "authority_profile_ref": "AUTHORITY-GATE3-BASE-V1",
@@ -213,6 +403,9 @@ def _world_profiles(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                     "episode_core_sha256"
                 ],
                 "world_id": episode["business_world"]["world_id"],
+                "business_world_independence_key": episode[
+                    "business_world_independence_key"
+                ],
                 "stage_profiles": {
                     "gate3": {
                         "status": "authoring",
@@ -421,7 +614,7 @@ def _expected_artifacts() -> dict[Path, dict[str, Any]]:
     episodes = _load_candidates()
     artifacts = {
         CATALOG_PATH: {
-            "catalog_version": "gate3.behavior-eval.v4",
+            "catalog_version": "gate3.behavior-eval.v5",
             "episodes": episodes,
         }
     }

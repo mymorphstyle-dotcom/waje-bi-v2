@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/execution-manifest.v2.schema.json",
+  "title": "WAJE Gate 3 Execution Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_scope",
+    "run_mode",
+    "status",
+    "source_run_manifest_sha256",
+    "policy_sha256",
+    "taxonomy_sha256",
+    "catalog_sha256",
+    "grader_registry_sha256",
+    "mutation_operator_registry_sha256",
+    "paraphrase_authority_registry_sha256",
+    "operator_scenario_authority_registry_sha256",
+    "protected_held_out_manifest_sha256",
+    "execution_universe_compiler_sha256",
+    "required_coordinate_set_sha256",
+    "required_episode_relation_group_set_sha256",
+    "required_operator_scenario_coordinate_set_sha256",
+    "required_operator_scenario_relation_group_set_sha256",
+    "trace_profiles_sha256",
+    "attempt_policy_sha256",
+    "runner_release_sha256",
+    "realm",
+    "attempt_policy",
+    "cells",
+    "relation_groups"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_execution_manifest"},
+    "artifact_version": {"const": "gate3.execution-manifest.v2"},
+    "execution_scope": {"enum": ["development", "formal"]},
+    "run_mode": {"enum": ["smoke", "slice", "full"]},
+    "status": {"enum": ["draft", "frozen"]},
+    "source_run_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "policy_sha256": {"$ref": "#/$defs/sha256"},
+    "taxonomy_sha256": {"$ref": "#/$defs/sha256"},
+    "catalog_sha256": {"$ref": "#/$defs/sha256"},
+    "grader_registry_sha256": {"$ref": "#/$defs/sha256"},
+    "mutation_operator_registry_sha256": {"$ref": "#/$defs/sha256"},
+    "paraphrase_authority_registry_sha256": {"$ref": "#/$defs/sha256"},
+    "operator_scenario_authority_registry_sha256": {"$ref": "#/$defs/sha256"},
+    "protected_held_out_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_universe_compiler_sha256": {"$ref": "#/$defs/sha256"},
+    "required_coordinate_set_sha256": {"$ref": "#/$defs/sha256"},
+    "required_episode_relation_group_set_sha256": {"$ref": "#/$defs/sha256"},
+    "required_operator_scenario_coordinate_set_sha256": {"$ref": "#/$defs/sha256"},
+    "required_operator_scenario_relation_group_set_sha256": {"$ref": "#/$defs/sha256"},
+    "trace_profiles_sha256": {"$ref": "#/$defs/sha256"},
+    "attempt_policy_sha256": {"$ref": "#/$defs/sha256"},
+    "runner_release_sha256": {"$ref": "#/$defs/sha256"},
+    "realm": {
+      "enum": ["development_conformance", "formal_conformance"]
+    },
+    "attempt_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_attempts_per_cell",
+        "terminal_selection",
+        "retain_all_attempts",
+        "retryable_reason_codes"
+      ],
+      "properties": {
+        "maximum_attempts_per_cell": {"type": "integer", "minimum": 1},
+        "terminal_selection": {"const": "first_terminal_attempt"},
+        "retain_all_attempts": {"const": true},
+        "retryable_reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+        }
+      }
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/cell"}
+    },
+    "relation_groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/relationGroup"}
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "profileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_ref",
+        "profile_sha256",
+        "runtime_configuration_sha256"
+      ],
+      "properties": {
+        "profile_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "profile_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_configuration_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "roleProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_business_analysis_agent",
+        "runtime_reviewer",
+        "evaluation_reviewer"
+      ],
+      "properties": {
+        "primary_business_analysis_agent": {
+          "$ref": "#/$defs/profileBinding"
+        },
+        "runtime_reviewer": {"$ref": "#/$defs/profileBinding"},
+        "evaluation_reviewer": {"$ref": "#/$defs/profileBinding"}
+      }
+    },
+    "caseVariant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "base"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sibling_id",
+            "materialized_sibling_sha256"
+          ],
+          "properties": {
+            "kind": {"const": "counterfactual"},
+            "sibling_id": {"$ref": "#/$defs/nonEmptyString"},
+            "materialized_sibling_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "held_out_object_ref",
+            "held_out_binding_sha256"
+          ],
+          "properties": {
+            "kind": {"const": "protected_held_out"},
+            "held_out_object_ref": {"$ref": "#/$defs/nonEmptyString"},
+            "held_out_binding_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      ]
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_cell_id",
+        "source_authority_kind",
+        "source_run_cell_ref",
+        "episode_id",
+        "episode_core_sha256",
+        "case_variant",
+        "lane",
+        "wording_variant_id",
+        "wording_authority_ref",
+        "wording_sha256",
+        "visible_turn",
+        "paraphrase_index",
+        "repeat_index",
+        "seed",
+        "risk_level",
+        "source_pool",
+        "business_world_id",
+        "business_world_independence_key",
+        "claim_target_kinds",
+        "coverage_atom_refs",
+        "historical_regression",
+        "agent_world_view_sha256",
+        "evaluator_oracle_view_sha256",
+        "trace_profile_ref",
+        "trace_profile_sha256",
+        "role_profiles",
+        "required_stage_ids"
+      ],
+      "properties": {
+        "execution_cell_id": {"$ref": "#/$defs/nonEmptyString"},
+        "source_authority_kind": {
+          "enum": ["candidate_episode", "frozen_run_cell", "protected_held_out"]
+        },
+        "source_run_cell_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "episode_core_sha256": {"$ref": "#/$defs/sha256"},
+        "case_variant": {"$ref": "#/$defs/caseVariant"},
+        "lane": {"enum": ["semantic_frame", "full_authority"]},
+        "wording_variant_id": {"$ref": "#/$defs/nonEmptyString"},
+        "wording_authority_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "operator_scenario_ref": {
+          "oneOf": [
+            {"$ref": "#/$defs/nonEmptyString"},
+            {"type": "null"}
+          ]
+        },
+        "wording_sha256": {"$ref": "#/$defs/sha256"},
+        "visible_turn": {"type": "integer", "minimum": 1},
+        "paraphrase_index": {"type": "integer", "minimum": 0},
+        "repeat_index": {"type": "integer", "minimum": 1},
+        "seed": {"type": "integer", "minimum": 0},
+        "risk_level": {"enum": ["medium", "high", "critical"]},
+        "source_pool": {
+          "enum": [
+            "real_user_language",
+            "expert_business_case",
+            "historical_failure",
+            "generated_business_world",
+            "adversarial_conversation",
+            "protected_held_out"
+          ]
+        },
+        "business_world_id": {"$ref": "#/$defs/nonEmptyString"},
+        "business_world_independence_key": {
+          "type": "string",
+          "pattern": "^authority-set:[a-f0-9]{64}$"
+        },
+        "claim_target_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "definition",
+              "data_quality_state",
+              "point_quantity",
+              "distribution",
+              "temporal_pattern",
+              "contrast",
+              "composition",
+              "accounting_decomposition",
+              "cohort_outcome",
+              "funnel_transition",
+              "association",
+              "causal_effect",
+              "diagnostic_set"
+            ]
+          }
+        },
+        "coverage_atom_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "historical_regression": {"type": "boolean"},
+        "agent_world_view_sha256": {"$ref": "#/$defs/sha256"},
+        "evaluator_oracle_view_sha256": {"$ref": "#/$defs/sha256"},
+        "trace_profile_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "trace_profile_sha256": {"$ref": "#/$defs/sha256"},
+        "role_profiles": {"$ref": "#/$defs/roleProfiles"},
+        "required_stage_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        }
+      }
+    },
+    "relationGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation_group_id",
+        "operator_ref",
+        "operator_sha256",
+        "expected_relation",
+        "members",
+        "scenario_binding"
+      ],
+      "properties": {
+        "relation_group_id": {"$ref": "#/$defs/nonEmptyString"},
+        "operator_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "operator_sha256": {"$ref": "#/$defs/sha256"},
+        "expected_relation": {"$ref": "#/$defs/nonEmptyString"},
+        "scenario_binding": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/scenarioBinding"}
+          ]
+        },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/relationMember"}
+        }
+      }
+    },
+    "relationMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_cell_id", "member_role"],
+      "properties": {
+        "execution_cell_id": {"$ref": "#/$defs/nonEmptyString"},
+        "member_role": {"enum": ["singleton", "anchor", "subject"]}
+      }
+    },
+    "scenarioBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_ref",
+        "scenario_sha256",
+        "stimulus_contract_sha256"
+      ],
+      "properties": {
+        "scenario_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "scenario_sha256": {"$ref": "#/$defs/sha256"},
+        "stimulus_contract_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

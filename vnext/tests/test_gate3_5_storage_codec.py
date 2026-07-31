@@ -47,10 +47,13 @@ class Gate35StorageCodecTest(unittest.TestCase):
             durable_model_result_id="result:nested-json",
             logical_model_job_id="job:nested-json",
             provider_attempt_id="attempt:nested-json",
+            provider_attempt_receipt_id="receipt:nested-json",
             result_kind="typed_agent_action",
             result_contract_ref="contract:nested-json",
             result_payload=payload,
             output_sha256=content_sha256(payload),
+            model_request_artifact_sha256="a" * 64,
+            configuration_sha256="b" * 64,
             recorded_at=NOW,
         )
 

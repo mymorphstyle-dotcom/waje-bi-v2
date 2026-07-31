@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/paraphrase-authority.v1.schema.json",
+  "title": "WAJE Gate 3 Paraphrase Authority Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "registry_epoch",
+    "status",
+    "entries"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_paraphrase_authority_registry"},
+    "artifact_version": {"const": "gate3.paraphrase-authority.v1"},
+    "registry_epoch": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["candidate_authoring", "reviewed"]},
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paraphrase_authority_id",
+        "episode_id",
+        "case_variant_ref",
+        "paraphrase_index",
+        "message_plan",
+        "message_plan_sha256",
+        "meaning_preservation_review"
+      ],
+      "properties": {
+        "paraphrase_authority_id": {
+          "type": "string",
+          "pattern": "^PARA-G3-[A-Z]+-[0-9]{3}-(BASE|CF[0-9]{2})-[0-9]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "case_variant_ref": {
+          "type": "string",
+          "pattern": "^(base|G3-[A-Z]+-[0-9]{3}-CF[0-9]{2})$"
+        },
+        "paraphrase_index": {"type": "integer", "minimum": 1},
+        "message_plan": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/message"}
+        },
+        "message_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "meaning_preservation_review": {
+          "$ref": "#/$defs/review"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn", "speaker", "trigger", "text"],
+      "properties": {
+        "turn": {"type": "integer", "minimum": 1},
+        "speaker": {"const": "user"},
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "fallback"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "initial",
+                "after_agent_clarification",
+                "after_user_visible_measurement_proposal",
+                "while_investigation_pending",
+                "after_user_visible_provisional_answer"
+              ]
+            },
+            "fallback": {
+              "enum": [
+                "none",
+                "inject_when_observable_or_mark_unreached"
+              ]
+            }
+          }
+        },
+        "text": {"$ref": "#/$defs/nonEmptyString"},
+        "communication_function": {
+          "enum": [
+            "question",
+            "context",
+            "correction",
+            "constraint",
+            "challenge",
+            "scope_revision",
+            "request_for_explanation"
+          ]
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reviewer_ref",
+        "rubric_ref",
+        "source_candidate_pair_sha256",
+        "review_ref",
+        "review_sha256"
+      ],
+      "properties": {
+        "status": {"enum": ["pending", "reviewed"]},
+        "reviewer_ref": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "rubric_ref": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "source_candidate_pair_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "review_ref": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "review_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "reviewed"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reviewer_ref": {"type": "string", "minLength": 1},
+              "rubric_ref": {"type": "string", "minLength": 1},
+              "source_candidate_pair_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "review_ref": {"type": "string", "minLength": 1},
+              "review_sha256": {"$ref": "#/$defs/sha256"}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,13 +1,19 @@
 {
   "artifact_type": "corpus_registry",
-  "artifact_version": "gate3.corpus-registry.v1",
-  "registry_epoch": 1,
+  "artifact_version": "gate3.corpus-registry.v2",
+  "registry_epoch": 2,
   "entries": [
     {
       "episode_id": "G3-ADV-001",
-      "episode_core_sha256": "30aadcac85acaf99a64c0c48094dbd2f3b28f0971b0b0a4f571428d949826db0",
+      "episode_core_sha256": "edf64b77e302611658c7fd6ed81d8098686ec0cac834c96b88ce1a248449de19",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "contrast",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "define",
@@ -42,9 +48,16 @@
     },
     {
       "episode_id": "G3-ADV-002",
-      "episode_core_sha256": "35c42936dfeeed4418c826d3945ebe36992760791ace8f4458b88d1cf27f40ed",
+      "episode_core_sha256": "19e52bcb1d4127ab49e78969ba94becb33d9c09b7eb034939bdd36d3f04b2e15",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:e698d75db150bfbef9b42175fdc438ec4700234797aa56698921774257605ab0",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "diagnostic_set",
+        "funnel_transition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -81,9 +94,14 @@
     },
     {
       "episode_id": "G3-ADV-004",
-      "episode_core_sha256": "4d5d52e8818cd45692f2fe64910bd0223cc01beef9221ea8443f1e92c49f9888",
+      "episode_core_sha256": "aa356050661f02ed658149b35aa793199e595df352630bb5fb4e72fc63815e0a",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9",
+      "claim_target_kinds": [
+        "cohort_outcome",
+        "distribution"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -118,9 +136,13 @@
     },
     {
       "episode_id": "G3-ADV-005",
-      "episode_core_sha256": "99eb9a8ea13c3f19619760df2029751397cf55a55e77b976cbe493c4d296a3db",
+      "episode_core_sha256": "ffc9afea0d2184be1b75df31f9dcc6110214bcb477a9802ef5d1f07c4012f31d",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:bb581cbe83ea06b17295cd9c538b0329035c526337452c21704bfebc0fc82c60",
+      "claim_target_kinds": [
+        "cohort_outcome"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare"
@@ -154,9 +176,14 @@
     },
     {
       "episode_id": "G3-ADV-006",
-      "episode_core_sha256": "29a4c7c9e59e09b15e9c26e0c1a8f52192c615bd25b02c264732c0fb0742cf6c",
+      "episode_core_sha256": "ca61afa4fb136525f64745521b9dcff1809ffb92be80a23c05ecf9c3604f261c",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9",
+      "claim_target_kinds": [
+        "data_quality_state",
+        "funnel_transition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -188,9 +215,15 @@
     },
     {
       "episode_id": "G3-ADV-007",
-      "episode_core_sha256": "a76fce9ca9a82ce9d00cf4d1f4fa1761940163b58a47fe7c6f558c72c1ec788e",
+      "episode_core_sha256": "5260b18f77424d825e112d6d7e9f9f0da4543ffd21e263b40b97f5de586dbb85",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:d3eb2b2c7c28708262af3da0d3bc5bfe060b00520e9f5d3e0bb8d0975becd34f",
+      "claim_target_kinds": [
+        "association",
+        "causal_effect",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "validate",
@@ -223,9 +256,14 @@
     },
     {
       "episode_id": "G3-ADV-008",
-      "episode_core_sha256": "80ab76617b628ad04ae7668c2cf44bb6944d581f715837d941bc9925b3c00dac",
+      "episode_core_sha256": "d35c9d8211e6a8c4edcd4978c819845d9524be4830758c8cc60b03d04efe69e9",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9",
+      "claim_target_kinds": [
+        "association",
+        "causal_effect"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "estimate",
@@ -259,9 +297,15 @@
     },
     {
       "episode_id": "G3-ADV-009",
-      "episode_core_sha256": "76b6690b9d6b5bf75a5c2f2e8a723751301326dc9ba787a2b503944e408b878f",
+      "episode_core_sha256": "bdc3fe062e79e5babe3db7a8b9695cedea96aa3534ffc8b3614d5129a46efc06",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-ADVERSARIAL-CONVERSATION-EPISODES",
+      "business_world_independence_key": "authority-set:ba5b8079f41c7c2884f7d99d8927821aed3051a449bd9791fd1924566a8477f9",
+      "claim_target_kinds": [
+        "association",
+        "cohort_outcome",
+        "definition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -293,9 +337,14 @@
     },
     {
       "episode_id": "G3-EXP-001",
-      "episode_core_sha256": "be20fddca1eb740b55b0de00f3d3c87cf514e237b255dcb55d9afada66a8bc39",
+      "episode_core_sha256": "2728d7662fafdbfeb196a5bda19e27bfa19f00b24e91c997b1972ce836f7bc20",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -332,9 +381,15 @@
     },
     {
       "episode_id": "G3-EXP-002",
-      "episode_core_sha256": "27904c5e6a2f24c6cdcba95f53a5b3460ef1feff84ef23ed05646253c1b5c8b0",
+      "episode_core_sha256": "f8c0dbe28c3b5fee3d834f15349cbf171d2fa5d7b0f60fa01e5acb4384230555",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "business_world_independence_key": "authority-set:a48b64eb3a71593d26eed74c65168b87a4f6e3af0f3bf37ed1113d2b113e0747",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -369,9 +424,15 @@
     },
     {
       "episode_id": "G3-EXP-005",
-      "episode_core_sha256": "91e2467f0da1f67c5b28112a7bd3ce74d3aec7dac443d911af454842a21b7434",
+      "episode_core_sha256": "656c40eb9e0d9714973bd6c292ed7d138e00c86e74f98bdea8b0495de4158974",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "business_world_independence_key": "authority-set:b206991717b62225c48cf29516c16d20b7b88cd79ccdcce08a4b3bcfff81d476",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "composition",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "attribute",
@@ -404,9 +465,15 @@
     },
     {
       "episode_id": "G3-EXP-007",
-      "episode_core_sha256": "e25e30955bca0553e0a902608d5ce9060256bdd94e0e9961aed5060d7205fa4b",
+      "episode_core_sha256": "76be7d157f95ce55a84079f5bf95e2f1a6e05acfc4c7b5e91dbda4f58f210e7b",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "business_world_independence_key": "authority-set:ac49edb55a88bdde655be5d5d1612696d57205674f22c06c2d79fc552901eafa",
+      "claim_target_kinds": [
+        "data_quality_state",
+        "distribution",
+        "funnel_transition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -440,9 +507,14 @@
     },
     {
       "episode_id": "G3-EXP-008",
-      "episode_core_sha256": "0cc7431699b2d5320f6e3ba4b818f5f88482f2d2dc49026a5674616b53d86974",
+      "episode_core_sha256": "f8943bda3274c8148037c1d5774501f998a16b531506e0268fba80e7404870de",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "data_quality_state",
+        "definition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "define",
@@ -477,9 +549,16 @@
     },
     {
       "episode_id": "G3-EXP-010",
-      "episode_core_sha256": "986ae321370be77a3c365be19270f582bb3da7cf8bfbf4d298fa06799c4eaa37",
+      "episode_core_sha256": "160f2f6e736da479025148c42113528229c56aabd72ef85c9d10db2f1bad50ce",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "association",
+        "causal_effect",
+        "definition",
+        "diagnostic_set"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "estimate",
@@ -514,9 +593,16 @@
     },
     {
       "episode_id": "G3-EXP-012",
-      "episode_core_sha256": "16a2a15e34d948218c08972d8251880ce6e7de76d6ccd11bd20c4de25349bf52",
+      "episode_core_sha256": "be26545d11f68c8d7ec71010e2b70bb131440412983db9948f5a9f1c3cb1a9d7",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "authoring_batch_id": "BATCH-REAL-EXPERT-EPISODES",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "causal_effect",
+        "composition",
+        "diagnostic_set"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -552,9 +638,14 @@
     },
     {
       "episode_id": "G3-GF-001",
-      "episode_core_sha256": "fc1257191ead9027e4bf5e0ff2bd3f5c05ffc0b91e6d27fe9360f3340911a973",
+      "episode_core_sha256": "14d567c3edc6ef706934dd035c488a4a84fd3d265d439fb516d7754166a5ad9a",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:86b1cdaf05357b46c6514163bde308b9cf16d7d28dbb3befc4380393e8953ced",
+      "claim_target_kinds": [
+        "contrast",
+        "point_quantity"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare"
@@ -586,9 +677,15 @@
     },
     {
       "episode_id": "G3-GF-002",
-      "episode_core_sha256": "5fcc885686a6e1f107e048eeefe2ec490c57678fcc10a5d11ec7e181944a1f45",
+      "episode_core_sha256": "00c78820edd25949f6086f9fa4d5086f39856cf18642fa97649d0f51ac4d875c",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:a58b971fa46409bed42d4521a6de5551fe5de132d4678f69c01f8b27135c5e1e",
+      "claim_target_kinds": [
+        "contrast",
+        "distribution",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -620,9 +717,14 @@
     },
     {
       "episode_id": "G3-GF-003",
-      "episode_core_sha256": "83b6aab27dd2e3842601609dec4cbf417e9a0baf6c0dee7405d6d850c0ae26a3",
+      "episode_core_sha256": "f6855f410b01a0f84a6a6ab6ddd5e617719aa3d818121161b27061ef49c2df0a",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:7b4ba6b206a0a16027f9dbdcfabd8dfc421e6613ccf6a8a694478596bf4729f0",
+      "claim_target_kinds": [
+        "contrast",
+        "point_quantity"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -657,9 +759,13 @@
     },
     {
       "episode_id": "G3-GF-004",
-      "episode_core_sha256": "1150b61c584f86adeead8ea82266f69f71664a3c94acfcf9a04e480479b589e4",
+      "episode_core_sha256": "a57cdc243f366798a99a651a490e0d8540d45f892520a67d724037e86142e272",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:d54fe86946d641189f4682a3ce8e7813b3ea116d3032d03be8887947e75d6950",
+      "claim_target_kinds": [
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -691,9 +797,15 @@
     },
     {
       "episode_id": "G3-GF-005",
-      "episode_core_sha256": "0d3832082e0be451ec4991b3694b839e85b1232ebfc4075404a66847f745ad9d",
+      "episode_core_sha256": "c0df8080e7c4b6923c44f105088664c3dd061edd47a73a21b4ed4f213fae4d65",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:b478f58e8345d871696179cd12bb09a194e0f0bc193454b5b35538dd905e95b7",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "cohort_outcome",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -724,9 +836,14 @@
     },
     {
       "episode_id": "G3-GF-006",
-      "episode_core_sha256": "336548e734dee9accf5d6b395521d830cbd77011ad52d3d57c3d9c175aa4384f",
+      "episode_core_sha256": "cf5096b635a08a47a55872ca47a532539c4ba5b88248565b1eb3981d0e26dc97",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "contrast",
+        "data_quality_state"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -759,9 +876,14 @@
     },
     {
       "episode_id": "G3-GF-007",
-      "episode_core_sha256": "8ae90f08450a42d955f4c685f05be6d4fc83c712f16aecb1af512bc4a0f5afbc",
+      "episode_core_sha256": "040cd39c3e12f25846b78b0c53063d0e01ae52003f6d89786d6f5b1e25b1eac3",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:76d7570dbe58b8383da4f0ea16f2fe7e310de0a88db05c236959a9944a27f281",
+      "claim_target_kinds": [
+        "cohort_outcome",
+        "data_quality_state"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare"
@@ -793,9 +915,14 @@
     },
     {
       "episode_id": "G3-GF-008",
-      "episode_core_sha256": "7a7d80a0cdd4da5a91ca8dcdd8dd76fe5a183b70c7c34763ae3065c9d4775039",
+      "episode_core_sha256": "92bfd550430cddc69df799dec087f714dd0bcf455b029ff8dcc6463f58496246",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:b6be8a8aa9527d80fff7a8bdd9390ed38179093b2be0faeca43c880a4308e832",
+      "claim_target_kinds": [
+        "contrast",
+        "funnel_transition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -828,9 +955,15 @@
     },
     {
       "episode_id": "G3-GF-009",
-      "episode_core_sha256": "8b18b4bb5b3cba0f02eeaf266a8c4e462e8fa87d9e8ea6329f4e003ad224f39e",
+      "episode_core_sha256": "e488463eb4c38e36dea6d4975ee3518ba4e21d3d3db03714a2c98800997ad3d8",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:15f70ac474b4774b268e0001933b98fa09df9f297f3ba4657b85e3c1ccca7241",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "attribute",
@@ -861,9 +994,15 @@
     },
     {
       "episode_id": "G3-GF-010",
-      "episode_core_sha256": "4a8e9a4e7be63cfe88b11c78e1866b0368f8ee34aa5999392d55ba22475da9d9",
+      "episode_core_sha256": "15dc558bdde30a81ac89ac47da8f7f35dfce023b6676701065ae28188edd2fa7",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:2e0447cf4e258b1373d7e00159cba7758b19d0216d90183d33b46fe5740f6948",
+      "claim_target_kinds": [
+        "association",
+        "causal_effect",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "challenge",
@@ -894,9 +1033,15 @@
     },
     {
       "episode_id": "G3-GF-011",
-      "episode_core_sha256": "488f619970b974229740c6672510057245aa9db9c6e5842177b5de02e8ef5c22",
+      "episode_core_sha256": "a26697830b74341dfb2556d595aebb53b669a6ea381b359ae1227f7e403a7191",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:4e4267379593b66f92db1173722671489744549e073bb01198715b0ac2395661",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "contrast",
+        "definition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "define",
@@ -927,9 +1072,14 @@
     },
     {
       "episode_id": "G3-GF-012",
-      "episode_core_sha256": "cdbb21ad695532281ed89eeac978d9916cc13d997ca2927925a4a0b551050fb8",
+      "episode_core_sha256": "158a51f6834c471b878e8577044a25270388fb8a70492ec2fe49e19bea938a00",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "authoring_batch_id": "BATCH-GENERATED-FAILURE-EPISODES",
+      "business_world_independence_key": "authority-set:61f308b9b79f8d3358179bddbe2338257dbcaf3e0ee94e8a01381e7190f3155c",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -962,9 +1112,13 @@
     },
     {
       "episode_id": "G3-ROOT-001",
-      "episode_core_sha256": "5bd39cac6adaa3b80a00e2abc35c1ba3697a90f61d442fdd598eb94db36dc028",
+      "episode_core_sha256": "205a1e17d0a8af2df6165e9c3927b529093f09ad2f99fe5619e3c8b79309052f",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "authoring_batch_id": "BATCH-WAJEGAME-SUITE-REBASE",
+      "business_world_independence_key": "authority-set:6bc559c9786248f51d3d78d7dd93d74efdced24879763962c0e5288612144ee5",
+      "claim_target_kinds": [
+        "definition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "define",
@@ -998,9 +1152,14 @@
     },
     {
       "episode_id": "G3-USER-001",
-      "episode_core_sha256": "bf4863158d7c0a2d3a87458dc0722fd1b198db92ad1a75825a98875bf3355709",
+      "episode_core_sha256": "60a739b0f2dd8d21ad81544345b445c50c0ee2d200f174cc928bca9241a89040",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "contrast"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -1033,9 +1192,15 @@
     },
     {
       "episode_id": "G3-USER-002",
-      "episode_core_sha256": "c1e092ce7d6922e61524115beb145a18a6ad869662a79c3d7c9190fd67486164",
+      "episode_core_sha256": "6a660b7404d65d25ca944a41751112f7bac49195962020c5164fdbe31ca3dd35",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "association",
+        "composition",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -1069,9 +1234,16 @@
     },
     {
       "episode_id": "G3-USER-003",
-      "episode_core_sha256": "77458b1f5efebd3f4600356af0e9eab7dda532a68132b9473d9aef77e6b94a19",
+      "episode_core_sha256": "9789167d7c13d6f445f69005dbfafe550e0ea87808d7cc77b5175546a3137d80",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "causal_effect",
+        "point_quantity"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "validate",
@@ -1104,9 +1276,18 @@
     },
     {
       "episode_id": "G3-USER-004",
-      "episode_core_sha256": "59b59d0bbacd23c7730e440542da3132fa68ff4ffbd71e4e2d928169e5f872d3",
+      "episode_core_sha256": "f1632aa45293738566aae3d04fb287813a0f6c7c650b7bd56f3825fdd27b053a",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "association",
+        "cohort_outcome",
+        "composition",
+        "diagnostic_set",
+        "distribution",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -1138,9 +1319,15 @@
     },
     {
       "episode_id": "G3-USER-005",
-      "episode_core_sha256": "caec89c03dbc079a25eaa8745fdcc9bdbe67e6a2d1a882531f3890d6686ffaf8",
+      "episode_core_sha256": "6178b9d586c3402ced9c2f20cd619fb4e0cba168773ba6c1a307a575b874dc9b",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "composition"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "attribute",
@@ -1172,9 +1359,17 @@
     },
     {
       "episode_id": "G3-USER-006",
-      "episode_core_sha256": "756e8252dde87ef4484c4ecbe29ce7aa562fc2ad0807ec7fbd8baf17fab62e10",
+      "episode_core_sha256": "4e5711ef5656610d26f14a6a2ef63b06c8db699c2a2b667f906e26a505dccf30",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "association",
+        "causal_effect",
+        "composition",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "diagnose",
@@ -1207,9 +1402,15 @@
     },
     {
       "episode_id": "G3-USER-007",
-      "episode_core_sha256": "9095e2e792a8e7de2d0ff578de90ba5f3a6c6cbeb56378fbbddf3a75a31e1f7c",
+      "episode_core_sha256": "65acf430bb5306eb3789685d764363a2d9f2622139ab1151f1d293877bd8ec21",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "accounting_decomposition",
+        "contrast",
+        "temporal_pattern"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "compare",
@@ -1242,9 +1443,14 @@
     },
     {
       "episode_id": "G3-USER-008",
-      "episode_core_sha256": "2831b52761505d73c51cea181518fdeb94b4f319c68571c3bb49d621437ab617",
+      "episode_core_sha256": "cbae86cfda8df9f7cf34347580ff36c82f183b458607ad3116d9fba6f9cdb221",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "authoring_batch_id": "BATCH-REAL-USER-PAID-AMOUNT-EPISODES",
+      "business_world_independence_key": "authority-set:fb45add82592b9a819a7bf742418c52bed8841bb814908a02a86df0ba984a166",
+      "claim_target_kinds": [
+        "data_quality_state",
+        "diagnostic_set"
+      ],
       "coverage_tags": {
         "decision_goals": [
           "validate",

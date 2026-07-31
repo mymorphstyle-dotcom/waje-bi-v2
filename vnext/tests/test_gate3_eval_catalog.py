@@ -15,6 +15,8 @@ VNEXT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(VNEXT_ROOT / "tools"))
 
 from build_gate3_eval_corpus import (  # noqa: E402
+    DESIGN_SPACE_POLICY,
+    _enrich_episode,
     _expected_artifacts,
     _load_json_strict,
     _render,
@@ -35,6 +37,8 @@ from materialize_gate3_controlled_case_files import (  # noqa: E402
 from validate_gate3_eval_catalog import (  # noqa: E402
     _validate_episode_semantics,
     _validate_required_suite,
+    business_world_independence_authority_refs,
+    business_world_independence_key,
     canonical_sha256,
     counterfactual_materialization_core,
     episode_core,
@@ -70,6 +74,9 @@ CATALOG_PATH = EVAL_ROOT / "catalog" / "gate3-authoring-candidates.json"
 LEDGER_PATH = EVAL_ROOT / "coverage-ledger.json"
 CANDIDATE_ROOT = EVAL_ROOT / "candidates"
 CORPUS_PATH = EVAL_ROOT / "registries" / "corpus-registry.json"
+CLAIM_TARGET_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "claim-target-authority-registry.json"
+)
 SOURCE_REGISTRY_PATH = EVAL_ROOT / "registries" / "source-registry.json"
 REVIEW_REGISTRY_PATH = EVAL_ROOT / "registries" / "review-registry.json"
 TRUST_SCHEMA_PATH = EVAL_ROOT / "gate3-e0-trust.schema.json"
@@ -1635,6 +1642,133 @@ class Gate3EvaluationAuthoringTests(unittest.TestCase):
             )
         )
 
+    def test_claim_targets_use_typed_open_world_authority(self) -> None:
+        catalog = _load_json(CATALOG_PATH)
+        registry = _load_json(CLAIM_TARGET_AUTHORITY_PATH)
+        bindings = {
+            item["episode_id"]: item
+            for item in registry["episode_bindings"]
+        }
+        observed_kinds: set[str] = set()
+        for episode in catalog["episodes"]:
+            binding = bindings[episode["episode_id"]]
+            self.assertEqual(
+                DESIGN_SPACE_POLICY,
+                episode["acceptable_outcome"]["design_space_policy"],
+            )
+            self.assertTrue(
+                episode["acceptable_outcome"]["design_space_policy"][
+                    "open_world_acceptance"
+                ]
+            )
+            base_kinds = {
+                target["claim_target_id"]: target["claim_target_kind"]
+                for target in episode["acceptable_outcome"]["claim_targets"]
+            }
+            self.assertEqual(binding["base_claim_target_kinds"], base_kinds)
+            observed_kinds.update(base_kinds.values())
+            replacement_by_id = {
+                sibling["sibling_id"]: {
+                    target["claim_target_id"]: target["claim_target_kind"]
+                    for target in sibling["replacement_expectation"][
+                        "variant_claim_targets"
+                    ]
+                }
+                for sibling in episode["counterfactual_siblings"]
+                if sibling.get("replacement_expectation", {}).get(
+                    "variant_claim_targets"
+                )
+            }
+            self.assertEqual(
+                binding["replacement_claim_target_kinds"],
+                replacement_by_id,
+            )
+        self.assertEqual(
+            {
+                "definition",
+                "data_quality_state",
+                "point_quantity",
+                "distribution",
+                "temporal_pattern",
+                "contrast",
+                "composition",
+                "accounting_decomposition",
+                "cohort_outcome",
+                "funnel_transition",
+                "association",
+                "causal_effect",
+                "diagnostic_set",
+            },
+            observed_kinds,
+        )
+
+    def test_business_world_independence_comes_from_outcome_authority(self) -> None:
+        catalog = _load_json(CATALOG_PATH)
+        keys_by_authority: dict[tuple[str, ...], set[str]] = {}
+        episodes_by_authority: dict[tuple[str, ...], set[str]] = {}
+        for episode in catalog["episodes"]:
+            authority_refs = business_world_independence_authority_refs(
+                episode
+            )
+            self.assertEqual(
+                business_world_independence_key(episode),
+                episode["business_world_independence_key"],
+            )
+            keys_by_authority.setdefault(authority_refs, set()).add(
+                episode["business_world_independence_key"]
+            )
+            episodes_by_authority.setdefault(authority_refs, set()).add(
+                episode["episode_id"]
+            )
+        self.assertTrue(
+            any(len(episode_ids) > 1 for episode_ids in episodes_by_authority.values())
+        )
+        self.assertTrue(
+            all(len(keys) == 1 for keys in keys_by_authority.values())
+        )
+
+    def test_corpus_builder_rejects_claim_kind_and_world_key_drift(self) -> None:
+        catalog = _load_json(CATALOG_PATH)
+        registry = _load_json(CLAIM_TARGET_AUTHORITY_PATH)
+        episode = copy.deepcopy(catalog["episodes"][0])
+        binding = next(
+            item
+            for item in registry["episode_bindings"]
+            if item["episode_id"] == episode["episode_id"]
+        )
+        expected_kind = episode["acceptable_outcome"]["claim_targets"][0][
+            "claim_target_kind"
+        ]
+        episode["acceptable_outcome"]["claim_targets"][0][
+            "claim_target_kind"
+        ] = "definition" if expected_kind != "definition" else "contrast"
+        with self.assertRaisesRegex(ValueError, "kind differs from typed authority"):
+            _enrich_episode(episode, binding)
+
+        episode = copy.deepcopy(catalog["episodes"][0])
+        episode["business_world_independence_key"] = "authority-set:" + "0" * 64
+        with self.assertRaisesRegex(
+            ValueError, "business-world independence key drifted"
+        ):
+            _enrich_episode(episode, binding)
+
+    def test_agent_view_does_not_receive_eval_acceptance_authority(self) -> None:
+        catalog = _load_json(CATALOG_PATH)
+        corpus = _load_json(CORPUS_PATH)
+        episode = catalog["episodes"][0]
+        entry = next(
+            item
+            for item in corpus["entries"]
+            if item["episode_id"] == episode["episode_id"]
+        )
+        views = compile_views(episode, entry, visible_turn=1)
+        agent_payload = json.dumps(
+            views["agent_world_view"], ensure_ascii=False
+        )
+        self.assertNotIn("business_world_independence_key", agent_payload)
+        self.assertNotIn("design_space_policy", agent_payload)
+        self.assertNotIn("claim_target_kind", agent_payload)
+
     def test_coverage_ledger_is_authoring_only(self) -> None:
         findings, report = validate_catalog(
             CATALOG_PATH, require_policy_ready=False
@@ -1642,8 +1776,59 @@ class Gate3EvaluationAuthoringTests(unittest.TestCase):
         self.assertEqual([], findings)
         self.assertEqual(report, _load_json(LEDGER_PATH))
         self.assertEqual(36, report["episode_count"])
+        self.assertEqual(
+            3,
+            report["claim_target_kind_world_coverage"][
+                "minimum_independent_worlds_per_kind"
+            ],
+        )
+        self.assertEqual(
+            {
+                "accounting_decomposition": 10,
+                "association": 8,
+                "causal_effect": 5,
+                "cohort_outcome": 5,
+                "composition": 3,
+                "contrast": 16,
+                "data_quality_state": 5,
+                "definition": 3,
+                "diagnostic_set": 3,
+                "distribution": 4,
+                "funnel_transition": 4,
+                "point_quantity": 3,
+                "temporal_pattern": 3,
+            },
+            report["claim_target_kind_world_coverage"][
+                "base_episode_world_counts"
+            ],
+        )
+        self.assertEqual(
+            {},
+            report["authoring_gaps"]["claim_target_kind_world_gaps"],
+        )
         self.assertFalse(report["promotion_ready"])
         self.assertEqual("verify_gate3_e0.py", report["promotion_authority"])
+
+    def test_claim_target_world_floor_is_owned_by_policy(self) -> None:
+        catalog = _load_json(CATALOG_PATH)
+        taxonomy = _load_json(
+            EVAL_ROOT / "taxonomy" / "coverage-taxonomy.json"
+        )
+        policy = _load_json(POLICY_PATH)
+        policy["required_suite"][
+            "minimum_independent_business_worlds_per_claim_target_kind"
+        ] = 21
+        findings = _validate_required_suite(
+            catalog["episodes"],
+            taxonomy=taxonomy,
+            policy=policy,
+        )
+        self.assertTrue(
+            any(
+                "below independent business-world floor 21" in finding
+                for finding in findings
+            )
+        )
 
     def test_episode_cannot_self_assign_review_partition_or_grader(self) -> None:
         catalog = _load_json(CATALOG_PATH)
@@ -2336,12 +2521,14 @@ class Gate3EvaluationAuthoringTests(unittest.TestCase):
                 "claim_target_id": "strong_claim",
                 "estimand_id": "strong_effect",
                 "target_description": "Causal claim",
+                "claim_target_kind": "causal_effect",
                 "design_claim_ceiling": "causal",
             },
             {
                 "claim_target_id": "weak_claim",
                 "estimand_id": "weak_pattern",
                 "target_description": "Descriptive claim",
+                "claim_target_kind": "temporal_pattern",
                 "design_claim_ceiling": "descriptive",
             },
         ]
@@ -2389,6 +2576,7 @@ class Gate3EvaluationAuthoringTests(unittest.TestCase):
                 "claim_target_id": "logo_claim",
                 "estimand_id": "logo_retention",
                 "target_description": "Logo retention claim",
+                "claim_target_kind": "cohort_outcome",
                 "design_claim_ceiling": "descriptive",
             }
         ]

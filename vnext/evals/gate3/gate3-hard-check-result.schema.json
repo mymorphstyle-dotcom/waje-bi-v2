@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/hard-check-result.v1.schema.json",
+  "title": "WAJE Gate 3 Hard Check Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_cell_id",
+    "execution_manifest_sha256",
+    "terminal_attempt_id",
+    "trace_bundle_sha256",
+    "artifact_index_sha256",
+    "checks",
+    "derived_layer_verdicts"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_hard_check_result"},
+    "artifact_version": {"const": "gate3.hard-check-result.v1"},
+    "execution_cell_id": {"type": "string", "minLength": 1},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "terminal_attempt_id": {"type": "string", "minLength": 1},
+    "trace_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "artifact_index_sha256": {"$ref": "#/$defs/sha256"},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "layer",
+          "verdict",
+          "observation_sha256",
+          "artifact_refs",
+          "concise_reason"
+        ],
+        "properties": {
+          "check_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"},
+          "layer": {"enum": ["authority_conformance", "implementation"]},
+          "verdict": {"$ref": "#/$defs/verdict"},
+          "observation_sha256": {"$ref": "#/$defs/sha256"},
+          "artifact_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "concise_reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "derived_layer_verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority_conformance", "implementation"],
+      "properties": {
+        "authority_conformance": {"$ref": "#/$defs/verdict"},
+        "implementation": {"$ref": "#/$defs/verdict"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["pass", "fail", "blocked", "invalid"]}
+  }
+}
