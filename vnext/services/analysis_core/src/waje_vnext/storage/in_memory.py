@@ -363,6 +363,11 @@ class InMemoryAuthorityStore:
                 self._restore(snapshot)
                 raise
 
+    @contextmanager
+    def consistent_read(self) -> Iterator[None]:
+        with self._lock:
+            yield
+
     def open_case(
         self,
         *,
@@ -1018,6 +1023,23 @@ class InMemoryAuthorityStore:
                 "provider attempt request",
             )
 
+    def list_provider_attempt_requests(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptRequest, ...]:
+        with self._lock:
+            self.get_logical_model_job(logical_model_job_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._provider_attempt_requests.values()
+                        if item.logical_model_job_id == logical_model_job_id
+                    ),
+                    key=lambda item: item.attempt_number,
+                )
+            )
+
     def get_provider_attempt_receipt(
         self,
         provider_attempt_receipt_id: str,
@@ -1058,6 +1080,36 @@ class InMemoryAuthorityStore:
         with self._lock:
             self.get_logical_model_job(logical_model_job_id)
             return self._durable_model_results.get(logical_model_job_id)
+
+    def read_model_execution_records(self, logical_model_job_id: str):
+        with self._lock:
+            job = self.get_logical_model_job(logical_model_job_id)
+            requests = self.list_provider_attempt_requests(
+                logical_model_job_id
+            )
+            receipts = self.list_provider_attempt_receipts(
+                logical_model_job_id
+            )
+            result = self._durable_model_results.get(logical_model_job_id)
+            return job, requests, receipts, result
+
+    def read_model_execution_trace_records(
+        self,
+        logical_model_job_id: str,
+        trace_manifest_id: str,
+    ):
+        with self._lock:
+            job = self.get_logical_model_job(logical_model_job_id)
+            requests = self.list_provider_attempt_requests(
+                logical_model_job_id
+            )
+            receipts = self.list_provider_attempt_receipts(
+                logical_model_job_id
+            )
+            result = self._durable_model_results.get(logical_model_job_id)
+            trace_manifest = self.get_run_trace_manifest(trace_manifest_id)
+            validate_run_trace_manifest_references(self, trace_manifest)
+            return job, requests, receipts, result, trace_manifest
 
     def record_obligation_schedule(
         self,

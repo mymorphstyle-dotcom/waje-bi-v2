@@ -15,6 +15,11 @@ from gate3_5_runtime_fixtures import (
     forge_conformance_provenance_envelope,
 )
 from test_gate3_3_measurement_resolver import make_trusted_verifier
+from test_gate2_provider import RecordingTransport
+from test_gate3_6_provider_invocation_authority import (
+    chat_provider,
+    controller_for,
+)
 from waje_vnext.domain.actions import (
     ActionEnvelope,
     ActionKind,
@@ -85,6 +90,60 @@ class Gate35PostgresStorageTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.store.close()
+
+    def test_runtime_model_execution_records_use_one_read_snapshot(
+        self,
+    ) -> None:
+        transport = RecordingTransport(case_id=self.case_id)
+        controller = controller_for(
+            self.store,
+            chat_provider(transport),
+            transport,
+        )
+        controller.start(
+            case_id=self.case_id,
+            thread_id=f"thread:{self.case_id}",
+            run_id=f"run:{self.case_id}",
+            user_message="分析昨天收入变化",
+        )
+        controller.deliver_pending_message_binding(self.case_id)
+        job = self.store.list_logical_model_jobs(self.case_id)[0]
+        projected_job, requests, receipts, result = (
+            self.store.read_model_execution_records(
+                job.logical_model_job_id
+            )
+        )
+        self.assertEqual(projected_job, job)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            requests[0].provider_attempt_id,
+            receipts[0].provider_attempt_id,
+        )
+        self.assertIsNotNone(result)
+        trace_manifest = controller.build_run_trace_manifest(self.case_id)
+        traced_records = self.store.read_model_execution_trace_records(
+            job.logical_model_job_id,
+            trace_manifest.trace_manifest_id,
+        )
+        self.assertEqual(
+            traced_records,
+            (
+                projected_job,
+                requests,
+                receipts,
+                result,
+                trace_manifest,
+            ),
+        )
+        with self.store.atomic():
+            with self.assertRaisesRegex(
+                AuthorityConflict,
+                "top-level read transaction",
+            ):
+                self.store.read_model_execution_records(
+                    job.logical_model_job_id
+                )
 
     def test_workflow_projection_is_durable_idempotent_and_profile_fenced(
         self,

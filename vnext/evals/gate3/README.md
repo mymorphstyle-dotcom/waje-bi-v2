@@ -43,7 +43,7 @@ readiness live outside the Episode. An Episode cannot declare itself reviewed or
   environment-bound skips;
 - G3.E0 remains `blocked`; `entry_decision=deny_g3_1`.
 - G3.6.0 execution-authority development is in progress. The repository now
-  contains hash-bound execution manifest, attempt, model invocation, trace,
+  contains hash-bound execution manifest, attempt, runtime-model-execution, trace,
   relation, hard-check, cell, suite and protected-receipt contracts. Formal
   admission remains blocked, and no real-provider full-matrix result exists.
 
@@ -100,7 +100,7 @@ gate3/
 ├── gate3-eval-policy.json
 ├── gate3-execution-manifest.schema.json
 ├── gate3-execution-attempt-journal.schema.json
-├── gate3-model-invocation.schema.json
+├── gate3-runtime-model-execution.schema.json
 ├── gate3-trace-bundle.schema.json
 ├── gate3-trace-artifact-index.schema.json
 ├── gate3-hard-check-result.schema.json
@@ -191,6 +191,35 @@ repository-level consistency only. Formal admission requires a protected
 external execution receipt and independent recomputation from the actual
 artifact bytes.
 
+Model-produced stages consume `RuntimeModelExecution` bundles projected from
+the runtime store. Each bundle carries the complete persisted logical job,
+ordered request/receipt history and durable result. Validation recomputes the
+configuration, request artifact, provider body, output and record-set hashes;
+binds the cell seed; and resolves stage role, job kind, input view and output
+contract through the manifest-bound stage-producer registry. TraceArtifactIndex
+v2 records the artifact kind and its authority source; producer identity is
+derived from the durable result chain. A caller claiming `direct_store_read` or
+`signed_export` cannot promote local evidence because protected source-proof
+verification is still open.
+
+For every `runtime_implemented` stage, the validator decodes the typed request
+with the production dataclass contract and replays the production invocation
+compiler. The replay must reproduce the provider body, input view, prompt,
+tools and decoder identity exactly. The persisted RunTraceManifest also owns
+the exact model-job, attempt-request, receipt and durable-result sets and is read from one
+consistent storage snapshot. Historical partial manifests cannot project later
+results. Runtime identities are globally unique across cells, and every
+event-sourced stage binds the exact event type, cursor, authority/action and
+event bytes. The Primary frame proposal, Reviewer candidate and acceptance
+event must identify one frame. Canonical lane graphs and each model stage's full
+producer capability tuple are enforced by an evaluator-code baseline, so a registry
+cannot remove a review stage, shrink a producer contract or self-report an implementation.
+Malformed authority, result collections and per-cell artifact maps derive an invalid/
+blocked suite; missing or ghost cell keys cannot alter the evaluated set. Canonical answer-review and
+evaluation-review producers remain `unprovisioned`; a manifest requiring them
+is rejected before execution, and a unit-test double cannot change that
+readiness state.
+
 An execution attempt's artifact-set identity is recomputed from the complete
 TraceArtifactIndex. Synchronizing arbitrary hashes across the attempt, cell and
 hard-check artifacts cannot create a locally valid cell. This still does not
@@ -257,7 +286,7 @@ The three generation commands are explicit authoring actions. Both checks are re
 entrypoint must depend on the latter hard gate.
 
 The execution-authority command validates one G3.6 manifest. The canonical
-candidate corpus still lacks the new typed `ClaimTargetKind` epoch, independent
-world coverage and protected execution inputs, so it cannot yet produce a
-formal G3.6 pass. Synthetic unit fixtures exercise the contracts without
-claiming corpus readiness.
+candidate corpus still lacks reviewed paraphrases, operator scenarios and
+protected execution inputs, so it cannot yet produce a formal G3.6 pass.
+Synthetic unit fixtures and the local runtime-store projector exercise the
+contracts without claiming corpus or protected-runtime readiness.

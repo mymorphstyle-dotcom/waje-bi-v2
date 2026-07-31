@@ -169,6 +169,7 @@ VERIFIER_CODE_PATHS = (
     ROOT / "tools" / "verify_github_workflow_deployment.py",
     ROOT / "tools" / "compile_gate3_execution_universe.py",
     ROOT / "tools" / "gate3_execution_authority.py",
+    ROOT / "tools" / "gate3_runtime_projection.py",
 )
 
 GITHUB_AUTHORITY_PATHS = (

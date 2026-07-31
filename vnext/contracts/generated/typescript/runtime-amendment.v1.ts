@@ -844,6 +844,7 @@ export interface RunTraceManifest {
   frame_review_ids: string[];
   job_disposition_record_ids: string[];
   logical_model_job_ids: string[];
+  provider_attempt_request_ids: string[];
   provider_attempt_receipt_ids: string[];
   durable_model_result_ids: string[];
   plan_revision_ids: string[];
@@ -859,9 +860,57 @@ export interface RunTraceManifest {
 export interface RunTraceEventLink {
   cursor: number;
   event_id: string;
+  event_type:
+    | "case_opened"
+    | "message_ingressed"
+    | "action_admitted"
+    | "action_rejected"
+    | "user_decision_requested"
+    | "question_accepted"
+    | "frame_accepted"
+    | "plan_accepted"
+    | "capability_result_landed"
+    | "evidence_recorded"
+    | "evidence_admission_recorded"
+    | "measurement_resolution_recorded"
+    | "evidence_obligation_recorded"
+    | "evidence_validity_recorded"
+    | "evidence_use_bound"
+    | "obligation_satisfaction_recorded"
+    | "obligation_schedule_created"
+    | "obligation_dispatch_enqueued"
+    | "obligation_completion_admitted"
+    | "obligation_schedule_checkpointed"
+    | "settlement_precondition_recorded"
+    | "answer_candidate_recorded"
+    | "claim_precheck_recorded"
+    | "interpretation_recorded"
+    | "user_decision_recorded"
+    | "reviewer_objection_recorded"
+    | "answer_accepted"
+    | "workflow_projection_applied"
+    | "checkpoint_recorded"
+    | "effect_enqueued"
+    | "effect_attempt_failed"
+    | "effect_completed"
+    | "llm_job_enqueued"
+    | "llm_job_completed"
+    | "message_binding_job_enqueued"
+    | "message_binding_completed"
+    | "reviewer_job_enqueued"
+    | "reviewer_job_completed"
+    | "job_superseded"
+    | "job_terminally_failed"
+    | "run_resumed"
+    | "case_stopped"
+    | "case_closed";
+  recorded_at: string;
   operation_id: string;
   causation_id: string;
   correlation_id: string;
   authority_revision: number;
+  action_id: string | null;
+  authority_ref: string | null;
   payload_sha256: string;
+  event_content_sha256: string;
 }

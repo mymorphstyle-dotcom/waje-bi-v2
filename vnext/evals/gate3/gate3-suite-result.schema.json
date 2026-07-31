@@ -39,7 +39,7 @@
     "artifact_version": {"const": "gate3.suite-result.v1"},
     "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
     "run_mode": {"enum": ["smoke", "slice", "full"]},
-    "expected_cell_count": {"type": "integer", "minimum": 1},
+    "expected_cell_count": {"type": "integer", "minimum": 0},
     "observed_cell_count": {"type": "integer", "minimum": 0},
     "missing_cell_ids": {"$ref": "#/$defs/stringArray"},
     "duplicate_cell_ids": {"$ref": "#/$defs/stringArray"},

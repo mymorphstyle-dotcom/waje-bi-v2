@@ -95,8 +95,17 @@ body，并以 role-neutral operational fingerprint 检查 Primary/Reviewer 独�
 endpoint/timeout 直接取 durable configuration。
 OpenAI-compatible job 只接受与 sealed adapter settings 完全一致的 configuration；任意 endpoint
 替换或未登记 adapter 会在 transport 前失败。
-当前 eval invocation 还没有消费这条 runtime artifact chain，protected execution 与完整 trace
-对账继续 fail closed。
+Gate 3 eval 已用 `RuntimeModelExecution` 取代可自由填写的 invocation projection：每个模型
+产物绑定完整 logical job、全部 attempt request/receipt、durable result、cell seed 和版本化
+stage producer contract；TraceArtifactIndex v2 从 durable result 派生产物来源。runtime store
+增加单 snapshot exact-set 读取；production decoder/compiler 会重放 runtime-implemented typed
+request，persisted RunTraceManifest exact 约束 job/request/receipt/result set 与 typed event lineage。
+lane/model-stage 完整性采用独立硬基线，六个模型阶段的完整 producer capability tuple 逐字段
+核验；跨 cell 身份复用、历史残缺 manifest、同 run 错事件、Primary/Reviewer 不同 Frame、晚于
+manifest 的记录，以及畸形 authority/per-cell collection/key set 都会被拒绝。local projector 只能生成
+`development_self_attested` 证据。
+Evaluation Reviewer 的 production runtime route、journal/outbox 与 artifact bytes 对账、protected
+provider ledger 和独立签名仍保持 fail closed。
 完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6 完成产品验收。
 
 真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：

@@ -206,6 +206,35 @@ class _ClaimedEndpointProvider(ChatCompletionsProvider):
 
 
 class Gate36ProviderInvocationAuthorityTest(unittest.TestCase):
+    def test_historical_partial_run_trace_cannot_project_later_results(
+        self,
+    ) -> None:
+        transport = RecordingTransport(case_id="case-g36-stale-trace")
+        provider = chat_provider(transport)
+        store = InMemoryAuthorityStore()
+        controller = controller_for(store, provider, transport)
+        controller.start(
+            case_id="case-g36-stale-trace",
+            thread_id="thread-g36-stale-trace",
+            run_id="run-g36-stale-trace",
+            user_message="分析昨天收入变化",
+        )
+        partial_manifest = controller.build_run_trace_manifest(
+            "case-g36-stale-trace"
+        )
+        controller.deliver_pending_message_binding(
+            "case-g36-stale-trace"
+        )
+        job = store.list_logical_model_jobs("case-g36-stale-trace")[0]
+        with self.assertRaisesRegex(
+            ValueError,
+            "run trace .* does not match",
+        ):
+            store.read_model_execution_trace_records(
+                job.logical_model_job_id,
+                partial_manifest.trace_manifest_id,
+            )
+
     def test_actual_outbound_body_is_the_durable_request_artifact(self) -> None:
         transport = RecordingTransport(case_id="case-g36-request")
         provider = chat_provider(transport)
@@ -228,6 +257,34 @@ class Gate36ProviderInvocationAuthorityTest(unittest.TestCase):
         )[0]
         attempt = store.get_provider_attempt_request(
             receipt.provider_attempt_id
+        )
+        self.assertEqual(
+            store.list_provider_attempt_requests(job.logical_model_job_id),
+            (attempt,),
+        )
+        projected_job, requests, receipts, durable_result = (
+            store.read_model_execution_records(job.logical_model_job_id)
+        )
+        self.assertEqual(projected_job, job)
+        self.assertEqual(requests, (attempt,))
+        self.assertEqual(receipts, (receipt,))
+        self.assertIsNotNone(durable_result)
+        trace_manifest = controller.build_run_trace_manifest(
+            "case-g36-request"
+        )
+        traced_projection = store.read_model_execution_trace_records(
+            job.logical_model_job_id,
+            trace_manifest.trace_manifest_id,
+        )
+        self.assertEqual(
+            traced_projection,
+            (
+                job,
+                (attempt,),
+                (receipt,),
+                durable_result,
+                trace_manifest,
+            ),
         )
         self.assertEqual(
             artifact.input_view_kind,
@@ -526,11 +583,11 @@ class Gate36ProviderInvocationAuthorityTest(unittest.TestCase):
         )
 
         receipts = store.list_provider_attempt_receipts(job_id)
-        attempts = tuple(
-            store.get_provider_attempt_request(
-                receipt.provider_attempt_id
-            )
-            for receipt in receipts
+        attempts = store.list_provider_attempt_requests(job_id)
+        projected = store.read_model_execution_records(job_id)
+        self.assertEqual(
+            projected[1:],
+            (attempts, receipts, store.get_durable_model_result(job_id)),
         )
         self.assertEqual(
             tuple(attempt.attempt_number for attempt in attempts),

@@ -16,6 +16,7 @@
     "trace_profile_sha256",
     "persisted_run_trace_manifest_ref",
     "persisted_run_trace_manifest_sha256",
+    "persisted_run_trace_manifest",
     "stages"
   ],
   "properties": {
@@ -30,6 +31,7 @@
     "trace_profile_sha256": {"$ref": "#/$defs/sha256"},
     "persisted_run_trace_manifest_ref": {"$ref": "#/$defs/nonEmptyString"},
     "persisted_run_trace_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "persisted_run_trace_manifest": {"type": "object"},
     "stages": {
       "type": "array",
       "minItems": 1,

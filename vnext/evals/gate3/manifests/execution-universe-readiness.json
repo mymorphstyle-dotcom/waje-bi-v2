@@ -7,11 +7,11 @@
     "paraphrase_registry_sha256": "f3d230da97621d51643736c485fd122344d49538f7a4eda5a4ca6e1a06bbec52",
     "operator_registry_sha256": "d1486841e0a557f8d0c57a99773e41122cc31acd2068668f99ba7e97a002aea3",
     "operator_scenario_registry_sha256": "5075974154665e4b81000ea51cf4dcc5f037d5a0ca080e1eb19c22d38fb501f0",
-    "trace_profiles_sha256": "89a8463671824db76fe02955a9c456516ed85f5a7e15a3ffb807fcfbf9f7552c",
+    "trace_profiles_sha256": "118898bae2537d7539a0d7fffe0c17c87bf6ef11b8a99f8c32d4604a799e146c",
     "grader_registry_sha256": "9585b1895477bc42fe8764d9453ef2d4465e746939b116c4eaa6f05c2cb29740",
     "source_run_manifest_sha256": "ed004046a20d00d9d44c24a04518b8de3368772815bbcfdb259e405c162f1ad0",
     "protected_held_out_manifest_sha256": "d851187b829a98659ec61fe1018edbaf9bf7bf89cad32f64f098a7c1d1394c34",
-    "compiler_release_sha256": "691b25012e19dff2bf512ad503607d34924949c4a4d09ff7b1e8afe8d4756531"
+    "compiler_release_sha256": "e15948e894d2aa0f429520a19b856ad59ed1ee604dc2a13a00adc9123bfaea52"
   },
   "universe_summary": {
     "episode_count": 36,

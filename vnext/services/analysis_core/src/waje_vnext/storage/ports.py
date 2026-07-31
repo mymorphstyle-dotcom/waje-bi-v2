@@ -127,6 +127,8 @@ class LeaseFenceLost(AuthorityStoreError):
 class AuthorityStore(Protocol):
     def atomic(self) -> ContextManager[None]: ...
 
+    def consistent_read(self) -> ContextManager[None]: ...
+
     def open_case(
         self,
         *,
@@ -312,6 +314,11 @@ class AuthorityStore(Protocol):
         provider_attempt_id: str,
     ) -> ProviderAttemptRequest: ...
 
+    def list_provider_attempt_requests(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptRequest, ...]: ...
+
     def record_provider_attempt_receipt(
         self,
         record: ProviderAttemptReceipt,
@@ -338,6 +345,28 @@ class AuthorityStore(Protocol):
         self,
         logical_model_job_id: str,
     ) -> DurableModelResult | None: ...
+
+    def read_model_execution_records(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[
+        LogicalModelJob,
+        tuple[ProviderAttemptRequest, ...],
+        tuple[ProviderAttemptReceipt, ...],
+        DurableModelResult | None,
+    ]: ...
+
+    def read_model_execution_trace_records(
+        self,
+        logical_model_job_id: str,
+        trace_manifest_id: str,
+    ) -> tuple[
+        LogicalModelJob,
+        tuple[ProviderAttemptRequest, ...],
+        tuple[ProviderAttemptReceipt, ...],
+        DurableModelResult | None,
+        RunTraceManifest,
+    ]: ...
 
     def record_obligation_schedule(
         self,

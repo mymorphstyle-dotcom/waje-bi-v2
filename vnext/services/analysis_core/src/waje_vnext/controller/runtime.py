@@ -834,6 +834,15 @@ class WAJEController:
     ) -> RunTraceManifest:
         """Materialize and verify the durable lineage known for one run."""
 
+        with self._store.consistent_read():
+            manifest = self._materialize_run_trace_manifest(case_id)
+        return self._store.record_run_trace_manifest(manifest)
+
+    def _materialize_run_trace_manifest(
+        self,
+        case_id: str,
+    ) -> RunTraceManifest:
+
         state = self.resume(case_id)
         all_events = self._store.list_events(case_id)
         events = tuple(
@@ -909,6 +918,13 @@ class WAJEController:
             item
             for item in self._store.list_logical_model_jobs(case_id)
             if item.job_id in outbox_ids
+        )
+        requests = tuple(
+            request
+            for job in model_jobs
+            for request in self._store.list_provider_attempt_requests(
+                job.logical_model_job_id
+            )
         )
         receipts = tuple(
             receipt
@@ -1046,11 +1062,16 @@ class WAJEController:
             RunTraceEventLink(
                 cursor=event.cursor,
                 event_id=event.event_id,
+                event_type=event.event_type,
+                recorded_at=event.recorded_at,
                 operation_id=event.operation.operation_id,
                 causation_id=event.operation.causation_id,
                 correlation_id=event.operation.correlation_id,
                 authority_revision=event.operation.authority_revision,
+                action_id=event.action_id,
+                authority_ref=event.authority_ref,
                 payload_sha256=event.operation.payload_sha256,
+                event_content_sha256=event.content_sha256,
             )
             for event in events
         )
@@ -1084,6 +1105,9 @@ class WAJEController:
             ),
             "logical_model_job_ids": tuple(
                 item.logical_model_job_id for item in model_jobs
+            ),
+            "provider_attempt_request_ids": tuple(
+                item.provider_attempt_id for item in requests
             ),
             "provider_attempt_receipt_ids": tuple(
                 item.provider_attempt_receipt_id for item in receipts
@@ -1125,6 +1149,9 @@ class WAJEController:
                 lineage["job_disposition_record_ids"]
             ),
             logical_model_job_ids=lineage["logical_model_job_ids"],
+            provider_attempt_request_ids=(
+                lineage["provider_attempt_request_ids"]
+            ),
             provider_attempt_receipt_ids=(
                 lineage["provider_attempt_receipt_ids"]
             ),
@@ -1141,7 +1168,7 @@ class WAJEController:
             lineage_sha256=lineage_sha256,
             built_at=self._now(),
         )
-        return self._store.record_run_trace_manifest(manifest)
+        return manifest
 
     def dispatch_outbox(self, message_id: str) -> ControllerState:
         """Idempotently route a durable outbox delivery to its worker handler."""

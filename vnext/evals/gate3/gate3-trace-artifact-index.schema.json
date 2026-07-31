@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://waje.dev/schemas/evals/gate3/trace-artifact-index.v1.schema.json",
+  "$id": "https://waje.dev/schemas/evals/gate3/trace-artifact-index.v2.schema.json",
   "title": "WAJE Gate 3 Trace Artifact Index",
   "type": "object",
   "additionalProperties": false,
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "artifact_type": {"const": "gate3_trace_artifact_index"},
-    "artifact_version": {"const": "gate3.trace-artifact-index.v1"},
+    "artifact_version": {"const": "gate3.trace-artifact-index.v2"},
     "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
     "records": {
       "type": "array",
@@ -29,6 +29,9 @@
       "required": [
         "artifact_ref",
         "artifact_sha256",
+        "artifact_kind",
+        "authority_source_kind",
+        "authority_source_ref",
         "run_id",
         "case_id",
         "correlation_id",
@@ -38,12 +41,37 @@
       "properties": {
         "artifact_ref": {"$ref": "#/$defs/nonEmptyString"},
         "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_kind": {
+          "enum": [
+            "authority_record",
+            "typed_model_result",
+            "run_trace_manifest"
+          ]
+        },
+        "authority_source_kind": {
+          "enum": [
+            "event_journal",
+            "durable_model_result",
+            "run_trace_manifest"
+          ]
+        },
+        "authority_source_ref": {"$ref": "#/$defs/nonEmptyString"},
         "run_id": {"$ref": "#/$defs/nonEmptyString"},
         "case_id": {"$ref": "#/$defs/nonEmptyString"},
         "correlation_id": {"$ref": "#/$defs/nonEmptyString"},
         "journal_cursor": {"type": "integer", "minimum": 1},
         "authority_snapshot_sha256": {"$ref": "#/$defs/sha256"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"artifact_kind": {"const": "typed_model_result"}}},
+          "then": {"properties": {"authority_source_kind": {"const": "durable_model_result"}}}
+        },
+        {
+          "if": {"properties": {"artifact_kind": {"const": "run_trace_manifest"}}},
+          "then": {"properties": {"authority_source_kind": {"const": "run_trace_manifest"}}}
+        }
+      ]
     }
   }
 }

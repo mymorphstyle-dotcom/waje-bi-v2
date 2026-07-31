@@ -3,7 +3,7 @@
 > 日期：2026-07-31
 > 分支：`codex/gate3-6-universal-measurement-eval`
 > 基线：`origin/main@ff9f3278`
-> 状态：G3.6.1 in progress；runtime provider invocation foundation 已完成，real-provider full matrix 尚未开放
+> 状态：G3.6.1 runtime provider invocation foundation 已完成；G3.6.2 尚未开始，real-provider full matrix 尚未开放
 
 ## 1. Gate entry
 
@@ -507,7 +507,7 @@ Reviewer trigger 和 ClaimTargetKind 采用分层 calibration；overall 80% 不�
 
 交付：
 
-- versioned execution manifest / model invocation / trace / review / suite result schemas；
+- versioned execution manifest / runtime model execution / trace / review / suite result schemas；
 - role profile exact binding；
 - lane/paraphrase/repeat/seed/realm/TraceProfile 坐标；
 - strict suite completeness derivation；
@@ -582,14 +582,43 @@ Exit：
   configuration 驱动；OpenAI-compatible job admission 要求 configuration 与已通过 HTTPS/
   credential/query/fragment 校验的 sealed adapter settings 完全相等，任意 endpoint 替换会在
   transport 前失败；
-- 482 个 Python tests 通过（35 skipped），Gate 3 eval execution 26 个 tests、contract check、
-  G3.E0 fail-closed 检查以及 26 个 disposable PostgreSQL migration/storage/race tests 通过；
-- 尚未完成 eval execution manifest/model invocation 与 runtime artifact 的可信桥接；
-  TraceArtifactIndex 仍需绑定 artifact kind、stage、producer logical job、provider attempt、
-  configuration 与 output contract，防止引用错误阶段输出；
+- eval 已删除旧的自由填写 model-invocation 合同，改用完整 `RuntimeModelExecution`：logical job、
+  全部 attempt request/receipt、durable result 和 record-set hash 必须逐层重算；runtime storage
+  可在 InMemory lock 或 PostgreSQL `REPEATABLE READ READ ONLY` snapshot 中读取 exact record set；
+- runtime-implemented stage 的 typed request 会由 production dataclass decoder 解码，再经同一
+  trusted invocation compiler 重建 provider body、input view、prompt、tool 和 decoder identity；
+  eval 不维护第二套近似请求编译规则；
+- `TraceArtifactIndex v2` 记录 artifact kind 与 authority source；版本化 stage producer registry
+  再从 durable result 链派生 execution role、logical job kind、input view、output contract、provider/
+  model/thinking 和 configuration。跨 stage、跨 job 拼接、错误 contract、重算后的错误 cell seed、
+  terminal receipt 后续跑与伪造 trusted source mode 都会令 cell invalid；
+- persisted `RunTraceManifest` 进入 TraceBundle，并与每个 model execution 的 job、request、receipt、result
+  exact set 及 event lineage 对账；manifest 构建使用 InMemory lock 或 PostgreSQL 顶层
+  `REPEATABLE READ READ ONLY` 快照，投影时再次核验当前 durable exact set。跨 run/case、丢 job、
+  历史残缺 manifest、跨 cell 复用 job/attempt request/receipt/idempotency/result/manifest id、晚于
+  快照的记录、错误 event type/cursor/action/authority/content hash 和 schema-invalid artifact 都会
+  fail closed；外部 results、relation results、findings、authority 与四类 per-cell map 的畸形结构，
+  以及 map key 与真实 cell set 不一致，同样只能派生 invalid/blocked；
+- semantic/full lane 的完整阶段图以及六个 model stage 的 15-field producer capability tuple 由
+  evaluator 可执行代码维护独立硬基线；删除 Reviewer stage、改 predecessor、缩减 stage 字段或把
+  unprovisioned producer 自报成 implemented 都不能缩小验收范围；
+- Frame proposal、Reviewer candidate 与 frame-accepted journal event 现在必须共用同一
+  question、measurement design、Frame id/hash、review job 和 source action；同 run 内换一份候选
+  Frame 也会使 cell invalid；
+- canonical producer registry 明示 `runtime_review` 与 `evaluation_review` 尚未 provision；需要这些
+  stage 的 execution manifest 会在入口被拒绝，synthetic test-double 无权改写 canonical readiness；
+- local projector 明确生成 `development_self_attested`。`direct_store_read` 与 `signed_export` 在
+  protected resolver/attestation verifier 接入前一律不能提升证据等级；
+- 495 个 Python tests 通过（36 个通用环境 skip），其中 41 个覆盖 G3.6 runtime/eval authority；
+  27 个加载本地配置的 disposable PostgreSQL migration/storage/race tests、contract、G3.E0、
+  Python 3.12.13 clean-copy build 均通过；
 - 受保护 executor/principal、provider 端幂等去重或 response lookup 仍需真实环境验收。
 - transport implementation release、实际 dispatch receipt 与同进程代码不可变性仍需受保护
   executor 证明；同一 Python 解释器内不把任意恶意 provider 代码视为可安全隔离对象。
+- Evaluation Reviewer 仍缺 production durable port；runner 尚未把 assignment、outbox/journal、
+  actual artifact bytes 与 provider gateway ledger 投影为受保护 execution receipt。
+- accepted Frame 的 proposal → candidate → review → acceptance event 已完成跨模型/事件一致性核验；
+  admission proof → accepted head 的 byte-level replay 尚未接入。
 
 因此 G3.6.1 的 runtime foundation 已完成，整节 Exit 尚未满足，Lane A/B 和 full matrix 继续
 保持关闭。
@@ -779,10 +808,16 @@ failure classes 已进入实施顺序：
 7. relation、pairwise/higher-order 与 suite 统计缺一等 authority；
 8. AgentWorldView、DecisionLedger inference、resolution worker、Answer Reviewer、trusted realm
    和并行 workers 未闭合；
-9. runtime provider configuration、exact request 和成功响应原子持久化已关闭；eval manifest
-   仍可自报 invocation hash，provider 端 outcome unknown 仍待外部幂等证明；
-10. trace、eval invocation、artifact index 尚未与 durable PostgreSQL facts exact 对账，
-    wrong-stage artifact 仍可能通过现有 eval validator。
+9. runtime provider configuration、exact request、成功响应原子持久化与 local eval record-set
+   对账已关闭；provider 端 outcome unknown 仍待外部幂等证明；
+10. trace/runtime execution/artifact index 已与 durable PostgreSQL record shapes exact 对账；
+    stage 必须绑定指定 event type、cursor、authority/action 与 event bytes，wrong-stage 和同 run
+    错事件均被拒绝；actual artifact bytes、journal/outbox 和 protected provider ledger 仍待独立
+    principal 对账；
+11. production compiler replay、RunTraceManifest exact model-set closure、全局 id/timestamp 与
+    malformed-input fail-closed 已关闭；lane/model-stage 基线不再由待测 registry 自定义，跨 cell
+    id namespace 与一致读快照已关闭；Frame admission proof/head、Answer Reviewer、Evaluation
+    Reviewer 和 protected assignment 仍 open。
 
 G3.6.0 的冻结快照又验证了两项已关闭的合同漏洞：动态调查不会因同一角色多次成功调用被
 误拒绝；terminal artifact root 必须等于 TraceArtifactIndex 的规范 hash。真实 artifact bytes、

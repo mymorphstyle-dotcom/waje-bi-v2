@@ -31,6 +31,7 @@ from .canonical import (
     require_sha256,
     to_jsonable,
 )
+from .events import JournalEventType
 
 
 class MessageBindingDisposition(StrEnum):
@@ -1615,11 +1616,16 @@ class DurableModelResult:
 class RunTraceEventLink:
     cursor: int
     event_id: str
+    event_type: JournalEventType
+    recorded_at: datetime
     operation_id: str
     causation_id: str
     correlation_id: str
     authority_revision: int
+    action_id: str | None
+    authority_ref: str | None
     payload_sha256: str
+    event_content_sha256: str
 
     def __post_init__(self) -> None:
         if self.cursor < 1:
@@ -1631,11 +1637,22 @@ class RunTraceEventLink:
             "correlation_id",
         ):
             require_nonempty(getattr(self, field_name), field_name)
+        if not isinstance(self.event_type, JournalEventType):
+            raise TypeError("run trace event_type must be JournalEventType")
+        require_aware_datetime(self.recorded_at, "recorded_at")
+        for field_name in ("action_id", "authority_ref"):
+            value = getattr(self, field_name)
+            if value is not None:
+                require_nonempty(value, field_name)
         if self.authority_revision < 0:
             raise ValueError(
                 "run trace authority revision cannot be negative"
             )
         require_sha256(self.payload_sha256, "payload_sha256")
+        require_sha256(
+            self.event_content_sha256,
+            "event_content_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1654,6 +1671,7 @@ class RunTraceManifest:
     frame_review_ids: tuple[str, ...]
     job_disposition_record_ids: tuple[str, ...]
     logical_model_job_ids: tuple[str, ...]
+    provider_attempt_request_ids: tuple[str, ...]
     provider_attempt_receipt_ids: tuple[str, ...]
     durable_model_result_ids: tuple[str, ...]
     plan_revision_ids: tuple[str, ...]
@@ -1714,6 +1732,7 @@ class RunTraceManifest:
             "frame_review_ids",
             "job_disposition_record_ids",
             "logical_model_job_ids",
+            "provider_attempt_request_ids",
             "provider_attempt_receipt_ids",
             "durable_model_result_ids",
             "plan_revision_ids",
@@ -1731,6 +1750,11 @@ class RunTraceManifest:
         if self.lineage_sha256 != compute_run_trace_lineage_sha256(self):
             raise ValueError("run trace lineage hash is stale or forged")
         require_aware_datetime(self.built_at, "built_at")
+        if any(
+            event.recorded_at > self.built_at
+            for event in self.event_operation_lineage
+        ):
+            raise ValueError("run trace event postdates manifest build")
 
 
 def run_trace_lineage_material(
@@ -1754,6 +1778,9 @@ def run_trace_lineage_material(
             record.job_disposition_record_ids
         ),
         "logical_model_job_ids": record.logical_model_job_ids,
+        "provider_attempt_request_ids": (
+            record.provider_attempt_request_ids
+        ),
         "provider_attempt_receipt_ids": (
             record.provider_attempt_receipt_ids
         ),

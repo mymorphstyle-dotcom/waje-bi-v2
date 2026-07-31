@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6.0 in progress |
+| 当前 Gate | Gate 2 complete；G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6.1 runtime foundation complete，G3.6.2 尚未开始 |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -580,9 +580,16 @@ Exit evidence：
   success receipt/result 写入同一 durable authority chain；migration 007 与 InMemory/PostgreSQL
   parity 已通过。durable retry 从全局 `N+1` 恢复，unreceipted request fail closed 为
   `outcome_unknown`；trusted compiler、role-neutral independence fingerprint 与 durable
-  endpoint/timeout dispatch 已封闭应用层配置漂移。eval invocation 仍需消费真实 runtime artifacts，trace wrong-stage 防护、
-  protected executor 和 provider-side outcome recovery 尚未关闭；真实 provider lanes 和 full
-  matrix 继续保持关闭。
+  endpoint/timeout dispatch 已封闭应用层配置漂移。eval 已绑定完整 RuntimeModelExecution
+  record set、cell seed 与 stage producer contract；TraceArtifactIndex v2 从 durable result 派生
+  producer，runtime-implemented typed request 由 production compiler 重放，persisted
+  RunTraceManifest exact 约束 job/request/receipt/result set 与 typed event lineage；InMemory/PostgreSQL
+  提供 exact-set consistent snapshot read，并拒绝历史残缺 manifest。lane/model-stage 完整性使用
+  独立阶段图与完整 producer capability tuple 硬基线；跨 cell identity reuse、同 run 错事件、
+  Primary/Reviewer Frame 分叉、畸形 authority/collection 和 ghost/missing cell map key 均 fail closed。
+  local 继续 self-attested；
+  Evaluation Reviewer durable port、protected executor、artifact bytes/provider ledger 对账和
+  provider-side outcome recovery 尚未关闭；真实 provider lanes 和 full matrix 继续保持关闭。
 
 **交付物**
 
@@ -913,7 +920,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6.0 in progress | G3.2–G3.6 本 Gate 无需用户决策；G3.6 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 合同、typed/open-world corpus epoch 与 exact execution-universe compiler；201 个 paraphrases、38 个 scenarios 和 runtime lane 前置仍待关闭 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md` |
+| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6.1 runtime foundation complete | G3.2–G3.6 本 Gate 无需用户决策；G3.6 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 合同、typed/open-world corpus、exact execution universe、独立 lane/model-stage 基线、consistent RunTraceManifest 与跨模型/事件 Frame identity；201 个 paraphrases、38 个 scenarios、Frame admission proof/head、Answer/Evaluation Reviewer 和 protected runtime lane 仍待关闭 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -954,4 +961,6 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-31 | 开始 G3.6 通用测量行为评测 | 本 Gate 无需用户决策；先封闭运行权威，再开放真实 provider lane | execution manifest 固定运行坐标与三角色配置；attempt、trace、relation、hard-check、cell/suite 形成严格派生链；本地运行与 formal admission 分离，typed corpus/runtime 前置未满足前保持 blocked |
 | 2026-07-31 | G3.6 typed/open-world corpus epoch | 本 Gate 无需用户决策；ClaimTargetKind registry 与 outcome authority 是机器权威 | 144 个 base 与 12 个 replacement targets 全部 typed；36 Episodes 归并为 20 个独立 authority worlds；13 类各有至少 3 个 candidate worlds；同源 snapshot 不重复计数；authored design 只作非穷尽示例；formal admission 仍等待 source/truth/双审/calibration/held-out/runtime lane |
 | 2026-07-31 | G3.6 exact execution universe epoch | 本 Gate 无需用户决策；policy compiler 拥有运行完整性，业务语义仍由 Episode、Agent 与 Reviewer 判断 | 156 个 case variants 编译为 1,172 个 execution coordinates 与 2,011 个 Episode relation groups；manifest 绑定 exact-set hashes；201 个 paraphrase authorities 和 38 个 operator scenarios 未齐前 development full run fail closed；readiness 纳入 G3.E0 evaluated/verifier release |
-| 2026-07-31 | G3.6.1 runtime provider invocation authority | 本 Gate 无需用户决策；实际发送请求必须从 typed state 重算并与 durable job 完全一致 | 三角色 configuration、input view、typed request、prompt/tool/output/decoder、canonical provider bytes、attempt/idempotency key 和原子 success pair 已进入 runtime authority；eval bridge、wrong-stage trace、protected principal 与 provider-side outcome proof 仍 open |
+| 2026-07-31 | G3.6.1 runtime provider invocation authority | 本 Gate 无需用户决策；实际发送请求必须从 typed state 重算并与 durable job 完全一致 | 三角色 configuration、input view、typed request、prompt/tool/output/decoder、canonical provider bytes、attempt/idempotency key 和原子 success pair 已进入 runtime authority；protected principal 与 provider-side outcome proof 仍 open |
+| 2026-07-31 | G3.6.1 runtime-to-eval local authority bridge | 本 Gate 无需用户决策；eval 派生字段无独立判定权 | eval 绑定完整 runtime job/request/receipt/result set、cell seed、RunTraceManifest 与 stage producer contract；production compiler 重放 typed request；TraceArtifactIndex v2 从 durable result 派生 producer；InMemory/PostgreSQL 提供 exact-set snapshot read；local 继续 self-attested，Frame admission 全链、Answer/Evaluation Reviewer 与 protected assignment/artifact/provider-ledger proof 仍 open |
+| 2026-07-31 | G3.6.1 组合对抗复审收口 | 本 Gate 无需用户决策；执行完整性不能由待测 registry 自己定义 | 独立 lane graph 与六阶段完整 producer capability tuple 拒绝删 Reviewer、缩减字段、自报 implementation 与 test-double admission；RunTrace 使用一致读、job/request/receipt/result exact set、跨 cell 全局 identity 与 typed event bytes；Primary proposal、Reviewer candidate、acceptance event 共用同一 Frame authority；malformed authority/collection/map key fail closed；495 个 Python tests、27 个 PostgreSQL tests、contract/eval/isolation checks 通过 |

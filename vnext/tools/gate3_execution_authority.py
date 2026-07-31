@@ -6,12 +6,41 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import copy
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
+
+from waje_vnext.domain.action_codec import (
+    ActionProposalDecodeError,
+    decode_agent_action_proposal,
+)
+from waje_vnext.domain.canonical import to_jsonable
+from waje_vnext.domain.controller import PrimaryAgentRequest
+from waje_vnext.domain.identity import validate_frame_identities
+from waje_vnext.domain.measurement import (
+    AnalysisFrameRevision,
+    QuestionRevision,
+)
+from waje_vnext.domain.runtime_amendment import (
+    FrameReviewProposal,
+    FrameReviewRequest,
+    MessageBindingRequest,
+    MessageImpactProposal,
+    ModelConfigurationIdentity,
+    RunTraceManifest,
+)
+from waje_vnext.domain.typed_decode import (
+    TypedDecodeError,
+    decode_typed_dataclass,
+)
+from waje_vnext.providers.base import ProviderConfigurationError
+from waje_vnext.providers.chat_completions import (
+    compile_trusted_chat_invocation,
+)
 
 try:
     from tools.compile_gate3_eval_views import compile_views
@@ -51,7 +80,12 @@ MANIFEST_SCHEMA_PATH = EVAL_ROOT / "gate3-execution-manifest.schema.json"
 CELL_RESULT_SCHEMA_PATH = (
     EVAL_ROOT / "gate3-execution-cell-result.schema.json"
 )
-MODEL_INVOCATION_SCHEMA_PATH = EVAL_ROOT / "gate3-model-invocation.schema.json"
+RUNTIME_MODEL_EXECUTION_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-runtime-model-execution.schema.json"
+)
+RUNTIME_AMENDMENT_SCHEMA_PATH = (
+    ROOT / "contracts" / "domain" / "runtime-amendment.v1.schema.json"
+)
 HARD_CHECK_RESULT_SCHEMA_PATH = (
     EVAL_ROOT / "gate3-hard-check-result.schema.json"
 )
@@ -104,13 +138,198 @@ ROLE_NAMES = (
     "evaluation_reviewer",
 )
 LANES = ("semantic_frame", "full_authority")
+CANONICAL_LANE_STAGE_GRAPHS = {
+    "semantic_frame": {
+        "message_ingress": (),
+        "typed_binding": ("message_ingress",),
+        "frame_proposal": ("typed_binding",),
+        "frame_review": ("frame_proposal",),
+        "frame_disposition": ("frame_review",),
+        "evaluation_review": ("frame_disposition",),
+    },
+    "full_authority": {
+        "message_ingress": (),
+        "typed_binding": ("message_ingress",),
+        "frame_proposal": ("typed_binding",),
+        "frame_review": ("frame_proposal",),
+        "frame_disposition": ("frame_review",),
+        "plan_acceptance": ("frame_disposition",),
+        "effect_dispatch": ("plan_acceptance",),
+        "effect_receipt": ("effect_dispatch",),
+        "evidence_disposition": ("effect_receipt",),
+        "claim_proposal": ("evidence_disposition",),
+        "runtime_review": ("claim_proposal",),
+        "settlement_boundary": ("runtime_review",),
+        "workflow_projection": ("settlement_boundary",),
+        "evaluation_review": ("workflow_projection",),
+    },
+}
+CANONICAL_LANE_PROFILE_IDS = {
+    "semantic_frame": "TRACE-SEMANTIC-FRAME-V1",
+    "full_authority": "TRACE-FULL-AUTHORITY-V1",
+}
+MODEL_STAGE_PRODUCER_BASELINE_FIELDS = (
+    "evaluation_role",
+    "profile_binding_name",
+    "execution_role",
+    "logical_job_kind",
+    "input_view_kind",
+    "typed_request_contract_ref",
+    "prompt_bundle_ref",
+    "tool_bundle_ref",
+    "decoder_release_ref",
+    "output_contract_ref",
+    "required_action_kind",
+    "producer_status",
+    "prompt_bundle_sha256",
+    "tool_bundle_sha256",
+    "decoder_release_sha256",
+)
+CANONICAL_MODEL_STAGE_PRODUCER_CAPABILITIES = {
+    "typed_binding": (
+        "message_binding",
+        "primary_business_analysis_agent",
+        "primary_business_analysis_agent",
+        "message_binding",
+        "message_binding_view",
+        "waje-vnext://runtime/message-binding-job.v1",
+        "waje-vnext://prompts/message-binding.v1",
+        "waje-vnext://tools/message-binding.v1",
+        "waje-vnext://decoders/message-impact.v1",
+        "waje-vnext://contracts/domain/message-impact-binding.v1",
+        None,
+        "runtime_implemented",
+        "62d3b267ce9dbad185709ec39fcb8dca56917d1d25d02b45452e0c3a0ce64996",
+        "4906ac1edc306360824be8b30af216b8105f61f8f15ca0effd8f9ce9355aa1e6",
+        "1e8ff1e69529637e28b4ad4c6e014bef20ec0c56d17d73665ecdf5dcda7a1302",
+    ),
+    "frame_proposal": (
+        "primary_business_analysis_agent",
+        "primary_business_analysis_agent",
+        "primary_business_analysis_agent",
+        "primary_agent",
+        "agent_world_view",
+        "waje-vnext://runtime/primary-agent-job.v1",
+        "waje-vnext://prompts/primary-business-analysis-agent.v1",
+        "waje-vnext://tools/primary-agent-actions.v3",
+        "waje-vnext://decoders/agent-action-proposal.v3",
+        "waje-vnext://contracts/domain/actions.v3",
+        "revise_frame",
+        "runtime_implemented",
+        "c9754831e7828ec2dd141e03382c662b25e5f4c8f8ecf88003f27960372e2345",
+        "b1157fc552297764819ce4d5c5de8ae41d9dcfc916aaf4ec97c29234718a3e15",
+        "1e8ff1e69529637e28b4ad4c6e014bef20ec0c56d17d73665ecdf5dcda7a1302",
+    ),
+    "frame_review": (
+        "runtime_reviewer",
+        "runtime_reviewer",
+        "runtime_reviewer",
+        "measurement_reviewer",
+        "measurement_review_view",
+        "waje-vnext://runtime/frame-review-job.v1",
+        "waje-vnext://prompts/measurement-reviewer.v1",
+        "waje-vnext://tools/measurement-review.v1",
+        "waje-vnext://decoders/measurement-review.v1",
+        "waje-vnext://contracts/domain/measurement-review.v1",
+        None,
+        "runtime_implemented",
+        "2f62d6cbaa49a03bd7da44b8fcdde7e2641581a487a1fc9f7181cd549c8d5778",
+        "a5435f9553f8637e2813139e992a791ac41b7532f2fe9bbb87d02c8b3e4fa267",
+        "1e8ff1e69529637e28b4ad4c6e014bef20ec0c56d17d73665ecdf5dcda7a1302",
+    ),
+    "claim_proposal": (
+        "primary_business_analysis_agent",
+        "primary_business_analysis_agent",
+        "primary_business_analysis_agent",
+        "primary_agent",
+        "agent_world_view",
+        "waje-vnext://runtime/primary-agent-job.v1",
+        "waje-vnext://prompts/primary-business-analysis-agent.v1",
+        "waje-vnext://tools/primary-agent-actions.v3",
+        "waje-vnext://decoders/agent-action-proposal.v3",
+        "waje-vnext://contracts/domain/actions.v3",
+        "propose_answer",
+        "runtime_implemented",
+        "c9754831e7828ec2dd141e03382c662b25e5f4c8f8ecf88003f27960372e2345",
+        "239001bbe2ddbbfa2bffc0d927b94554b548cc00fd319fb8830753caaf1acdd9",
+        "1e8ff1e69529637e28b4ad4c6e014bef20ec0c56d17d73665ecdf5dcda7a1302",
+    ),
+    "runtime_review": (
+        "runtime_reviewer",
+        "runtime_reviewer",
+        "runtime_reviewer",
+        "answer_reviewer",
+        "answer_review_view",
+        "waje-vnext://runtime/provisional-answer-review-job.v1",
+        "waje-vnext://prompts/provisional-answer-reviewer.v1",
+        "waje-vnext://tools/provisional-answer-review.v1",
+        "waje-vnext://decoders/provisional-answer-review.v1",
+        "waje-vnext://contracts/domain/provisional-answer-review.v1",
+        None,
+        "unprovisioned",
+        None,
+        None,
+        None,
+    ),
+    "evaluation_review": (
+        "evaluation_reviewer",
+        "evaluation_reviewer",
+        "evaluation_reviewer",
+        "evaluation_reviewer",
+        "evaluation_review_view",
+        "waje-vnext://evals/gate3/evaluation-review-job.v1",
+        "waje-vnext://evals/gate3/prompts/evaluation-reviewer.v1",
+        "waje-vnext://evals/gate3/tools/evaluation-review.v1",
+        "waje-vnext://evals/gate3/decoders/evaluation-review.v1",
+        "waje-vnext://evals/gate3/evaluation-review.v1",
+        None,
+        "unprovisioned",
+        None,
+        None,
+        None,
+    ),
+}
+NON_MODEL_STAGE_EVENT_TYPES = {
+    "message_ingress": {"message_ingressed"},
+    "frame_disposition": {
+        "frame_accepted",
+        "action_rejected",
+        "reviewer_job_completed",
+    },
+    "plan_acceptance": {"plan_accepted"},
+    "effect_dispatch": {
+        "effect_enqueued",
+        "obligation_dispatch_enqueued",
+    },
+    "effect_receipt": {
+        "effect_completed",
+        "obligation_completion_admitted",
+    },
+    "evidence_disposition": {
+        "evidence_recorded",
+        "evidence_admission_recorded",
+    },
+    "settlement_boundary": {"settlement_precondition_recorded"},
+    "workflow_projection": {"workflow_projection_applied"},
+}
+FULL_AUTHORITY_REQUIRED_TRACE_ID_FIELDS = (
+    "plan_revision_ids",
+    "resolution_outcome_ids",
+    "obligation_ids",
+    "effect_attempt_ids",
+    "evidence_record_ids",
+    "claim_ids",
+    "provisional_answer_version_ids",
+)
 RUNNER_RELEASE_PATHS = (
     Path(__file__).resolve(),
     Path(__file__).resolve().parent / "compile_gate3_eval_views.py",
     Path(__file__).resolve().parent / "validate_gate3_eval_catalog.py",
+    Path(__file__).resolve().parent / "gate3_runtime_projection.py",
     MANIFEST_SCHEMA_PATH,
     CELL_RESULT_SCHEMA_PATH,
-    MODEL_INVOCATION_SCHEMA_PATH,
+    RUNTIME_MODEL_EXECUTION_SCHEMA_PATH,
+    RUNTIME_AMENDMENT_SCHEMA_PATH,
     HARD_CHECK_RESULT_SCHEMA_PATH,
     SUITE_RESULT_SCHEMA_PATH,
     TRACE_SCHEMA_PATH,
@@ -143,19 +362,6 @@ def execution_runner_release_sha256() -> str:
         {
             str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in RUNNER_RELEASE_PATHS
-        }
-    )
-
-
-def model_configuration_sha256(profile: Mapping[str, Any]) -> str:
-    return canonical_sha256(
-        {
-            "provider_ref": profile["provider"],
-            "model_ref": profile["model"],
-            "thinking": profile["thinking"],
-            "prompt_bundle_sha256": profile["prompt_sha256"],
-            "input_contract_sha256": profile["input_contract_sha256"],
-            "output_contract_sha256": profile["output_contract_sha256"],
         }
     )
 
@@ -229,8 +435,70 @@ def schema_findings(value: Any, schema_path: Path) -> list[str]:
             "/".join(str(part) for part in error.absolute_path) or "<root>",
             error.message,
         )
-        for error in Draft202012Validator(schema).iter_errors(value)
+        for error in Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        ).iter_errors(value)
     ]
+
+
+def runtime_record_schema_findings(
+    value: Any,
+    definition_name: str,
+) -> list[str]:
+    runtime_schema = load_json(RUNTIME_AMENDMENT_SCHEMA_PATH)
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": runtime_schema["$defs"],
+        "$ref": f"#/$defs/{definition_name}",
+    }
+    return [
+        "{}: {}".format(
+            "/".join(str(part) for part in error.absolute_path)
+            or "<root>",
+            error.message,
+        )
+        for error in Draft202012Validator(
+            schema,
+            format_checker=FormatChecker(),
+        ).iter_errors(value)
+    ]
+
+
+def runtime_model_record_set_sha256(
+    execution: Mapping[str, Any],
+) -> str:
+    return canonical_sha256(
+        {
+            "logical_model_job": execution["logical_model_job"],
+            "attempts": execution["attempts"],
+            "durable_result": execution["durable_result"],
+        }
+    )
+
+
+def _parse_aware_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def operational_configuration_sha256(
+    configuration: Mapping[str, Any],
+) -> str:
+    return canonical_sha256(
+        {
+            key: value
+            for key, value in configuration.items()
+            if key not in {"execution_role", "configuration_sha256"}
+        }
+    )
 
 
 def canonical_authority() -> dict[str, Any]:
@@ -254,7 +522,7 @@ def canonical_authority() -> dict[str, Any]:
     }
 
 
-def validate_execution_manifest(
+def _validate_execution_manifest(
     manifest: Mapping[str, Any],
     *,
     authority: Mapping[str, Any] | None = None,
@@ -262,7 +530,8 @@ def validate_execution_manifest(
     findings = schema_findings(manifest, MANIFEST_SCHEMA_PATH)
     if findings:
         return findings
-    authority = authority or canonical_authority()
+    if authority is None:
+        authority = canonical_authority()
     paraphrase_schema_findings = schema_findings(
         authority["paraphrase_authority"],
         PARAPHRASE_AUTHORITY_SCHEMA_PATH,
@@ -371,6 +640,161 @@ def validate_execution_manifest(
     }
     if len(trace_profiles) != len(authority["trace_profiles"]["profiles"]):
         findings.append("trace profile registry contains duplicate ids")
+    trace_profile_lanes = [
+        profile["lane"]
+        for profile in authority["trace_profiles"]["profiles"]
+    ]
+    if len(trace_profile_lanes) != len(set(trace_profile_lanes)):
+        findings.append("trace profile registry contains duplicate lanes")
+    profiles_by_lane = {
+        profile["lane"]: profile
+        for profile in authority["trace_profiles"]["profiles"]
+    }
+    if set(profiles_by_lane) != set(CANONICAL_LANE_STAGE_GRAPHS):
+        findings.append("trace profile registry differs from the lane baseline")
+    else:
+        for lane, expected_graph in CANONICAL_LANE_STAGE_GRAPHS.items():
+            profile = profiles_by_lane[lane]
+            observed_graph = {
+                stage_id: tuple(predecessors)
+                for stage_id, predecessors in profile[
+                    "required_predecessors"
+                ].items()
+            }
+            if (
+                profile["profile_id"] != CANONICAL_LANE_PROFILE_IDS[lane]
+                or tuple(profile["required_stage_ids"])
+                != tuple(expected_graph)
+                or observed_graph != expected_graph
+            ):
+                findings.append(
+                    f"trace profile {lane} differs from the lane stage baseline"
+                )
+    producer_contracts = authority["trace_profiles"].get(
+        "model_stage_producer_contracts",
+        [],
+    )
+    producer_stages = [
+        contract.get("stage_id", "") for contract in producer_contracts
+    ]
+    producer_roles = [
+        contract.get("evaluation_role", "")
+        for contract in producer_contracts
+    ]
+    producer_identities = [
+        (
+            contract.get("stage_id", ""),
+            contract.get("logical_job_kind", ""),
+            contract.get("output_contract_ref", ""),
+        )
+        for contract in producer_contracts
+    ]
+    if (
+        len(producer_stages) != len(set(producer_stages))
+        or len(producer_identities) != len(set(producer_identities))
+    ):
+        findings.append(
+            "model stage producer contracts contain duplicate identities"
+        )
+    required_producer_fields = {
+        "stage_id",
+        "evaluation_role",
+        "profile_binding_name",
+        "execution_role",
+        "logical_job_kind",
+        "input_view_kind",
+        "typed_request_contract_ref",
+        "prompt_bundle_ref",
+        "tool_bundle_ref",
+        "decoder_release_ref",
+        "output_contract_ref",
+        "required_action_kind",
+        "producer_status",
+        "prompt_bundle_sha256",
+        "tool_bundle_sha256",
+        "decoder_release_sha256",
+    }
+    for contract in producer_contracts:
+        optional_fields = {
+            "required_action_kind",
+            "prompt_bundle_sha256",
+            "tool_bundle_sha256",
+            "decoder_release_sha256",
+        }
+        string_fields = required_producer_fields - optional_fields
+        if (
+            set(contract) != required_producer_fields
+            or any(
+                not isinstance(contract[field], str)
+                or not contract[field]
+                for field in string_fields
+            )
+            or (
+                contract["required_action_kind"] is not None
+                and (
+                    not isinstance(contract["required_action_kind"], str)
+                    or not contract["required_action_kind"]
+                )
+            )
+            or contract["producer_status"]
+            not in {"runtime_implemented", "unprovisioned", "test_double"}
+            or any(
+                value is not None
+                and (
+                    not isinstance(value, str)
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                )
+                for value in (
+                    contract["prompt_bundle_sha256"],
+                    contract["tool_bundle_sha256"],
+                    contract["decoder_release_sha256"],
+                )
+            )
+            or (
+                contract["producer_status"] != "unprovisioned"
+                and any(
+                    contract[field] is None
+                    for field in (
+                        "prompt_bundle_sha256",
+                        "tool_bundle_sha256",
+                        "decoder_release_sha256",
+                    )
+                )
+            )
+        ):
+            findings.append(
+                "model stage producer contract shape is invalid"
+            )
+            break
+    if set(producer_roles) != {
+        "primary_business_analysis_agent",
+        "message_binding",
+        "runtime_reviewer",
+        "evaluation_reviewer",
+    }:
+        findings.append(
+            "model stage producer contracts omit required evaluation roles"
+        )
+    producer_capabilities_by_stage = {
+        contract["stage_id"]: tuple(
+            contract[field]
+            for field in MODEL_STAGE_PRODUCER_BASELINE_FIELDS
+        )
+        for contract in producer_contracts
+    }
+    if (
+        producer_capabilities_by_stage
+        != CANONICAL_MODEL_STAGE_PRODUCER_CAPABILITIES
+    ):
+        findings.append(
+            "model stage producer registry differs from the runtime capability baseline"
+        )
+    if any(
+        contract["producer_status"] == "test_double"
+        for contract in producer_contracts
+    ):
+        findings.append("test-double producers cannot enter execution admission")
     operators = {
         operator["operator_id"]: operator
         for operator in authority["mutation_operators"]["operators"]
@@ -413,6 +837,22 @@ def validate_execution_manifest(
     }
 
     cells = manifest["cells"]
+    required_runtime_stage_ids = {
+        stage_id
+        for cell in cells
+        for stage_id in cell["required_stage_ids"]
+    }
+    unprovisioned_stage_ids = sorted(
+        contract["stage_id"]
+        for contract in producer_contracts
+        if contract["stage_id"] in required_runtime_stage_ids
+        and contract["producer_status"] == "unprovisioned"
+    )
+    if unprovisioned_stage_ids:
+        findings.append(
+            "execution manifest requires unprovisioned model stages: "
+            + ",".join(unprovisioned_stage_ids)
+        )
     cell_ids = [cell["execution_cell_id"] for cell in cells]
     if len(cell_ids) != len(set(cell_ids)):
         findings.append("execution_cell_id values must be unique")
@@ -510,6 +950,24 @@ def validate_execution_manifest(
         )
     )
     return findings
+
+
+def validate_execution_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    authority: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Validate an execution manifest without trusting loaded authority input."""
+
+    if authority is not None and not isinstance(authority, Mapping):
+        return ["evaluation authority is invalid"]
+    try:
+        return _validate_execution_manifest(
+            manifest,
+            authority=authority,
+        )
+    except (IndexError, KeyError, TypeError, ValueError):
+        return ["evaluation authority structure is invalid"]
 
 
 def _validate_full_run_universe(
@@ -1399,6 +1857,33 @@ def validate_trace_bundle(
         findings.append("trace profile ref does not match execution cell")
     if bundle["trace_profile_sha256"] != cell["trace_profile_sha256"]:
         findings.append("trace profile hash does not match execution cell")
+    persisted_manifest = bundle["persisted_run_trace_manifest"]
+    persisted_manifest_schema = runtime_record_schema_findings(
+        persisted_manifest,
+        "RunTraceManifest",
+    )
+    findings.extend(
+        f"persisted run trace manifest {item}"
+        for item in persisted_manifest_schema
+    )
+    if persisted_manifest_schema:
+        return findings
+    try:
+        decoded_manifest = decode_typed_dataclass(
+            RunTraceManifest,
+            persisted_manifest,
+        )
+    except (KeyError, TypeError, ValueError):
+        findings.append("persisted run trace manifest lineage is invalid")
+        return findings
+    if decoded_manifest.case_id != bundle["case_id"]:
+        findings.append("persisted run trace manifest crosses cases")
+    if decoded_manifest.run_id != bundle["run_id"]:
+        findings.append("persisted run trace manifest crosses runs")
+    if bundle["persisted_run_trace_manifest_sha256"] != canonical_sha256(
+        persisted_manifest
+    ):
+        findings.append("persisted run trace manifest payload hash drifted")
     stage_ids = [stage["stage_id"] for stage in bundle["stages"]]
     if len(stage_ids) != len(set(stage_ids)):
         findings.append("trace stage ids must be unique")
@@ -1465,6 +1950,28 @@ def validate_trace_bundle(
         != bundle["persisted_run_trace_manifest_sha256"]
     ):
         findings.append("persisted RunTraceManifest is absent or drifted")
+    elif (
+        persisted["artifact_kind"] != "run_trace_manifest"
+        or persisted["authority_source_kind"] != "run_trace_manifest"
+        or persisted["authority_source_ref"]
+        != persisted_manifest["trace_manifest_id"]
+    ):
+        findings.append("persisted RunTraceManifest has wrong artifact authority")
+    event_ids = {
+        item["event_id"]
+        for item in persisted_manifest["event_operation_lineage"]
+    }
+    events_by_id = {
+        item["event_id"]: item
+        for item in persisted_manifest["event_operation_lineage"]
+    }
+    model_stage_ids = {
+        contract["stage_id"]
+        for contract in authority["trace_profiles"].get(
+            "model_stage_producer_contracts",
+            [],
+        )
+    }
     for stage in bundle["stages"]:
         record = records.get(stage["artifact_ref"])
         if record is None:
@@ -1486,6 +1993,74 @@ def validate_trace_bundle(
             if record[field] != expected_value:
                 findings.append(
                     f"trace stage {stage['stage_id']} {field} drifted"
+                )
+        expected_artifact_kind = (
+            "typed_model_result"
+            if stage["stage_id"] in model_stage_ids
+            else "authority_record"
+        )
+        expected_source_kind = (
+            "durable_model_result"
+            if stage["stage_id"] in model_stage_ids
+            else "event_journal"
+        )
+        if (
+            record["artifact_kind"] != expected_artifact_kind
+            or record["authority_source_kind"] != expected_source_kind
+        ):
+            findings.append(
+                f"trace stage {stage['stage_id']} has wrong artifact authority"
+            )
+        elif (
+            expected_source_kind == "event_journal"
+            and record["authority_source_ref"] not in event_ids
+        ):
+            findings.append(
+                f"trace stage {stage['stage_id']} references an unknown journal event"
+            )
+        elif expected_source_kind == "event_journal":
+            event = events_by_id[record["authority_source_ref"]]
+            allowed_event_types = NON_MODEL_STAGE_EVENT_TYPES.get(
+                stage["stage_id"],
+                set(),
+            )
+            if event["event_type"] not in allowed_event_types:
+                findings.append(
+                    f"trace stage {stage['stage_id']} uses the wrong journal event type"
+                )
+            if event["cursor"] != stage["journal_cursor"]:
+                findings.append(
+                    f"trace stage {stage['stage_id']} event cursor drifted"
+                )
+            if event["event_content_sha256"] != stage["artifact_sha256"]:
+                findings.append(
+                    f"trace stage {stage['stage_id']} does not bind journal event bytes"
+                )
+    if cell["lane"] == "full_authority":
+        for field in FULL_AUTHORITY_REQUIRED_TRACE_ID_FIELDS:
+            if not persisted_manifest[field]:
+                findings.append(
+                    f"full-authority trace has no {field}"
+                )
+        event_membership_fields = {
+            "plan_acceptance": "plan_revision_ids",
+            "effect_receipt": "effect_attempt_ids",
+            "evidence_disposition": "evidence_record_ids",
+        }
+        for stage_id, field in event_membership_fields.items():
+            stage = next(
+                item for item in bundle["stages"] if item["stage_id"] == stage_id
+            )
+            record = records.get(stage["artifact_ref"])
+            if record is None:
+                continue
+            event = events_by_id.get(record["authority_source_ref"])
+            if (
+                event is not None
+                and event["authority_ref"] not in persisted_manifest[field]
+            ):
+                findings.append(
+                    f"trace stage {stage_id} authority ref is absent from {field}"
                 )
     stage_by_id = {stage["stage_id"]: stage for stage in bundle["stages"]}
     for stage in bundle["stages"]:
@@ -1806,134 +2381,918 @@ def derive_cell_final_verdict(result: Mapping[str, Any]) -> str:
     return "invalid"
 
 
-def validate_model_invocations(
-    invocations: Iterable[Mapping[str, Any]],
+def _runtime_execution_findings(
+    execution: Mapping[str, Any],
     *,
+    manifest: Mapping[str, Any],
+    cell: Mapping[str, Any],
+    terminal_attempt_id: str,
+    profile: Mapping[str, Any],
+    producer_contract: Mapping[str, Any],
+    trace_bundle: Mapping[str, Any],
+    trace_records: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[str], Mapping[str, Any] | None]:
+    findings: list[str] = []
+    outer_findings = schema_findings(
+        execution,
+        RUNTIME_MODEL_EXECUTION_SCHEMA_PATH,
+    )
+    findings.extend(outer_findings)
+    if outer_findings:
+        return findings, None
+    role = producer_contract["evaluation_role"]
+    if producer_contract["producer_status"] == "unprovisioned":
+        findings.append(f"{role} runtime producer is unprovisioned")
+    if execution["execution_manifest_sha256"] != canonical_sha256(manifest):
+        findings.append(f"{role} runtime execution does not bind manifest")
+    if execution["execution_cell_id"] != cell["execution_cell_id"]:
+        findings.append(f"{role} runtime execution belongs to another cell")
+    if execution["execution_attempt_id"] != terminal_attempt_id:
+        findings.append(
+            f"{role} runtime execution belongs to another execution attempt"
+        )
+    persisted_manifest = trace_bundle["persisted_run_trace_manifest"]
+    manifest_built_at = _parse_aware_datetime(
+        persisted_manifest["built_at"]
+    )
+    if manifest_built_at is None:
+        findings.append(f"{role} persisted run trace built_at is invalid")
+        return findings, None
+    if (
+        execution["run_trace_manifest_id"]
+        != persisted_manifest["trace_manifest_id"]
+        or execution["run_trace_manifest_sha256"]
+        != canonical_sha256(persisted_manifest)
+    ):
+        findings.append(f"{role} runtime execution crosses run trace authority")
+    if execution["evaluator_profile_ref"] != profile["profile_id"]:
+        findings.append(f"{role} runtime execution profile ref drifted")
+    if execution["evaluator_profile_sha256"] != canonical_sha256(profile):
+        findings.append(f"{role} runtime execution profile hash drifted")
+    proof_mode = execution["source_proof"]["mode"]
+    if proof_mode == "development_self_attested":
+        if manifest["execution_scope"] == "formal":
+            findings.append(
+                f"{role} formal runtime execution is self-attested"
+            )
+    else:
+        findings.append(
+            f"{role} trusted runtime source proof lacks protected verification"
+        )
+    if execution["runtime_record_set_sha256"] != (
+        runtime_model_record_set_sha256(execution)
+    ):
+        findings.append(f"{role} runtime record set hash drifted")
+
+    job = execution["logical_model_job"]
+    job_schema = runtime_record_schema_findings(job, "LogicalModelJob")
+    findings.extend(f"{role} logical job {item}" for item in job_schema)
+    attempts = execution["attempts"]
+    for index, attempt in enumerate(attempts, start=1):
+        request_schema = runtime_record_schema_findings(
+            attempt["request"],
+            "ProviderAttemptRequest",
+        )
+        receipt_schema = runtime_record_schema_findings(
+            attempt["receipt"],
+            "ProviderAttemptReceipt",
+        )
+        findings.extend(
+            f"{role} attempt {index} request {item}"
+            for item in request_schema
+        )
+        findings.extend(
+            f"{role} attempt {index} receipt {item}"
+            for item in receipt_schema
+        )
+    result = execution["durable_result"]
+    result_schema = runtime_record_schema_findings(
+        result,
+        "DurableModelResult",
+    )
+    findings.extend(f"{role} durable result {item}" for item in result_schema)
+    if job_schema or result_schema or any(
+        runtime_record_schema_findings(item["request"], "ProviderAttemptRequest")
+        or runtime_record_schema_findings(
+            item["receipt"],
+            "ProviderAttemptReceipt",
+        )
+        for item in attempts
+    ):
+        return findings, None
+
+    created_at = _parse_aware_datetime(job["created_at"])
+    if created_at is None:
+        findings.append(f"{role} logical job created_at is invalid")
+        return findings, None
+    if created_at > manifest_built_at:
+        findings.append(f"{role} logical job postdates its run trace manifest")
+    prior_completed_at: datetime | None = None
+    for index, attempt in enumerate(attempts, start=1):
+        requested_at = _parse_aware_datetime(
+            attempt["request"]["requested_at"]
+        )
+        completed_at = _parse_aware_datetime(
+            attempt["receipt"]["completed_at"]
+        )
+        if requested_at is None or completed_at is None:
+            findings.append(f"{role} attempt {index} timestamp is invalid")
+            return findings, None
+        if requested_at < created_at:
+            findings.append(f"{role} attempt {index} predates its logical job")
+        if completed_at < requested_at:
+            findings.append(f"{role} attempt {index} completes before request")
+        if requested_at > manifest_built_at or completed_at > manifest_built_at:
+            findings.append(
+                f"{role} attempt {index} postdates its run trace manifest"
+            )
+        if prior_completed_at is not None and requested_at < prior_completed_at:
+            findings.append(f"{role} attempt {index} overlaps prior attempt")
+        prior_completed_at = completed_at
+    recorded_at = _parse_aware_datetime(result["recorded_at"])
+    if recorded_at is None:
+        findings.append(f"{role} durable result recorded_at is invalid")
+        return findings, None
+    if recorded_at < (prior_completed_at or created_at):
+        findings.append(f"{role} durable result predates final receipt")
+    if recorded_at > manifest_built_at:
+        findings.append(f"{role} durable result postdates its run trace manifest")
+
+    output_contract_ref = producer_contract["output_contract_ref"]
+    decoded_action_kind: str | None = None
+    try:
+        if output_contract_ref == (
+            "waje-vnext://contracts/domain/message-impact-binding.v1"
+        ):
+            decode_typed_dataclass(
+                MessageImpactProposal,
+                result["result_payload"],
+            )
+        elif output_contract_ref == (
+            "waje-vnext://contracts/domain/actions.v3"
+        ):
+            decoded_action_kind = decode_agent_action_proposal(
+                result["result_payload"]
+            ).kind.value
+        elif output_contract_ref == (
+            "waje-vnext://contracts/domain/measurement-review.v1"
+        ):
+            decode_typed_dataclass(
+                FrameReviewProposal,
+                result["result_payload"],
+            )
+        elif output_contract_ref != (
+            "waje-vnext://evals/gate3/evaluation-review.v1"
+        ):
+            findings.append(f"{role} output contract has no trusted decoder")
+    except (ActionProposalDecodeError, KeyError, TypeError, ValueError):
+        findings.append(f"{role} durable result violates its typed output contract")
+    required_action_kind = producer_contract["required_action_kind"]
+    if (
+        required_action_kind is not None
+        and decoded_action_kind != required_action_kind
+    ):
+        findings.append(f"{role} durable result targets the wrong action stage")
+
+    configuration = job["configuration_identity"]
+    artifact = job["model_request_artifact"]
+    configuration_content = {
+        key: value
+        for key, value in configuration.items()
+        if key != "configuration_sha256"
+    }
+    if configuration["configuration_sha256"] != canonical_sha256(
+        configuration_content
+    ):
+        findings.append(f"{role} configuration hash drifted")
+    artifact_sha256 = canonical_sha256(artifact)
+    if job["model_request_artifact_sha256"] != artifact_sha256:
+        findings.append(f"{role} model request artifact hash drifted")
+    expected_job_links = {
+        "provider_ref": configuration["provider_ref"],
+        "model_ref": configuration["model_ref"],
+        "configuration_sha256": configuration["configuration_sha256"],
+        "prompt_contract_ref": artifact["prompt_bundle_ref"],
+        "input_sha256": artifact["typed_request_sha256"],
+    }
+    for field, expected in expected_job_links.items():
+        if job[field] != expected:
+            findings.append(f"{role} logical job {field} drifted")
+    expected_artifact_links = {
+        "logical_model_job_id": job["logical_model_job_id"],
+        "execution_role": configuration["execution_role"],
+        "logical_job_kind": job["role"],
+    }
+    for field, expected in expected_artifact_links.items():
+        if artifact[field] != expected:
+            findings.append(f"{role} request artifact {field} drifted")
+    expected_contract = {
+        "execution_role": configuration["execution_role"],
+        "logical_job_kind": job["role"],
+        "input_view_kind": artifact["input_view_kind"],
+        "typed_request_contract_ref": artifact["typed_request_contract_ref"],
+        "prompt_bundle_ref": artifact["prompt_bundle_ref"],
+        "tool_bundle_ref": artifact["tool_bundle_ref"],
+        "decoder_release_ref": artifact["decoder_release_ref"],
+        "output_contract_ref": artifact["output_contract_ref"],
+    }
+    for field, observed in expected_contract.items():
+        if observed != producer_contract[field]:
+            findings.append(f"{role} stage producer {field} drifted")
+    for field in (
+        "prompt_bundle_sha256",
+        "tool_bundle_sha256",
+        "decoder_release_sha256",
+    ):
+        expected = producer_contract[field]
+        if expected is not None and artifact[field] != expected:
+            findings.append(f"{role} stage producer {field} drifted")
+    profile_expected = {
+        "provider_ref": profile["provider"],
+        "model_ref": profile["model"],
+        "thinking": profile["thinking"],
+    }
+    for field, expected in profile_expected.items():
+        if configuration[field] != expected:
+            findings.append(f"{role} runtime configuration {field} drifted")
+    profile_binding = cell["role_profiles"][
+        producer_contract["profile_binding_name"]
+    ]
+    if (
+        configuration["configuration_sha256"]
+        != profile_binding["runtime_configuration_sha256"]
+    ):
+        findings.append(
+            f"{role} runtime configuration differs from the execution cell"
+        )
+    stable = configuration["stable_parameters"]
+    expected_stable_keys = {
+        "temperature",
+        "top_p",
+        "tool_choice_policy",
+        "parallel_tool_calls",
+        "seed",
+    }
+    if set(stable) != expected_stable_keys:
+        findings.append(f"{role} stable parameter set drifted")
+    else:
+        if stable["tool_choice_policy"] != "contract_selected":
+            findings.append(f"{role} tool choice policy drifted")
+        if stable["parallel_tool_calls"] is not False:
+            findings.append(f"{role} parallel tool policy drifted")
+        if stable["seed"] != cell["seed"]:
+            findings.append(f"{role} execution seed drifted")
+
+    body = artifact["provider_request_body"]
+    if artifact["provider_request_sha256"] != canonical_sha256(body):
+        findings.append(f"{role} provider request body hash drifted")
+    expected_body_keys = {
+        "model",
+        "thinking",
+        "temperature",
+        "top_p",
+        "messages",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "seed",
+    }
+    if set(body) != expected_body_keys:
+        findings.append(f"{role} provider request field set drifted")
+        typed_request = None
+    else:
+        for body_field in ("model", "temperature", "top_p", "seed"):
+            expected = (
+                configuration["model_ref"]
+                if body_field == "model"
+                else stable.get(body_field)
+            )
+            if body[body_field] != expected:
+                findings.append(f"{role} provider request {body_field} drifted")
+        if body["thinking"] != {"type": configuration["thinking"]}:
+            findings.append(f"{role} provider request thinking drifted")
+        if body["parallel_tool_calls"] != stable.get("parallel_tool_calls"):
+            findings.append(f"{role} provider request parallel policy drifted")
+        messages = body["messages"]
+        if (
+            not isinstance(messages, list)
+            or len(messages) != 2
+            or not all(isinstance(message, Mapping) for message in messages)
+            or messages[0].get("role") != "system"
+            or messages[1].get("role") != "user"
+            or not isinstance(messages[0].get("content"), str)
+            or not isinstance(messages[1].get("content"), str)
+        ):
+            findings.append(f"{role} provider request messages are invalid")
+            typed_request = None
+        else:
+            if artifact["prompt_bundle_sha256"] != canonical_sha256(
+                {"messages": [messages[0]]}
+            ):
+                findings.append(f"{role} prompt bundle hash drifted")
+            try:
+                typed_request = json.loads(messages[1]["content"])
+            except json.JSONDecodeError:
+                typed_request = None
+                findings.append(f"{role} typed request is not canonical JSON")
+        if not isinstance(body["tools"], list):
+            findings.append(f"{role} provider request tools are invalid")
+        if artifact["tool_bundle_sha256"] != canonical_sha256(body["tools"]):
+            findings.append(f"{role} tool bundle hash drifted")
+        expected_tool_choice = {
+            "primary_agent": "required",
+            "message_binding": {
+                "type": "function",
+                "function": {"name": "submit_message_impact"},
+            },
+            "measurement_reviewer": {
+                "type": "function",
+                "function": {"name": "submit_measurement_review"},
+            },
+            "evaluation_reviewer": {
+                "type": "function",
+                "function": {"name": "submit_evaluation_review"},
+            },
+        }.get(job["role"])
+        if (
+            expected_tool_choice is None
+            or body["tool_choice"] != expected_tool_choice
+        ):
+            findings.append(f"{role} provider request tool choice drifted")
+    if typed_request is not None and not isinstance(typed_request, Mapping):
+        findings.append(f"{role} typed request must be an object")
+        typed_request = None
+    if typed_request is not None:
+        typed_request_sha256 = canonical_sha256(typed_request)
+        if artifact["typed_request_sha256"] != typed_request_sha256:
+            findings.append(f"{role} typed request hash drifted")
+        if job["role"] == "primary_agent":
+            context = typed_request.get("context_packet", {})
+            if not isinstance(context, Mapping):
+                context = {}
+            expected_view_ref = context.get("packet_id")
+            expected_view_sha256 = context.get("content_sha256")
+        elif job["role"] == "message_binding":
+            expected_view_ref = typed_request.get("message_id")
+            expected_view_sha256 = typed_request_sha256
+        elif job["role"] == "measurement_reviewer":
+            candidate = typed_request.get("frame_candidate", {})
+            if not isinstance(candidate, Mapping):
+                candidate = {}
+            expected_view_ref = candidate.get("frame_candidate_id")
+            expected_view_sha256 = typed_request_sha256
+            if expected_view_ref not in trace_bundle[
+                "persisted_run_trace_manifest"
+            ]["frame_candidate_ids"]:
+                findings.append(
+                    f"{role} frame candidate is absent from the persisted run trace"
+                )
+        else:
+            expected_view_ref = typed_request.get("evaluation_input_id")
+            expected_view_sha256 = typed_request_sha256
+        if artifact["input_view_ref"] != expected_view_ref:
+            findings.append(f"{role} input view ref drifted")
+        if artifact["input_view_sha256"] != expected_view_sha256:
+            findings.append(f"{role} input view hash drifted")
+        if producer_contract["producer_status"] == "runtime_implemented":
+            try:
+                request_type = {
+                    "primary_agent": PrimaryAgentRequest,
+                    "message_binding": MessageBindingRequest,
+                    "measurement_reviewer": FrameReviewRequest,
+                }[job["role"]]
+                request_record = decode_typed_dataclass(
+                    request_type,
+                    typed_request,
+                )
+                configuration_record = decode_typed_dataclass(
+                    ModelConfigurationIdentity,
+                    configuration,
+                )
+                compiled = compile_trusted_chat_invocation(
+                    logical_job_kind=job["role"],
+                    request=request_record,
+                    configuration=configuration_record,
+                )
+            except (
+                KeyError,
+                ProviderConfigurationError,
+                TypeError,
+                TypedDecodeError,
+                ValueError,
+            ):
+                findings.append(
+                    f"{role} typed request cannot be replayed through "
+                    "the production invocation compiler"
+                )
+            else:
+                trusted_prompt_sha256 = canonical_sha256(
+                    {
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": compiled.system_instruction,
+                            }
+                        ]
+                    }
+                )
+                trusted_tool_sha256 = canonical_sha256(
+                    to_jsonable(compiled.tools)
+                )
+                trusted_links = {
+                    "provider_request_body": to_jsonable(compiled.payload),
+                    "input_view_kind": compiled.input_view_kind.value,
+                    "input_view_ref": compiled.input_view_ref,
+                    "input_view_sha256": compiled.input_view_sha256,
+                    "prompt_bundle_ref": compiled.prompt_bundle_ref,
+                    "prompt_bundle_sha256": trusted_prompt_sha256,
+                    "tool_bundle_ref": compiled.tool_bundle_ref,
+                    "tool_bundle_sha256": trusted_tool_sha256,
+                    "decoder_release_ref": compiled.decoder_release_ref,
+                }
+                for field, expected in trusted_links.items():
+                    observed = (
+                        body
+                        if field == "provider_request_body"
+                        else artifact[field]
+                    )
+                    if observed != expected:
+                        findings.append(
+                            f"{role} {field} differs from the production "
+                            "invocation compiler"
+                        )
+    expected_output_contract_sha256 = canonical_sha256(
+        {
+            "output_contract_ref": artifact["output_contract_ref"],
+            "tool_bundle_sha256": artifact["tool_bundle_sha256"],
+            "decoder_release_ref": artifact["decoder_release_ref"],
+            "decoder_release_sha256": artifact["decoder_release_sha256"],
+        }
+    )
+    if artifact["output_contract_sha256"] != expected_output_contract_sha256:
+        findings.append(f"{role} output contract hash drifted")
+    if artifact["decoder_release_sha256"] != configuration[
+        "adapter_release_sha256"
+    ]:
+        findings.append(f"{role} decoder release hash drifted")
+
+    if configuration["max_attempts"] < 1:
+        findings.append(f"{role} configured attempt budget is invalid")
+    elif len(attempts) > configuration["max_attempts"]:
+        findings.append(f"{role} attempt budget exceeded")
+    request_ids: set[str] = set()
+    receipt_ids: set[str] = set()
+    idempotency_keys: set[str] = set()
+    prior_request_id: str | None = None
+    for attempt_number, attempt in enumerate(attempts, start=1):
+        request = attempt["request"]
+        receipt = attempt["receipt"]
+        if request["provider_attempt_id"] in request_ids:
+            findings.append(f"{role} provider attempt id is duplicated")
+        request_ids.add(request["provider_attempt_id"])
+        if receipt["provider_attempt_receipt_id"] in receipt_ids:
+            findings.append(f"{role} provider receipt id is duplicated")
+        receipt_ids.add(receipt["provider_attempt_receipt_id"])
+        if request["provider_idempotency_key"] in idempotency_keys:
+            findings.append(f"{role} provider idempotency key is duplicated")
+        idempotency_keys.add(request["provider_idempotency_key"])
+        expected_request = {
+            "logical_model_job_id": job["logical_model_job_id"],
+            "attempt_number": attempt_number,
+            "prior_provider_attempt_id": prior_request_id,
+            "request_sha256": artifact["provider_request_sha256"],
+            "model_request_artifact_sha256": artifact_sha256,
+            "configuration_sha256": configuration["configuration_sha256"],
+        }
+        for field, expected in expected_request.items():
+            if request[field] != expected:
+                findings.append(f"{role} attempt {attempt_number} {field} drifted")
+        if (
+            receipt["provider_attempt_id"] != request["provider_attempt_id"]
+            or receipt["logical_model_job_id"] != job["logical_model_job_id"]
+        ):
+            findings.append(f"{role} attempt {attempt_number} receipt linkage drifted")
+        if attempt_number < len(attempts):
+            if receipt["disposition"] != "retryable_failure":
+                findings.append(
+                    f"{role} attempt history continues after a terminal receipt"
+                )
+        elif receipt["disposition"] != "succeeded":
+            findings.append(f"{role} model-produced stage lacks successful receipt")
+        prior_request_id = request["provider_attempt_id"]
+
+    final_request = attempts[-1]["request"]
+    final_receipt = attempts[-1]["receipt"]
+    expected_result = {
+        "logical_model_job_id": job["logical_model_job_id"],
+        "provider_attempt_id": final_request["provider_attempt_id"],
+        "provider_attempt_receipt_id": final_receipt[
+            "provider_attempt_receipt_id"
+        ],
+        "result_kind": job["role"],
+        "result_contract_ref": artifact["output_contract_ref"],
+        "model_request_artifact_sha256": artifact_sha256,
+        "configuration_sha256": configuration["configuration_sha256"],
+    }
+    for field, expected in expected_result.items():
+        if result[field] != expected:
+            findings.append(f"{role} durable result {field} drifted")
+    if result["output_sha256"] != canonical_sha256(result["result_payload"]):
+        findings.append(f"{role} durable result payload hash drifted")
+    if (
+        final_receipt["output_sha256"] != result["output_sha256"]
+        or final_receipt["provider_response_id"] is None
+    ):
+        findings.append(f"{role} success receipt/result pair drifted")
+
+    binding = execution["trace_output_binding"]
+    if binding["stage_id"] != producer_contract["stage_id"]:
+        findings.append(f"{role} trace stage binding drifted")
+    output_record = trace_records.get(binding["artifact_ref"])
+    if output_record is None:
+        findings.append(f"{role} typed output is absent from trace artifacts")
+    else:
+        expected_record = {
+            "artifact_kind": "typed_model_result",
+            "authority_source_kind": "durable_model_result",
+            "authority_source_ref": result["durable_model_result_id"],
+            "artifact_sha256": result["output_sha256"],
+            "run_id": trace_bundle["run_id"],
+            "case_id": trace_bundle["case_id"],
+            "correlation_id": trace_bundle["correlation_id"],
+            "authority_snapshot_sha256": job["authority_snapshot_sha256"],
+        }
+        for field, expected in expected_record.items():
+            if output_record[field] != expected:
+                findings.append(f"{role} trace output {field} drifted")
+    if job["case_id"] != trace_bundle["case_id"]:
+        findings.append(f"{role} logical job case differs from trace")
+    trace_authority_snapshots = {
+        stage["authority_snapshot_sha256"]
+        for stage in trace_bundle["stages"]
+    }
+    if job["authority_snapshot_sha256"] not in trace_authority_snapshots:
+        findings.append(f"{role} authority snapshot is absent from trace")
+    return findings, {
+        "role": role,
+        "stage_id": producer_contract["stage_id"],
+        "artifact_ref": binding["artifact_ref"],
+        "logical_model_job_id": job["logical_model_job_id"],
+        "provider_attempt_ids": tuple(
+            attempt["request"]["provider_attempt_id"] for attempt in attempts
+        ),
+        "provider_attempt_receipt_ids": tuple(
+            attempt["receipt"]["provider_attempt_receipt_id"]
+            for attempt in attempts
+        ),
+        "provider_idempotency_keys": tuple(
+            attempt["request"]["provider_idempotency_key"]
+            for attempt in attempts
+        ),
+        "durable_model_result_id": result["durable_model_result_id"],
+        "configuration_sha256": configuration["configuration_sha256"],
+        "operational_configuration_sha256": (
+            operational_configuration_sha256(configuration)
+        ),
+        "output_sha256": result["output_sha256"],
+        "result_payload": result["result_payload"],
+        "typed_request": typed_request,
+    }
+
+
+def validate_runtime_model_executions(
+    executions: Iterable[Mapping[str, Any]],
+    *,
+    manifest: Mapping[str, Any],
     cell: Mapping[str, Any],
     terminal_attempt_id: str,
     grader_registry: Mapping[str, Any],
     trace_bundle: Mapping[str, Any],
     trace_artifact_index: Mapping[str, Any],
-) -> list[str]:
-    invocations = list(invocations)
+    trace_profiles: Mapping[str, Any],
+) -> tuple[list[str], list[Mapping[str, Any]]]:
+    executions = list(executions)
     findings: list[str] = []
     profiles = {
         profile["profile_id"]: profile
         for profile in grader_registry["evaluator_profiles"]
     }
-    role_binding_name = {
-        "primary_business_analysis_agent": "primary_business_analysis_agent",
-        "message_binding": "primary_business_analysis_agent",
-        "runtime_reviewer": "runtime_reviewer",
-        "evaluation_reviewer": "evaluation_reviewer",
+    producer_contracts = {
+        contract["stage_id"]: contract
+        for contract in trace_profiles["model_stage_producer_contracts"]
     }
-    required_roles = set(role_binding_name)
-    observed_success_roles: set[str] = set()
-    success_job_counts: Counter[str] = Counter()
-    invocation_ids: set[str] = set()
-    successful_configurations: dict[str, set[str]] = {}
     trace_records = {
         record["artifact_ref"]: record
         for record in trace_artifact_index["records"]
     }
-    trace_authority_snapshots = {
-        stage["authority_snapshot_sha256"]
-        for stage in trace_bundle["stages"]
-    }
-    for invocation in invocations:
-        invocation_schema_findings = schema_findings(
-            invocation,
-            MODEL_INVOCATION_SCHEMA_PATH,
+    projections: list[Mapping[str, Any]] = []
+    for execution in executions:
+        outer_findings = schema_findings(
+            execution,
+            RUNTIME_MODEL_EXECUTION_SCHEMA_PATH,
         )
-        findings.extend(invocation_schema_findings)
-        if invocation_schema_findings:
+        if outer_findings:
+            findings.extend(outer_findings)
             continue
-        attempt_id = invocation["provider_attempt_id"]
-        if attempt_id in invocation_ids:
-            findings.append("model invocation attempt ids must be unique")
-        invocation_ids.add(attempt_id)
-        if invocation["execution_cell_id"] != cell["execution_cell_id"]:
-            findings.append("model invocation belongs to another cell")
-        if invocation["execution_attempt_id"] != terminal_attempt_id:
-            findings.append("model invocation belongs to another execution attempt")
-        if invocation["case_id"] != trace_bundle["case_id"]:
-            findings.append("model invocation case differs from trace")
-        if invocation["correlation_id"] != trace_bundle["correlation_id"]:
-            findings.append("model invocation correlation differs from trace")
-        if (
-            invocation["authority_snapshot_sha256"]
-            not in trace_authority_snapshots
-        ):
-            findings.append("model invocation authority snapshot is absent from trace")
-        role = invocation["role"]
-        binding_name = role_binding_name[role]
-        binding = cell["role_profiles"][binding_name]
-        profile = profiles.get(binding["profile_ref"])
+        stage_id = execution["trace_output_binding"]["stage_id"]
+        contract = producer_contracts.get(stage_id)
+        if contract is None:
+            findings.append(
+                f"runtime model execution targets unregistered stage {stage_id}"
+            )
+            continue
+        binding = cell["role_profiles"].get(contract["profile_binding_name"])
+        profile = None if binding is None else profiles.get(binding["profile_ref"])
         if profile is None:
-            findings.append("model invocation references an unknown profile")
+            findings.append(
+                f"{contract['evaluation_role']} runtime execution has no profile"
+            )
             continue
-        if invocation["evaluator_profile_ref"] != profile["profile_id"]:
-            findings.append(f"{role} invocation profile ref drifted")
-        if invocation["evaluator_profile_sha256"] != canonical_sha256(profile):
-            findings.append(f"{role} invocation profile hash drifted")
-        expected = {
-            "provider_ref": profile["provider"],
-            "model_ref": profile["model"],
-            "thinking": profile["thinking"],
-            "prompt_bundle_sha256": profile["prompt_sha256"],
-            "input_contract_sha256": profile["input_contract_sha256"],
-            "output_contract_sha256": profile["output_contract_sha256"],
-        }
-        for field, expected_value in expected.items():
-            if invocation[field] != expected_value:
-                findings.append(f"{role} invocation {field} drifted")
-        if invocation["configuration_sha256"] != model_configuration_sha256(
-            profile
+        execution_findings, projection = _runtime_execution_findings(
+            execution,
+            manifest=manifest,
+            cell=cell,
+            terminal_attempt_id=terminal_attempt_id,
+            profile=profile,
+            producer_contract=contract,
+            trace_bundle=trace_bundle,
+            trace_records=trace_records,
+        )
+        findings.extend(execution_findings)
+        if projection is not None:
+            projections.append(projection)
+
+    job_ids = [item["logical_model_job_id"] for item in projections]
+    if len(job_ids) != len(set(job_ids)):
+        findings.append("runtime model execution jobs must be unique")
+    attempt_ids = [
+        attempt_id
+        for item in projections
+        for attempt_id in item["provider_attempt_ids"]
+    ]
+    if len(attempt_ids) != len(set(attempt_ids)):
+        findings.append("runtime provider attempt ids must be unique")
+    receipt_ids = [
+        receipt_id
+        for item in projections
+        for receipt_id in item["provider_attempt_receipt_ids"]
+    ]
+    if len(receipt_ids) != len(set(receipt_ids)):
+        findings.append("runtime provider receipt ids must be unique")
+    idempotency_keys = [
+        idempotency_key
+        for item in projections
+        for idempotency_key in item["provider_idempotency_keys"]
+    ]
+    if len(idempotency_keys) != len(set(idempotency_keys)):
+        findings.append(
+            "runtime provider idempotency keys must be unique"
+        )
+    result_ids = [item["durable_model_result_id"] for item in projections]
+    if len(result_ids) != len(set(result_ids)):
+        findings.append("durable model results must be unique")
+    persisted_manifest = trace_bundle["persisted_run_trace_manifest"]
+    if set(job_ids) != set(persisted_manifest["logical_model_job_ids"]):
+        findings.append(
+            "runtime model execution jobs differ from the persisted run trace"
+        )
+    if set(attempt_ids) != set(
+        persisted_manifest["provider_attempt_request_ids"]
+    ):
+        findings.append(
+            "runtime provider requests differ from the persisted run trace"
+        )
+    if set(receipt_ids) != set(
+        persisted_manifest["provider_attempt_receipt_ids"]
+    ):
+        findings.append(
+            "runtime provider receipts differ from the persisted run trace"
+        )
+    if set(result_ids) != set(
+        persisted_manifest["durable_model_result_ids"]
+    ):
+        findings.append(
+            "durable model results differ from the persisted run trace"
+        )
+    indexed_model_artifact_refs = {
+        artifact_ref
+        for artifact_ref, record in trace_records.items()
+        if record["artifact_kind"] == "typed_model_result"
+    }
+    projected_model_artifact_refs = {
+        item["artifact_ref"] for item in projections
+    }
+    if indexed_model_artifact_refs != projected_model_artifact_refs:
+        findings.append(
+            "runtime model execution set differs from typed trace artifacts"
+        )
+    required_stage_ids = set(producer_contracts) & set(cell["required_stage_ids"])
+    observed_stage_ids = {item["stage_id"] for item in projections}
+    missing_stages = sorted(required_stage_ids - observed_stage_ids)
+    if missing_stages:
+        findings.append(
+            "runtime model execution set lacks stages: "
+            + ",".join(missing_stages)
+        )
+    accepted_stages = {
+        stage["stage_id"]: stage["artifact_ref"]
+        for stage in trace_bundle["stages"]
+        if stage["stage_id"] in required_stage_ids
+    }
+    for stage_id, artifact_ref in accepted_stages.items():
+        accepted = [
+            item
+            for item in projections
+            if item["stage_id"] == stage_id
+            and item["artifact_ref"] == artifact_ref
+        ]
+        if len(accepted) != 1:
+            findings.append(
+                f"trace stage {stage_id} lacks one accepted runtime producer"
+            )
+    accepted_projections = {
+        stage_id: next(
+            (
+                item
+                for item in projections
+                if item["stage_id"] == stage_id
+                and item["artifact_ref"] == artifact_ref
+            ),
+            None,
+        )
+        for stage_id, artifact_ref in accepted_stages.items()
+    }
+    typed_binding = accepted_projections.get("typed_binding")
+    if typed_binding is not None:
+        ingress_stage = next(
+            (
+                stage
+                for stage in trace_bundle["stages"]
+                if stage["stage_id"] == "message_ingress"
+            ),
+            None,
+        )
+        ingress_record = (
+            None
+            if ingress_stage is None
+            else trace_records.get(ingress_stage["artifact_ref"])
+        )
+        ingress_event = None
+        if ingress_record is not None:
+            ingress_event = next(
+                (
+                    item
+                    for item in trace_bundle[
+                        "persisted_run_trace_manifest"
+                    ]["event_operation_lineage"]
+                    if item["event_id"]
+                    == ingress_record["authority_source_ref"]
+                ),
+                None,
+            )
+        binding_request = typed_binding["typed_request"]
+        if (
+            ingress_event is None
+            or ingress_event["event_type"] != "message_ingressed"
+            or ingress_event["authority_ref"]
+            != binding_request.get("message_id")
         ):
-            findings.append(f"{role} invocation configuration identity drifted")
-        if invocation["disposition"] == "succeeded":
-            observed_success_roles.add(role)
-            success_job_counts[invocation["logical_model_job_id"]] += 1
-            successful_configurations.setdefault(role, set()).add(
-                invocation["configuration_sha256"]
+            findings.append(
+                "typed binding input does not match its message ingress event"
             )
-            output_record = trace_records.get(
-                invocation["typed_output_artifact_ref"]
+    frame_proposal = accepted_projections.get("frame_proposal")
+    frame_review = accepted_projections.get("frame_review")
+    if frame_proposal is not None and frame_review is not None:
+        proposal_payload = frame_proposal["result_payload"]
+        review_request = frame_review["typed_request"]
+        candidate = (
+            review_request.get("frame_candidate", {})
+            if isinstance(review_request, Mapping)
+            else {}
+        )
+        proposed_frame = (
+            candidate.get("proposed_frame", {})
+            if isinstance(candidate, Mapping)
+            else {}
+        )
+        action_payload = (
+            proposal_payload.get("payload", {})
+            if isinstance(proposal_payload, Mapping)
+            else {}
+        )
+        frame_identity_valid = True
+        try:
+            accepted_question = decode_typed_dataclass(
+                QuestionRevision,
+                review_request["accepted_question"],
             )
-            if (
-                output_record is None
-                or output_record["artifact_sha256"]
-                != invocation["typed_output_sha256"]
+            decoded_frame = decode_typed_dataclass(
+                AnalysisFrameRevision,
+                proposed_frame,
+            )
+            validate_frame_identities(accepted_question, decoded_frame)
+        except (KeyError, TypeError, ValueError, TypedDecodeError):
+            frame_identity_valid = False
+        if (
+            proposal_payload.get("kind") != "revise_frame"
+            or action_payload.get("question_revision_id")
+            != candidate.get("question_revision_id")
+            or action_payload.get("measurement_design")
+            != proposed_frame.get("measurement_design")
+            or action_payload.get("revision_reason_ref")
+            != proposed_frame.get("revision_reason_ref")
+            or candidate.get("source_action_id")
+            != proposed_frame.get("created_by_action_id")
+            or review_request.get("case_id")
+            != proposed_frame.get("case_id")
+            or candidate.get("review_job_id")
+            != frame_review["logical_model_job_id"]
+            or candidate.get("proposed_frame_revision_id")
+            != proposed_frame.get("frame_revision_id")
+            or candidate.get("proposed_frame_content_sha256")
+            != canonical_sha256(proposed_frame)
+            or not frame_identity_valid
+        ):
+            findings.append(
+                "frame proposal, candidate and Reviewer input do not share one frame authority"
+            )
+        review_result = frame_review["result_payload"]
+        if isinstance(review_result, Mapping):
+            disposition_stage = next(
+                (
+                    stage
+                    for stage in trace_bundle["stages"]
+                    if stage["stage_id"] == "frame_disposition"
+                ),
+                None,
+            )
+            disposition_record = (
+                None
+                if disposition_stage is None
+                else trace_records.get(disposition_stage["artifact_ref"])
+            )
+            event = None
+            if disposition_record is not None:
+                event = next(
+                    (
+                        item
+                        for item in trace_bundle[
+                            "persisted_run_trace_manifest"
+                        ]["event_operation_lineage"]
+                        if item["event_id"]
+                        == disposition_record["authority_source_ref"]
+                    ),
+                    None,
+                )
+            disposition = review_result.get("disposition")
+            if disposition == "accept" and (
+                event is None
+                or event["event_type"] != "frame_accepted"
+                or event["authority_ref"]
+                != candidate.get("proposed_frame_revision_id")
+                or event["action_id"] != candidate.get("source_action_id")
             ):
                 findings.append(
-                    f"{role} typed output is absent or drifted in trace artifacts"
+                    "accepted frame review lacks the matching frame acceptance event"
                 )
-    missing_roles = required_roles - observed_success_roles
-    if missing_roles:
-        findings.append(
-            "model invocation set lacks successful roles: "
-            + ",".join(sorted(missing_roles))
+            if disposition in {"revise", "block"} and (
+                event is None
+                or event["event_type"] != "reviewer_job_completed"
+                or event["authority_ref"]
+                not in trace_bundle["persisted_run_trace_manifest"][
+                    "frame_review_ids"
+                ]
+                or event["action_id"] != candidate.get("source_action_id")
+            ):
+                findings.append(
+                    "non-accepting frame review conflicts with its disposition event"
+                )
+    configurations = {
+        role: {
+            item["operational_configuration_sha256"]
+            for item in projections
+            if item["role"] == role
+        }
+        for role in (
+            "primary_business_analysis_agent",
+            "runtime_reviewer",
+            "evaluation_reviewer",
         )
-    duplicate_success_jobs = sorted(
-        job_id for job_id, count in success_job_counts.items() if count > 1
-    )
-    if duplicate_success_jobs:
+    }
+    if configurations["primary_business_analysis_agent"] & configurations[
+        "runtime_reviewer"
+    ]:
         findings.append(
-            "model invocation set has multiple successful outputs for jobs: "
-            + ",".join(duplicate_success_jobs)
+            "Primary and runtime Reviewer operational configurations overlap"
         )
-    primary_config = successful_configurations.get(
-        "primary_business_analysis_agent"
-    )
-    reviewer_config = successful_configurations.get("runtime_reviewer")
-    evaluator_config = successful_configurations.get("evaluation_reviewer")
-    if primary_config is not None and reviewer_config == primary_config:
-        findings.append("Primary and runtime Reviewer configurations are not separated")
-    if evaluator_config is not None and (
-        evaluator_config == primary_config or evaluator_config == reviewer_config
+    if configurations["evaluation_reviewer"] & (
+        configurations["primary_business_analysis_agent"]
+        | configurations["runtime_reviewer"]
     ):
-        findings.append("Evaluation Reviewer configuration is not separated")
-    return findings
+        findings.append(
+            "Evaluation Reviewer operational configuration overlaps another role"
+        )
+    return findings, projections
 
 
 def validate_cell_result(
@@ -1943,19 +3302,39 @@ def validate_cell_result(
     attempt_journal: Mapping[str, Any] | None = None,
     trace_bundle: Mapping[str, Any] | None = None,
     trace_artifact_index: Mapping[str, Any] | None = None,
-    model_invocations: Iterable[Mapping[str, Any]] | None = None,
+    runtime_model_executions: Iterable[Mapping[str, Any]] | None = None,
     hard_check_result: Mapping[str, Any] | None = None,
     authority: Mapping[str, Any] | None = None,
 ) -> list[str]:
     findings = schema_findings(result, CELL_RESULT_SCHEMA_PATH)
     if findings:
         return findings
+    manifest_schema_findings = schema_findings(
+        manifest,
+        MANIFEST_SCHEMA_PATH,
+    )
+    if manifest_schema_findings:
+        return [
+            "execution manifest is invalid: " + finding
+            for finding in manifest_schema_findings
+        ]
     manifest_hash = canonical_sha256(manifest)
     if result["execution_manifest_sha256"] != manifest_hash:
         findings.append("cell result does not bind execution manifest")
     if attempt_journal is None:
         findings.append("cell result requires a verified attempt journal")
     else:
+        attempt_schema_findings = schema_findings(
+            attempt_journal,
+            ATTEMPT_SCHEMA_PATH,
+        )
+        if attempt_schema_findings:
+            findings.extend(
+                "attempt journal is invalid: " + finding
+                for finding in attempt_schema_findings
+            )
+            attempt_journal = None
+    if attempt_journal is not None:
         if result["attempt_journal_sha256"] != canonical_sha256(
             attempt_journal
         ):
@@ -2034,31 +3413,55 @@ def validate_cell_result(
         findings.append(
             f"trace_complete must be {str(expected_trace_complete).lower()}"
         )
-    if model_invocations is None:
-        findings.append("cell result requires verified model invocations")
-    elif trace_bundle is None or trace_artifact_index is None:
-        findings.append("model invocations require verified trace artifacts")
+    if runtime_model_executions is None:
+        findings.append("cell result requires verified runtime model executions")
+    elif (
+        trace_bundle is None
+        or trace_artifact_index is None
+        or trace_findings
+    ):
+        findings.append("runtime model executions require verified trace artifacts")
     else:
-        model_invocations = list(model_invocations)
-        findings.extend(
-            validate_model_invocations(
-                model_invocations,
+        runtime_model_executions = list(runtime_model_executions)
+        execution_findings, execution_projections = (
+            validate_runtime_model_executions(
+                runtime_model_executions,
+                manifest=manifest,
                 cell=cell,
                 terminal_attempt_id=result["terminal_attempt_id"],
                 grader_registry=authority["grader_registry"],
                 trace_bundle=trace_bundle,
                 trace_artifact_index=trace_artifact_index,
+                trace_profiles=authority["trace_profiles"],
             )
         )
-        if result["model_invocation_set_sha256"] != canonical_sha256(
-            model_invocations
+        findings.extend(execution_findings)
+        expected_trace_artifact_refs = {
+            stage["artifact_ref"] for stage in trace_bundle["stages"]
+        } | {
+            trace_bundle["persisted_run_trace_manifest_ref"]
+        } | {
+            projection["artifact_ref"]
+            for projection in execution_projections
+        }
+        observed_trace_artifact_refs = {
+            record["artifact_ref"]
+            for record in trace_artifact_index["records"]
+        }
+        if observed_trace_artifact_refs != expected_trace_artifact_refs:
+            findings.append(
+                "trace artifact index differs from the execution authority closure"
+            )
+        if result["runtime_model_execution_set_sha256"] != canonical_sha256(
+            runtime_model_executions
         ):
-            findings.append("cell result does not bind model invocations")
+            findings.append(
+                "cell result does not bind runtime model executions"
+            )
         evaluation_outputs = [
-            invocation["typed_output_sha256"]
-            for invocation in model_invocations
-            if invocation.get("role") == "evaluation_reviewer"
-            and invocation.get("disposition") == "succeeded"
+            projection["output_sha256"]
+            for projection in execution_projections
+            if projection["role"] == "evaluation_reviewer"
         ]
         if evaluation_outputs != [
             canonical_sha256(result["evaluation_review"])
@@ -2154,6 +3557,78 @@ def validate_cell_result(
     return findings
 
 
+def _runtime_model_global_identity_findings(
+    executions_by_cell: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> list[str]:
+    global_runtime_ids: dict[str, list[str]] = {
+        "run trace manifest": [],
+        "logical model job": [],
+        "provider attempt": [],
+        "provider receipt": [],
+        "provider idempotency key": [],
+        "durable model result": [],
+    }
+    for executions in executions_by_cell.values():
+        cell_trace_manifest_ids: set[str] = set()
+        for execution in executions:
+            if not isinstance(execution, Mapping) or schema_findings(
+                execution,
+                RUNTIME_MODEL_EXECUTION_SCHEMA_PATH,
+            ):
+                continue
+            cell_trace_manifest_ids.add(execution["run_trace_manifest_id"])
+            job = execution["logical_model_job"]
+            global_runtime_ids["logical model job"].append(
+                job["logical_model_job_id"]
+            )
+            for attempt in execution["attempts"]:
+                request = attempt["request"]
+                receipt = attempt["receipt"]
+                global_runtime_ids["provider attempt"].append(
+                    request["provider_attempt_id"]
+                )
+                global_runtime_ids["provider receipt"].append(
+                    receipt["provider_attempt_receipt_id"]
+                )
+                global_runtime_ids["provider idempotency key"].append(
+                    request["provider_idempotency_key"]
+                )
+            global_runtime_ids["durable model result"].append(
+                execution["durable_result"]["durable_model_result_id"]
+            )
+        global_runtime_ids["run trace manifest"].extend(
+            sorted(cell_trace_manifest_ids)
+        )
+    return [
+        f"{label} ids must be globally unique across cells"
+        for label, values in global_runtime_ids.items()
+        if any(count > 1 for count in Counter(values).values())
+    ]
+
+
+def _cell_artifact_map_key_findings(
+    observed_cell_ids: set[str],
+    artifact_maps: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    return [
+        f"{label} cell keys differ from cell results"
+        for label, artifact_map in artifact_maps.items()
+        if set(artifact_map) != observed_cell_ids
+    ]
+
+
+def _materialize_external_collection(
+    value: Any,
+    label: str,
+) -> tuple[list[Any], list[str]]:
+    if value is None or isinstance(value, (str, bytes, Mapping)):
+        return [], [f"{label} collection is invalid"]
+    try:
+        return list(value), []
+    except TypeError:
+        return [], [f"{label} collection is invalid"]
+
+
 def derive_suite_result(
     manifest: Mapping[str, Any],
     results: Iterable[Mapping[str, Any]],
@@ -2163,7 +3638,7 @@ def derive_suite_result(
     relation_results: Iterable[Mapping[str, Any]] = (),
     trace_bundles: Mapping[str, Mapping[str, Any]] | None = None,
     trace_artifact_indexes: Mapping[str, Mapping[str, Any]] | None = None,
-    model_invocations_by_cell: Mapping[
+    runtime_model_executions_by_cell: Mapping[
         str,
         Iterable[Mapping[str, Any]],
     ]
@@ -2171,35 +3646,144 @@ def derive_suite_result(
     hard_check_results: Mapping[str, Mapping[str, Any]] | None = None,
     authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    results = list(results)
-    authority = authority or canonical_authority()
+    results, input_findings = _materialize_external_collection(
+        results,
+        "cell result",
+    )
+    relation_results, relation_input_findings = (
+        _materialize_external_collection(
+            relation_results,
+            "relation result",
+        )
+    )
+    input_findings.extend(relation_input_findings)
+    supplied_manifest_findings, finding_input_findings = (
+        _materialize_external_collection(
+            manifest_findings,
+            "manifest finding",
+        )
+    )
+    input_findings.extend(finding_input_findings)
+    if any(
+        not isinstance(finding, str)
+        for finding in supplied_manifest_findings
+    ):
+        input_findings.append("manifest finding collection is invalid")
+    supplied_manifest_findings = [
+        finding
+        for finding in supplied_manifest_findings
+        if isinstance(finding, str)
+    ]
+    if authority is None:
+        authority = canonical_authority()
+    elif not isinstance(authority, Mapping):
+        input_findings.append("evaluation authority is invalid")
+        authority = canonical_authority()
+    manifest_schema_findings = schema_findings(
+        manifest,
+        MANIFEST_SCHEMA_PATH,
+    )
+    manifest_view = manifest if isinstance(manifest, Mapping) else {}
     derived_manifest_findings = validate_execution_manifest(
         manifest,
         authority=authority,
     )
+    if any(
+        finding.startswith("evaluation authority ")
+        for finding in derived_manifest_findings
+    ):
+        # Keep deriving the blocked result from trusted local structure only.
+        # The malformed external authority remains recorded as a finding and
+        # therefore cannot influence a verdict or publication decision.
+        authority = canonical_authority()
     manifest_findings = sorted(
-        set(manifest_findings) | set(derived_manifest_findings)
+        set(supplied_manifest_findings)
+        | set(derived_manifest_findings)
+        | set(input_findings)
     )
-    trace_bundles = trace_bundles or {}
-    trace_artifact_indexes = trace_artifact_indexes or {}
-    model_invocations_by_cell = model_invocations_by_cell or {}
-    hard_check_results = hard_check_results or {}
+    if trace_bundles is None:
+        trace_bundles = {}
+    elif not isinstance(trace_bundles, Mapping):
+        manifest_findings.append("trace bundle map is invalid")
+        trace_bundles = {}
+    if trace_artifact_indexes is None:
+        trace_artifact_indexes = {}
+    elif not isinstance(trace_artifact_indexes, Mapping):
+        manifest_findings.append("trace artifact index map is invalid")
+        trace_artifact_indexes = {}
+    if runtime_model_executions_by_cell is None:
+        raw_runtime_model_executions = {}
+    elif not isinstance(runtime_model_executions_by_cell, Mapping):
+        manifest_findings.append("runtime model execution map is invalid")
+        raw_runtime_model_executions = {}
+    else:
+        raw_runtime_model_executions = runtime_model_executions_by_cell
+    runtime_model_executions_by_cell = {}
+    for cell_id, executions in raw_runtime_model_executions.items():
+        if isinstance(executions, (str, bytes, Mapping)):
+            manifest_findings.append(
+                "runtime model execution collection is invalid"
+            )
+            runtime_model_executions_by_cell[cell_id] = ()
+            continue
+        try:
+            runtime_model_executions_by_cell[cell_id] = tuple(executions)
+        except TypeError:
+            manifest_findings.append(
+                "runtime model execution collection is invalid"
+            )
+            runtime_model_executions_by_cell[cell_id] = ()
+    if hard_check_results is None:
+        hard_check_results = {}
+    elif not isinstance(hard_check_results, Mapping):
+        manifest_findings.append("hard check result map is invalid")
+        hard_check_results = {}
+    manifest_cells = manifest_view.get("cells", [])
+    if not isinstance(manifest_cells, list):
+        manifest_cells = []
     expected = {
-        cell["execution_cell_id"] for cell in manifest["cells"]
+        cell["execution_cell_id"]
+        for cell in manifest_cells
+        if isinstance(cell, Mapping)
+        and isinstance(cell.get("execution_cell_id"), str)
     }
-    observed_ids = [result.get("execution_cell_id", "") for result in results]
+    mapped_results = [
+        result for result in results if isinstance(result, Mapping)
+    ]
+    if len(mapped_results) != len(results):
+        manifest_findings.append("cell result collection contains non-objects")
+    observed_ids = [
+        result.get("execution_cell_id", "") for result in mapped_results
+    ]
     counts = Counter(observed_ids)
     observed = set(observed_ids)
+    manifest_findings.extend(
+        _cell_artifact_map_key_findings(
+            observed,
+            {
+                "trace bundle": trace_bundles,
+                "trace artifact index": trace_artifact_indexes,
+                "runtime model execution": runtime_model_executions_by_cell,
+                "hard check result": hard_check_results,
+            },
+        )
+    )
     missing = sorted(expected - observed)
     unexpected = sorted(observed - expected)
     duplicates = sorted(
         cell_id for cell_id, count in counts.items() if count > 1
     )
-    attempt_findings = (
-        ["attempt journal is missing"]
-        if attempt_journal is None
-        else validate_attempt_journal(attempt_journal, manifest=manifest)
-    )
+    if attempt_journal is None:
+        attempt_findings = ["attempt journal is missing"]
+    elif manifest_schema_findings:
+        attempt_findings = [
+            "attempt journal cannot be verified against an invalid manifest"
+        ]
+    else:
+        attempt_findings = validate_attempt_journal(
+            attempt_journal,
+            manifest=manifest,
+        )
     result_findings = {
         result.get("execution_cell_id", "<missing-id>"): validate_cell_result(
             result,
@@ -2211,7 +3795,7 @@ def derive_suite_result(
             trace_artifact_index=trace_artifact_indexes.get(
                 str(result.get("execution_cell_id", ""))
             ),
-            model_invocations=model_invocations_by_cell.get(
+            runtime_model_executions=runtime_model_executions_by_cell.get(
                 str(result.get("execution_cell_id", ""))
             ),
             hard_check_result=hard_check_results.get(
@@ -2219,20 +3803,34 @@ def derive_suite_result(
             ),
             authority=authority,
         )
-        for result in results
-        if isinstance(result, Mapping)
+        for result in mapped_results
     }
     verdict_counts = Counter(
-        result.get("derived_final_verdict", "invalid") for result in results
+        result.get("derived_final_verdict", "invalid")
+        for result in mapped_results
     )
-    relation_results = list(relation_results)
+    manifest_relation_groups = manifest_view.get("relation_groups", [])
+    if not isinstance(manifest_relation_groups, list):
+        manifest_relation_groups = []
     expected_relation_ids = {
         group["relation_group_id"]
-        for group in manifest["relation_groups"]
-        if group["operator_ref"] != "episode_outcome"
+        for group in manifest_relation_groups
+        if isinstance(group, Mapping)
+        and isinstance(group.get("relation_group_id"), str)
+        and group.get("operator_ref") != "episode_outcome"
     }
+    mapped_relation_results = [
+        result
+        for result in relation_results
+        if isinstance(result, Mapping)
+    ]
+    if len(mapped_relation_results) != len(relation_results):
+        manifest_findings.append(
+            "relation result collection contains non-objects"
+        )
     observed_relation_ids = [
-        result.get("relation_group_id", "") for result in relation_results
+        result.get("relation_group_id", "")
+        for result in mapped_relation_results
     ]
     relation_id_counts = Counter(observed_relation_ids)
     missing_relations = sorted(
@@ -2246,19 +3844,28 @@ def derive_suite_result(
         for relation_id, count in relation_id_counts.items()
         if count > 1
     )
-    relation_findings = [
-        finding
-        for result in relation_results
-        for finding in validate_relation_result(
-            result,
-            manifest=manifest,
-            authority=authority,
-            cell_results=results,
-        )
-    ]
+    relation_findings = (
+        ["relation results cannot be verified against an invalid manifest"]
+        if manifest_schema_findings and mapped_relation_results
+        else [
+            finding
+            for result in mapped_relation_results
+            for finding in validate_relation_result(
+                result,
+                manifest=manifest,
+                authority=authority,
+                cell_results=results,
+            )
+        ]
+    )
     relation_verdict_counts = Counter(
         result.get("derived_verdict", "invalid")
-        for result in relation_results
+        for result in mapped_relation_results
+    )
+    manifest_findings.extend(
+        _runtime_model_global_identity_findings(
+            runtime_model_executions_by_cell
+        )
     )
     invalid_structure = bool(
         list(manifest_findings)
@@ -2284,7 +3891,7 @@ def derive_suite_result(
     elif (
         len(results) == len(expected)
         and verdict_counts["pass"] == len(expected)
-        and len(relation_results) == len(expected_relation_ids)
+        and len(mapped_relation_results) == len(expected_relation_ids)
         and relation_verdict_counts["pass"] == len(expected_relation_ids)
     ):
         local_status = "pass"
@@ -2292,22 +3899,22 @@ def derive_suite_result(
         local_status = "invalid"
 
     formal_blockers: list[str] = []
-    if manifest["execution_scope"] != "formal":
+    if manifest_view.get("execution_scope") != "formal":
         formal_blockers.append("development_execution_scope")
-    if manifest["status"] != "frozen":
+    if manifest_view.get("status") != "frozen":
         formal_blockers.append("execution_manifest_not_frozen")
     if local_status != "pass":
         formal_blockers.append("local_execution_not_passed")
     if any(
         "external_execution_receipt_sha256" not in result
-        for result in results
+        for result in mapped_results
     ):
         formal_blockers.append("external_execution_receipts_incomplete")
     if manifest_findings:
         formal_blockers.append("execution_manifest_invalid")
-    world_counts = _claim_target_kind_world_counts(manifest)
+    world_counts = _claim_target_kind_world_counts(manifest_view)
     coverage_blockers: list[str] = []
-    if manifest["run_mode"] != "full":
+    if manifest_view.get("run_mode") != "full":
         coverage_blockers.append("run_mode_not_full")
     missing_world_floor = [
         kind
@@ -2338,7 +3945,11 @@ def derive_suite_result(
         "artifact_type": "gate3_suite_result",
         "artifact_version": "gate3.suite-result.v1",
         "execution_manifest_sha256": canonical_sha256(manifest),
-        "run_mode": manifest["run_mode"],
+        "run_mode": (
+            manifest_view.get("run_mode")
+            if manifest_view.get("run_mode") in {"smoke", "slice", "full"}
+            else "smoke"
+        ),
         "expected_cell_count": len(expected),
         "observed_cell_count": len(results),
         "missing_cell_ids": missing,
@@ -2358,27 +3969,34 @@ def derive_suite_result(
             for verdict in ("pass", "fail", "blocked", "invalid")
         },
         "trace_complete_cell_count": sum(
-            bool(result.get("trace_complete")) for result in results
+            bool(result.get("trace_complete"))
+            for result in mapped_results
         ),
         "trace_incomplete_cell_count": sum(
-            not bool(result.get("trace_complete")) for result in results
+            not bool(result.get("trace_complete"))
+            for result in mapped_results
         ),
         "critical_episode_count": len(
             {
                 cell["episode_id"]
-                for cell in manifest["cells"]
-                if cell["risk_level"] == "critical"
+                for cell in manifest_cells
+                if isinstance(cell, Mapping)
+                and cell.get("risk_level") == "critical"
+                and isinstance(cell.get("episode_id"), str)
             }
         ),
         "historical_regression_episode_count": len(
             {
                 cell["episode_id"]
-                for cell in manifest["cells"]
-                if cell["historical_regression"]
+                for cell in manifest_cells
+                if isinstance(cell, Mapping)
+                and cell.get("historical_regression") is True
+                and isinstance(cell.get("episode_id"), str)
             }
         ),
         "critical_veto_count": sum(
-            len(result.get("critical_vetoes", ())) for result in results
+            len(result.get("critical_vetoes", ()))
+            for result in mapped_results
         ),
         "claim_target_kind_world_counts": world_counts,
         "coverage_admission_status": coverage_status,
@@ -2398,11 +4016,19 @@ def _claim_target_kind_world_counts(
     manifest: Mapping[str, Any],
 ) -> dict[str, int]:
     worlds_by_kind: dict[str, set[str]] = {}
-    for cell in manifest["cells"]:
-        for kind in cell["claim_target_kinds"]:
-            worlds_by_kind.setdefault(kind, set()).add(
-                cell["business_world_independence_key"]
-            )
+    cells = manifest.get("cells", [])
+    if not isinstance(cells, list):
+        return {}
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            continue
+        kinds = cell.get("claim_target_kinds", [])
+        world_key = cell.get("business_world_independence_key")
+        if not isinstance(kinds, list) or not isinstance(world_key, str):
+            continue
+        for kind in kinds:
+            if isinstance(kind, str):
+                worlds_by_kind.setdefault(kind, set()).add(world_key)
     return {
         kind: len(worlds)
         for kind, worlds in sorted(worlds_by_kind.items())

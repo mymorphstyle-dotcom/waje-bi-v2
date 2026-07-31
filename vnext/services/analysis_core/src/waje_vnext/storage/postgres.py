@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 import psycopg
 from psycopg import Connection, Cursor, errors, sql
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -450,6 +451,23 @@ class PostgresAuthorityStore:
     def atomic(self) -> Iterator[None]:
         with self._lock, self._connection.transaction():
             yield
+
+    @contextmanager
+    def consistent_read(self) -> Iterator[None]:
+        with self._lock:
+            if (
+                self._connection.info.transaction_status
+                is not TransactionStatus.IDLE
+            ):
+                raise AuthorityConflict(
+                    "consistent read requires a top-level transaction"
+                )
+            with self._connection.transaction():
+                with self._cursor() as cursor:
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                yield
 
     def open_case(
         self,
@@ -1326,6 +1344,34 @@ class PostgresAuthorityStore:
             decoder=decode_provider_attempt_request,
         )
 
+    def list_provider_attempt_requests(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptRequest, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_payload(
+                    cursor,
+                    table="logical_model_jobs",
+                    id_column="logical_model_job_id",
+                    record_id=logical_model_job_id,
+                    label="logical model job",
+                    decoder=decode_logical_model_job,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.provider_attempt_requests
+                    WHERE logical_model_job_id = %s
+                    ORDER BY attempt_number
+                    """,
+                    (logical_model_job_id,),
+                )
+                return tuple(
+                    decode_provider_attempt_request(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
     def get_provider_attempt_receipt(
         self,
         provider_attempt_receipt_id: str,
@@ -1396,6 +1442,160 @@ class PostgresAuthorityStore:
                     if row is None
                     else decode_durable_model_result(row["payload"])
                 )
+
+    def read_model_execution_records(self, logical_model_job_id: str):
+        with self._lock:
+            if (
+                self._connection.info.transaction_status
+                is not TransactionStatus.IDLE
+            ):
+                raise AuthorityConflict(
+                    "model execution snapshot requires a top-level read transaction"
+                )
+            with self._connection.transaction():
+                with self._cursor() as cursor:
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                    job = self._get_payload(
+                        cursor,
+                        table="logical_model_jobs",
+                        id_column="logical_model_job_id",
+                        record_id=logical_model_job_id,
+                        label="logical model job",
+                        decoder=decode_logical_model_job,
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.provider_attempt_requests
+                        WHERE logical_model_job_id = %s
+                        ORDER BY attempt_number
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    requests = tuple(
+                        decode_provider_attempt_request(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    cursor.execute(
+                        """
+                        SELECT r.payload
+                        FROM waje_vnext.provider_attempt_receipts AS r
+                        JOIN waje_vnext.provider_attempt_requests AS q
+                          ON q.provider_attempt_id = r.provider_attempt_id
+                        WHERE r.logical_model_job_id = %s
+                        ORDER BY q.attempt_number
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    receipts = tuple(
+                        decode_provider_attempt_receipt(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.durable_model_results
+                        WHERE logical_model_job_id = %s
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    row = cursor.fetchone()
+                    result = (
+                        None
+                        if row is None
+                        else decode_durable_model_result(row["payload"])
+                    )
+                    return job, requests, receipts, result
+
+    def read_model_execution_trace_records(
+        self,
+        logical_model_job_id: str,
+        trace_manifest_id: str,
+    ):
+        with self._lock:
+            if (
+                self._connection.info.transaction_status
+                is not TransactionStatus.IDLE
+            ):
+                raise AuthorityConflict(
+                    "model execution snapshot requires a top-level read transaction"
+                )
+            with self._connection.transaction():
+                with self._cursor() as cursor:
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                    job = self._get_payload(
+                        cursor,
+                        table="logical_model_jobs",
+                        id_column="logical_model_job_id",
+                        record_id=logical_model_job_id,
+                        label="logical model job",
+                        decoder=decode_logical_model_job,
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.provider_attempt_requests
+                        WHERE logical_model_job_id = %s
+                        ORDER BY attempt_number
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    requests = tuple(
+                        decode_provider_attempt_request(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    cursor.execute(
+                        """
+                        SELECT r.payload
+                        FROM waje_vnext.provider_attempt_receipts AS r
+                        JOIN waje_vnext.provider_attempt_requests AS q
+                          ON q.provider_attempt_id = r.provider_attempt_id
+                        WHERE r.logical_model_job_id = %s
+                        ORDER BY q.attempt_number
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    receipts = tuple(
+                        decode_provider_attempt_receipt(row["payload"])
+                        for row in cursor.fetchall()
+                    )
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM waje_vnext.durable_model_results
+                        WHERE logical_model_job_id = %s
+                        """,
+                        (logical_model_job_id,),
+                    )
+                    row = cursor.fetchone()
+                    result = (
+                        None
+                        if row is None
+                        else decode_durable_model_result(row["payload"])
+                    )
+                    trace_manifest = self._get_payload(
+                        cursor,
+                        table="run_trace_manifests",
+                        id_column="trace_manifest_id",
+                        record_id=trace_manifest_id,
+                        label="run trace manifest",
+                        decoder=decode_run_trace_manifest,
+                    )
+                    validate_run_trace_manifest_references(
+                        self,
+                        trace_manifest,
+                    )
+                    return (
+                        job,
+                        requests,
+                        receipts,
+                        result,
+                        trace_manifest,
+                    )
 
     def record_obligation_schedule(
         self,
@@ -2047,32 +2247,44 @@ class PostgresAuthorityStore:
         self,
         record: RunTraceManifest,
     ) -> RunTraceManifest:
-        validate_run_trace_manifest_references(self, record)
         payload = encode_record(record)
-        with self._lock, self._connection.transaction():
-            with self._cursor() as cursor:
-                self._get_case(cursor, record.case_id)
-                self._insert_idempotent_immutable(
-                    cursor,
-                    table="run_trace_manifests",
-                    id_column="trace_manifest_id",
-                    record_id=record.trace_manifest_id,
-                    columns=(
-                        "case_id",
-                        "run_id",
-                        "lineage_sha256",
-                        "payload",
-                    ),
-                    values=(
-                        record.case_id,
-                        record.run_id,
-                        record.lineage_sha256,
-                        Jsonb(payload),
-                    ),
-                    payload=payload,
-                    label="run trace manifest",
+        with self._lock:
+            if (
+                self._connection.info.transaction_status
+                is not TransactionStatus.IDLE
+            ):
+                raise AuthorityConflict(
+                    "run trace admission requires a top-level transaction"
                 )
-                return record
+            with self._connection.transaction():
+                with self._cursor() as cursor:
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+                    )
+                validate_run_trace_manifest_references(self, record)
+                with self._cursor() as cursor:
+                    self._get_case(cursor, record.case_id)
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="run_trace_manifests",
+                        id_column="trace_manifest_id",
+                        record_id=record.trace_manifest_id,
+                        columns=(
+                            "case_id",
+                            "run_id",
+                            "lineage_sha256",
+                            "payload",
+                        ),
+                        values=(
+                            record.case_id,
+                            record.run_id,
+                            record.lineage_sha256,
+                            Jsonb(payload),
+                        ),
+                        payload=payload,
+                        label="run trace manifest",
+                    )
+                    return record
 
     def get_run_trace_manifest(
         self,

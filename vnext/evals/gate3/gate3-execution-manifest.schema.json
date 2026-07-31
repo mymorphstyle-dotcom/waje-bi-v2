@@ -99,10 +99,15 @@
     "profileBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile_ref", "profile_sha256"],
+      "required": [
+        "profile_ref",
+        "profile_sha256",
+        "runtime_configuration_sha256"
+      ],
       "properties": {
         "profile_ref": {"$ref": "#/$defs/nonEmptyString"},
-        "profile_sha256": {"$ref": "#/$defs/sha256"}
+        "profile_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_configuration_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "roleProfiles": {

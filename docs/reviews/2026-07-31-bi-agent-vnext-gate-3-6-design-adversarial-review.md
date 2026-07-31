@@ -30,7 +30,7 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 | G36-RT-02 | low-risk inference 无法进入 DecisionLedger | typed inference → immutable DecisionRecord → Frame refs |
 | G36-RT-03 | accepted Frame 后无 production resolution/obligation stage | 建立 durable resolution worker，harness 只供 source authority |
 | G36-RT-04 | provisional Answer Reviewer outbox 路由到 Frame Reviewer | typed AnswerReview worker 和独立 dispatch route |
-| G36-RT-05 | provider config/thinking/prompt 不在 durable job identity | runtime 已由 ModelConfigurationIdentity + ModelRequestArtifact 关闭；eval bridge 仍 open |
+| G36-RT-05 | provider config/thinking/prompt 不在 durable job identity | runtime identity 与 local eval bridge 已关闭；protected source proof 仍 open |
 | G36-RT-06 | success receipt 与 typed result 分事务产生 crash window | 本地事务已关闭；provider 端 outcome unknown 仍需幂等/response lookup 证明 |
 | G36-RT-07 | test realm 由 caller DSN/字符串自报 | registry-issued RunRealmContext + store attestation |
 | G36-RT-08 | parallel obligation/projector/sensitivity worker 不完整 | 独立 workers、selected sensitivity identity、safety+liveness |
@@ -44,14 +44,14 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 - coverage ledger 汇总作者标签，部分 conversation tag 与结构事实矛盾。
 - deterministic hard-check verdict 若提前给 Evaluation Reviewer，会造成锚定和双计分。
 - A/B dossier 只覆盖跨月 world，固定七天 reference 本身带偏，无法推广。
-- model invocation schema 需无损表达 retry/refusal/incomplete/superseded。
+- runtime model execution 必须携带完整 attempt history；仅成功 result 可生产 trace stage。
 - live Gate 2 runner 和 direct-urllib quality probe 都不能作为 G3.6 lane evidence。
 
 ## 已落地的第一批修复
 
 - G3.6 持久化计划与 Gate entry；
 - provider thinking 进入 request 和 configuration identity；
-- execution manifest、attempt journal、trace、model invocation、cell/suite result、relation
+- execution manifest、attempt journal、trace、runtime model execution、cell/suite result、relation
   result 与 protected execution receipt 初始合同；
 - authority/implementation hard-check result 按 grader registry exact set 派生，cell 无法自报
   两层 pass；
@@ -107,18 +107,33 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 - OpenAI-compatible configuration 必须与 sealed adapter settings 完全相等；伪造 endpoint、
   timeout、model 或 adapter identity 都会在 transport 前失败，未登记 adapter 不进入 job；
 - 三角色 provider factory 已固化用户确认的三组临时配置，三个 configuration hash 独立；
-- migration 007、482 个 Python tests、26 个 eval execution tests、contract checks 和 26 个
-  disposable PostgreSQL migration/storage/race tests 已通过。
+- migration 007、495 个 Python tests（36 skipped）、41 个 G3.6 runtime/eval authority tests、
+  contract checks、27 个加载本地配置的 disposable PostgreSQL migration/storage/race tests 和
+  Python 3.12.13 clean-copy build 已通过。
+
+复审后已关闭的 local Blocking：
+
+- eval 已采用 runtime configuration identity 与 per-job request artifact，quality-probe prompt
+  hash 不再充当 production invocation identity；
+- `RuntimeModelExecution` 携带完整 job/request/receipt/result set，重算所有内部 hash 与 retry
+  连续性；
+- TraceArtifactIndex v2 通过 durable result source 和 stage producer registry 阻止 wrong-stage
+  artifact；
+- runtime-implemented typed request 必须由 production decoder/compiler 原样重放；简化占位输入、
+  prompt/tool/body 复制规则和隐藏字段已从正向 fixture 删除；
+- persisted RunTraceManifest exact 绑定 model job、attempt request、receipt、result 与 journal lineage；
+  跨 case/run、漏 job/request、额外未拥有 artifact、跨 cell 重复 id、错误时间顺序、历史残缺
+  manifest 与 malformed schema 均被拒绝；
+- lane stage graph 与六个 model stage 的完整 15-field producer capability tuple 使用独立代码基线，
+  registry 无法通过删除 Reviewer、改 predecessor、缩减 producer 字段或自报 implemented 来降低
+  测试要求；test-double 永远不能进入 execution admission；
+- results、relation results、findings、authority 和 per-cell artifact/runtime/check maps 的畸形输入
+  均安全派生 invalid/blocked；ghost/missing cell keys 无法绕过 exact-set closure；
+- event-sourced stage 精确绑定 journal event type、cursor、authority/action 与 event bytes；Primary
+  Frame proposal、Reviewer candidate 和 acceptance event 必须指向同一 Frame authority。
 
 复审确认仍 open 的 Blocking：
 
-- runtime exact invocation foundation 已落地；eval `request_sha256`、logical job、attempt 与
-  causation 仍由 synthetic dossier 自报，尚未引用并重算 runtime job/request/receipt artifacts；
-- registry 中的 quality-probe prompt identity 与 production runtime prompt identity 仍混在同一
-  配置概念中；eval 需采用 runtime 已实现的 configuration identity 与 per-job invocation
-  contract 两层结构；
-- TraceArtifactIndex 尚未绑定 artifact kind、stage、producer logical job、provider attempt、
-  configuration 和 output contract，typed output 仍可能指向错误阶段 artifact；
 - 本地 success pair 已原子提交，稳定幂等键会保留给后续 provider 对账；当前 unreceipted
   request 会停在 `outcome_unknown`。provider 幂等承诺或按键查询能力仍缺真实证明；
 - 内置 request compiler 和 durable dispatch 参数已封闭应用层 drift；transport release、实际
@@ -137,14 +152,24 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
   正向可满足路径；
 - Primary runtime invocation 已绑定可重算 request artifact 与 AgentWorldView 类型，并会拒绝
   clean-view label 下的隐藏 oracle；protected principal 和 eval-side execution proof 仍未形成；
+- Frame proposal、review、candidate 与 frame-accepted event 已做同一 Frame identity 核验；
+  admission proof → accepted frame/head 的完整 byte-level replay 仍待接入；
+- canonical `runtime_review` 和 `evaluation_review` producer 明确标记为 `unprovisioned`，因此
+  full-authority manifest 会在入口 fail closed；test-double 只能验证合同，不能生成 readiness；
 - Evaluation Reviewer 仍能看到 illustrative valid-design examples，存在锚定风险；正式输入收敛
   取决于预注册 A/B 探针，当前不能宣称 Reviewer 对替代设计无偏；
 - Lane A/B 尚未接入 production durable runtime，因此 full matrix 禁止启动。
 
-最终冻结快照继续确认：runtime request bytes、attempt 和原子 success pair 已可重算；eval
-`request_sha256`、provider response/receipt 和 causation 仍可由同一 synthetic dossier 自报；
-hard-check/relation observation 仍未从真实 artifact bytes 重算；eval append-only attempt 历史
-尚未与 PostgreSQL journal 对账。以上限制由
+后续 G3.6.1 修订已删除自由填写的 eval `request_sha256`/job/attempt projection。local eval 直接
+消费完整 runtime record set，重算 request/config/result，验证完整 retry chain，并通过
+TraceArtifactIndex v2 与 stage producer registry 阻止 wrong-stage 引用。PostgreSQL projector
+使用一个顶层 `REPEATABLE READ READ ONLY` 事务读取 job、全部 request/receipt、result 和
+RunTraceManifest；manifest materialization 同样使用一致读，admission 在独立顶层事务重新核验
+引用。嵌套事务会被明确拒绝，历史残缺 manifest 也不能投影新结果。
+
+本地 runner 仍可先编造整套数据库事实，再生成内部一致的 dossier；hard-check/relation
+observation、actual artifact bytes、provider gateway raw response 与 protected assignment 尚未由
+独立 principal 对账。以上限制由
 `local_evidence_trust=runner_self_attested` 和 formal fail-closed 明示，不得把本地合同测试
 解读为真实模型运行证据。
 
