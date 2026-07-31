@@ -1,6 +1,6 @@
 {
-  "policy_version": "gate3.behavior-eval-policy.v4",
-  "policy_epoch": "wajegame-claim-case-files-2026-07-31",
+  "policy_version": "gate3.behavior-eval-policy.v5",
+  "policy_epoch": "wajegame-typed-open-world-2026-07-31",
   "coverage_taxonomy": {
     "artifact_version": "gate3.coverage-taxonomy.v1",
     "canonical_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3"
@@ -28,7 +28,10 @@
     "multi_estimand_requires_per_claim_ceiling": true,
     "held_out_plaintext_must_be_absent": true,
     "run_manifest_must_be_frozen": true,
-    "three_layer_verdict_is_strict_and": true
+    "three_layer_verdict_is_strict_and": true,
+    "claim_target_kind_is_typed": true,
+    "open_world_design_acceptance_required": true,
+    "business_world_independence_is_authority_derived": true
   },
   "required_suite": {
     "required_catalog_episodes": 36,
@@ -77,6 +80,22 @@
       "known_contract_gap"
     ],
     "minimum_independent_sources": 3,
+    "required_claim_target_kinds": [
+      "definition",
+      "data_quality_state",
+      "point_quantity",
+      "distribution",
+      "temporal_pattern",
+      "contrast",
+      "composition",
+      "accounting_decomposition",
+      "cohort_outcome",
+      "funnel_transition",
+      "association",
+      "causal_effect",
+      "diagnostic_set"
+    ],
+    "minimum_independent_business_worlds_per_claim_target_kind": 3,
     "counterfactual_siblings_per_episode": 3,
     "required_counterfactual_roles_per_episode": [
       "meaning_preserving",

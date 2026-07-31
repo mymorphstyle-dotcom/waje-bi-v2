@@ -25,6 +25,7 @@ from tools.gate3_execution_authority import (
     validate_hard_check_result,
     validate_relation_result,
     validate_trace_bundle,
+    _claim_target_kind_world_counts,
 )
 
 
@@ -91,6 +92,9 @@ def execution_cell(authority, *, cell_id="CELL-DEV-001", critical=False):
         "critical": critical,
         "source_pool": "real_user_language",
         "business_world_id": "WORLD-PAID-AMOUNT-CHANGE-001",
+        "business_world_independence_key": episode[
+            "business_world_independence_key"
+        ],
         "claim_target_kinds": ["contrast", "accounting_decomposition"],
         "coverage_atom_refs": episode_coverage_atom_refs(episode),
         "historical_regression": False,
@@ -148,6 +152,9 @@ def counterfactual_cell(authority, *, cell_id="CELL-CF-001"):
                 [materialized["user_episode"]["messages"][0]["text"]]
             ),
             "coverage_atom_refs": episode_coverage_atom_refs(materialized),
+            "business_world_independence_key": materialized[
+                "business_world_independence_key"
+            ],
             "agent_world_view_sha256": views["agent_world_view"][
                 "view_sha256"
             ],
@@ -474,29 +481,6 @@ def trace_bundle(cell, manifest):
 class Gate36ExecutionAuthorityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.authority = copy.deepcopy(canonical_authority())
-        episode = next(
-            item
-            for item in self.authority["catalog"]["episodes"]
-            if item["episode_id"] == "G3-USER-001"
-        )
-        kinds = {
-            "primary_paid_amount_change_claim": "contrast",
-            "behavior_contribution_claim": "accounting_decomposition",
-            "seven_day_sensitivity_claim": "contrast",
-            "prior_week_sensitivity_claim": "contrast",
-        }
-        for target in episode["acceptable_outcome"]["claim_targets"]:
-            target["claim_target_kind"] = kinds[target["claim_target_id"]]
-        for sibling in episode["counterfactual_siblings"]:
-            materialized = materialize_counterfactual_episode(
-                episode,
-                sibling,
-            )
-            sibling["mutation_operation"][
-                "materialized_sibling_sha256"
-            ] = canonical_sha256(
-                counterfactual_materialization_core(materialized)
-            )
         self.manifest = execution_manifest(self.authority)
 
     def test_development_manifest_binds_profiles_and_trace(self) -> None:
@@ -541,15 +525,63 @@ class Gate36ExecutionAuthorityTest(unittest.TestCase):
             ),
         )
 
-    def test_canonical_untyped_corpus_cannot_open_execution(self) -> None:
+    def test_canonical_typed_corpus_can_open_development_execution(self) -> None:
         canonical = canonical_authority()
         manifest = execution_manifest(canonical)
+        self.assertEqual(
+            validate_execution_manifest(manifest, authority=canonical),
+            [],
+        )
+
+        attacked_authority = copy.deepcopy(canonical)
+        attacked_episode = next(
+            item
+            for item in attacked_authority["catalog"]["episodes"]
+            if item["episode_id"] == "G3-USER-001"
+        )
+        del attacked_episode["acceptable_outcome"]["claim_targets"][0][
+            "claim_target_kind"
+        ]
+        attacked_manifest = execution_manifest(attacked_authority)
         self.assertTrue(
             any(
                 "lacks typed claim target kinds" in finding
-                for finding in validate_execution_manifest(manifest)
+                for finding in validate_execution_manifest(
+                    attacked_manifest,
+                    authority=attacked_authority,
+                )
             )
         )
+
+    def test_world_coverage_deduplicates_shared_outcome_authority(self) -> None:
+        counts = _claim_target_kind_world_counts(
+            {
+                "cells": [
+                    {
+                        "business_world_id": "WORLD-WORDING-A",
+                        "business_world_independence_key": (
+                            "authority-set:" + "a" * 64
+                        ),
+                        "claim_target_kinds": ["contrast"],
+                    },
+                    {
+                        "business_world_id": "WORLD-WORDING-B",
+                        "business_world_independence_key": (
+                            "authority-set:" + "a" * 64
+                        ),
+                        "claim_target_kinds": ["contrast"],
+                    },
+                    {
+                        "business_world_id": "WORLD-INDEPENDENT",
+                        "business_world_independence_key": (
+                            "authority-set:" + "b" * 64
+                        ),
+                        "claim_target_kinds": ["contrast"],
+                    },
+                ]
+            }
+        )
+        self.assertEqual({"contrast": 2}, counts)
 
     def test_full_mode_cannot_shrink_episode_or_operator_universe(self) -> None:
         attacked = copy.deepcopy(self.manifest)

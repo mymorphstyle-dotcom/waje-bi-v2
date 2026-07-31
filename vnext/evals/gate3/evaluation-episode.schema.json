@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-episode.v4.schema.json",
+  "$id": "https://waje.dev/schemas/evals/gate3/evaluation-episode.v5.schema.json",
   "title": "WAJE Gate 3 Behavior Evaluation Catalog",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "catalog_version": {
-      "const": "gate3.behavior-eval.v4"
+      "const": "gate3.behavior-eval.v5"
     },
     "episodes": {
       "type": "array",
@@ -40,6 +40,7 @@
         "episode_id",
         "title",
         "source_pool",
+        "business_world_independence_key",
         "provenance",
         "suite_binding",
         "data_source_bindings",
@@ -68,6 +69,10 @@
             "generated_business_world",
             "adversarial_conversation"
           ]
+        },
+        "business_world_independence_key": {
+          "type": "string",
+          "pattern": "^authority-set:[a-f0-9]{64}$"
         },
         "provenance": {
           "$ref": "#/$defs/provenance"
@@ -976,6 +981,7 @@
       "additionalProperties": false,
       "required": [
         "must_preserve",
+        "design_space_policy",
         "valid_design_space",
         "must_investigate",
         "permitted_resolution_kinds",
@@ -986,6 +992,9 @@
       "properties": {
         "must_preserve": {
           "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "design_space_policy": {
+          "$ref": "#/$defs/designSpacePolicy"
         },
         "valid_design_space": {
           "type": "array",
@@ -1042,6 +1051,7 @@
       "required": [
         "claim_target_id",
         "estimand_id",
+        "claim_target_kind",
         "target_description",
         "design_claim_ceiling"
       ],
@@ -1053,6 +1063,23 @@
         "estimand_id": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "claim_target_kind": {
+          "enum": [
+            "definition",
+            "data_quality_state",
+            "point_quantity",
+            "distribution",
+            "temporal_pattern",
+            "contrast",
+            "composition",
+            "accounting_decomposition",
+            "cohort_outcome",
+            "funnel_transition",
+            "association",
+            "causal_effect",
+            "diagnostic_set"
+          ]
         },
         "target_description": {
           "$ref": "#/$defs/nonEmptyString"
@@ -1103,6 +1130,42 @@
         },
         "required_properties": {
           "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    },
+    "designSpacePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "open_world_acceptance",
+        "authored_examples_role",
+        "acceptance_authority_refs",
+        "disqualifier_codes"
+      ],
+      "properties": {
+        "open_world_acceptance": {"const": true},
+        "authored_examples_role": {
+          "const": "illustrative_non_exhaustive"
+        },
+        "acceptance_authority_refs": {
+          "type": "array",
+          "const": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ]
+        },
+        "disqualifier_codes": {
+          "type": "array",
+          "const": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
         }
       }
     },

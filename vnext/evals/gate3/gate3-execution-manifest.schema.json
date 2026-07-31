@@ -157,6 +157,7 @@
         "critical",
         "source_pool",
         "business_world_id",
+        "business_world_independence_key",
         "claim_target_kinds",
         "coverage_atom_refs",
         "historical_regression",
@@ -199,6 +200,10 @@
           ]
         },
         "business_world_id": {"$ref": "#/$defs/nonEmptyString"},
+        "business_world_independence_key": {
+          "type": "string",
+          "pattern": "^authority-set:[a-f0-9]{64}$"
+        },
         "claim_target_kinds": {
           "type": "array",
           "minItems": 1,

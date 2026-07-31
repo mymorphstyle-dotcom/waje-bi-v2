@@ -1,5 +1,5 @@
 {
-  "catalog_version": "gate3.behavior-eval.v4",
+  "catalog_version": "gate3.behavior-eval.v5",
   "episodes": [
     {
       "episode_id": "G3-GF-001",
@@ -173,18 +173,38 @@
             "claim_target_id": "cross_month_daily_intensity_claim",
             "estimand_id": "target_month_start_vs_prior_month_end_daily_intensity",
             "target_description": "保持 M month-start 对 M-1 month-end 身份的日均方向和幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "cross_month_raw_total_context_claim",
             "estimand_id": "target_month_start_vs_prior_month_end_raw_total",
             "target_description": "同一跨月配对的 raw total 及其 exposure 适用边界。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "point_quantity"
           }
         ],
         "allowed_boundary_codes": [
           "incomplete_cross_month_window"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -224,7 +244,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_001_cf01",
-            "materialized_sibling_sha256": "048847daab29e338e98b6e0b9a5ba32f6b638998b5899c988c0e338398f7d50d",
+            "materialized_sibling_sha256": "c81a910d7b790a93764c3a95460f6d6859db8bddd03573a400148c3f71d6e1c6",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -283,7 +303,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_001_cf02",
-            "materialized_sibling_sha256": "91e18636f308e159b91d9164295cdf6185f778575d920cf7782c03b8ea904f38",
+            "materialized_sibling_sha256": "c441841d4df2e2c39b052320b47091fc937b901e1f8b45b6776ab6111e2bd418",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -341,7 +361,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_001_cf03",
-            "materialized_sibling_sha256": "f013e52ed8331374151f7786ba2d56346dacbfb0bb23c100e684592796958765",
+            "materialized_sibling_sha256": "c5be5d891c85447cc1bfae626171988ca018d4e21bfd62ac167b73c2023a88e0",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -399,7 +419,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_001_cf04",
-            "materialized_sibling_sha256": "5552cd6f43f15b3668fb88d005593cdce8c4efae8399c925cc6954ade476af44",
+            "materialized_sibling_sha256": "0c0262caf53ba1a4ee943b45d9b3654d465f95c5001304609b898d33b8fbaeb3",
             "patches": [
               {
                 "path": "/business_world/data_conditions/1/description",
@@ -607,7 +627,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:86b1cdaf05357b46c6514163bde308b9cf16d7d28dbb3befc4380393e8953ced"
     },
     {
       "episode_id": "G3-GF-002",
@@ -792,24 +813,45 @@
             "claim_target_id": "monthly_resolved_window_claim",
             "estimand_id": "monthly_last_n_day_paid_amount_intensity",
             "target_description": "逐月 resolved start/end、calendar days、valid days 和日均金额。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "distribution"
           },
           {
             "claim_target_id": "paired_year_over_year_month_end_claim",
             "estimand_id": "paired_year_over_year_month_end_change",
             "target_description": "同月配对的年度方向与幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "month_end_stability_claim",
             "estimand_id": "month_end_pattern_stability",
             "target_description": "跨 28/29/30/31 天月份的月末模式稳定性及例外。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "temporal_pattern"
           }
         ],
         "allowed_boundary_codes": [
           "incomplete_month_end_window"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -849,7 +891,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_002_cf01",
-            "materialized_sibling_sha256": "d835848a3be2b8e4928cda5f716a22f8b002f6674cb042b97db17d173d367e77",
+            "materialized_sibling_sha256": "b51a521b5dbb3cda1d613cce3ebe1708e4fdf5c38cd62e0709ba1deae87c8ece",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -918,7 +960,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_002_cf02",
-            "materialized_sibling_sha256": "50a8176cbde1998219b5cdada9ab925eaab581da96117bbec343a32d095dfac4",
+            "materialized_sibling_sha256": "eaea39819db2f00dee9a45444734b19ac61201d9c7bc2f30f0d8843cd85d29a1",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -987,7 +1029,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_002_cf03",
-            "materialized_sibling_sha256": "13121f25b14af7eb400648d8d66adeebb12bed1ff2bbb8243d2ec51cad4cc125",
+            "materialized_sibling_sha256": "8dfcea55832a48b6bcbb171746409846f29978c4658f976c00b37648baba4df9",
             "patches": [
               {
                 "path": "/business_world/data_conditions/1/description",
@@ -1057,7 +1099,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_002_cf04",
-            "materialized_sibling_sha256": "59d8737d69503b9ed89a5ff19216f4de9946517cb255d430f6943baf5a8bce3a",
+            "materialized_sibling_sha256": "56f705975da2e06bbe89348f9219d03ee5e98eee746e6e40232a4fa88f0f123f",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -1354,7 +1396,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:a58b971fa46409bed42d4521a6de5551fe5de132d4678f69c01f8b27135c5e1e"
     },
     {
       "episode_id": "G3-GF-003",
@@ -1530,18 +1573,38 @@
             "claim_target_id": "matched_maturity_mtd_rate_claim",
             "estimand_id": "matched_maturity_mtd_new_same_day_paid_rate",
             "target_description": "相同成熟度 MTD 窗口的百分点差异及分子分母。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "complete_month_rate_claim",
             "estimand_id": "current_month_complete_period_new_same_day_paid_rate",
             "target_description": "完整 6 月新增首日付费率方向；当前只能给出明确的不可识别边界。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "point_quantity"
           }
         ],
         "allowed_boundary_codes": [
           "current_month_incomplete"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -1581,7 +1644,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_003_cf01",
-            "materialized_sibling_sha256": "ea018f73bfbf5d31f4c30221015ad6bc3862452d917e175d8b0845efe44c4aff",
+            "materialized_sibling_sha256": "cfd4ef83c6eb013511e5da33e55d28381fdcf09f285bbf52a868d0793ab7324d",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -1640,7 +1703,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_003_cf02",
-            "materialized_sibling_sha256": "af3ef05f9e7ce55ca14c53deab4d739228ec36e8c06b32ae78ea2b7a91f42f54",
+            "materialized_sibling_sha256": "726e72f652acbc0af34c3f1846d83765cda535d3abe8d4196c1189194265570e",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -1721,7 +1784,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_003_cf03",
-            "materialized_sibling_sha256": "1ba52bf560eed5d8ff06340e1a565f2cf3ed1c73de444f443d4d562817dc7ff1",
+            "materialized_sibling_sha256": "24a787afee2c6d718527b281368d9ac9a1eb9281670a41f9a37ddc08a67cda0a",
             "patches": [
               {
                 "path": "/business_world/data_conditions/0/description",
@@ -1779,7 +1842,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_003_cf04",
-            "materialized_sibling_sha256": "9351d8d69a30365b8dc069c4200d0616df71b97f31614931eeac274c1f3d5141",
+            "materialized_sibling_sha256": "46cb82f165a641dcc6d15f47f9deb3eacd7f4991fc7f636a70958f1c4ffedf96",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -1989,7 +2052,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:7b4ba6b206a0a16027f9dbdcfabd8dfc421e6613ccf6a8a694478596bf4729f0"
     },
     {
       "episode_id": "G3-GF-004",
@@ -2162,24 +2226,45 @@
             "claim_target_id": "unequal_exposure_raw_total_claim",
             "estimand_id": "unequal_exposure_raw_paid_amount_total",
             "target_description": "raw total 的方向、幅度与长度效应限制。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "normalized_operating_intensity_claim",
             "estimand_id": "valid_day_normalized_paid_amount_intensity",
             "target_description": "valid-day 日均经营强度的方向与幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "matched_exposure_sensitivity_claim",
             "estimand_id": "matched_five_day_operating_sensitivity",
             "target_description": "匹配五个 valid days 后方向是否保持。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           }
         ],
         "allowed_boundary_codes": [
           "invalid_exposure_comparability"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -2219,7 +2304,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_004_cf01",
-            "materialized_sibling_sha256": "c5b64781a48448537aeddff7fcb90f08bdea56570d8e4f6aed38186cf799f4da",
+            "materialized_sibling_sha256": "e62b43858fd63958c6c8985b7aa85eae0890f76b95af867cbddde22fcb46771b",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -2288,7 +2373,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_004_cf02",
-            "materialized_sibling_sha256": "ef72403b0b3f9a80c0d320f35a1f88f1129906c57e48f8278f02f9f452687732",
+            "materialized_sibling_sha256": "ccbe95ce5d7d96cfd5eeb4edb49f5839090f17b26c457b6c8c9f95a222cdfc67",
             "patches": [
               {
                 "path": "/business_world/truth_facts/0/statement",
@@ -2358,7 +2443,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_004_cf03",
-            "materialized_sibling_sha256": "e082e7d94645244dfdc5cb3c255f201ee1ce68dc0963758a061d93ee5556a184",
+            "materialized_sibling_sha256": "4435918ceb4bd639f4c63049bfa0820c348146e21bdd44c06f57365a9256fc42",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -2444,7 +2529,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_004_cf04",
-            "materialized_sibling_sha256": "b104652441501c555c3660e455c11b07bd6b09fb1b7d3e931370c9289534bac3",
+            "materialized_sibling_sha256": "7f7acc17185527304f5ef47c0442a38f36e5470a5e4f538b0605dc2358cd2917",
             "patches": [
               {
                 "path": "/business_world/data_conditions/1/description",
@@ -2705,7 +2790,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:d54fe86946d641189f4682a3ce8e7813b3ea116d3032d03be8887947e75d6950"
     },
     {
       "episode_id": "G3-GF-008",
@@ -2892,36 +2978,59 @@
             "claim_target_id": "matched_new_user_count_claim",
             "estimand_id": "matched_week_new_user_count_change",
             "target_description": "新增人数规模的方向和幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "registration_rate_change_claim",
             "estimand_id": "matched_week_registration_rate_change",
             "target_description": "注册率的分子、共同新增分母与百分点变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "funnel_transition"
           },
           {
             "claim_target_id": "first_payment_rate_change_claim",
             "estimand_id": "matched_week_first_payment_rate_change",
             "target_description": "首充率的分子、共同新增分母与百分点变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "funnel_transition"
           },
           {
             "claim_target_id": "same_day_new_paid_rate_change_claim",
             "estimand_id": "matched_week_same_day_new_paid_rate_change",
             "target_description": "新增首日付费率的分子、共同新增分母与百分点变化。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "funnel_transition"
           },
           {
             "claim_target_id": "user_level_transition_loss_claim",
             "estimand_id": "user_level_funnel_transition_loss",
             "target_description": "用户级逐阶段流失位置；只允许明确合同边界。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "funnel_transition"
           }
         ],
         "allowed_boundary_codes": [
           "user_level_funnel_unavailable"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -2961,7 +3070,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_008_cf01",
-            "materialized_sibling_sha256": "c13c55b35ec4e2921cb09f286e3cb658185c4ae2797a75da086dd17c61139e3a",
+            "materialized_sibling_sha256": "29812c92f353964f92b0f88605545bfebb368195b342aab6353bae88321183cf",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -3052,7 +3161,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_008_cf02",
-            "materialized_sibling_sha256": "1a19104bb33e245436b61f57df5aca7d309b8c2b9ef284037e8a92c5c665b114",
+            "materialized_sibling_sha256": "e2ede204bc20b840b2470048cdc923834a1872fea59d6eebe9351cc84c6c2e03",
             "patches": [
               {
                 "path": "/business_world/truth_facts/0/statement",
@@ -3105,7 +3214,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_008_cf03",
-            "materialized_sibling_sha256": "e6132cf57192e5b0cd4ed84d20901c71645d79301d41357437bb11f485e874b2",
+            "materialized_sibling_sha256": "4802f0f8efe91a47ac33824ee1c48027ffd21a4032acde14bf972e8b29659849",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -3167,7 +3276,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_008_cf04",
-            "materialized_sibling_sha256": "3b49c59426b5f5d95e852437f12f54c4e9b3b7334715e81b400e7f8f60cb5ee0",
+            "materialized_sibling_sha256": "58640bd38d9cb56f633f82a6dfba6ca3b3ce46c081a0de7c64e6d5860569997e",
             "patches": [
               {
                 "path": "/business_world/data_conditions/3/description",
@@ -3501,7 +3610,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:b6be8a8aa9527d80fff7a8bdd9390ed38179093b2be0faeca43c880a4308e832"
     },
     {
       "episode_id": "G3-GF-009",
@@ -3693,27 +3803,49 @@
             "claim_target_id": "closed_month_ggr_change_claim",
             "estimand_id": "closed_month_gameplay_ggr_change",
             "target_description": "完整月 GGR 总差异。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "ggr_component_contribution_claim",
             "estimand_id": "contracted_ggr_component_contributions",
             "target_description": "可回收到已解释金额的 component、interaction 与顺序敏感性。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           },
           {
             "claim_target_id": "ggr_residual_magnitude_claim",
             "estimand_id": "ggr_unexplained_residual",
             "target_description": "residual 金额、占比和是否超过 tolerance。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           },
           {
             "claim_target_id": "ggr_residual_cause_claim",
             "estimand_id": "ggr_residual_component_explanation",
             "target_description": "residual 的具体业务来源；缺少合同只能给 boundary。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -3753,7 +3885,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_009_cf01",
-            "materialized_sibling_sha256": "24b3c5cf28947eae5bce4b01ea9a85ed2d15c0e4859d8eef7b28967f676ec17d",
+            "materialized_sibling_sha256": "c05693eb52ec8f71b0e9384299f1b4426e1da25229ad83f6bc5db96892fb9af4",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -3833,7 +3965,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_009_cf02",
-            "materialized_sibling_sha256": "40cb5aa2a934b541276dae6181208abdb8bf414e29e309269abfc641df80e45a",
+            "materialized_sibling_sha256": "ad0a0b07960a8d9db08cf4ebd0df5b0c882f9b246333b6dd8e96e807220b8ab0",
             "patches": [
               {
                 "path": "/business_world/truth_facts/0/statement",
@@ -3905,7 +4037,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_009_cf03",
-            "materialized_sibling_sha256": "019df6e20d76a89d5342a1d8ad223ff6c54ae63c13c2a654a1f1b5e7e2dfb6a3",
+            "materialized_sibling_sha256": "d50ef200ad0102f3ff6a93892428b7fb7567cafd96a53d08a616aec7d5c85faf",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -4020,7 +4152,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_009_cf04",
-            "materialized_sibling_sha256": "f9d2886811b0d186094ee986eebdf6b75fe1f5eba21bdf8aff6ae67b8f3e5c01",
+            "materialized_sibling_sha256": "e8ba888aca639415bc2c3a5e0b38d2bc26027eb02ca9f13b47ca54791af6732b",
             "patches": [
               {
                 "path": "/acceptable_outcome/valid_design_space/0/rationale",
@@ -4340,7 +4472,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:15f70ac474b4774b268e0001933b98fa09df9f297f3ba4657b85e3c1ccca7241"
     },
     {
       "episode_id": "G3-GF-010",
@@ -4522,21 +4655,42 @@
             "claim_target_id": "reactivation_unadjusted_association_claim",
             "estimand_id": "reactivation_reward_unadjusted_rate_difference",
             "target_description": "两组未调整再次付费率差异。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "reactivation_adjusted_association_claim",
             "estimand_id": "reactivation_reward_adjusted_observational_association",
             "target_description": "调整后的观察关联、overlap 与 residual confounding 边界。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           },
           {
             "claim_target_id": "reactivation_causal_effect_claim",
             "estimand_id": "reactivation_reward_average_causal_effect",
             "target_description": "奖励是否导致再次付费；当前只允许 causal identification boundary。",
-            "design_claim_ceiling": "causal"
+            "design_claim_ceiling": "causal",
+            "claim_target_kind": "causal_effect"
           }
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -4576,7 +4730,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_010_cf01",
-            "materialized_sibling_sha256": "ce47aad81f096228fba05f8593dd546759e49707dcebdb69cc8ff3d1e387a36b",
+            "materialized_sibling_sha256": "625a5c14417bdbe2ce426720255375255fce019f1b3c938c001e45eccdc10b61",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -4645,7 +4799,7 @@
             "authority_surface": "semantic_contract",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_010_cf02",
-            "materialized_sibling_sha256": "d4a0f394135c94006e94ba694c90b30470d21d0ef5082fb1e2d3c73b046c3014",
+            "materialized_sibling_sha256": "4f934dff38b498629944ca0cae87cdf034afa9f2bf865418d7ca82d1b146b368",
             "patches": [
               {
                 "path": "/business_world/available_contracts/0/description",
@@ -4714,7 +4868,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_010_cf03",
-            "materialized_sibling_sha256": "e6ac19a95ab9fc2acb077d5b4b2b7d07cf96c81df73ebb5ddcfdb66fc7de1f20",
+            "materialized_sibling_sha256": "3cc87d9094ce9ee5bac0d5b0c7c2e28494daa28d1b41b9f05b8da9f6d68c5efd",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -4797,7 +4951,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_010_cf04",
-            "materialized_sibling_sha256": "49b99b18254ddc21f127ef2c39cffefe3b943ceeb849972ddb60cc19bccfb1d1",
+            "materialized_sibling_sha256": "efcd76bc1016d535957f32d008d0b961ef51616f95fa6693f454d60ce583e982",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -5053,7 +5207,8 @@
           ],
           "materialization_status": "missing_by_design"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:2e0447cf4e258b1373d7e00159cba7758b19d0216d90183d33b46fe5740f6948"
     },
     {
       "episode_id": "G3-GF-011",
@@ -5240,24 +5395,45 @@
             "claim_target_id": "income_metric_resolution_claim",
             "estimand_id": "income_metric_resolution",
             "target_description": "一次澄清后的 metric 选择及替代口径影响。",
-            "design_claim_ceiling": "definition_only"
+            "design_claim_ceiling": "definition_only",
+            "claim_target_kind": "definition"
           },
           {
             "claim_target_id": "selected_ggr_change_claim",
             "estimand_id": "selected_gameplay_ggr_month_change",
             "target_description": "选定 GGR 的完整月方向与幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "selected_ggr_driver_claim",
             "estimand_id": "selected_gameplay_ggr_decomposition",
             "target_description": "选定 GGR 的可 reconciliation driver 贡献。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           }
         ],
         "allowed_boundary_codes": [
           "selected_metric_contract_stale"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -5297,7 +5473,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_011_cf01",
-            "materialized_sibling_sha256": "8e6f1fcbdf2110ebbe11b547d82a68f1f6d50b1e7b179bded793407a38c16e68",
+            "materialized_sibling_sha256": "87363375fa3f70d71e907e90aff8eadfc1e90ad31e26b8362c1d8af1dc913f07",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -5367,7 +5543,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_011_cf02",
-            "materialized_sibling_sha256": "0f19bf377c323b2f09a76dc65b8bb98e16676879213e7571bfa0ac601dda9e62",
+            "materialized_sibling_sha256": "df1e6039f8cfdb0ca96dd9d9d41f1c4f0be3ca1b72a35a9c6c9a377dd05988ee",
             "patches": [
               {
                 "path": "/user_episode/messages/1/text",
@@ -5465,7 +5641,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_011_cf03",
-            "materialized_sibling_sha256": "0fbf9cd59743bd256c99cca116fbebddf5f310ca96668b0e539be8b4d380c69f",
+            "materialized_sibling_sha256": "783b5d451e166e7c331ce5dc8f23343c62ba84e35855da8e9a7f8eec40f0b353",
             "patches": [
               {
                 "path": "/business_world/truth_facts/0/statement",
@@ -5525,7 +5701,7 @@
             "authority_surface": "semantic_contract",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_011_cf04",
-            "materialized_sibling_sha256": "88fc8bbabf589bb05fd3bb9d147b931bf8eb78a5ef7416a4696a2ad4b3cb45ea",
+            "materialized_sibling_sha256": "0b5eb63a2a7c7726e8853a16d8bfbf49caba26ed3f880b5517aaa2c6cbec4286",
             "patches": [
               {
                 "path": "/business_world/available_contracts/4/state",
@@ -5780,7 +5956,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:4e4267379593b66f92db1173722671489744549e073bb01198715b0ac2395661"
     },
     {
       "episode_id": "G3-GF-012",
@@ -5959,24 +6136,45 @@
             "claim_target_id": "lagos_business_day_campaign_claim",
             "estimand_id": "lagos_business_day_campaign_first_day_contrast",
             "target_description": "用户指定 Africa/Lagos 业务日下的主方向和幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "utc_source_date_diagnostic_claim",
             "estimand_id": "utc_source_date_diagnostic_contrast",
             "target_description": "UTC source-date 方向，仅作为边界诊断。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "timezone_reassignment_contribution_claim",
             "estimand_id": "timezone_boundary_reassignment_contribution",
             "target_description": "午夜边界订单重分配对方向反转的 accounting bridge。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           }
         ],
         "allowed_boundary_codes": [
           "calendar_version_incompatible"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -6016,7 +6214,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_012_cf01",
-            "materialized_sibling_sha256": "d54f51f903304980ac57d81e81fedb9bd22fe33c4992132ed947af5b99d99cbc",
+            "materialized_sibling_sha256": "feec0cdcaa94ae1138623207c1bb7f42a203d19548adaa73a77d892acdb50f60",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -6086,7 +6284,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_012_cf02",
-            "materialized_sibling_sha256": "0bf9f9dc2ab981b2f5771f4d60dfec14ebcfde04f54a472e66eed60a713f04f6",
+            "materialized_sibling_sha256": "94a5d1540cc6d992583c941535b91dd725511b4ebf8fa107cdd7b856dbe344e0",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -6155,7 +6353,7 @@
             "authority_surface": "semantic_contract",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_012_cf03",
-            "materialized_sibling_sha256": "166f0ce4b55c6ef44ea26c2a8bd50bb5ba09ee2f07d08c5225c5c97d1f2cf14e",
+            "materialized_sibling_sha256": "b522f03327ff3e827cfc167d35c161ad889d2eec6bcd72349e00d12e49734f2b",
             "patches": [
               {
                 "path": "/business_world/available_contracts/3/description",
@@ -6215,7 +6413,7 @@
             "authority_surface": "world_fixture",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_gf_012_cf04",
-            "materialized_sibling_sha256": "33e34b771f43d4accbe83abbc0760bac4bdf5283bb12637cbb572a31c597b2f1",
+            "materialized_sibling_sha256": "4ace612620ec51918498ab56767c2711387b7ef68c85a497ff7d149c33ab6933",
             "patches": [
               {
                 "path": "/business_world/data_conditions/3/description",
@@ -6480,7 +6678,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:61f308b9b79f8d3358179bddbe2338257dbcaf3e0ee94e8a01381e7190f3155c"
     },
     {
       "episode_id": "G3-EXP-002",
@@ -6677,30 +6876,52 @@
             "claim_target_id": "overall_weekly_payer_value_claim",
             "estimand_id": "weekly_paid_amount_per_canonical_payer_change",
             "target_description": "总体每付费用户金额方向和幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "fixed_mix_payer_value_claim",
             "estimand_id": "fixed_mix_within_stratum_payer_value_change",
             "target_description": "固定上周 mix 后的组内价值方向和幅度。",
-            "design_claim_ceiling": "descriptive"
+            "design_claim_ceiling": "descriptive",
+            "claim_target_kind": "contrast"
           },
           {
             "claim_target_id": "payer_mix_contribution_claim",
             "estimand_id": "payer_value_composition_contribution",
             "target_description": "组内、构成、interaction 与 residual 贡献。",
-            "design_claim_ceiling": "accounting_attribution"
+            "design_claim_ceiling": "accounting_attribution",
+            "claim_target_kind": "accounting_decomposition"
           },
           {
             "claim_target_id": "payer_value_reversal_claim",
             "estimand_id": "payer_value_reversal_diagnostic",
             "target_description": "总体上涨与主要交叉组内下滑的反转。",
-            "design_claim_ceiling": "associational"
+            "design_claim_ceiling": "associational",
+            "claim_target_kind": "association"
           }
         ],
         "allowed_boundary_codes": [
           "channel_mapping_incomplete"
-        ]
+        ],
+        "design_space_policy": {
+          "open_world_acceptance": true,
+          "authored_examples_role": "illustrative_non_exhaustive",
+          "acceptance_authority_refs": [
+            "must_preserve",
+            "must_investigate",
+            "claim_targets",
+            "support_expectation",
+            "forbidden_outcomes"
+          ],
+          "disqualifier_codes": [
+            "must_preserve_violated",
+            "required_investigation_omitted",
+            "claim_ceiling_exceeded",
+            "forbidden_outcome_matched",
+            "evidence_or_authority_boundary_violated"
+          ]
+        }
       },
       "forbidden_outcomes": [
         {
@@ -6735,7 +6956,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_exp_002_cf01",
-            "materialized_sibling_sha256": "062b9fbd77bce8a505ce3c65adce0411cf99de082549617beec9b1dba01d6d90",
+            "materialized_sibling_sha256": "d40868978297c2be562e277be7de06bec088a9b7aca9822f440fb9161c6c5c66",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -6816,7 +7037,7 @@
             "authority_surface": "user_message",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_exp_002_cf02",
-            "materialized_sibling_sha256": "2c586c5bcc47c6a5125d92417d1c4465af21759b9d7871debf3ac6ad8d37aa2f",
+            "materialized_sibling_sha256": "acf7df7f67a290eabe9f7329cb15bc9e44ed7d9e24004754aa5cbd3a8bcb1d0c",
             "patches": [
               {
                 "path": "/user_episode/messages/0/text",
@@ -6896,7 +7117,7 @@
             "authority_surface": "semantic_contract",
             "execution_status": "executable_verified",
             "semantic_intervention_id": "g3_exp_002_cf03",
-            "materialized_sibling_sha256": "06858cf5396a5865bbcf56e870630f856e0b28cd244e9c283338d71ec7eaf4e4",
+            "materialized_sibling_sha256": "915d9ab1a51f3389577b22664bd7ee1e5f18b6ad6ee59df80db579c21e31bf9b",
             "patches": [
               {
                 "path": "/business_world/available_contracts/2/state",
@@ -7215,7 +7436,8 @@
           ],
           "materialization_status": "verified"
         }
-      ]
+      ],
+      "business_world_independence_key": "authority-set:a48b64eb3a71593d26eed74c65168b87a4f6e3af0f3bf37ed1113d2b113e0747"
     }
   ]
 }

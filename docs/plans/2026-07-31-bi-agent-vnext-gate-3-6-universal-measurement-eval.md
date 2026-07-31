@@ -358,31 +358,71 @@ association、causal challenge 和无时间问题。
 
 ### 6.4 Corpus remediation
 
-当前 36 Episodes 是完整 candidate set，仍有以下 formal coverage 缺口：
+当前 36 Episodes 是完整 candidate set。typed corpus epoch 已完成以下机器权威：
+
+- 144 个 base claim targets 和 12 个 replacement claim targets 全部绑定 13 类
+  `ClaimTargetKind`；候选 Episode 不能自行覆盖 registry 中的类型；
+- `business_world_independence_key` 从 outcome data binding 的 authority refs 规范派生；36 个
+  Episodes 实际归并为 20 个独立 authority sets，换题面、换 `world_id` 或重复使用同一 frozen
+  snapshot 都不会增加独立世界数；
+- 13 类 claim target 在 base Episodes 和完整 executable variant universe 中均达到至少 3 个
+  独立世界；floor 由 eval policy 拥有，coverage ledger 与 SuiteResult 共用：
+
+| ClaimTargetKind | base worlds | executable variant worlds |
+|---|---:|---:|
+| accounting_decomposition | 10 | 14 |
+| association | 8 | 11 |
+| causal_effect | 5 | 7 |
+| cohort_outcome | 5 | 8 |
+| composition | 3 | 4 |
+| contrast | 16 | 20 |
+| data_quality_state | 5 | 8 |
+| definition | 3 | 4 |
+| diagnostic_set | 3 | 4 |
+| distribution | 4 | 5 |
+| funnel_transition | 4 | 6 |
+| point_quantity | 3 | 3 |
+| temporal_pattern | 3 | 3 |
+
+- 每个 Episode 固定 `open_world_acceptance=true`，authored designs 仅作
+  `illustrative_non_exhaustive` 示例；Reviewer 依据 must-preserve、must-investigate、claim
+  target、support expectation、forbidden outcomes 和显式 disqualifier 判定；
+- independence key、typed targets 和 design-space policy 只进入 evaluator/corpus authority，
+  AgentWorldView 不接收这些答案侧字段。
+
+仍有以下 formal coverage 缺口：
 
 - `expert_business_case` 来源为 0；
 - 8 个 real-user Episodes 来自同一 source task；
 - historical sources 仍待 protected provenance；
 - 36/36 全部为 multi-estimand，缺单 estimand、低上下文、简单开放问题；
-- 5 个 Episodes 只有一个 authored valid design example；
-- 144 个现有 claim target 尚未带 typed `ClaimTargetKind`。
+- 5 个 Episodes 只有一个 authored valid design example，开放验收合同已经避免将示例当作
+  whitelist，仍需独立测量审查补充设计多样性；
+- candidate world count 尚未获得 source verification、truth review 或独立双审，不能当作
+  reviewed coverage；
+- `next_experiment_design_claim` 与 repair/republication 类 target 仍需迁入 WorkPlan / next
+  investigation expectation，当前 typed registry 只保证分类和覆盖计算没有漂移。
 
-G3.6.0 新 epoch 必须：
+G3.6.0 新 epoch 已完成：
 
 - 为 claim target 增加与 runtime 同源的 `claim_target_kind`；
 - 为 Episode 增加 `business_world_independence_key`；
 - 每类 ClaimTargetKind 至少 3 个独立 business worlds；
-- 增加 pairwise/higher-order registry 与 derived coverage proof；
 - 将 valid design 改为非穷尽 illustrative examples + required properties + disqualifiers +
   `open_world_acceptance=true`；
+- 每次执行按 authority-derived independence key 计算 ClaimTargetKind world coverage。
+
+继续 open：
+
+- 增加 pairwise/higher-order registry 与 derived coverage proof；
 - 从业务结构派生 conversation/data/time coverage atom，语义 atom 绑定独立 review；
 - 增加 expert、single-estimand、low-context 和 simple-open Episodes。
 
-现有 target 映射审计确认，COMPOSITION 没有一个可直接诚实复用的原子 target。需要拆分
-segment pattern、payer base、business segment concentration、per-dimension leader、stable
-channel payment/GGR 和 paid-silence factor 等复合目标；repair/republication 与 next
-experiment design 迁回 WorkPlan/next-investigation expectation。禁止为了填 coverage 表直接按
-文案给复合 target 贴 COMPOSITION 标签。
+typed registry 只把显式份额、构成、集中度、分组定位或排名目标纳入 COMPOSITION；机制、
+贡献分解、相关关系和诊断目标分别保留自己的类型。后续仍要拆解同时混有 segment pattern、
+payer base、per-dimension leader、stable channel payment/GGR 与 paid-silence factor 的复合目标；
+repair/republication 与 next experiment design 迁回 WorkPlan/next-investigation expectation。
+禁止为了填覆盖表按文案给复合 target 改类型。
 
 ## 7. 评分与校准
 
@@ -650,7 +690,8 @@ failure classes 已进入实施顺序：
 
 1. runner/grader 可用任意 hash 自证 artifact；
 2. policy 尚不能编译完整 lane/paraphrase/repeat/mutation/schedule cell universe；
-3. typed ClaimTargetKind 和独立 world coverage 缺失；
+3. typed ClaimTargetKind 和独立 world coverage 缺失；已由 typed registry、authority-derived
+   independence key 和 execution coverage 去重关闭；
 4. protected held-out 未进入 executable suite；
 5. Reviewer 分数/critical code 到 product verdict 缺机械映射；
 6. 同一 cell 可丢弃失败 attempt 后重跑到 pass；

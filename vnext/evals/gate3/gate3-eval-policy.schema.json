@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://waje.dev/schemas/evals/gate3/gate3-eval-policy.v4.schema.json",
+  "$id": "https://waje.dev/schemas/evals/gate3/gate3-eval-policy.v5.schema.json",
   "title": "WAJE Gate 3 Evaluation Policy",
   "type": "object",
   "additionalProperties": false,
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "policy_version": {
-      "const": "gate3.behavior-eval-policy.v4"
+      "const": "gate3.behavior-eval-policy.v5"
     },
     "policy_epoch": {
       "type": "string",
@@ -114,6 +114,8 @@
         "required_question_family_refs",
         "required_source_modes",
         "minimum_independent_sources",
+        "required_claim_target_kinds",
+        "minimum_independent_business_worlds_per_claim_target_kind",
         "counterfactual_siblings_per_episode",
         "required_counterfactual_roles_per_episode",
         "multi_turn_episodes",
@@ -171,6 +173,13 @@
           "$ref": "#/$defs/nonEmptyUniqueStrings"
         },
         "minimum_independent_sources": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "required_claim_target_kinds": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "minimum_independent_business_worlds_per_claim_target_kind": {
           "type": "integer",
           "minimum": 1
         },

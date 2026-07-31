@@ -5,7 +5,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-001",
       "episode_id": "G3-ADV-001",
-      "episode_core_sha256": "30aadcac85acaf99a64c0c48094dbd2f3b28f0971b0b0a4f571428d949826db0",
+      "episode_core_sha256": "edf64b77e302611658c7fd6ed81d8098686ec0cac834c96b88ce1a248449de19",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-001",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -68,7 +68,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "93ff1e3398312baf505c0f3efb5d990f3ff16420eb2759528eee095f20ed0952",
-      "evaluator_oracle_view_sha256": "5c17acd71cb078225e10919aa4d51ae136ff3e74e5d553b40827c70e262ab8f5",
+      "evaluator_oracle_view_sha256": "c81987d5e3abc40f53a36d5047b514096ba6e78b04ce0fea08daf02887cf9ca6",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -101,7 +101,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-002",
       "episode_id": "G3-ADV-002",
-      "episode_core_sha256": "35c42936dfeeed4418c826d3945ebe36992760791ace8f4458b88d1cf27f40ed",
+      "episode_core_sha256": "19e52bcb1d4127ab49e78969ba94becb33d9c09b7eb034939bdd36d3f04b2e15",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-002",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -146,7 +146,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "6e249ba191b8d72a4f79e857c3e423dd5e5b81d58d0d0c54d43589968eba4747",
-      "evaluator_oracle_view_sha256": "c5495f87a5ba52f4ab9d77c5b6305f91432ac9d52331f54775b07b565b948dee",
+      "evaluator_oracle_view_sha256": "ffe264d4d7731999bdd212b5333f3a60392648951309f9d7a0150a034bb01f1d",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -179,7 +179,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-004",
       "episode_id": "G3-ADV-004",
-      "episode_core_sha256": "4d5d52e8818cd45692f2fe64910bd0223cc01beef9221ea8443f1e92c49f9888",
+      "episode_core_sha256": "aa356050661f02ed658149b35aa793199e595df352630bb5fb4e72fc63815e0a",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-004",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -243,7 +243,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "1960663584f612c639d894ba4996e28ce39931f067f2008193bee090ab32ca5c",
-      "evaluator_oracle_view_sha256": "2af5e30e10a032fe01a4a01afb17db682534849476083dac9cb19d0114afb9b6",
+      "evaluator_oracle_view_sha256": "f9fa147f03a51900abb55737ef00d89e0aba956e746171308d6b6636f148c6fa",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -276,7 +276,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-005",
       "episode_id": "G3-ADV-005",
-      "episode_core_sha256": "99eb9a8ea13c3f19619760df2029751397cf55a55e77b976cbe493c4d296a3db",
+      "episode_core_sha256": "ffc9afea0d2184be1b75df31f9dcc6110214bcb477a9802ef5d1f07c4012f31d",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-005",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -337,7 +337,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "c5f949ef1b89cf6761feddda3aa5802af337e40ff5f10d9ac980271d5e595bce",
-      "evaluator_oracle_view_sha256": "c1a8d53a97d86cb458114f51a663da158aaf71f781777f51cc5cbf22a0e63693",
+      "evaluator_oracle_view_sha256": "bc4104b413e64d09f15d1d2b474f8f309523b0571879923bc9b5d604ec6393d7",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -370,7 +370,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-006",
       "episode_id": "G3-ADV-006",
-      "episode_core_sha256": "29a4c7c9e59e09b15e9c26e0c1a8f52192c615bd25b02c264732c0fb0742cf6c",
+      "episode_core_sha256": "ca61afa4fb136525f64745521b9dcff1809ffb92be80a23c05ecf9c3604f261c",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-006",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -454,7 +454,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "a471307e91719b4493e906740088ad24d041b14c9ed2253b69dabfe48a02fe2a",
-      "evaluator_oracle_view_sha256": "330651a1620af9591d57af523c1e61942d80bd0c23d00ab6e90a3911d22d54a1",
+      "evaluator_oracle_view_sha256": "6fe9a7804c90008552c2eb9468f9cb6d882a25e647376bae62c9b4d5a9077118",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -487,7 +487,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-007",
       "episode_id": "G3-ADV-007",
-      "episode_core_sha256": "a76fce9ca9a82ce9d00cf4d1f4fa1761940163b58a47fe7c6f558c72c1ec788e",
+      "episode_core_sha256": "5260b18f77424d825e112d6d7e9f9f0da4543ffd21e263b40b97f5de586dbb85",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-007",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -530,7 +530,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "b343fa6437142e8c574c25ff0e6c268bcbd2c652017ed4a4bc02a4f4b084bef7",
-      "evaluator_oracle_view_sha256": "1484f382e5d1cee869166c685fd71577267c92ad83a68bafa26650d90263e6b5",
+      "evaluator_oracle_view_sha256": "f0c09bffd27f3d9f0bf29c4e276d942aa012a2f15f628da522084c6ccdf5ff20",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -563,7 +563,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-008",
       "episode_id": "G3-ADV-008",
-      "episode_core_sha256": "80ab76617b628ad04ae7668c2cf44bb6944d581f715837d941bc9925b3c00dac",
+      "episode_core_sha256": "d35c9d8211e6a8c4edcd4978c819845d9524be4830758c8cc60b03d04efe69e9",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-008",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -628,7 +628,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "30289b73db552daf039e6b8808c9e401f6ecc763709dd1ddbf6d646c255ba081",
-      "evaluator_oracle_view_sha256": "1b3965bb1295edad15ae03f4451e12f1944f143f647173610261d3ad2d0de799",
+      "evaluator_oracle_view_sha256": "c1d1d87efa70f80a5fc3ce11fd04b11a920bbd1dd8ae69309b005018e917b930",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -661,7 +661,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ADV-009",
       "episode_id": "G3-ADV-009",
-      "episode_core_sha256": "76b6690b9d6b5bf75a5c2f2e8a723751301326dc9ba787a2b503944e408b878f",
+      "episode_core_sha256": "bdc3fe062e79e5babe3db7a8b9695cedea96aa3534ffc8b3614d5129a46efc06",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ADV-009",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -784,7 +784,7 @@
         "release_cutoff_instant": "2026-07-05T09:00:00+01:00"
       },
       "agent_world_view_sha256": "00c04abb1d2a9eec289b34772c1c84e77e4be055f3a59bff30552ecc61a1d818",
-      "evaluator_oracle_view_sha256": "592ef59950460309b01fad57c3ce73103621a5cf08ecaf2215adff70e3037961",
+      "evaluator_oracle_view_sha256": "741582031a44a1197e07d23305627d3cfceda6675076871e1c39e48e553bfdc6",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -817,7 +817,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-001",
       "episode_id": "G3-EXP-001",
-      "episode_core_sha256": "be20fddca1eb740b55b0de00f3d3c87cf514e237b255dcb55d9afada66a8bc39",
+      "episode_core_sha256": "2728d7662fafdbfeb196a5bda19e27bfa19f00b24e91c997b1972ce836f7bc20",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-001",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "suite_binding": {
@@ -941,7 +941,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "45da1611a572c102986137d7130fc6b0baa85302df505231cb76efcce90a4782",
-      "evaluator_oracle_view_sha256": "0bcc96cf39592c238a869ec6300a1d5f3c70774c4ecfd56941c95f6086486a74",
+      "evaluator_oracle_view_sha256": "636db2d682efb4ac4e8cd8f547593ca0d43e0ff89626363615621eaf6f5709ce",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -977,7 +977,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-002",
       "episode_id": "G3-EXP-002",
-      "episode_core_sha256": "27904c5e6a2f24c6cdcba95f53a5b3460ef1feff84ef23ed05646253c1b5c8b0",
+      "episode_core_sha256": "f8c0dbe28c3b5fee3d834f15349cbf171d2fa5d7b0f60fa01e5acb4384230555",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-002",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -1025,7 +1025,7 @@
         "release_cutoff_instant": "2026-07-27T09:30:00+01:00"
       },
       "agent_world_view_sha256": "eb174d4f890b75db87b2a4474b6fbcb7b820d0818f98a0e83c4cfa7d84e85c2e",
-      "evaluator_oracle_view_sha256": "88deb735b43b136d923bf8420f0a364518cd74748055f024686e9d1aa3fa200b",
+      "evaluator_oracle_view_sha256": "e96d68a85520f50689d88f63e1627fe0eecb8d4a22c4c6f6e03e107fc8792946",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1060,7 +1060,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-005",
       "episode_id": "G3-EXP-005",
-      "episode_core_sha256": "91e2467f0da1f67c5b28112a7bd3ce74d3aec7dac443d911af454842a21b7434",
+      "episode_core_sha256": "656c40eb9e0d9714973bd6c292ed7d138e00c86e74f98bdea8b0495de4158974",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-005",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "suite_binding": {
@@ -1103,7 +1103,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "e5cd1b0f74fcde78e3410ce5f9627ed441728f899220c46d60b76e6db4399f16",
-      "evaluator_oracle_view_sha256": "cee59e43ab81a23950e3daa4d7350578a9cee664d794fe16175c290f1a42a47d",
+      "evaluator_oracle_view_sha256": "3d99f5dc0ad753190d62794ff75cbc250994a54c6e3288fd932cabcc4b537550",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1139,7 +1139,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-007",
       "episode_id": "G3-EXP-007",
-      "episode_core_sha256": "e25e30955bca0553e0a902608d5ce9060256bdd94e0e9961aed5060d7205fa4b",
+      "episode_core_sha256": "76be7d157f95ce55a84079f5bf95e2f1a6e05acfc4c7b5e91dbda4f58f210e7b",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-007",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -1184,7 +1184,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "31128a818b67db39c4294a989cf19d1f829027a2c673fa1f7589ddbf31cf42b2",
-      "evaluator_oracle_view_sha256": "d4cb2c189e9ddced126e709bfa71633000aa7cac00e224ca30e6d1b84fb5d8bd",
+      "evaluator_oracle_view_sha256": "944587aa247211626719ec592ea943139e5e47c1d5a76888c6d8d93bf6d5d611",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1218,7 +1218,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-008",
       "episode_id": "G3-EXP-008",
-      "episode_core_sha256": "0cc7431699b2d5320f6e3ba4b818f5f88482f2d2dc49026a5674616b53d86974",
+      "episode_core_sha256": "f8943bda3274c8148037c1d5774501f998a16b531506e0268fba80e7404870de",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-008",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "suite_binding": {
@@ -1285,7 +1285,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "4b836b9704526d8470ae97e2c634578c8146ddd5862e6134ed6a475901e0aa1d",
-      "evaluator_oracle_view_sha256": "342203803c8eef80c1c21725cd30f76834047557dd492b4052d5209daab7f4f2",
+      "evaluator_oracle_view_sha256": "8bb7188d005e30ede315590450a8644d5d1ae2eff79957054426eaa19cbc2337",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1320,7 +1320,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-010",
       "episode_id": "G3-EXP-010",
-      "episode_core_sha256": "986ae321370be77a3c365be19270f582bb3da7cf8bfbf4d298fa06799c4eaa37",
+      "episode_core_sha256": "160f2f6e736da479025148c42113528229c56aabd72ef85c9d10db2f1bad50ce",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-010",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -1383,7 +1383,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "bbe53f180a6c8cc88286e3777f2e6bc1c39ab8dbee0c1469fb1fd44341487354",
-      "evaluator_oracle_view_sha256": "f72f932708f778e9627c112c75c3b17da1c09df1a6acfc0781301114b038b58a",
+      "evaluator_oracle_view_sha256": "59ac6d2b5b9b855df165a65ecc8e5b1f1ac5e11fe4995b85ca0496d37ea48480",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1418,7 +1418,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-EXP-012",
       "episode_id": "G3-EXP-012",
-      "episode_core_sha256": "16a2a15e34d948218c08972d8251880ce6e7de76d6ccd11bd20c4de25349bf52",
+      "episode_core_sha256": "be26545d11f68c8d7ec71010e2b70bb131440412983db9948f5a9f1c3cb1a9d7",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-EXP-012",
       "source_record_ref": "SRC-ADVERSARIAL-AUTHORING-20260730",
       "suite_binding": {
@@ -1479,7 +1479,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "81096fd54f417467867c701271c3020c15e839886957bc863b3d258737cdf8f2",
-      "evaluator_oracle_view_sha256": "210c214259fe16db246542f8ff78e57b5d1ebd36cfc1258e6361e59d50a3552a",
+      "evaluator_oracle_view_sha256": "30332233eef55b31eab46d16074374456f9ffa15bfe192f52ee743fee5ae19c5",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1514,7 +1514,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-001",
       "episode_id": "G3-GF-001",
-      "episode_core_sha256": "fc1257191ead9027e4bf5e0ff2bd3f5c05ffc0b91e6d27fe9360f3340911a973",
+      "episode_core_sha256": "14d567c3edc6ef706934dd035c488a4a84fd3d265d439fb516d7754166a5ad9a",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-001",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -1560,7 +1560,7 @@
         "release_cutoff_instant": "2025-03-08T10:00:00+01:00"
       },
       "agent_world_view_sha256": "c9ed8e80bb65816f421a4b2849eddc78ba5a45d7ebf89a582fbb993447a98ee9",
-      "evaluator_oracle_view_sha256": "434d99d0f9267a17dde5bef492c3411f28fed301b4531c72d878bb7a033c60e4",
+      "evaluator_oracle_view_sha256": "3aec7eb3d98deeb647098007b2eaa92970adea6815365af9a66ea1c425fa0ad0",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1594,7 +1594,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-002",
       "episode_id": "G3-GF-002",
-      "episode_core_sha256": "5fcc885686a6e1f107e048eeefe2ec490c57678fcc10a5d11ec7e181944a1f45",
+      "episode_core_sha256": "00c78820edd25949f6086f9fa4d5086f39856cf18642fa97649d0f51ac4d875c",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-002",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -1640,7 +1640,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "2e018ecefac8728cf6062b5c8c6969ec11bbff71bf879bf36334ccfd44fe443a",
-      "evaluator_oracle_view_sha256": "6cd4f046d7cacc81c25fd876bf3a078eec180b4e9c93c649965a9896cd07309a",
+      "evaluator_oracle_view_sha256": "42a62d55bce6c0bc30911e8a191928aca41b7a52d808d0e184b2aec6e2fe6093",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1673,7 +1673,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-003",
       "episode_id": "G3-GF-003",
-      "episode_core_sha256": "83b6aab27dd2e3842601609dec4cbf417e9a0baf6c0dee7405d6d850c0ae26a3",
+      "episode_core_sha256": "f6855f410b01a0f84a6a6ab6ddd5e617719aa3d818121161b27061ef49c2df0a",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-003",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -1718,7 +1718,7 @@
         "release_cutoff_instant": "2025-06-12T09:00:00+01:00"
       },
       "agent_world_view_sha256": "ce346e047ead2630a394f3413b39e904524e3d866d4cf19752bafa21d7c8038c",
-      "evaluator_oracle_view_sha256": "2c34a8a69ae80a5f9cdb69bbdee901302ab7760d11b953556a856e2eb0bf9c6a",
+      "evaluator_oracle_view_sha256": "8b9af5c168ab7f94d04ca9320278a11e2c3b02418bc598cc0155bc89893a2c8d",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1752,7 +1752,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-004",
       "episode_id": "G3-GF-004",
-      "episode_core_sha256": "1150b61c584f86adeead8ea82266f69f71664a3c94acfcf9a04e480479b589e4",
+      "episode_core_sha256": "a57cdc243f366798a99a651a490e0d8540d45f892520a67d724037e86142e272",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-004",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -1798,7 +1798,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "f0ae9cad610feae5f68a081cff69f00e399b6183ddcbb9975c04c1b2f049f215",
-      "evaluator_oracle_view_sha256": "44ce333a67e5f44ae24bc253b061b6b656637399bd5490427591401264ee2dde",
+      "evaluator_oracle_view_sha256": "fc3b8d8000dae2bb3061b89cbee6c8858c583277b10d37c8c0d6a279e292a673",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1832,7 +1832,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-005",
       "episode_id": "G3-GF-005",
-      "episode_core_sha256": "0d3832082e0be451ec4991b3694b839e85b1232ebfc4075404a66847f745ad9d",
+      "episode_core_sha256": "c0df8080e7c4b6923c44f105088664c3dd061edd47a73a21b4ed4f213fae4d65",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-005",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -1875,7 +1875,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "7ef476bc3b3beafc9f93d2fab9088955f5410375155fa6ee8ca0c5916a57e78c",
-      "evaluator_oracle_view_sha256": "4f19ab220b0ec01f406f44904685de07d0a4443f0729cb486c13f925540839c0",
+      "evaluator_oracle_view_sha256": "52ffe3123c73aef087c4091535e3f369b9b6b9dea50087254bed49ad2fde2023",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -1909,7 +1909,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-006",
       "episode_id": "G3-GF-006",
-      "episode_core_sha256": "336548e734dee9accf5d6b395521d830cbd77011ad52d3d57c3d9c175aa4384f",
+      "episode_core_sha256": "cf5096b635a08a47a55872ca47a532539c4ba5b88248565b1eb3981d0e26dc97",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-006",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -1973,7 +1973,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "d69b5a9c4d26e979614d8a640cb052ffb044bf0e99f3bf9029e770450ca1e960",
-      "evaluator_oracle_view_sha256": "b2308fe8831330d5f33b9731d32e8d4613a585e7381dbff2269ad4b288b78c5c",
+      "evaluator_oracle_view_sha256": "97c62eaf938eef4ab6a72706d558c7861dae1e9dec2cb8296e558d8dd6d252e1",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2006,7 +2006,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-007",
       "episode_id": "G3-GF-007",
-      "episode_core_sha256": "8ae90f08450a42d955f4c685f05be6d4fc83c712f16aecb1af512bc4a0f5afbc",
+      "episode_core_sha256": "040cd39c3e12f25846b78b0c53063d0e01ae52003f6d89786d6f5b1e25b1eac3",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-007",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -2068,7 +2068,7 @@
         "release_cutoff_instant": "2025-05-15T00:00:00+01:00"
       },
       "agent_world_view_sha256": "610746bd21f20cc753ec9d7f874ebe6d69e676f60bba95823b77275529e0ddc0",
-      "evaluator_oracle_view_sha256": "9be6260916f967c2c0d1dcdcfab21741861b253a21bcc4b6d28131e798f9045e",
+      "evaluator_oracle_view_sha256": "31c8c65eaaebcc0364fc376fa3dcaecf7e9f9894c5f9bde3ded7b0a271f205a7",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2101,7 +2101,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-008",
       "episode_id": "G3-GF-008",
-      "episode_core_sha256": "7a7d80a0cdd4da5a91ca8dcdd8dd76fe5a183b70c7c34763ae3065c9d4775039",
+      "episode_core_sha256": "92bfd550430cddc69df799dec087f714dd0bcf455b029ff8dcc6463f58496246",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-008",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -2164,7 +2164,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "92257b1cbd768a02976ec81753daf75f27719ad208bf75662bdfb08b33d350a6",
-      "evaluator_oracle_view_sha256": "cc2f56a1dfef1d7d0e988900c4fc2488d2102bbf675c30cee75079686cc1a938",
+      "evaluator_oracle_view_sha256": "7ce04632f7890e9a4a481b3f3f0b4dbf17a9c17696a134bd3f8cef62c88dd0f3",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2197,7 +2197,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-009",
       "episode_id": "G3-GF-009",
-      "episode_core_sha256": "8b18b4bb5b3cba0f02eeaf266a8c4e462e8fa87d9e8ea6329f4e003ad224f39e",
+      "episode_core_sha256": "e488463eb4c38e36dea6d4975ee3518ba4e21d3d3db03714a2c98800997ad3d8",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-009",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -2262,7 +2262,7 @@
         "release_cutoff_instant": "2026-08-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "967b86053c766926c8c853323df76fd12a82ff41a42d5ef8103bc4ccb48e015f",
-      "evaluator_oracle_view_sha256": "5466dd085019c104ef52abd39f8be38fd312b8e9ea90ed1a02f9a24f2a1d629a",
+      "evaluator_oracle_view_sha256": "f26b091c65da5fd3fc96b523ffbb6710ba52063ea7694bba9709f5a5df9b84db",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2295,7 +2295,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-010",
       "episode_id": "G3-GF-010",
-      "episode_core_sha256": "4a8e9a4e7be63cfe88b11c78e1866b0368f8ee34aa5999392d55ba22475da9d9",
+      "episode_core_sha256": "15dc558bdde30a81ac89ac47da8f7f35dfce023b6676701065ae28188edd2fa7",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-010",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -2360,7 +2360,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "b6294b173167c5a3fcb3350f3332b6d76248eef030ba42c7e22e457a4f924b1b",
-      "evaluator_oracle_view_sha256": "94268dc0e9aa90fc03abc7382d5fdf801dc6d71068aef67e5ceb35570a90c1a3",
+      "evaluator_oracle_view_sha256": "ef8b87d46c91ba4d6ba1f4ba606f7f1361f2dfdee66a83b9590ae573f16f4706",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2393,7 +2393,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-011",
       "episode_id": "G3-GF-011",
-      "episode_core_sha256": "488f619970b974229740c6672510057245aa9db9c6e5842177b5de02e8ef5c22",
+      "episode_core_sha256": "a26697830b74341dfb2556d595aebb53b669a6ea381b359ae1227f7e403a7191",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-011",
       "source_record_ref": "SRC-CONTROLLED-WORLD-20260730",
       "suite_binding": {
@@ -2440,7 +2440,7 @@
         "release_cutoff_instant": "2026-08-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "d7a8ccf5bef3f8627c622d516395f2236e4b8fdbdaf4c3c621f16c86fa1e9406",
-      "evaluator_oracle_view_sha256": "6134fb2002e98ab402adbe54a1d4c446783069c41e07583c61a6664dd3a47697",
+      "evaluator_oracle_view_sha256": "83201757c860d6f3620f81deb54af0c09b9d8c93c9ab5c085bc2c229470d5fe4",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2473,7 +2473,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-GF-012",
       "episode_id": "G3-GF-012",
-      "episode_core_sha256": "cdbb21ad695532281ed89eeac978d9916cc13d997ca2927925a4a0b551050fb8",
+      "episode_core_sha256": "158a51f6834c471b878e8577044a25270388fb8a70492ec2fe49e19bea938a00",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-GF-012",
       "source_record_ref": "SRC-HISTORICAL-CLAIM-PENDING-20260730",
       "suite_binding": {
@@ -2520,7 +2520,7 @@
         "release_cutoff_instant": "2025-11-13T09:30:00+01:00"
       },
       "agent_world_view_sha256": "b775a1729f7869f8ce623f43541ebf6ac8d27c21cccee705037fd1b694915ad3",
-      "evaluator_oracle_view_sha256": "7ee71d1bcb7c6f84db2ebc5922593ca0f078924abddb62b31a3143ac2d52a790",
+      "evaluator_oracle_view_sha256": "1470f0c02a6e7989dbec4173ddce3e69583b0cd83b86b77ecdbcff9a9dceb947",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2554,7 +2554,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-ROOT-001",
       "episode_id": "G3-ROOT-001",
-      "episode_core_sha256": "5bd39cac6adaa3b80a00e2abc35c1ba3697a90f61d442fdd598eb94db36dc028",
+      "episode_core_sha256": "205a1e17d0a8af2df6165e9c3927b529093f09ad2f99fe5619e3c8b79309052f",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-ROOT-001",
       "source_record_ref": "SRC-WAJEGAME-SUITE-REBASE-20260731",
       "suite_binding": {
@@ -2659,7 +2659,7 @@
         "release_cutoff_instant": "2026-07-30T09:00:00+01:00"
       },
       "agent_world_view_sha256": "83def71e0615258877cf5d9fbfd23c93fb84c7c75bcc07d2f02cb9ff018e8196",
-      "evaluator_oracle_view_sha256": "52da30ad8b7ec2812d2752cd5e193da951c29409411cd60d3ee8f06f09fa72ad",
+      "evaluator_oracle_view_sha256": "5882ba34df640f3274c648ae35d38d8e5794c56330945e85877b0c82888494d4",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2696,7 +2696,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-001",
       "episode_id": "G3-USER-001",
-      "episode_core_sha256": "bf4863158d7c0a2d3a87458dc0722fd1b198db92ad1a75825a98875bf3355709",
+      "episode_core_sha256": "60a739b0f2dd8d21ad81544345b445c50c0ee2d200f174cc928bca9241a89040",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-001",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -2783,7 +2783,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "f4a550f2059a02edde2f6a107176cf6f2cf95a3cca3f1fadbf68182237aa86c9",
-      "evaluator_oracle_view_sha256": "34b4783e25ceedb9fda16d3f431f2a5769304bcecdeed05080b56c8e32ec75eb",
+      "evaluator_oracle_view_sha256": "e1255fcf0b641a2fa937aa2f2430b45a36db29a4864b6bb2ce60f76d498707a2",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -2816,7 +2816,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-002",
       "episode_id": "G3-USER-002",
-      "episode_core_sha256": "c1e092ce7d6922e61524115beb145a18a6ad869662a79c3d7c9190fd67486164",
+      "episode_core_sha256": "6a660b7404d65d25ca944a41751112f7bac49195962020c5164fdbe31ca3dd35",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-002",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -3042,7 +3042,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "c93be7c690032d5670547e0b2c636701f512fb810801fb873bb34e2f2325419c",
-      "evaluator_oracle_view_sha256": "688940516705817989975a5b022dbacca0dd509958518b4dc84ee44f819f1940",
+      "evaluator_oracle_view_sha256": "00129200a945350c2c711c3b0141f9b902ab9f3343677297c158c302826f9da3",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -3075,7 +3075,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-003",
       "episode_id": "G3-USER-003",
-      "episode_core_sha256": "77458b1f5efebd3f4600356af0e9eab7dda532a68132b9473d9aef77e6b94a19",
+      "episode_core_sha256": "9789167d7c13d6f445f69005dbfafe550e0ea87808d7cc77b5175546a3137d80",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-003",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -3264,7 +3264,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "44de54bf19a92e3f61dfadb321f88eab7c72ce0f9e5fd9384d2071fa02cc7533",
-      "evaluator_oracle_view_sha256": "079fd8747bcaccf57d6331d5412967a585259a6240aad14df986193d9d9747f9",
+      "evaluator_oracle_view_sha256": "abb1cc290e4208695d21eb487bd6cd434a4991253c2f1bb8375b4c3732c34e5d",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -3299,7 +3299,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-004",
       "episode_id": "G3-USER-004",
-      "episode_core_sha256": "59b59d0bbacd23c7730e440542da3132fa68ff4ffbd71e4e2d928169e5f872d3",
+      "episode_core_sha256": "f1632aa45293738566aae3d04fb287813a0f6c7c650b7bd56f3825fdd27b053a",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-004",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -3501,7 +3501,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "e8fd5f38d99ef2076fc74e779901ceb54617eaf1997d5d18a4e518cafbee2966",
-      "evaluator_oracle_view_sha256": "d98ad50bc479acba907aa59aca29eb7cc8cc641adc137abe15e27aca41e011e1",
+      "evaluator_oracle_view_sha256": "d8930e8251b51cbd38f681696558dc6ff501294e652a30c0c12613c4531b51b5",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -3534,7 +3534,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-005",
       "episode_id": "G3-USER-005",
-      "episode_core_sha256": "caec89c03dbc079a25eaa8745fdcc9bdbe67e6a2d1a882531f3890d6686ffaf8",
+      "episode_core_sha256": "6178b9d586c3402ced9c2f20cd619fb4e0cba168773ba6c1a307a575b874dc9b",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-005",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -3708,7 +3708,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "2886b6ef0584313bf22ce0cd91320f9951554d6ca53839304b326c64c33f2bb0",
-      "evaluator_oracle_view_sha256": "1ab7521159d7c0e6c50c942a4389eae9bb52602002f2e220fffde83b53c71a38",
+      "evaluator_oracle_view_sha256": "3082e8d056778c89adcf14419e2c58151158981a87e09e91b3ee855e442febdf",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -3741,7 +3741,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-006",
       "episode_id": "G3-USER-006",
-      "episode_core_sha256": "756e8252dde87ef4484c4ecbe29ce7aa562fc2ad0807ec7fbd8baf17fab62e10",
+      "episode_core_sha256": "4e5711ef5656610d26f14a6a2ef63b06c8db699c2a2b667f906e26a505dccf30",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-006",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -3894,7 +3894,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "4137e003f39cdfefe29e993dd5121c8ebd86042f0ba433df6514c36c90f0b01a",
-      "evaluator_oracle_view_sha256": "d1a63ab085dca8dfdde49890445cafe0ea603ee48ff64aaf4edfe8d938826ba1",
+      "evaluator_oracle_view_sha256": "a2f64955bf028bded310711d159d87e53d6849ce86205aa50db752138eaaa341",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -3927,7 +3927,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-007",
       "episode_id": "G3-USER-007",
-      "episode_core_sha256": "9095e2e792a8e7de2d0ff578de90ba5f3a6c6cbeb56378fbbddf3a75a31e1f7c",
+      "episode_core_sha256": "65acf430bb5306eb3789685d764363a2d9f2622139ab1151f1d293877bd8ec21",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-007",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -4098,7 +4098,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "5d74b815091a9afd103c8cf84f1d79ad68fe7d61fb1563b4fd2e12079dfeed0a",
-      "evaluator_oracle_view_sha256": "08f2550cb75fc7665c618afd75c11a636ae0c53ef48b2365497e982d72526a63",
+      "evaluator_oracle_view_sha256": "e3fdea9247340e50144d8f442eed75c75333b593221900275bd149b125e25747",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",
@@ -4131,7 +4131,7 @@
     {
       "package_id": "REVIEW-PACKAGE-G3-USER-008",
       "episode_id": "G3-USER-008",
-      "episode_core_sha256": "2831b52761505d73c51cea181518fdeb94b4f319c68571c3bb49d621437ab617",
+      "episode_core_sha256": "cbae86cfda8df9f7cf34347580ff36c82f183b458607ad3116d9fba6f9cdb221",
       "authoring_episode_ref": "evals/gate3/catalog/gate3-authoring-candidates.json#G3-USER-008",
       "source_record_ref": "SRC-REAL-USER-PAID-AMOUNT-20260730",
       "suite_binding": {
@@ -4259,7 +4259,7 @@
         "release_cutoff_instant": "2026-06-03T09:30:00+01:00"
       },
       "agent_world_view_sha256": "1e41d4094414381f45c44c040e0d0a6b600d5ed2d298e01f25907d2085bdf1ef",
-      "evaluator_oracle_view_sha256": "1b7633094109ae8e1b976eda73e0019e7bd31c6360309cb9779c430f95b2bf10",
+      "evaluator_oracle_view_sha256": "1e3f1d517e9b29436d5cc3d8ca2dd7797512df75ec5d9a657b735bb7848a456d",
       "business_review_scopes": [
         "user wording and decision target",
         "title, user, world, outcome and counterfactual semantic coherence",

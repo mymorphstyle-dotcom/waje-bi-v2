@@ -53,6 +53,12 @@ POLICY_PATH = EVAL_ROOT / "gate3-eval-policy.json"
 SOURCE_REGISTRY_PATH = EVAL_ROOT / "registries" / "source-registry.json"
 REVIEW_REGISTRY_PATH = EVAL_ROOT / "registries" / "review-registry.json"
 CORPUS_REGISTRY_PATH = EVAL_ROOT / "registries" / "corpus-registry.json"
+CLAIM_TARGET_AUTHORITY_PATH = (
+    EVAL_ROOT / "registries" / "claim-target-authority-registry.json"
+)
+CLAIM_TARGET_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "claim-target-authority-registry.schema.json"
+)
 GRADER_REGISTRY_PATH = EVAL_ROOT / "registries" / "grader-registry.json"
 GRADER_RUBRIC_PATH = EVAL_ROOT / "grader-rubric.json"
 AUTHORITY_PROFILES_PATH = (
@@ -207,6 +213,8 @@ EVALUATED_PATHS = (
     COVERAGE_LEDGER_PATH,
     POLICY_PATH,
     EPISODE_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_PATH,
     POLICY_SCHEMA_PATH,
     GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
     GITHUB_PROVIDER_STATE_SCHEMA_PATH,
@@ -240,6 +248,8 @@ VERIFIER_RELEASE_PATHS = (
     ROOT / "tools" / "isolation-policy.json",
     MISSING_CONTRACT_BACKLOG_PATH,
     POLICY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_SCHEMA_PATH,
+    CLAIM_TARGET_AUTHORITY_PATH,
     GITHUB_ADMISSION_REQUEST_SCHEMA_PATH,
     GITHUB_PROVIDER_STATE_SCHEMA_PATH,
     TRUST_SCHEMA_PATH,

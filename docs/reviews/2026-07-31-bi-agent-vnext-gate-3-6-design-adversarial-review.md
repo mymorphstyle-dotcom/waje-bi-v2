@@ -23,7 +23,7 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 | G36-AR-02 | run manifest 缺 lane/paraphrase/repeat/seed/role/trace 坐标 | G3.6.0 增加 execution manifest 与 policy compiler |
 | G36-AR-03 | 同一 cell 可丢弃失败 attempt 后重跑 | append-only attempt journal + first terminal selection |
 | G36-AR-04 | protected held-out 未进入 executable universe | protected expansion receipt + opaque cells |
-| G36-AR-05 | 144 claim targets 无 typed kind，COMPOSITION 真实覆盖为 0 | 新 schema epoch、拆分复合 target、每 kind ≥3 worlds |
+| G36-AR-05 | 144 claim targets 无 typed kind，COMPOSITION 真实覆盖为 0 | typed epoch 已关闭分类与独立世界计数；复合 target 语义拆分仍 open |
 | G36-AR-06 | mutation/property/schedule 无 relation authority | operator registry + relation group/result + exact suite set |
 | G36-AR-07 | SuiteResult 只数 cell | 增加 relation、trace、critical、historical、coverage 分母 |
 | G36-RT-01 | Agent 看不到 calendar/release/data-contract world | AgentWorldView authority 进入 binding/ContextPacket |
@@ -64,6 +64,14 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 - invocation 的 case/correlation/authority snapshot/typed output 与 trace artifact 绑定；
 - 同一角色允许多个独立 logical jobs，单个 logical job 仍只允许一个成功输出；
 - terminal attempt 与 cell 的 artifact-set identity 改由完整 TraceArtifactIndex 规范 hash 重算；
+- 144 个 base 与 12 个 replacement claim targets 由独立 registry 绑定 13 类
+  `ClaimTargetKind`，候选 Episode 自行改类型会被拒绝；
+- business world independence 从 outcome authority refs 派生；36 个 Episodes 归并为 20 个
+  authority sets，同一 snapshot 的多道题只算一个世界；
+- 每类 ClaimTargetKind 当前有 3–16 个 base authority worlds、3–20 个 executable variant
+  worlds；coverage floor 由 policy 拥有，ledger 与 suite admission 按 independence key 去重；
+- authored design 固定为非穷尽示例，开放设计由 must-preserve、required investigation、claim
+  ceiling、evidence boundary 和 forbidden outcomes 判定；Agent view 不接收这些 evaluator 字段；
 - product Reviewer 必须声明并覆盖 grader registry 的 exact predicate set；
 - critical/historical 分母按 unique Episode 统计，repeat 不再放大业务覆盖；
 - 缺 cell、重复 cell、profile drift、trace stage/cycle、attempt terminal selection、hard-check
@@ -74,8 +82,9 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 - production durable model job 尚未绑定 thinking、exact prompt/tool/request/config identity；
 - provider success receipt 与 typed result 尚未原子持久，crash window 未关闭；
 - local hard/relation observations 仍由 runner 产生，需 protected executor 从 artifact bytes 重算；
-- canonical corpus 尚缺 typed ClaimTargetKind、independence key、open-world contract 和可验收
-  paraphrase authority；
+- canonical corpus 已有 typed ClaimTargetKind、independence key 和 open-world contract；
+  paraphrase authority、pairwise/higher-order coverage、expert/single-estimand/low-context/simple
+  Episode、复合 target 语义拆分仍 open；
 - opaque held-out expansion、frozen run-cell 全链和 protected execution receipt verifier 尚未形成
   正向可满足路径；
 - Lane A/B 尚未接入 production durable runtime，因此 full matrix 禁止启动。

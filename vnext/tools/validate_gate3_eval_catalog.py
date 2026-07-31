@@ -257,6 +257,29 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
+def business_world_independence_authority_refs(
+    episode: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return the conservative source-authority roots for one business world."""
+
+    concrete = [
+        binding
+        for binding in episode["data_source_bindings"]
+        if binding["source_mode"] != "known_contract_gap"
+    ]
+    outcome = [
+        binding for binding in concrete if "outcome" in binding["roles"]
+    ]
+    selected = outcome or concrete or list(episode["data_source_bindings"])
+    return tuple(sorted({binding["authority_ref"] for binding in selected}))
+
+
+def business_world_independence_key(episode: Mapping[str, Any]) -> str:
+    return "authority-set:" + canonical_sha256(
+        business_world_independence_authority_refs(episode)
+    )
+
+
 def replacement_expectation_content_core(
     expectation: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -293,6 +316,7 @@ def episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
             "episode_id",
             "title",
             "source_pool",
+            "business_world_independence_key",
             "suite_binding",
             "data_source_bindings",
             "user_episode",
@@ -420,6 +444,9 @@ def materialize_counterfactual_episode(
             del parent[target]
         else:
             parent[target] = copy.deepcopy(patch["after"])
+    materialized["business_world_independence_key"] = (
+        business_world_independence_key(materialized)
+    )
     return materialized
 
 
@@ -867,7 +894,7 @@ def validate_counterfactual_materialization(
             format_checker=FormatChecker(),
         ).iter_errors(
             {
-                "catalog_version": "gate3.behavior-eval.v4",
+                "catalog_version": "gate3.behavior-eval.v5",
                 "episodes": [materialized],
             }
         )
@@ -1879,6 +1906,14 @@ def _validate_episode_semantics(
         ),
     )
     episode_id = episode["episode_id"]
+    if episode["business_world_independence_key"] != (
+        business_world_independence_key(episode)
+    ):
+        findings.append(
+            "{} business-world independence key differs from source authority".format(
+                episode_id
+            )
+        )
     turns = [
         message["turn"] for message in episode["user_episode"]["messages"]
     ]
@@ -2249,6 +2284,33 @@ def _validate_episode_semantics(
     return findings
 
 
+def _claim_target_kind_world_counts(
+    episodes: Sequence[Mapping[str, Any]],
+    *,
+    include_counterfactuals: bool,
+) -> dict[str, int]:
+    worlds_by_kind: dict[str, set[str]] = {}
+    for episode in episodes:
+        variants = [episode]
+        if include_counterfactuals:
+            variants.extend(
+                materialize_counterfactual_episode(episode, sibling)
+                for sibling in episode["counterfactual_siblings"]
+            )
+        for variant in variants:
+            independence_key = variant[
+                "business_world_independence_key"
+            ]
+            for target in variant["acceptable_outcome"]["claim_targets"]:
+                worlds_by_kind.setdefault(
+                    target["claim_target_kind"], set()
+                ).add(independence_key)
+    return {
+        kind: len(worlds)
+        for kind, worlds in sorted(worlds_by_kind.items())
+    }
+
+
 def _coverage_report(
     episodes: Sequence[Mapping[str, Any]],
     *,
@@ -2287,6 +2349,23 @@ def _coverage_report(
         gaps = sorted(required_roles - observed_roles)
         if gaps:
             counterfactual_role_gaps[episode["episode_id"]] = gaps
+    required_kinds = policy["required_suite"]["required_claim_target_kinds"]
+    world_floor = policy["required_suite"][
+        "minimum_independent_business_worlds_per_claim_target_kind"
+    ]
+    base_world_counts = _claim_target_kind_world_counts(
+        episodes,
+        include_counterfactuals=False,
+    )
+    executable_world_counts = _claim_target_kind_world_counts(
+        episodes,
+        include_counterfactuals=True,
+    )
+    claim_target_kind_world_gaps = {
+        kind: world_floor - executable_world_counts.get(kind, 0)
+        for kind in required_kinds
+        if executable_world_counts.get(kind, 0) < world_floor
+    }
     return {
         "catalog_sha256": canonical_sha256(_load_json(catalog_path)),
         "schema_sha256": canonical_sha256(_load_json(SCHEMA_PATH)),
@@ -2339,9 +2418,15 @@ def _coverage_report(
             ),
         },
         "coverage": coverage,
+        "claim_target_kind_world_coverage": {
+            "minimum_independent_worlds_per_kind": world_floor,
+            "base_episode_world_counts": base_world_counts,
+            "executable_variant_world_counts": executable_world_counts,
+        },
         "authoring_gaps": {
             "missing_coverage": missing_coverage,
             "counterfactual_role_gaps": counterfactual_role_gaps,
+            "claim_target_kind_world_gaps": claim_target_kind_world_gaps,
         },
         "promotion_ready": False,
         "promotion_authority": "verify_gate3_e0.py",
@@ -2420,6 +2505,25 @@ def _validate_required_suite(
         findings.append(
             "required source mode coverage missing: {}".format(
                 missing_source_modes
+            )
+        )
+    executable_world_counts = _claim_target_kind_world_counts(
+        episodes,
+        include_counterfactuals=True,
+    )
+    world_floor = required[
+        "minimum_independent_business_worlds_per_claim_target_kind"
+    ]
+    missing_kind_worlds = {
+        kind: executable_world_counts.get(kind, 0)
+        for kind in required["required_claim_target_kinds"]
+        if executable_world_counts.get(kind, 0) < world_floor
+    }
+    if missing_kind_worlds:
+        findings.append(
+            "claim target kinds below independent business-world floor {}: {}".format(
+                world_floor,
+                dict(sorted(missing_kind_worlds.items())),
             )
         )
     sibling_floor = required["counterfactual_siblings_per_episode"]
@@ -2542,6 +2646,18 @@ def validate_catalog(
     if schema_source_modes != policy_source_modes:
         findings.append(
             "policy source modes differ from Episode schema"
+        )
+    schema_claim_target_kinds = set(
+        schema["$defs"]["claimTargetExpectation"]["properties"][
+            "claim_target_kind"
+        ]["enum"]
+    )
+    policy_claim_target_kinds = set(
+        policy["required_suite"]["required_claim_target_kinds"]
+    )
+    if schema_claim_target_kinds != policy_claim_target_kinds:
+        findings.append(
+            "policy claim target kinds differ from Episode schema"
         )
     episodes = catalog["episodes"]
     duplicate_episode_ids = _duplicates(

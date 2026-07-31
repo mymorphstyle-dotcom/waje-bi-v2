@@ -67,21 +67,6 @@ ROLE_NAMES = (
     "evaluation_reviewer",
 )
 LANES = ("semantic_frame", "full_authority")
-CLAIM_TARGET_KINDS = (
-    "definition",
-    "data_quality_state",
-    "point_quantity",
-    "distribution",
-    "temporal_pattern",
-    "contrast",
-    "composition",
-    "accounting_decomposition",
-    "cohort_outcome",
-    "funnel_transition",
-    "association",
-    "causal_effect",
-    "diagnostic_set",
-)
 RUNNER_RELEASE_PATHS = (
     Path(__file__).resolve(),
     MANIFEST_SCHEMA_PATH,
@@ -139,6 +124,7 @@ def episode_core(episode: Mapping[str, Any]) -> dict[str, Any]:
             "episode_id",
             "title",
             "source_pool",
+            "business_world_independence_key",
             "suite_binding",
             "data_source_bindings",
             "user_episode",
@@ -523,6 +509,13 @@ def _validate_cell_source_authority(
     if cell["business_world_id"] != episode["business_world"]["world_id"]:
         findings.append(
             f"{cell['execution_cell_id']} business world differs from Episode"
+        )
+    if cell["business_world_independence_key"] != episode[
+        "business_world_independence_key"
+    ]:
+        findings.append(
+            f"{cell['execution_cell_id']} business world independence authority "
+            "differs from Episode"
         )
     expected_historical = episode["source_pool"] == "historical_failure"
     if cell["historical_regression"] != expected_historical:
@@ -1778,7 +1771,14 @@ def derive_suite_result(
     if manifest["run_mode"] != "full":
         coverage_blockers.append("run_mode_not_full")
     missing_world_floor = [
-        kind for kind in CLAIM_TARGET_KINDS if world_counts.get(kind, 0) < 3
+        kind
+        for kind in authority["policy"]["required_suite"][
+            "required_claim_target_kinds"
+        ]
+        if world_counts.get(kind, 0)
+        < authority["policy"]["required_suite"][
+            "minimum_independent_business_worlds_per_claim_target_kind"
+        ]
     ]
     if missing_world_floor:
         coverage_blockers.append("claim_target_kind_world_floor_incomplete")
@@ -1862,7 +1862,7 @@ def _claim_target_kind_world_counts(
     for cell in manifest["cells"]:
         for kind in cell["claim_target_kinds"]:
             worlds_by_kind.setdefault(kind, set()).add(
-                cell["business_world_id"]
+                cell["business_world_independence_key"]
             )
     return {
         kind: len(worlds)

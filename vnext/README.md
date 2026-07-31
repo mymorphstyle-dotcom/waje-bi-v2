@@ -75,6 +75,11 @@ settled publication 和 delivered Workflow 继续 fail closed，分别等待 Gat
 `run_sensitivity` 在 selected sensitivity identity 进入 sealed dispatch/result 合同前也
 保持 fail closed。Workflow projector 直接消费 durable journal，通过 cursor receipt 与
 head CAS 恢复，不建立第二套 projection outbox authority。
+
+G3.6.0 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 运行权威，并完成
+typed/open-world corpus epoch：144 个 base 与 12 个 replacement claim targets 绑定 13 类
+`ClaimTargetKind`；business-world independence 从 outcome authority refs 派生；authored
+design 只作非穷尽示例。真实 provider lanes、protected execution 和 full matrix 尚未开放。
 完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6 完成产品验收。
 
 真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：
