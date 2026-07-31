@@ -516,16 +516,28 @@ export interface WorkPlanRevision {
   created_by_action_id: string;
   created_at: string;
   revision_reason: string;
+  /**
+   * @minItems 1
+   */
+  resolution_outcome_ids: [string, ...string[]];
   tasks: WorkTask[];
 }
 export interface WorkTask {
   task_id: string;
+  proposal_task_key: string;
   business_purpose: string;
-  capability_intent: string;
-  target_claim_ids: string[];
+  capability_intent_ref: string;
+  target_estimand_ids: string[];
+  /**
+   * @minItems 1
+   */
+  obligation_ids: [string, ...string[]];
+  query_binding_ids: string[];
+  completion_spec_ids: string[];
+  execution_success_policy_refs: string[];
+  execution_degrade_policy_refs: string[];
+  execution_stop_policy_refs: string[];
   depends_on_task_ids: string[];
-  success_conditions: string[];
-  stop_conditions: string[];
 }
 export interface EvidenceRecord {
   evidence_record_id: string;
@@ -600,12 +612,19 @@ export interface MeasurementResolutionOutcome {
   estimand_id: string;
   semantic_measurement_id: string;
   authority_binding_id: string;
+  derivation_authority: MeasurementDerivationAuthority;
   kind: "resolved_instance" | "typed_resolution_boundary";
   resolved_instance: ResolvedMeasurementInstance | null;
   boundary: TypedResolutionBoundary | null;
   requirement_boundaries: RequirementResolutionBoundary[];
   created_at: string;
   schema_epoch: 3;
+}
+export interface MeasurementDerivationAuthority {
+  case_id: string;
+  mailbox_authority_epoch: number;
+  accepted_question_revision_id: string;
+  accepted_frame_revision_id: string;
 }
 export interface ResolvedMeasurementInstance {
   resolution_id: string;
@@ -697,7 +716,9 @@ export interface ResolvedEvidenceObligation {
   estimand_id: string;
   evidence_requirement_id: string;
   evidence_requirement_sha256: string;
+  evidence_type_refs: string[];
   resolution_outcome_id: string;
+  derivation_authority: MeasurementDerivationAuthority;
   execution_disposition: "executable" | "typed_boundary" | "blocked";
   boundary_code: string | null;
   closure_definition_sha256: string;

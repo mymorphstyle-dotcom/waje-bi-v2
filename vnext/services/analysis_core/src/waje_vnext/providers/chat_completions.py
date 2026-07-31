@@ -447,7 +447,6 @@ def _decode_action_tool_response(
         raise ProviderPermanentError(
             "provider selected an action outside allowed_actions"
         )
-    decoded = _decode_json_string_parameters(decoded)
     _reject_provider_system_identifiers(decoded)
     if kind is ActionKind.REVISE_FRAME:
         if accepted_question_revision_id is None:
@@ -528,31 +527,6 @@ def _decode_single_tool_call(
     return name, decoded
 
 
-def _decode_json_string_parameters(
-    payload: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    decoded = dict(payload)
-    if "parameters" not in decoded:
-        return decoded
-    raw = decoded["parameters"]
-    if not isinstance(raw, str):
-        raise ProviderPermanentError(
-            "provider action parameters must use canonical JSON transport"
-        )
-    try:
-        parameters = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ProviderPermanentError(
-            "provider action parameters are not valid JSON"
-        ) from error
-    if not isinstance(parameters, Mapping):
-        raise ProviderPermanentError(
-            "provider action parameters must decode to an object"
-        )
-    decoded["parameters"] = parameters
-    return decoded
-
-
 _PROVIDER_FORBIDDEN_ID_FIELDS = {
     "answer_version_id",
     "case_id",
@@ -568,7 +542,6 @@ _PROVIDER_FORBIDDEN_ID_FIELDS = {
 }
 
 _CANONICAL_JSON_TRANSPORT_FIELDS = {
-    "parameters",
     "recommended_interpretation_json",
     "value_json",
 }

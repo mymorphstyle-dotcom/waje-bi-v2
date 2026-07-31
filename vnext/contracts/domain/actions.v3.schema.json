@@ -2288,52 +2288,38 @@
         "tasks": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/WorkTask"
+            "$ref": "#/$defs/ProposedWorkTask"
           }
         }
       }
     },
-    "WorkTask": {
+    "ProposedWorkTask": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "task_id",
+        "proposal_task_key",
         "business_purpose",
-        "capability_intent",
-        "target_claim_ids",
-        "depends_on_task_ids",
-        "success_conditions",
-        "stop_conditions"
+        "capability_intent_ref",
+        "obligation_ids",
+        "depends_on_task_keys"
       ],
       "properties": {
-        "task_id": {
+        "proposal_task_key": {
           "type": "string"
         },
         "business_purpose": {
           "type": "string"
         },
-        "capability_intent": {
+        "capability_intent_ref": {
           "type": "string"
         },
-        "target_claim_ids": {
+        "obligation_ids": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "depends_on_task_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "success_conditions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "stop_conditions": {
+        "depends_on_task_keys": {
           "type": "array",
           "items": {
             "type": "string"
@@ -2364,17 +2350,24 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "probe_kind",
-        "parameters"
+        "probe_contract_ref",
+        "target_authority_refs",
+        "requested_output_refs"
       ],
       "properties": {
-        "probe_kind": {
+        "probe_contract_ref": {
           "type": "string"
         },
-        "parameters": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/jsonValue"
+        "target_authority_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requested_output_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         }
       }
@@ -2384,21 +2377,15 @@
       "additionalProperties": false,
       "required": [
         "task_id",
-        "capability_name",
-        "parameters"
+        "query_binding_id"
       ],
       "properties": {
         "task_id": {
           "type": "string"
         },
-        "capability_name": {
-          "type": "string"
-        },
-        "parameters": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/jsonValue"
-          }
+        "query_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
@@ -2407,21 +2394,19 @@
       "additionalProperties": false,
       "required": [
         "task_id",
-        "variant_label",
-        "parameters"
+        "query_binding_id",
+        "sensitivity_id"
       ],
       "properties": {
         "task_id": {
           "type": "string"
         },
-        "variant_label": {
-          "type": "string"
+        "query_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
-        "parameters": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/jsonValue"
-          }
+        "sensitivity_id": {
+          "type": "string"
         }
       }
     },

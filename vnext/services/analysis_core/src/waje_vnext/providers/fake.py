@@ -32,6 +32,12 @@ class ScriptedPrimaryAgentProvider:
         self.binding_requests: list[MessageBindingRequest] = []
         self.review_requests: list[FrameReviewRequest] = []
 
+    def enqueue_proposals(
+        self,
+        *proposals: AgentActionProposal,
+    ) -> None:
+        self._proposals.extend(proposals)
+
     def propose(self, request: PrimaryAgentRequest) -> AgentActionProposal:
         self.requests.append(request)
         if not self._proposals:

@@ -1,0 +1,1252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waje-vnext:domain:planning:v1",
+  "title": "WAJE vNext Gate 3.4 logical planning contracts",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PlanAdoptionRecord"
+    },
+    {
+      "$ref": "#/$defs/QueryBindingEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ConformanceExecutionSpec"
+    },
+    {
+      "$ref": "#/$defs/LogicalExecutionAttempt"
+    }
+  ],
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "PlanAdoptionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_adoption_id",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "expected_head_version",
+        "authority_snapshot",
+        "authority_snapshot_sha256",
+        "frame_content_sha256",
+        "plan_content_sha256",
+        "resolution_outcome_ids",
+        "resolution_outcome_content_sha256s",
+        "resolution_admission_content_sha256s",
+        "resolution_context_sha256s",
+        "resolver_input_bundle_sha256s",
+        "resolution_registry_content_sha256s",
+        "obligation_ids",
+        "obligation_content_sha256s",
+        "query_binding_ids",
+        "query_binding_content_sha256s",
+        "capability_intent_registry_version",
+        "capability_intent_registry_sha256",
+        "adoption_policy_version",
+        "derivation_proof_sha256",
+        "created_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "plan_adoption_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "expected_head_version": {
+          "type": "integer"
+        },
+        "authority_snapshot": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "authority_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "frame_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plan_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resolution_outcome_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "resolution_outcome_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "resolution_admission_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "resolution_context_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "resolver_input_bundle_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "resolution_registry_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "obligation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "obligation_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1
+        },
+        "query_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "query_binding_content_sha256s": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "capability_intent_registry_version": {
+          "type": "string"
+        },
+        "capability_intent_registry_sha256": {
+          "type": "string"
+        },
+        "adoption_policy_version": {
+          "type": "string"
+        },
+        "derivation_proof_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "AuthoritySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "head_version",
+        "mailbox_authority_epoch",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id",
+        "accepted_plan_revision_id",
+        "active_frame_candidate_generation",
+        "active_frame_candidate_sha256",
+        "obligation_state_version",
+        "evidence_admission_state_version",
+        "contradiction_state_version"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "head_version": {
+          "type": "integer"
+        },
+        "mailbox_authority_epoch": {
+          "type": "integer"
+        },
+        "accepted_question_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_frame_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_plan_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_frame_candidate_generation": {
+          "type": "integer"
+        },
+        "active_frame_candidate_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "obligation_state_version": {
+          "type": "integer"
+        },
+        "evidence_admission_state_version": {
+          "type": "integer"
+        },
+        "contradiction_state_version": {
+          "type": "integer"
+        }
+      }
+    },
+    "QueryBindingEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query_binding_id",
+        "case_id",
+        "question_revision_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "task_id",
+        "capability_intent_ref",
+        "estimand_id",
+        "evidence_requirement_id",
+        "obligation_id",
+        "resolution_outcome_id",
+        "semantic_measurement_id",
+        "authority_binding_id",
+        "frame_content_sha256",
+        "plan_content_sha256",
+        "resolution_outcome_content_sha256",
+        "obligation_content_sha256",
+        "measurement_binding",
+        "requirement_binding",
+        "resolved_measurement_instance",
+        "query_binding_policy_version",
+        "physical_compiler_contract_ref",
+        "created_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "query_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "question_revision_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "capability_intent_ref": {
+          "type": "string"
+        },
+        "estimand_id": {
+          "type": "string"
+        },
+        "evidence_requirement_id": {
+          "type": "string"
+        },
+        "obligation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resolution_outcome_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "semantic_measurement_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "frame_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plan_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resolution_outcome_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "obligation_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "measurement_binding": {
+          "$ref": "#/$defs/LogicalMeasurementBinding"
+        },
+        "requirement_binding": {
+          "$ref": "#/$defs/EvidenceRequirementBinding"
+        },
+        "resolved_measurement_instance": {
+          "$ref": "#/$defs/ResolvedMeasurementInstance"
+        },
+        "query_binding_policy_version": {
+          "type": "string"
+        },
+        "physical_compiler_contract_ref": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "LogicalMeasurementBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_target_kind",
+        "claim_target_spec_sha256",
+        "variable_ids",
+        "event_ids",
+        "population_id",
+        "observation_unit_id",
+        "temporal_semantic_id",
+        "estimator_id",
+        "exposure_id",
+        "contrast_id",
+        "sequence_id",
+        "cohort_risk_set_id",
+        "reconciliation_id",
+        "relationship_id",
+        "eligibility_id",
+        "identification_id",
+        "alternative_ids",
+        "sensitivity_ids",
+        "falsification_ids",
+        "reversal_ids",
+        "scope_ceiling_id",
+        "claim_strength_ceiling"
+      ],
+      "properties": {
+        "claim_target_kind": {
+          "type": "string",
+          "enum": [
+            "definition",
+            "data_quality_state",
+            "point_quantity",
+            "distribution",
+            "temporal_pattern",
+            "contrast",
+            "composition",
+            "accounting_decomposition",
+            "cohort_outcome",
+            "funnel_transition",
+            "association",
+            "causal_effect",
+            "diagnostic_set"
+          ]
+        },
+        "claim_target_spec_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "variable_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "population_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_unit_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "temporal_semantic_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "estimator_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exposure_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contrast_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cohort_risk_set_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reconciliation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relationship_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibility_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identification_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alternative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sensitivity_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "falsification_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reversal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_ceiling_id": {
+          "type": "string"
+        },
+        "claim_strength_ceiling": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        }
+      }
+    },
+    "EvidenceRequirementBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_requirement_id",
+        "required_evidence_type_refs",
+        "obligation_evidence_type_refs",
+        "composition",
+        "minimum_count",
+        "minimum_strength",
+        "scope_id",
+        "exposure_id",
+        "contradiction_policy_ref",
+        "boundary_policy",
+        "allowed_boundary_codes",
+        "linked_falsification_ids",
+        "linked_reversal_ids"
+      ],
+      "properties": {
+        "evidence_requirement_id": {
+          "type": "string"
+        },
+        "required_evidence_type_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "obligation_evidence_type_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "composition": {
+          "type": "string",
+          "enum": [
+            "all",
+            "any",
+            "at_least"
+          ]
+        },
+        "minimum_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minimum_strength": {
+          "type": "string",
+          "enum": [
+            "boundary_only",
+            "descriptive",
+            "accounting",
+            "associational",
+            "causal"
+          ]
+        },
+        "scope_id": {
+          "type": "string"
+        },
+        "exposure_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contradiction_policy_ref": {
+          "type": "string"
+        },
+        "boundary_policy": {
+          "type": "string",
+          "enum": [
+            "block",
+            "allow_typed_boundary",
+            "allow_claim_degrade"
+          ]
+        },
+        "allowed_boundary_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "linked_falsification_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "linked_reversal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ResolvedMeasurementInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolution_id",
+        "semantic_measurement_id",
+        "authority_binding_id",
+        "frame_revision_id",
+        "estimand_id",
+        "context",
+        "target_period_ref",
+        "windows",
+        "expected_scope_id",
+        "expected_grain_ref",
+        "expected_unit_ref",
+        "expected_exposure_id",
+        "eligibility_id",
+        "resolver_contract_ref",
+        "resolver_input_bundle_sha256",
+        "field_derivation_proof_sha256"
+      ],
+      "properties": {
+        "resolution_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "semantic_measurement_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "estimand_id": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ResolutionContext"
+        },
+        "target_period_ref": {
+          "type": "string"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedWindow"
+          }
+        },
+        "expected_scope_id": {
+          "type": "string"
+        },
+        "expected_grain_ref": {
+          "type": "string"
+        },
+        "expected_unit_ref": {
+          "type": "string"
+        },
+        "expected_exposure_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibility_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolver_contract_ref": {
+          "type": "string"
+        },
+        "resolver_input_bundle_sha256": {
+          "type": "string"
+        },
+        "field_derivation_proof_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ResolutionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of_instant",
+        "timezone",
+        "business_day_cutoff",
+        "ambiguous_local_time_policy",
+        "calendar_version_ref",
+        "holiday_version_ref",
+        "fiscal_version_ref",
+        "data_contract_version_ref",
+        "snapshot_release_ref",
+        "coverage_watermark_ref",
+        "late_arrival_policy_ref"
+      ],
+      "properties": {
+        "as_of_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "business_day_cutoff": {
+          "type": "string"
+        },
+        "ambiguous_local_time_policy": {
+          "type": "string",
+          "enum": [
+            "earliest_fold",
+            "latest_fold",
+            "reject"
+          ]
+        },
+        "calendar_version_ref": {
+          "type": "string"
+        },
+        "holiday_version_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fiscal_version_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_contract_version_ref": {
+          "type": "string"
+        },
+        "snapshot_release_ref": {
+          "type": "string"
+        },
+        "coverage_watermark_ref": {
+          "type": "string"
+        },
+        "late_arrival_policy_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "ResolvedWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operand_id",
+        "window_rule_id",
+        "anchor_date",
+        "period_offset",
+        "actual_start",
+        "actual_end",
+        "start_instant",
+        "end_instant",
+        "elapsed_seconds",
+        "actual_calendar_days",
+        "selected_calendar_dates_count",
+        "observed_calendar_dates_count",
+        "valid_calendar_dates_count",
+        "selected_calendar_dates_sha256",
+        "calendar_coverage_receipt_sha256",
+        "exposure_facts"
+      ],
+      "properties": {
+        "operand_id": {
+          "type": "string"
+        },
+        "window_rule_id": {
+          "type": "string"
+        },
+        "anchor_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "period_offset": {
+          "type": "integer"
+        },
+        "actual_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "actual_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "start_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_instant": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "elapsed_seconds": {
+          "type": "integer"
+        },
+        "actual_calendar_days": {
+          "type": "integer"
+        },
+        "selected_calendar_dates_count": {
+          "type": "integer"
+        },
+        "observed_calendar_dates_count": {
+          "type": "integer"
+        },
+        "valid_calendar_dates_count": {
+          "type": "integer"
+        },
+        "selected_calendar_dates_sha256": {
+          "type": "string"
+        },
+        "calendar_coverage_receipt_sha256": {
+          "type": "string"
+        },
+        "exposure_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedExposureFact"
+          }
+        }
+      }
+    },
+    "ResolvedExposureFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exposure_id",
+        "basis",
+        "unit_ref",
+        "expected_exposure_decimal",
+        "observed_exposure_decimal",
+        "valid_exposure_decimal",
+        "invalid_exposure_decimal",
+        "missing_exposure_decimal",
+        "coverage_ratio_decimal",
+        "at_risk_exposure_decimal",
+        "source_kind",
+        "source_receipt_sha256"
+      ],
+      "properties": {
+        "exposure_id": {
+          "type": "string"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "calendar",
+            "eligible",
+            "observed",
+            "valid",
+            "missing_invalid",
+            "at_risk"
+          ]
+        },
+        "unit_ref": {
+          "type": "string"
+        },
+        "expected_exposure_decimal": {
+          "type": "string"
+        },
+        "observed_exposure_decimal": {
+          "type": "string"
+        },
+        "valid_exposure_decimal": {
+          "type": "string"
+        },
+        "invalid_exposure_decimal": {
+          "type": "string"
+        },
+        "missing_exposure_decimal": {
+          "type": "string"
+        },
+        "coverage_ratio_decimal": {
+          "type": "string"
+        },
+        "at_risk_exposure_decimal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "contract_catalog",
+            "snapshot_catalog",
+            "calendar_derivation"
+          ]
+        },
+        "source_receipt_sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "ConformanceExecutionSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conformance_execution_spec_id",
+        "logical_execution_id",
+        "case_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "task_id",
+        "obligation_id",
+        "query_binding_id",
+        "query_binding_content_sha256",
+        "realm",
+        "fixture_ref",
+        "fixture_content_sha256",
+        "result_contract_ref",
+        "execution_policy_ref",
+        "created_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "conformance_execution_spec_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "logical_execution_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "obligation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "query_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "query_binding_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "realm": {
+          "type": "string",
+          "enum": [
+            "conformance"
+          ]
+        },
+        "fixture_ref": {
+          "type": "string"
+        },
+        "fixture_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "result_contract_ref": {
+          "type": "string"
+        },
+        "execution_policy_ref": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    },
+    "LogicalExecutionAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_execution_attempt_id",
+        "logical_execution_id",
+        "case_id",
+        "frame_revision_id",
+        "plan_revision_id",
+        "task_id",
+        "query_binding_id",
+        "conformance_execution_spec_id",
+        "query_binding_content_sha256",
+        "execution_spec_content_sha256",
+        "authority_snapshot",
+        "authority_snapshot_sha256",
+        "attempt_number",
+        "prior_attempt_id",
+        "attempt_kind",
+        "retry_reason_code",
+        "requested_at",
+        "schema_epoch"
+      ],
+      "properties": {
+        "logical_execution_attempt_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "logical_execution_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "frame_revision_id": {
+          "type": "string"
+        },
+        "plan_revision_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "query_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "conformance_execution_spec_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "query_binding_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "execution_spec_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_snapshot": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "authority_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attempt_number": {
+          "type": "integer"
+        },
+        "prior_attempt_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempt_kind": {
+          "type": "string",
+          "enum": [
+            "initial",
+            "technical_retry"
+          ]
+        },
+        "retry_reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema_epoch": {
+          "const": 3
+        }
+      }
+    }
+  }
+}

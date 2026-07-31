@@ -6,6 +6,10 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 
 from gate1_fixtures import make_frame
+from gate3_plan_fixtures import (
+    record_measurement_authority,
+    record_plan_bundle,
+)
 from tests.test_gate2_controller import frame_proposal
 from waje_vnext.controller import (
     DurableObligationCoordinator,
@@ -13,8 +17,10 @@ from waje_vnext.controller import (
     WAJEController,
 )
 from waje_vnext.domain.async_runtime import AsyncJobKind, AuthoritySnapshot
+from waje_vnext.domain.authority import CaseLifecycle
 from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.measurement import ObligationExecutionDisposition
 from waje_vnext.domain.measurement_resolver import (
     TrustedMeasurementResolver,
 )
@@ -22,12 +28,14 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletion,
     ObligationCompletionRecord,
     ObligationDependency,
+    ObligationPlanBinding,
     ObligationTerminalStatus,
     admit_obligation_completion,
-    build_obligation_dispatch,
+    build_obligation_dispatch as build_plan_bound_dispatch,
     propagate_dependency_terminals,
     select_runnable_obligations,
 )
+from waje_vnext.domain.planning import ProposedWorkTask
 from waje_vnext.providers import ScriptedPrimaryAgentProvider
 from waje_vnext.storage import (
     InMemoryAuthorityStore,
@@ -35,6 +43,7 @@ from waje_vnext.storage import (
 )
 from tests.test_gate3_3_measurement_resolver import (
     make_context,
+    make_derivation_authority,
     make_request,
     make_trusted_registry,
     make_trusted_signer,
@@ -43,6 +52,25 @@ from tests.test_gate3_3_measurement_resolver import (
 
 
 NOW = datetime(2026, 7, 31, 8, tzinfo=UTC)
+
+
+def build_obligation_dispatch(*, obligation, current_authority):
+    return build_plan_bound_dispatch(
+        obligation=obligation,
+        plan_binding=ObligationPlanBinding(
+            obligation_id=obligation.obligation_id,
+            task_id=content_sha256(
+                {"task": obligation.obligation_id}
+            ),
+            query_binding_id=content_sha256(
+                {"query": obligation.obligation_id}
+            ),
+        ),
+        plan_revision_id=(
+            current_authority.accepted_plan_revision_id or ""
+        ),
+        current_authority=current_authority,
+    )
 
 
 def authority(frame, *, obligation_version: int = 0):
@@ -106,6 +134,7 @@ def obligations():
     )
     outcome = resolver.resolve_measurement(
         frame=frame,
+        derivation_authority=make_derivation_authority(frame),
         estimand_id=estimand.estimand_id,
         context=context,
         request=request,
@@ -130,8 +159,15 @@ def accepted_single_obligation_runtime(
     *,
     store: InMemoryAuthorityStore | None = None,
     obligation_count: int = 1,
+    typed_boundary: bool = False,
 ):
-    store = InMemoryAuthorityStore() if store is None else store
+    store = (
+        InMemoryAuthorityStore(
+            resolution_input_verifier=make_trusted_verifier()
+        )
+        if store is None
+        else store
+    )
     proposal = frame_proposal(case_id)
     if obligation_count > 1:
         design = proposal.payload.measurement_design
@@ -194,33 +230,76 @@ def accepted_single_obligation_runtime(
     frame_id = store.get_case(case_id).accepted_frame_revision_id
     assert frame_id is not None
     frame = store.get_frame(frame_id)
-    context = make_context()
-    request = make_request(frame, anchor=date(2026, 7, 1))
-    registry = make_trusted_registry(request, context)
-    verifier = make_trusted_verifier()
-    resolver = TrustedMeasurementResolver(
-        verifier,
-        make_trusted_signer(),
-    )
-    outcome = resolver.resolve_measurement(
+    case = store.get_case(case_id)
+    resolution_requests = None
+    if typed_boundary:
+        estimand_id = (
+            frame.measurement_design.estimands[0].estimand_id
+        )
+        resolution_requests = {
+            estimand_id: make_request(
+                frame,
+                anchor=date(2026, 7, 1),
+                expected="7",
+                observed="6",
+                valid="6",
+                invalid="0",
+                missing="1",
+            )
+        }
+    measurement_authority = record_measurement_authority(
+        store=store,
+        case=case,
         frame=frame,
-        estimand_id=frame.measurement_design.estimands[0].estimand_id,
-        context=context,
-        request=request,
-        trusted_input_registry=registry,
         created_at=NOW,
+        correlation_id=run_id,
+        resolution_requests_by_estimand_id=resolution_requests,
     )
-    items = resolver.compile_evidence_obligations(
+    _, _, items = measurement_authority
+    task_keys = tuple(
+        f"investigate-{index}"
+        for index in range(1, len(items) + 1)
+    )
+    proposed_tasks = tuple(
+        ProposedWorkTask(
+            proposal_task_key=task_keys[index],
+            business_purpose="Close the accepted evidence obligation",
+            capability_intent_ref=(
+                "waje-vnext://capability-intent/"
+                + (
+                    "measurement-evidence.v1"
+                    if item.execution_disposition
+                    is ObligationExecutionDisposition.EXECUTABLE
+                    else "boundary-inspection.v1"
+                )
+            ),
+            obligation_ids=(item.obligation_id,),
+            depends_on_task_keys=(
+                ()
+                if index == 0
+                else (task_keys[index - 1],)
+            ),
+        )
+        for index, item in enumerate(items)
+    )
+    case, _ = record_plan_bundle(
+        store=store,
+        case=case,
         frame=frame,
-        outcome=outcome,
-        context=context,
-        resolution_request=request,
-        trusted_input_registry=registry,
         created_at=NOW,
+        plan_revision_id=f"{case_id}:plan:1",
+        correlation_id=run_id,
+        proposed_tasks=proposed_tasks,
+        measurement_authority=measurement_authority,
     )
     dependencies = tuple(
-        ObligationDependency(item.obligation_id, ())
-        for item in items
+        ObligationDependency(
+            item.obligation_id,
+            ()
+            if index == 0
+            else (items[index - 1].obligation_id,),
+        )
+        for index, item in enumerate(items)
     )
     scheduler = DurableObligationCoordinator(
         store=store,
@@ -237,6 +316,92 @@ def accepted_single_obligation_runtime(
 
 
 class ObligationSchedulerTest(unittest.TestCase):
+    def test_mixed_topology_only_selects_executable_obligations(self) -> None:
+        frame, items = obligations()
+        boundary = replace(
+            items[1],
+            execution_disposition=(
+                ObligationExecutionDisposition.TYPED_BOUNDARY
+            ),
+            boundary_code="incomplete_period",
+        )
+        mixed = (items[0], boundary, items[2])
+        runnable = select_runnable_obligations(
+            obligations=mixed,
+            dependencies=tuple(
+                ObligationDependency(item.obligation_id, ())
+                for item in mixed
+            ),
+            completions=(),
+            current_authority=authority(frame),
+        )
+
+        self.assertEqual(
+            {item.obligation_id for item in runnable},
+            {
+                items[0].obligation_id,
+                items[2].obligation_id,
+            },
+        )
+
+    def test_accepted_all_boundary_plan_completes_without_dispatch(
+        self,
+    ) -> None:
+        (
+            _,
+            store,
+            scheduler,
+            items,
+            _,
+            _,
+        ) = accepted_single_obligation_runtime(
+            "case-obligation-all-boundary",
+            typed_boundary=True,
+        )
+        schedule = scheduler.create_schedule(
+            case_id="case-obligation-all-boundary",
+            causation_id="accepted-frame",
+            created_at=NOW,
+        )
+
+        self.assertTrue(
+            all(
+                item.execution_disposition
+                is ObligationExecutionDisposition.TYPED_BOUNDARY
+                for item in items
+            )
+        )
+        self.assertEqual(
+            store.list_obligation_dispatches(schedule.schedule_id),
+            (),
+        )
+        self.assertFalse(
+            any(
+                item.job_kind is AsyncJobKind.OBLIGATION
+                for item in store.list_outbox_messages(
+                    case_id=schedule.case_id
+                )
+            )
+        )
+        completions = store.list_obligation_completions(
+            schedule.schedule_id
+        )
+        self.assertEqual(len(completions), len(items))
+        self.assertTrue(
+            all(
+                item.completion.status
+                is ObligationTerminalStatus.TYPED_BOUNDARY
+                for item in completions
+            )
+        )
+        checkpoint = (
+            store.list_obligation_schedule_checkpoints(
+                schedule.schedule_id
+            )[-1]
+        )
+        self.assertEqual(checkpoint.pending_obligation_ids, ())
+        self.assertEqual(checkpoint.dispatched_obligation_ids, ())
+
     def test_parallel_completion_is_order_invariant(self) -> None:
         frame, items = obligations()
         dependencies = tuple(
@@ -272,7 +437,7 @@ class ObligationSchedulerTest(unittest.TestCase):
                 completions = admit_obligation_completion(
                     dispatch=dispatches[item.obligation_id],
                     obligation=item,
-                    status=ObligationTerminalStatus.SATISFIED,
+                    status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                     result_sha256=content_sha256(
                         {"obligation_id": item.obligation_id}
                     ),
@@ -303,7 +468,7 @@ class ObligationSchedulerTest(unittest.TestCase):
         first = admit_obligation_completion(
             dispatch=dispatch,
             obligation=item,
-            status=ObligationTerminalStatus.SATISFIED,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             result_sha256=result_sha,
             current_authority=authority(frame),
             prior_completions=(),
@@ -311,7 +476,7 @@ class ObligationSchedulerTest(unittest.TestCase):
         duplicate = admit_obligation_completion(
             dispatch=dispatch,
             obligation=item,
-            status=ObligationTerminalStatus.SATISFIED,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             result_sha256=result_sha,
             current_authority=authority(
                 frame,
@@ -344,7 +509,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             admit_obligation_completion(
                 dispatch=dispatch,
                 obligation=item,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256({"result": "late"}),
                 current_authority=replace(
                     authority(frame),
@@ -356,7 +521,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             admit_obligation_completion(
                 dispatch=dispatch,
                 obligation=item,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256({"result": "late"}),
                 current_authority=replace(
                     authority(frame),
@@ -365,7 +530,9 @@ class ObligationSchedulerTest(unittest.TestCase):
                 prior_completions=(),
             )
 
-    def test_dependency_waits_for_accepted_prerequisite(self) -> None:
+    def test_dependency_waits_for_successful_prerequisite_execution(
+        self,
+    ) -> None:
         frame, items = obligations()
         dependencies = (
             ObligationDependency(items[0].obligation_id, ()),
@@ -392,8 +559,10 @@ class ObligationSchedulerTest(unittest.TestCase):
         first_completion = admit_obligation_completion(
             dispatch=dispatch,
             obligation=items[0],
-            status=ObligationTerminalStatus.SATISFIED,
-            result_sha256=content_sha256({"result": "satisfied"}),
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
+            result_sha256=content_sha256(
+                {"result": "execution_succeeded"}
+            ),
             current_authority=authority(frame),
             prior_completions=(),
         )
@@ -407,6 +576,211 @@ class ObligationSchedulerTest(unittest.TestCase):
             ),
         )
         self.assertEqual(second_runnable, (items[1],))
+
+    def test_execution_success_does_not_record_evidence_satisfaction(
+        self,
+    ) -> None:
+        (
+            _,
+            store,
+            scheduler,
+            items,
+            dependencies,
+            _,
+        ) = accepted_single_obligation_runtime(
+            "case-obligation-execution-only"
+        )
+        schedule = scheduler.create_schedule(
+            case_id="case-obligation-execution-only",
+            causation_id="accepted-frame",
+            created_at=NOW,
+        )
+        authority_before = store.get_authority_snapshot(schedule.case_id)
+        completion = scheduler.admit_completion(
+            schedule_id=schedule.schedule_id,
+            obligation_id=items[0].obligation_id,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
+            result_sha256=content_sha256({"result": "available"}),
+            completed_at=NOW,
+        )
+        authority_after = store.get_authority_snapshot(schedule.case_id)
+
+        self.assertEqual(
+            completion.completion.status,
+            ObligationTerminalStatus.EXECUTION_SUCCEEDED,
+        )
+        self.assertEqual(
+            authority_after.obligation_state_version,
+            authority_before.obligation_state_version,
+        )
+        self.assertNotIn(
+            JournalEventType.OBLIGATION_SATISFACTION_RECORDED,
+            {
+                event.event_type
+                for event in store.list_events(schedule.case_id)
+            },
+        )
+        completion_event = next(
+            event
+            for event in store.list_events(schedule.case_id)
+            if event.event_type
+            is JournalEventType.OBLIGATION_COMPLETION_ADMITTED
+        )
+        self.assertEqual(
+            completion_event.customer_projection,
+            {
+                "state": "execution_succeeded",
+                "obligation_id": items[0].obligation_id,
+                "status": "execution_succeeded",
+            },
+        )
+
+    def test_generic_outbox_cannot_inject_obligation_work(self) -> None:
+        (
+            _,
+            store,
+            scheduler,
+            _,
+            _,
+            _,
+        ) = accepted_single_obligation_runtime(
+            "case-obligation-generic-outbox"
+        )
+        schedule = scheduler.create_schedule(
+            case_id="case-obligation-generic-outbox",
+            causation_id="accepted-frame",
+            created_at=NOW,
+        )
+        message = next(
+            item
+            for item in store.list_outbox_messages(
+                case_id=schedule.case_id
+            )
+            if item.job_kind is AsyncJobKind.OBLIGATION
+        )
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "requires schedule dispatch admission",
+        ):
+            store.enqueue_outbox(message)
+        dispatch_record = store.list_obligation_dispatches(
+            schedule.schedule_id
+        )[0]
+        forged_payload = dict(message.payload)
+        forged_payload["obligation"] = {
+            "forged": "different persisted obligation"
+        }
+        forged_sha256 = content_sha256(forged_payload)
+        forged_message = replace(
+            message,
+            operation=replace(
+                message.operation,
+                payload_sha256=forged_sha256,
+            ),
+            payload=forged_payload,
+            payload_sha256=forged_sha256,
+        )
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "does not exactly bind",
+        ):
+            store.record_obligation_dispatch(
+                message=forged_message,
+                record=dispatch_record,
+            )
+
+    def test_terminal_case_fences_obligation_runtime_and_keeps_facts(
+        self,
+    ) -> None:
+        for lifecycle in (
+            CaseLifecycle.STOPPED,
+            CaseLifecycle.CLOSED,
+        ):
+            with self.subTest(lifecycle=lifecycle.value):
+                case_id = f"case-obligation-{lifecycle.value}"
+                (
+                    _,
+                    store,
+                    scheduler,
+                    items,
+                    _,
+                    _,
+                ) = accepted_single_obligation_runtime(case_id)
+                schedule = scheduler.create_schedule(
+                    case_id=case_id,
+                    causation_id="accepted-frame",
+                    created_at=NOW,
+                )
+                dispatches_before = store.list_obligation_dispatches(
+                    schedule.schedule_id
+                )
+                checkpoints_before = (
+                    store.list_obligation_schedule_checkpoints(
+                        schedule.schedule_id
+                    )
+                )
+                events_before = store.list_events(case_id)
+                case = store.get_case(case_id)
+                store.transition_case_lifecycle(
+                    case_id=case_id,
+                    lifecycle=lifecycle,
+                    expected_head_version=case.head_version,
+                    event_id=f"{case_id}:event:{lifecycle.value}",
+                    action_id=f"{case_id}:action:{lifecycle.value}",
+                    recorded_at=NOW,
+                )
+                events_after_terminal = store.list_events(case_id)
+
+                with self.assertRaisesRegex(
+                    InvalidAuthorityTransition,
+                    "terminal case fences obligation runtime",
+                ):
+                    scheduler.resume(
+                        schedule_id=schedule.schedule_id,
+                        resumed_at=NOW,
+                    )
+                with self.assertRaisesRegex(
+                    InvalidAuthorityTransition,
+                    "terminal case fences obligation runtime",
+                ):
+                    scheduler.admit_completion(
+                        schedule_id=schedule.schedule_id,
+                        obligation_id=items[0].obligation_id,
+                        status=(
+                            ObligationTerminalStatus.EXECUTION_SUCCEEDED
+                        ),
+                        result_sha256=content_sha256(
+                            {"result": "arrived-after-terminal"}
+                        ),
+                        completed_at=NOW,
+                    )
+
+                self.assertEqual(
+                    store.list_obligation_dispatches(
+                        schedule.schedule_id
+                    ),
+                    dispatches_before,
+                )
+                self.assertEqual(
+                    store.list_obligation_schedule_checkpoints(
+                        schedule.schedule_id
+                    ),
+                    checkpoints_before,
+                )
+                self.assertEqual(
+                    store.list_obligation_completions(
+                        schedule.schedule_id
+                    ),
+                    (),
+                )
+                self.assertEqual(
+                    store.list_events(case_id),
+                    events_after_terminal,
+                )
+                self.assertEqual(
+                    len(events_after_terminal),
+                    len(events_before) + 1,
+                )
 
     def test_worker_cannot_turn_executable_work_into_typed_boundary(
         self,
@@ -427,6 +801,50 @@ class ObligationSchedulerTest(unittest.TestCase):
                 current_authority=authority(frame),
                 prior_completions=(),
             )
+
+    def test_unadopted_typed_boundary_cannot_change_schedule(
+        self,
+    ) -> None:
+        (
+            _,
+            store,
+            scheduler,
+            items,
+            _,
+            _,
+        ) = accepted_single_obligation_runtime(
+            "case-obligation-typed-boundary"
+        )
+        boundary = replace(
+            items[0],
+            execution_disposition=(
+                ObligationExecutionDisposition.TYPED_BOUNDARY
+            ),
+            boundary_code="incomplete_period",
+        )
+        schedule = scheduler.create_schedule(
+            case_id="case-obligation-typed-boundary",
+            causation_id="accepted-frame",
+            created_at=NOW,
+        )
+
+        completions = store.list_obligation_completions(
+            schedule.schedule_id
+        )
+        self.assertEqual(completions, ())
+        self.assertEqual(
+            schedule.obligations,
+            items,
+        )
+        self.assertNotEqual(schedule.obligations[0], boundary)
+        self.assertEqual(
+            len(
+                store.list_obligation_dispatches(
+                    schedule.schedule_id
+                )
+            ),
+            1,
+        )
 
     def test_failed_prerequisite_closes_all_dependents(self) -> None:
         frame, items = obligations()
@@ -503,8 +921,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id="case-obligation-failed-fan-in",
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -552,8 +968,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id="case-obligation-forged-system-terminal",
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -627,7 +1041,9 @@ class ObligationSchedulerTest(unittest.TestCase):
             ),
         )
         provider = ScriptedPrimaryAgentProvider((proposal,))
-        store = InMemoryAuthorityStore()
+        store = InMemoryAuthorityStore(
+            resolution_input_verifier=make_trusted_verifier()
+        )
         controller = WAJEController(
             store=store,
             provider=provider,
@@ -650,31 +1066,42 @@ class ObligationSchedulerTest(unittest.TestCase):
         ).accepted_frame_revision_id
         assert accepted_frame_id is not None
         frame = store.get_frame(accepted_frame_id)
-        context = make_context()
-        request = make_request(
-            frame,
-            anchor=datetime(2026, 7, 1).date(),
-        )
-        trusted_registry = make_trusted_registry(request)
-        resolver = TrustedMeasurementResolver(
-            make_trusted_verifier(),
-            make_trusted_signer(),
-        )
-        outcome = resolver.resolve_measurement(
+        case = store.get_case(case_id)
+        _, _, items = record_measurement_authority(
+            store=store,
+            case=case,
             frame=frame,
-            estimand_id=estimand.estimand_id,
-            context=context,
-            request=request,
-            trusted_input_registry=trusted_registry,
             created_at=NOW,
+            correlation_id="run-durable-obligations",
         )
-        items = resolver.compile_evidence_obligations(
+        task_keys = tuple(
+            f"durable-task-{index}" for index in range(len(items))
+        )
+        proposed_tasks = tuple(
+            ProposedWorkTask(
+                proposal_task_key=task_keys[index],
+                business_purpose="Run durable dependent evidence work",
+                capability_intent_ref=(
+                    "waje-vnext://capability-intent/"
+                    "measurement-evidence.v1"
+                ),
+                obligation_ids=(item.obligation_id,),
+                depends_on_task_keys=(
+                    ()
+                    if index == 0
+                    else (task_keys[index - 1],)
+                ),
+            )
+            for index, item in enumerate(items)
+        )
+        case, _ = record_plan_bundle(
+            store=store,
+            case=case,
             frame=frame,
-            outcome=outcome,
-            context=context,
-            resolution_request=request,
-            trusted_input_registry=trusted_registry,
             created_at=NOW,
+            plan_revision_id=f"{case_id}:plan:1",
+            proposed_tasks=proposed_tasks,
+            correlation_id="run-durable-obligations",
         )
         dependencies = (
             ObligationDependency(items[0].obligation_id, ()),
@@ -693,8 +1120,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id=case_id,
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -739,7 +1164,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             restarted.admit_completion(
                 schedule_id=schedule.schedule_id,
                 obligation_id="obligation-unknown",
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256({"result": "unknown"}),
                 completed_at=NOW,
             )
@@ -747,7 +1172,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             restarted.admit_completion(
                 schedule_id=schedule.schedule_id,
                 obligation_id=items[1].obligation_id,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256(
                     {"result": "arrived-before-dispatch"}
                 ),
@@ -757,7 +1182,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             restarted.admit_completion(
                 schedule_id=schedule.schedule_id,
                 obligation_id=item.obligation_id,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256(
                     {"obligation_id": item.obligation_id}
                 ),
@@ -800,8 +1225,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "before first dispatch"):
             scheduler.create_schedule(
                 case_id="case-obligation-create-crash",
-                obligations=items,
-                dependencies=dependencies,
                 causation_id="accepted-frame",
                 created_at=NOW,
             )
@@ -826,7 +1249,9 @@ class ObligationSchedulerTest(unittest.TestCase):
     def test_completion_and_dependent_resume_share_atomic_commit(self) -> None:
         class FailNextCheckpointStore(InMemoryAuthorityStore):
             def __init__(self) -> None:
-                super().__init__()
+                super().__init__(
+                    resolution_input_verifier=make_trusted_verifier()
+                )
                 self.fail_next_checkpoint = False
 
             def record_obligation_schedule_checkpoint(self, checkpoint):
@@ -853,8 +1278,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id="case-obligation-completion-crash",
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -869,7 +1292,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             scheduler.admit_completion(
                 schedule_id=schedule.schedule_id,
                 obligation_id=items[0].obligation_id,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256({"result": "first"}),
                 completed_at=NOW,
             )
@@ -883,7 +1306,7 @@ class ObligationSchedulerTest(unittest.TestCase):
         scheduler.admit_completion(
             schedule_id=schedule.schedule_id,
             obligation_id=items[0].obligation_id,
-            status=ObligationTerminalStatus.SATISFIED,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             result_sha256=content_sha256({"result": "first"}),
             completed_at=NOW,
         )
@@ -905,8 +1328,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id="case-obligation-superseded",
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -964,8 +1385,6 @@ class ObligationSchedulerTest(unittest.TestCase):
         )
         schedule = scheduler.create_schedule(
             case_id="case-obligation-late-worker",
-            obligations=items,
-            dependencies=dependencies,
             causation_id="accepted-frame",
             created_at=NOW,
         )
@@ -982,7 +1401,7 @@ class ObligationSchedulerTest(unittest.TestCase):
         completion = scheduler.admit_completion(
             schedule_id=schedule.schedule_id,
             obligation_id=items[0].obligation_id,
-            status=ObligationTerminalStatus.SATISFIED,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             result_sha256=content_sha256({"late": "worker-result"}),
             completed_at=NOW,
         )
@@ -1005,7 +1424,7 @@ class ObligationSchedulerTest(unittest.TestCase):
         replay = scheduler.admit_completion(
             schedule_id=schedule.schedule_id,
             obligation_id=items[0].obligation_id,
-            status=ObligationTerminalStatus.SATISFIED,
+            status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             result_sha256=content_sha256({"late": "worker-result"}),
             completed_at=NOW,
         )
@@ -1014,7 +1433,7 @@ class ObligationSchedulerTest(unittest.TestCase):
             scheduler.admit_completion(
                 schedule_id=schedule.schedule_id,
                 obligation_id=items[0].obligation_id,
-                status=ObligationTerminalStatus.SATISFIED,
+                status=ObligationTerminalStatus.EXECUTION_SUCCEEDED,
                 result_sha256=content_sha256(
                     {"late": "different-worker-result"}
                 ),

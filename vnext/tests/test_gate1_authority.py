@@ -13,6 +13,8 @@ from gate1_fixtures import (
     make_plan,
     record_reviewed_frame,
 )
+from gate3_plan_fixtures import record_plan_bundle
+from test_gate3_3_measurement_resolver import make_trusted_verifier
 from waje_vnext.domain.actions import (
     ActionEnvelope,
     ActionKind,
@@ -59,6 +61,28 @@ def make_frame_action_payload(reason: str) -> ReviseFramePayload:
     )
 
 
+def make_contract_task(
+    task_id: str,
+    depends_on_task_ids: tuple[str, ...],
+) -> WorkTask:
+    return WorkTask(
+        task_id=task_id,
+        proposal_task_key=task_id,
+        business_purpose=f"Investigate {task_id}",
+        capability_intent_ref=(
+            "waje-vnext://capability-intent/measurement-evidence.v1"
+        ),
+        target_estimand_ids=("estimand-1",),
+        obligation_ids=(content_sha256({"obligation": task_id}),),
+        query_binding_ids=(content_sha256({"query": task_id}),),
+        completion_spec_ids=("completion-1",),
+        execution_success_policy_refs=("completion:all:v1",),
+        execution_degrade_policy_refs=("degrade:local:v1",),
+        execution_stop_policy_refs=("stop:blocked:v1",),
+        depends_on_task_ids=depends_on_task_ids,
+    )
+
+
 class AuthorityModelTest(unittest.TestCase):
     def test_later_frame_requires_prior_revision(self) -> None:
         with self.assertRaises(ValueError):
@@ -75,16 +99,9 @@ class AuthorityModelTest(unittest.TestCase):
                 created_by_action_id="action-plan-invalid",
                 created_at=NOW,
                 revision_reason="Invalid dependency",
+                resolution_outcome_ids=(content_sha256("resolution-1"),),
                 tasks=(
-                    WorkTask(
-                        task_id="task-1",
-                        business_purpose="Test dependency validation",
-                        capability_intent="generic comparison",
-                        target_claim_ids=("claim-1",),
-                        depends_on_task_ids=("task-missing",),
-                        success_conditions=("Complete",),
-                        stop_conditions=("Blocked",),
-                    ),
+                    make_contract_task("task-1", ("task-missing",)),
                 ),
             )
 
@@ -99,25 +116,10 @@ class AuthorityModelTest(unittest.TestCase):
                 created_by_action_id="action-plan-cycle",
                 created_at=NOW,
                 revision_reason="Invalid cyclic investigation",
+                resolution_outcome_ids=(content_sha256("resolution-1"),),
                 tasks=(
-                    WorkTask(
-                        task_id="task-a",
-                        business_purpose="Measure A",
-                        capability_intent="measure a",
-                        target_claim_ids=("claim-a",),
-                        depends_on_task_ids=("task-b",),
-                        success_conditions=("A measured",),
-                        stop_conditions=("A blocked",),
-                    ),
-                    WorkTask(
-                        task_id="task-b",
-                        business_purpose="Measure B",
-                        capability_intent="measure b",
-                        target_claim_ids=("claim-b",),
-                        depends_on_task_ids=("task-a",),
-                        success_conditions=("B measured",),
-                        stop_conditions=("B blocked",),
-                    ),
+                    make_contract_task("task-a", ("task-b",)),
+                    make_contract_task("task-b", ("task-a",)),
                 ),
             )
 
@@ -155,7 +157,9 @@ class AuthorityModelTest(unittest.TestCase):
 
 class TypedActionTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = InMemoryAuthorityStore()
+        self.store = InMemoryAuthorityStore(
+            resolution_input_verifier=make_trusted_verifier()
+        )
         self.case = self.store.open_case(
             case_id="case-1",
             thread_id="thread-1",
@@ -178,8 +182,9 @@ class TypedActionTest(unittest.TestCase):
                 issued_at=NOW,
                 payload=CallCapabilityPayload(
                     task_id="task-pattern",
-                    capability_name="periodic_pattern_compare",
-                    parameters={},
+                    query_binding_id=content_sha256(
+                        "query-binding-mismatch"
+                    ),
                 ),
             )
 
@@ -206,13 +211,14 @@ class TypedActionTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
-        plan = make_plan()
-        case = self.store.accept_plan(
-            plan,
-            expected_head_version=case.head_version,
-            event_id="event-plan",
-            recorded_at=plan.created_at,
+        case, bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame,
+            created_at=NOW,
         )
+        plan = bundle.plan
+        binding = bundle.query_bindings[0]
         action = ActionEnvelope(
             action_id="action-call-1",
             case_id="case-1",
@@ -221,13 +227,17 @@ class TypedActionTest(unittest.TestCase):
             idempotency_key="capability-call-1",
             issued_at=NOW,
             payload=CallCapabilityPayload(
-                task_id="task-pattern",
-                capability_name="periodic_pattern_compare",
-                parameters={"window": "month-start"},
+                task_id=binding.task_id,
+                query_binding_id=binding.query_binding_id,
             ),
         )
 
-        admission = admit_action(case=case, action=action, current_plan=plan)
+        admission = admit_action(
+            case=case,
+            action=action,
+            current_plan=plan,
+            current_query_bindings=bundle.query_bindings,
+        )
 
         self.assertTrue(admission.accepted)
         self.assertFalse(admission.creates_frame_revision)
@@ -264,13 +274,13 @@ class TypedActionTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
-        plan = make_plan()
-        case = self.store.accept_plan(
-            plan,
-            expected_head_version=case.head_version,
-            event_id="event-plan",
-            recorded_at=plan.created_at,
+        case, bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame,
+            created_at=NOW,
         )
+        plan = bundle.plan
         action = ActionEnvelope(
             action_id="action-sensitivity",
             case_id="case-1",
@@ -280,8 +290,10 @@ class TypedActionTest(unittest.TestCase):
             issued_at=NOW,
             payload=RunSensitivityPayload(
                 task_id="task-unknown",
-                variant_label="complete-month-only",
-                parameters={},
+                query_binding_id=(
+                    bundle.query_bindings[0].query_binding_id
+                ),
+                sensitivity_id="sensitivity:complete-month-only",
             ),
         )
 
@@ -289,10 +301,55 @@ class TypedActionTest(unittest.TestCase):
             case=case,
             action=action,
             current_plan=plan,
+            current_query_bindings=bundle.query_bindings,
         )
 
         self.assertFalse(admission.accepted)
         self.assertEqual(admission.reason_code, "unknown_plan_task")
+
+    def test_action_kind_must_match_governed_capability_intent(self) -> None:
+        frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
+        case = self.store.accept_frame(
+            frame,
+            frame_admission_proof_id=frame_proof_id,
+            expected_head_version=self.case.head_version,
+            event_id="event-frame-for-intent",
+            recorded_at=frame.created_at,
+        )
+        case, bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame,
+            created_at=NOW,
+        )
+        binding = bundle.query_bindings[0]
+        action = ActionEnvelope(
+            action_id="action-wrong-for-intent",
+            case_id="case-1",
+            kind=ActionKind.RUN_SENSITIVITY,
+            expected_head_version=case.head_version,
+            idempotency_key="wrong-intent-action-key",
+            issued_at=NOW,
+            payload=RunSensitivityPayload(
+                task_id=binding.task_id,
+                query_binding_id=binding.query_binding_id,
+                sensitivity_id="sensitivity:forged",
+            ),
+        )
+
+        admission = admit_action(
+            case=case,
+            action=action,
+            current_plan=bundle.plan,
+            current_query_bindings=bundle.query_bindings,
+        )
+
+        self.assertFalse(admission.accepted)
+        self.assertEqual(
+            admission.reason_code,
+            "capability_intent_action_mismatch",
+        )
 
     def test_terminal_case_rejects_new_actions(self) -> None:
         terminal = replace(self.case, lifecycle=CaseLifecycle.STOPPED)
@@ -405,7 +462,9 @@ class ContextPacketTest(unittest.TestCase):
 
 class InMemoryAuthorityStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = InMemoryAuthorityStore()
+        self.store = InMemoryAuthorityStore(
+            resolution_input_verifier=make_trusted_verifier()
+        )
         self.case = self.store.open_case(
             case_id="case-1",
             thread_id="thread-1",
@@ -427,12 +486,11 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
-        plan = make_plan()
-        self.case = self.store.accept_plan(
-            plan,
-            expected_head_version=self.case.head_version,
-            event_id="event-plan",
-            recorded_at=plan.created_at,
+        self.case, self.plan_bundle = record_plan_bundle(
+            store=self.store,
+            case=self.case,
+            frame=frame,
+            created_at=NOW,
         )
 
     def test_open_case_retry_is_idempotent(self) -> None:
@@ -578,17 +636,13 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         self.assertIsNone(self.case.accepted_plan_revision_id)
         self.assertIsNone(self.case.accepted_answer_version_id)
 
-        plan_2 = make_plan(
-            frame_id="frame-2",
-            revision_number=2,
-            plan_id="plan-2",
-            prior_id="plan-1",
-        )
-        self.case = self.store.accept_plan(
-            plan_2,
-            expected_head_version=self.case.head_version,
-            event_id="event-plan-2",
-            recorded_at=plan_2.created_at,
+        self.case, plan_bundle_2 = record_plan_bundle(
+            store=self.store,
+            case=self.case,
+            frame=frame_2,
+            created_at=frame_2.created_at,
+            plan_revision_id="plan-2",
+            prior_plan=self.plan_bundle.plan,
         )
         evidence_2 = make_evidence(
             evidence_id="evidence-2",
@@ -682,12 +736,28 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
+        self.case, bundle = record_plan_bundle(
+            store=self.store,
+            case=self.case,
+            frame=frame,
+            created_at=NOW,
+        )
+        forged = replace(
+            bundle,
+            plan=replace(
+                bundle.plan,
+                plan_revision_id="plan-other-frame",
+                frame_revision_id="frame-other",
+                revision_number=2,
+                prior_plan_revision_id=bundle.plan.plan_revision_id,
+            ),
+        )
 
         with self.assertRaises(InvalidAuthorityTransition):
-            self.store.accept_plan(
-                make_plan(frame_id="frame-other"),
+            self.store.accept_plan_bundle(
+                forged,
                 expected_head_version=self.case.head_version,
-                event_id="event-plan",
+                event_id="event-plan-other-frame",
                 recorded_at=NOW,
             )
 

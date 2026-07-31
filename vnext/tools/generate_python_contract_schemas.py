@@ -42,6 +42,12 @@ from waje_vnext.domain.measurement import (
     ResolvedEvidenceObligation,
     SettlementPreconditionReport,
 )
+from waje_vnext.domain.planning import (
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
+    PlanAdoptionRecord,
+    QueryBindingEnvelope,
+)
 from waje_vnext.domain.runtime_amendment import (
     DispatcherRecoveryCursor,
     FrameAdmissionProof,
@@ -73,29 +79,46 @@ EPOCH_3_RECORDS = {
     EvidenceValidityRecord,
     ObligationSatisfactionRecord,
     SettlementPreconditionReport,
+    PlanAdoptionRecord,
+    QueryBindingEnvelope,
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
 }
 SHA256_FIELDS = {
     "authority_binding_id",
     "authority_snapshot_sha256",
+    "claim_target_spec_sha256",
     "closure_definition_sha256",
+    "conformance_execution_spec_id",
     "content_sha256",
     "derived_input_sha256",
     "derivation_proof_sha256",
     "evidence_requirement_sha256",
+    "execution_spec_content_sha256",
     "expected_prior_content_sha256",
     "field_derivation_proof_sha256",
+    "fixture_content_sha256",
     "frame_content_sha256",
     "frame_review_content_sha256",
     "input_set_sha256",
     "input_sha256",
     "lineage_sha256",
+    "logical_execution_attempt_id",
+    "logical_execution_id",
     "message_payload_sha256",
     "obligation_id",
+    "obligation_content_sha256",
     "payload_sha256",
+    "plan_adoption_id",
+    "plan_content_sha256",
+    "prior_attempt_id",
     "proposed_frame_content_sha256",
+    "query_binding_content_sha256",
+    "query_binding_id",
     "request_sha256",
     "reviewed_frame_content_sha256",
     "resolution_id",
+    "resolution_outcome_content_sha256",
     "resolution_outcome_id",
     "selected_text_sha256",
     "semantic_binding_sha256",
@@ -106,6 +129,38 @@ SHA256_FIELDS = {
 SHA256_ARRAY_FIELDS = {
     "authority_binding_ids",
     "semantic_measurement_ids",
+}
+RECORD_SHA256_ARRAY_FIELDS = {
+    "PlanAdoptionRecord": {
+        "resolution_outcome_ids": True,
+        "resolution_outcome_content_sha256s": True,
+        "resolution_admission_content_sha256s": True,
+        "resolution_context_sha256s": True,
+        "resolver_input_bundle_sha256s": True,
+        "resolution_registry_content_sha256s": True,
+        "obligation_ids": True,
+        "obligation_content_sha256s": True,
+        "query_binding_ids": False,
+        "query_binding_content_sha256s": False,
+    },
+    "WorkPlanRevision": {
+        "resolution_outcome_ids": True,
+    },
+    "WorkTask": {
+        "obligation_ids": True,
+        "query_binding_ids": False,
+    },
+}
+NON_UNIQUE_RECORD_SHA256_ARRAY_FIELDS = {
+    "PlanAdoptionRecord": {
+        "resolution_outcome_content_sha256s",
+        "resolution_admission_content_sha256s",
+        "resolution_context_sha256s",
+        "resolver_input_bundle_sha256s",
+        "resolution_registry_content_sha256s",
+        "obligation_content_sha256s",
+        "query_binding_content_sha256s",
+    },
 }
 
 
@@ -239,6 +294,26 @@ class SchemaBuilder:
                     "minItems": 1,
                     "uniqueItems": True,
                 }
+            elif field.name in RECORD_SHA256_ARRAY_FIELDS.get(
+                name,
+                {},
+            ):
+                schema = {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "pattern": SHA256_PATTERN,
+                    },
+                }
+                if field.name not in (
+                    NON_UNIQUE_RECORD_SHA256_ARRAY_FIELDS.get(
+                        name,
+                        set(),
+                    )
+                ):
+                    schema["uniqueItems"] = True
+                if RECORD_SHA256_ARRAY_FIELDS[name][field.name]:
+                    schema["minItems"] = 1
             if (
                 field.name
                 in {"revision_number", "version_number", "sequence"}
@@ -369,6 +444,16 @@ def main() -> None:
                 ProviderAttemptRequest,
                 ProviderAttemptReceipt,
                 RunTraceManifest,
+            ),
+        ),
+        DOMAIN / "planning.v1.schema.json": _document(
+            schema_id="urn:waje-vnext:domain:planning:v1",
+            title="WAJE vNext Gate 3.4 logical planning contracts",
+            roots=(
+                PlanAdoptionRecord,
+                QueryBindingEnvelope,
+                ConformanceExecutionSpec,
+                LogicalExecutionAttempt,
             ),
         ),
     }

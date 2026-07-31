@@ -10,6 +10,7 @@ from waje_vnext.domain.async_runtime import (
     OperationIdentity,
 )
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
+from waje_vnext.domain.authority import CaseLifecycle
 from waje_vnext.domain.events import JournalEventType
 from waje_vnext.domain.measurement import (
     ObligationExecutionDisposition,
@@ -20,6 +21,9 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletionRecord,
     ObligationDependency,
     ObligationDispatchRecord,
+    OBLIGATION_JOB_CONTRACT_REF,
+    OBLIGATION_JOB_DESTINATION,
+    ObligationPlanBinding,
     ObligationScheduleCheckpoint,
     ObligationScheduleRecord,
     ObligationTerminalStatus,
@@ -28,17 +32,16 @@ from waje_vnext.domain.obligation_scheduler import (
     propagate_dependency_terminals,
     same_obligation_business_authority,
     select_runnable_obligations,
+    validate_schedule_plan_binding,
 )
 from waje_vnext.domain.runtime_amendment import (
     JobDisposition,
     JobDispositionRecord,
 )
 from waje_vnext.domain.runtime_state import OutboxMessage
-from waje_vnext.storage.ports import AuthorityStore
-
-
-OBLIGATION_JOB_CONTRACT_REF = (
-    "waje-vnext://runtime/resolved-evidence-obligation-job.v1"
+from waje_vnext.storage.ports import (
+    AuthorityStore,
+    InvalidAuthorityTransition,
 )
 
 
@@ -62,11 +65,10 @@ class DurableObligationCoordinator:
         self,
         *,
         case_id: str,
-        obligations: tuple[ResolvedEvidenceObligation, ...],
-        dependencies: tuple[ObligationDependency, ...],
         causation_id: str,
         created_at: datetime,
     ) -> ObligationScheduleRecord:
+        self._assert_case_accepts_obligation_work(case_id)
         authority = self._store.get_authority_snapshot(case_id)
         checkpoint = self._store.latest_checkpoint(case_id)
         if checkpoint is None:
@@ -79,16 +81,69 @@ class DurableObligationCoordinator:
                 "active checkpoint does not bind a durable run"
             )
         frame_revision_id = authority.accepted_frame_revision_id
-        if frame_revision_id is None:
+        plan_revision_id = authority.accepted_plan_revision_id
+        if frame_revision_id is None or plan_revision_id is None:
             raise ValueError(
-                "obligation schedule requires an accepted Frame"
+                "obligation schedule requires accepted Frame and Plan"
             )
+        plan = self._store.get_plan(plan_revision_id)
+        adoption = self._store.get_plan_adoption(plan_revision_id)
+        obligations = tuple(
+            self._store.get_evidence_obligation(obligation_id)
+            for obligation_id in adoption.obligation_ids
+        )
+        query_bindings = self._store.list_query_bindings(
+            plan_revision_id
+        )
+        query_by_obligation = {
+            item.obligation_id: item for item in query_bindings
+        }
+        task_by_obligation = {
+            obligation_id: task
+            for task in plan.tasks
+            for obligation_id in task.obligation_ids
+        }
+        plan_bindings = tuple(
+            ObligationPlanBinding(
+                obligation_id=obligation.obligation_id,
+                task_id=task_by_obligation[
+                    obligation.obligation_id
+                ].task_id,
+                query_binding_id=(
+                    None
+                    if obligation.execution_disposition
+                    is not ObligationExecutionDisposition.EXECUTABLE
+                    else query_by_obligation[
+                        obligation.obligation_id
+                    ].query_binding_id
+                ),
+            )
+            for obligation in obligations
+        )
+        obligations_by_task = {
+            task.task_id: task.obligation_ids for task in plan.tasks
+        }
+        dependencies = tuple(
+            ObligationDependency(
+                obligation_id=obligation.obligation_id,
+                depends_on_obligation_ids=tuple(
+                    dependency_obligation_id
+                    for dependency_task_id in task_by_obligation[
+                        obligation.obligation_id
+                    ].depends_on_task_ids
+                    for dependency_obligation_id in obligations_by_task[
+                        dependency_task_id
+                    ]
+                ),
+            )
+            for obligation in obligations
+        )
         schedule_id = _stable_id(
             "obligation-schedule",
             case_id,
             frame_revision_id,
-            content_sha256(obligations),
-            content_sha256(dependencies),
+            plan_revision_id,
+            adoption.content_sha256,
             authority.content_sha256,
         )
         schedule = ObligationScheduleRecord(
@@ -96,21 +151,35 @@ class DurableObligationCoordinator:
             case_id=case_id,
             correlation_id=correlation_id,
             frame_revision_id=frame_revision_id,
+            plan_revision_id=plan_revision_id,
+            plan_adoption_id=adoption.plan_adoption_id,
+            plan_adoption_content_sha256=adoption.content_sha256,
             obligations=obligations,
+            plan_bindings=plan_bindings,
             dependencies=dependencies,
             authority_snapshot=authority,
             authority_snapshot_sha256=authority.content_sha256,
             created_at=created_at,
         )
+        validate_schedule_plan_binding(
+            schedule=schedule,
+            plan=plan,
+            adoption=adoption,
+            query_bindings=query_bindings,
+            obligations=obligations,
+        )
         payload = {
             "schedule_id": schedule_id,
             "frame_revision_id": frame_revision_id,
+            "plan_revision_id": plan_revision_id,
+            "plan_adoption_id": adoption.plan_adoption_id,
             "obligation_ids": tuple(
                 item.obligation_id for item in obligations
             ),
             "schedule_sha256": schedule.content_sha256,
         }
         with self._store.atomic():
+            self._assert_case_accepts_obligation_work(case_id)
             current_checkpoint = self._store.latest_checkpoint(case_id)
             if (
                 current_checkpoint is None
@@ -170,6 +239,7 @@ class DurableObligationCoordinator:
     ) -> ObligationScheduleCheckpoint:
         with self._store.atomic():
             schedule = self._store.get_obligation_schedule(schedule_id)
+            self._assert_case_accepts_obligation_work(schedule.case_id)
             current_authority = self._store.get_authority_snapshot(
                 schedule.case_id
             )
@@ -213,7 +283,7 @@ class DurableObligationCoordinator:
                             "execution_disposition": (
                                 obligation.execution_disposition.value
                             ),
-                            "boundary_codes": obligation.boundary_codes,
+                            "boundary_code": obligation.boundary_code,
                         }
                     ),
                 )
@@ -433,8 +503,9 @@ class DurableObligationCoordinator:
         completed_at: datetime,
     ) -> ObligationCompletionRecord:
         schedule = self._store.get_obligation_schedule(schedule_id)
+        self._assert_case_accepts_obligation_work(schedule.case_id)
         if status not in {
-            ObligationTerminalStatus.SATISFIED,
+            ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             ObligationTerminalStatus.FAILED,
         }:
             raise ValueError(
@@ -535,6 +606,9 @@ class DurableObligationCoordinator:
                     lease,
                     checked_at=completed_at,
                 )
+                self._assert_case_accepts_obligation_work(
+                    schedule.case_id
+                )
                 current = self._store.get_authority_snapshot(
                     schedule.case_id
                 )
@@ -633,8 +707,15 @@ class DurableObligationCoordinator:
         obligation: ResolvedEvidenceObligation,
         recorded_at: datetime,
     ) -> ObligationDispatchRecord:
+        plan_binding = next(
+            item
+            for item in schedule.plan_bindings
+            if item.obligation_id == obligation.obligation_id
+        )
         dispatch = build_obligation_dispatch(
             obligation=obligation,
+            plan_binding=plan_binding,
+            plan_revision_id=schedule.plan_revision_id,
             current_authority=schedule.authority_snapshot,
         )
         outbox_message_id = _stable_id(
@@ -645,12 +726,18 @@ class DurableObligationCoordinator:
         payload = {
             "schedule_id": schedule.schedule_id,
             "obligation_id": obligation.obligation_id,
+            "plan_revision_id": schedule.plan_revision_id,
+            "task_id": dispatch.task_id,
+            "query_binding_id": dispatch.query_binding_id,
             "obligation": to_jsonable(obligation),
             "dispatch_id": dispatch.dispatch_id,
         }
         event_payload = {
             "schedule_id": schedule.schedule_id,
             "obligation_id": obligation.obligation_id,
+            "plan_revision_id": schedule.plan_revision_id,
+            "task_id": dispatch.task_id,
+            "query_binding_id": dispatch.query_binding_id,
             "dispatch_id": dispatch.dispatch_id,
             "outbox_message_id": outbox_message_id,
         }
@@ -708,31 +795,29 @@ class DurableObligationCoordinator:
             ),
             payload=payload,
         )
-        self._store.enqueue_outbox(
-            OutboxMessage(
-                outbox_message_id=outbox_message_id,
-                case_id=schedule.case_id,
-                source_event_cursor=event.cursor,
-                action_id=None,
-                job_kind=AsyncJobKind.OBLIGATION,
-                operation=operation,
-                expected_head_version=(
-                    schedule.authority_snapshot.head_version
-                ),
-                expected_authority_epoch=(
-                    schedule.authority_snapshot.mailbox_authority_epoch
-                ),
-                authority_snapshot=schedule.authority_snapshot,
-                authority_snapshot_sha256=(
-                    schedule.authority_snapshot_sha256
-                ),
-                idempotency_key=operation.idempotency_key,
-                destination="obligation-worker",
-                contract_ref=OBLIGATION_JOB_CONTRACT_REF,
-                payload=payload,
-                payload_sha256=content_sha256(payload),
-                created_at=recorded_at,
-            )
+        message = OutboxMessage(
+            outbox_message_id=outbox_message_id,
+            case_id=schedule.case_id,
+            source_event_cursor=event.cursor,
+            action_id=None,
+            job_kind=AsyncJobKind.OBLIGATION,
+            operation=operation,
+            expected_head_version=(
+                schedule.authority_snapshot.head_version
+            ),
+            expected_authority_epoch=(
+                schedule.authority_snapshot.mailbox_authority_epoch
+            ),
+            authority_snapshot=schedule.authority_snapshot,
+            authority_snapshot_sha256=(
+                schedule.authority_snapshot_sha256
+            ),
+            idempotency_key=operation.idempotency_key,
+            destination=OBLIGATION_JOB_DESTINATION,
+            contract_ref=OBLIGATION_JOB_CONTRACT_REF,
+            payload=payload,
+            payload_sha256=content_sha256(payload),
+            created_at=recorded_at,
         )
         record = ObligationDispatchRecord(
             dispatch_record_id=_stable_id(
@@ -745,7 +830,10 @@ class DurableObligationCoordinator:
             dispatch=dispatch,
             created_at=recorded_at,
         )
-        return self._store.record_obligation_dispatch(record)
+        return self._store.record_obligation_dispatch(
+            message=message,
+            record=record,
+        )
 
     def _append_completion_event(
         self,
@@ -779,7 +867,7 @@ class DurableObligationCoordinator:
             authority_ref=completion.obligation_id,
             payload=payload,
             customer_projection={
-                "state": "evidence_obligation_completed",
+                "state": _customer_execution_state(completion.status),
                 "obligation_id": completion.obligation_id,
                 "status": completion.status.value,
             },
@@ -804,6 +892,18 @@ class DurableObligationCoordinator:
                 payload=payload,
             ),
         )
+
+    def _assert_case_accepts_obligation_work(
+        self,
+        case_id: str,
+    ) -> None:
+        if self._store.get_case(case_id).lifecycle in {
+            CaseLifecycle.STOPPED,
+            CaseLifecycle.CLOSED,
+        }:
+            raise InvalidAuthorityTransition(
+                "terminal case fences obligation runtime"
+            )
 
     def _checkpoint(
         self,
@@ -932,6 +1032,23 @@ def _operation(
         authority_revision=authority_revision,
         payload_sha256=content_sha256(payload),
     )
+
+
+def _customer_execution_state(
+    status: ObligationTerminalStatus,
+) -> str:
+    return {
+        ObligationTerminalStatus.EXECUTION_SUCCEEDED: (
+            "execution_succeeded"
+        ),
+        ObligationTerminalStatus.FAILED: "execution_failed",
+        ObligationTerminalStatus.TYPED_BOUNDARY: (
+            "typed_boundary_recorded"
+        ),
+        ObligationTerminalStatus.SUPERSEDED: (
+            "execution_superseded"
+        ),
+    }[status]
 
 
 def _stable_id(*parts: str) -> str:

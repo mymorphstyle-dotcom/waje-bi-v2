@@ -1,9 +1,4 @@
-"""Pure obligation fan-out and fan-in rules for the durable runtime.
-
-The scheduler works only from immutable obligation definitions and authority
-snapshots.  Capability routing and WorkPlan task binding remain later-Gate
-concerns.
-"""
+"""Plan-bound obligation fan-out and fan-in rules for the durable runtime."""
 
 from __future__ import annotations
 
@@ -12,21 +7,32 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
 
-from .async_runtime import AuthoritySnapshot
+from .async_runtime import AsyncJobKind, AuthoritySnapshot
 from .canonical import (
     content_sha256,
+    freeze_json,
     require_aware_datetime,
     require_nonempty,
     require_sha256,
+    to_jsonable,
 )
 from .measurement import (
     ObligationExecutionDisposition,
     ResolvedEvidenceObligation,
 )
+from .authority import WorkPlanRevision
+from .planning import PlanAdoptionRecord, QueryBindingEnvelope
+from .runtime_state import OutboxMessage
+
+
+OBLIGATION_JOB_CONTRACT_REF = (
+    "waje-vnext://runtime/resolved-evidence-obligation-job.v1"
+)
+OBLIGATION_JOB_DESTINATION = "obligation-worker"
 
 
 class ObligationTerminalStatus(StrEnum):
-    SATISFIED = "satisfied"
+    EXECUTION_SUCCEEDED = "execution_succeeded"
     TYPED_BOUNDARY = "typed_boundary"
     FAILED = "failed"
     SUPERSEDED = "superseded"
@@ -66,16 +72,44 @@ class ObligationDependency:
 
 
 @dataclass(frozen=True, slots=True)
+class ObligationPlanBinding:
+    obligation_id: str
+    task_id: str
+    query_binding_id: str | None
+
+    def __post_init__(self) -> None:
+        require_sha256(self.obligation_id, "obligation_id")
+        require_sha256(self.task_id, "task_id")
+        if self.query_binding_id is not None:
+            require_sha256(
+                self.query_binding_id,
+                "query_binding_id",
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ObligationDispatch:
     dispatch_id: str
     obligation_id: str
+    plan_revision_id: str
+    task_id: str
+    query_binding_id: str
     obligation_definition_sha256: str
     authority_snapshot: AuthoritySnapshot
     authority_snapshot_sha256: str
 
     def __post_init__(self) -> None:
-        for field_name in ("dispatch_id", "obligation_id"):
-            require_nonempty(getattr(self, field_name), field_name)
+        for field_name in (
+            "dispatch_id",
+            "obligation_id",
+            "task_id",
+            "query_binding_id",
+        ):
+            require_sha256(getattr(self, field_name), field_name)
+        require_nonempty(
+            self.plan_revision_id,
+            "plan_revision_id",
+        )
         require_sha256(
             self.obligation_definition_sha256,
             "obligation_definition_sha256",
@@ -93,6 +127,13 @@ class ObligationDispatch:
 
 @dataclass(frozen=True, slots=True)
 class ObligationCompletion:
+    """Terminal execution receipt.
+
+    ``EXECUTION_SUCCEEDED`` confirms that the dispatched work produced a
+    result. It does not satisfy the Evidence obligation. Evidence admission
+    owns that later transition.
+    """
+
     obligation_id: str
     dispatch_id: str
     status: ObligationTerminalStatus
@@ -112,7 +153,11 @@ class ObligationScheduleRecord:
     case_id: str
     correlation_id: str
     frame_revision_id: str
+    plan_revision_id: str
+    plan_adoption_id: str
+    plan_adoption_content_sha256: str
     obligations: tuple[ResolvedEvidenceObligation, ...]
+    plan_bindings: tuple[ObligationPlanBinding, ...]
     dependencies: tuple[ObligationDependency, ...]
     authority_snapshot: AuthoritySnapshot
     authority_snapshot_sha256: str
@@ -124,14 +169,42 @@ class ObligationScheduleRecord:
             "case_id",
             "correlation_id",
             "frame_revision_id",
+            "plan_revision_id",
         ):
             require_nonempty(getattr(self, field_name), field_name)
+        require_sha256(self.plan_adoption_id, "plan_adoption_id")
+        require_sha256(
+            self.plan_adoption_content_sha256,
+            "plan_adoption_content_sha256",
+        )
         if not self.obligations:
             raise ValueError("obligation schedule requires obligations")
         _validate_graph(
             obligations=self.obligations,
             dependencies=self.dependencies,
         )
+        if not isinstance(self.plan_bindings, tuple):
+            raise TypeError("plan_bindings must be a tuple")
+        binding_by_id = {
+            item.obligation_id: item for item in self.plan_bindings
+        }
+        if len(binding_by_id) != len(self.plan_bindings):
+            raise ValueError("plan obligation bindings must be unique")
+        if set(binding_by_id) != {
+            item.obligation_id for item in self.obligations
+        }:
+            raise ValueError(
+                "schedule must bind every adopted obligation"
+            )
+        for obligation in self.obligations:
+            binding = binding_by_id[obligation.obligation_id]
+            if (
+                obligation.execution_disposition
+                is ObligationExecutionDisposition.EXECUTABLE
+            ) != (binding.query_binding_id is not None):
+                raise ValueError(
+                    "query binding presence must follow disposition"
+                )
         if any(
             item.case_id != self.case_id
             or item.frame_revision_id != self.frame_revision_id
@@ -144,6 +217,8 @@ class ObligationScheduleRecord:
             self.authority_snapshot.case_id != self.case_id
             or self.authority_snapshot.accepted_frame_revision_id
             != self.frame_revision_id
+            or self.authority_snapshot.accepted_plan_revision_id
+            != self.plan_revision_id
         ):
             raise ValueError(
                 "obligation schedule authority does not accept its Frame"
@@ -182,6 +257,76 @@ class ObligationDispatchRecord:
         if not isinstance(self.dispatch, ObligationDispatch):
             raise TypeError("dispatch must be ObligationDispatch")
         require_aware_datetime(self.created_at, "created_at")
+
+
+def validate_obligation_dispatch_admission(
+    *,
+    schedule: ObligationScheduleRecord,
+    record: ObligationDispatchRecord,
+    message: OutboxMessage,
+) -> None:
+    """Validate the complete schedule -> dispatch -> outbox authority chain."""
+
+    obligation = next(
+        (
+            item
+            for item in schedule.obligations
+            if item.obligation_id == record.dispatch.obligation_id
+        ),
+        None,
+    )
+    plan_binding = next(
+        (
+            item
+            for item in schedule.plan_bindings
+            if item.obligation_id == record.dispatch.obligation_id
+        ),
+        None,
+    )
+    if obligation is None or plan_binding is None:
+        raise ValueError(
+            "obligation dispatch is outside the accepted schedule"
+        )
+    expected_dispatch = build_obligation_dispatch(
+        obligation=obligation,
+        plan_binding=plan_binding,
+        plan_revision_id=schedule.plan_revision_id,
+        current_authority=schedule.authority_snapshot,
+    )
+    expected_payload = {
+        "schedule_id": schedule.schedule_id,
+        "obligation_id": obligation.obligation_id,
+        "plan_revision_id": schedule.plan_revision_id,
+        "task_id": expected_dispatch.task_id,
+        "query_binding_id": expected_dispatch.query_binding_id,
+        "obligation": to_jsonable(obligation),
+        "dispatch_id": expected_dispatch.dispatch_id,
+    }
+    if (
+        record.schedule_id != schedule.schedule_id
+        or record.dispatch != expected_dispatch
+        or record.outbox_message_id != message.outbox_message_id
+        or record.created_at != message.created_at
+        or message.case_id != schedule.case_id
+        or message.action_id is not None
+        or message.job_kind is not AsyncJobKind.OBLIGATION
+        or message.destination != OBLIGATION_JOB_DESTINATION
+        or message.contract_ref != OBLIGATION_JOB_CONTRACT_REF
+        or message.authority_snapshot != schedule.authority_snapshot
+        or message.authority_snapshot_sha256
+        != schedule.authority_snapshot_sha256
+        or message.expected_head_version
+        != schedule.authority_snapshot.head_version
+        or message.expected_authority_epoch
+        != schedule.authority_snapshot.mailbox_authority_epoch
+        or message.operation.authority_revision
+        != schedule.authority_snapshot.mailbox_authority_epoch
+        or message.operation.correlation_id != schedule.correlation_id
+        or message.payload != freeze_json(expected_payload)
+    ):
+        raise ValueError(
+            "obligation dispatch does not exactly bind schedule outbox"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +406,86 @@ class ObligationScheduleCheckpoint:
         require_aware_datetime(self.created_at, "created_at")
 
 
+def validate_schedule_plan_binding(
+    *,
+    schedule: ObligationScheduleRecord,
+    plan: WorkPlanRevision,
+    adoption: PlanAdoptionRecord,
+    query_bindings: tuple[QueryBindingEnvelope, ...],
+    obligations: tuple[ResolvedEvidenceObligation, ...],
+) -> None:
+    """Replay the schedule from the accepted Plan adoption."""
+
+    if (
+        schedule.plan_revision_id != plan.plan_revision_id
+        or schedule.frame_revision_id != plan.frame_revision_id
+        or adoption.plan_revision_id != plan.plan_revision_id
+        or schedule.plan_adoption_id != adoption.plan_adoption_id
+        or schedule.plan_adoption_content_sha256
+        != adoption.content_sha256
+    ):
+        raise ValueError("schedule does not bind accepted Plan adoption")
+    obligation_by_id = {
+        item.obligation_id: item for item in obligations
+    }
+    if tuple(item.obligation_id for item in schedule.obligations) != (
+        adoption.obligation_ids
+    ):
+        raise ValueError("schedule obligation order differs from adoption")
+    if any(
+        obligation_by_id.get(item.obligation_id) != item
+        for item in schedule.obligations
+    ):
+        raise ValueError("schedule carries forged obligation content")
+    task_by_obligation = {
+        obligation_id: task
+        for task in plan.tasks
+        for obligation_id in task.obligation_ids
+    }
+    query_by_obligation = {
+        item.obligation_id: item for item in query_bindings
+    }
+    expected_bindings = tuple(
+        ObligationPlanBinding(
+            obligation_id=obligation.obligation_id,
+            task_id=task_by_obligation[
+                obligation.obligation_id
+            ].task_id,
+            query_binding_id=(
+                None
+                if obligation.execution_disposition
+                is not ObligationExecutionDisposition.EXECUTABLE
+                else query_by_obligation[
+                    obligation.obligation_id
+                ].query_binding_id
+            ),
+        )
+        for obligation in schedule.obligations
+    )
+    if schedule.plan_bindings != expected_bindings:
+        raise ValueError("schedule task/query bindings were not Plan-derived")
+    obligations_by_task = {
+        task.task_id: task.obligation_ids for task in plan.tasks
+    }
+    expected_dependencies = tuple(
+        ObligationDependency(
+            obligation_id=obligation.obligation_id,
+            depends_on_obligation_ids=tuple(
+                dependency_obligation_id
+                for dependency_task_id in task_by_obligation[
+                    obligation.obligation_id
+                ].depends_on_task_ids
+                for dependency_obligation_id in obligations_by_task[
+                    dependency_task_id
+                ]
+            ),
+        )
+        for obligation in schedule.obligations
+    )
+    if schedule.dependencies != expected_dependencies:
+        raise ValueError("schedule dependencies were not Plan-derived")
+
+
 def select_runnable_obligations(
     *,
     obligations: tuple[ResolvedEvidenceObligation, ...],
@@ -295,7 +520,7 @@ def select_runnable_obligations(
         and all(
             dependency_id in completion_by_id
             and completion_by_id[dependency_id].status
-            is ObligationTerminalStatus.SATISFIED
+            is ObligationTerminalStatus.EXECUTION_SUCCEEDED
             for dependency_id in dependency_by_id[
                 obligation.obligation_id
             ]
@@ -307,6 +532,8 @@ def select_runnable_obligations(
 def build_obligation_dispatch(
     *,
     obligation: ResolvedEvidenceObligation,
+    plan_binding: ObligationPlanBinding,
+    plan_revision_id: str,
     current_authority: AuthoritySnapshot,
 ) -> ObligationDispatch:
     if (
@@ -315,11 +542,23 @@ def build_obligation_dispatch(
         != current_authority.accepted_frame_revision_id
     ):
         raise ValueError("cannot dispatch a stale obligation")
+    if (
+        current_authority.accepted_plan_revision_id
+        != plan_revision_id
+        or plan_binding.obligation_id != obligation.obligation_id
+        or plan_binding.query_binding_id is None
+    ):
+        raise ValueError(
+            "dispatch requires accepted Plan task and query binding"
+        )
     definition_sha256 = content_sha256(obligation)
     dispatch_id = content_sha256(
         {
             "kind": "obligation-dispatch.v1",
             "obligation_id": obligation.obligation_id,
+            "plan_revision_id": plan_revision_id,
+            "task_id": plan_binding.task_id,
+            "query_binding_id": plan_binding.query_binding_id,
             "definition_sha256": definition_sha256,
             "authority_snapshot_sha256": current_authority.content_sha256,
         }
@@ -327,6 +566,9 @@ def build_obligation_dispatch(
     return ObligationDispatch(
         dispatch_id=dispatch_id,
         obligation_id=obligation.obligation_id,
+        plan_revision_id=plan_revision_id,
+        task_id=plan_binding.task_id,
+        query_binding_id=plan_binding.query_binding_id,
         obligation_definition_sha256=definition_sha256,
         authority_snapshot=current_authority,
         authority_snapshot_sha256=current_authority.content_sha256,
@@ -352,7 +594,7 @@ def admit_obligation_completion(
             "only executable obligations accept worker completion"
         )
     if status not in {
-        ObligationTerminalStatus.SATISFIED,
+        ObligationTerminalStatus.EXECUTION_SUCCEEDED,
         ObligationTerminalStatus.FAILED,
     }:
         raise ValueError(
@@ -392,7 +634,7 @@ def propagate_dependency_terminals(
     dependencies: tuple[ObligationDependency, ...],
     completions: tuple[ObligationCompletion, ...],
 ) -> tuple[ObligationCompletion, ...]:
-    """Close every dependent whose prerequisite cannot be satisfied."""
+    """Close every dependent whose prerequisite cannot complete execution."""
 
     _validate_graph(
         obligations=obligations,
@@ -418,7 +660,8 @@ def propagate_dependency_terminals(
                 item
                 for item in prerequisite_completions
                 if item is not None
-                and item.status is not ObligationTerminalStatus.SATISFIED
+                and item.status
+                is not ObligationTerminalStatus.EXECUTION_SUCCEEDED
             )
             if not blocking:
                 continue
@@ -498,7 +741,7 @@ def validate_persisted_obligation_completion(
                     "execution_disposition": (
                         obligation.execution_disposition.value
                     ),
-                    "boundary_codes": obligation.boundary_codes,
+                    "boundary_code": obligation.boundary_code,
                 }
             ),
         )
@@ -581,7 +824,7 @@ def validate_persisted_obligation_completion(
         is not ObligationExecutionDisposition.EXECUTABLE
         or completion.status
         not in {
-            ObligationTerminalStatus.SATISFIED,
+            ObligationTerminalStatus.EXECUTION_SUCCEEDED,
             ObligationTerminalStatus.FAILED,
         }
         or completion.dispatch_id != dispatch.dispatch_id

@@ -33,6 +33,7 @@ MAX_CONTEXT_EVENTS = 100
 MAX_CONTEXT_EVIDENCE = 200
 MAX_CONTEXT_DECISIONS = 100
 MAX_CONTEXT_OBJECTIONS = 100
+MAX_CONTEXT_MEASUREMENT_RECORDS = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,19 @@ class ContextPacket:
     accepted_message_binding_payload: Mapping[str, FrozenJson] | None
     active_frame_candidate_payload: Mapping[str, FrozenJson] | None
     latest_frame_review_payload: Mapping[str, FrozenJson] | None
+    available_measurement_resolution_payloads: tuple[
+        Mapping[str, FrozenJson],
+        ...,
+    ]
+    available_evidence_obligation_payloads: tuple[
+        Mapping[str, FrozenJson],
+        ...,
+    ]
+    accepted_plan_adoption_payload: Mapping[str, FrozenJson] | None
+    accepted_query_binding_payloads: tuple[
+        Mapping[str, FrozenJson],
+        ...,
+    ]
     user_messages: tuple[ContextUserMessageItem, ...]
     relevant_event_cursor_start: int
     relevant_event_cursor_end: int
@@ -293,6 +307,7 @@ class ContextPacket:
         )
         _validate_event_window(self)
         _freeze_authority_payloads(self)
+        _freeze_measurement_payloads(self)
         require_aware_datetime(self.built_at, "built_at")
         require_sha256(self.content_sha256, "content_sha256")
         if self.content_sha256 != content_sha256(_context_content(self)):
@@ -313,6 +328,10 @@ def build_context_packet(
     accepted_message_binding: object | None = None,
     active_frame_candidate: object | None = None,
     latest_frame_review: object | None = None,
+    available_measurement_resolutions: tuple[object, ...] = (),
+    available_evidence_obligations: tuple[object, ...] = (),
+    accepted_plan_adoption: object | None = None,
+    accepted_query_bindings: tuple[object, ...] = (),
     recent_events: tuple[ContextEventItem, ...],
     evidence_index: tuple[ContextEvidenceItem, ...],
     decision_index: tuple[ContextDecisionItem, ...],
@@ -326,6 +345,16 @@ def build_context_packet(
     message_binding_payload = _record_payload(accepted_message_binding)
     frame_candidate_payload = _record_payload(active_frame_candidate)
     frame_review_payload = _record_payload(latest_frame_review)
+    resolution_payloads = _record_payloads(
+        available_measurement_resolutions
+    )
+    obligation_payloads = _record_payloads(
+        available_evidence_obligations
+    )
+    plan_adoption_payload = _record_payload(accepted_plan_adoption)
+    query_binding_payloads = _record_payloads(
+        accepted_query_bindings
+    )
     content = {
         "case_id": case.case_id,
         "head_version": case.head_version,
@@ -342,6 +371,14 @@ def build_context_packet(
         "accepted_message_binding_payload": message_binding_payload,
         "active_frame_candidate_payload": frame_candidate_payload,
         "latest_frame_review_payload": frame_review_payload,
+        "available_measurement_resolution_payloads": (
+            resolution_payloads
+        ),
+        "available_evidence_obligation_payloads": (
+            obligation_payloads
+        ),
+        "accepted_plan_adoption_payload": plan_adoption_payload,
+        "accepted_query_binding_payloads": query_binding_payloads,
         "user_messages": user_messages,
         "relevant_event_cursor_start": relevant_event_cursor_start,
         "relevant_event_cursor_end": relevant_event_cursor_end,
@@ -367,6 +404,14 @@ def build_context_packet(
         accepted_message_binding_payload=message_binding_payload,
         active_frame_candidate_payload=frame_candidate_payload,
         latest_frame_review_payload=frame_review_payload,
+        available_measurement_resolution_payloads=(
+            resolution_payloads
+        ),
+        available_evidence_obligation_payloads=(
+            obligation_payloads
+        ),
+        accepted_plan_adoption_payload=plan_adoption_payload,
+        accepted_query_binding_payloads=query_binding_payloads,
         user_messages=user_messages,
         relevant_event_cursor_start=relevant_event_cursor_start,
         relevant_event_cursor_end=relevant_event_cursor_end,
@@ -400,6 +445,18 @@ def _context_content(packet: ContextPacket) -> dict[str, object]:
             packet.active_frame_candidate_payload
         ),
         "latest_frame_review_payload": packet.latest_frame_review_payload,
+        "available_measurement_resolution_payloads": (
+            packet.available_measurement_resolution_payloads
+        ),
+        "available_evidence_obligation_payloads": (
+            packet.available_evidence_obligation_payloads
+        ),
+        "accepted_plan_adoption_payload": (
+            packet.accepted_plan_adoption_payload
+        ),
+        "accepted_query_binding_payloads": (
+            packet.accepted_query_binding_payloads
+        ),
         "user_messages": packet.user_messages,
         "relevant_event_cursor_start": packet.relevant_event_cursor_start,
         "relevant_event_cursor_end": packet.relevant_event_cursor_end,
@@ -414,6 +471,17 @@ def _record_payload(value: object | None) -> Mapping[str, FrozenJson] | None:
     if value is None:
         return None
     return _freeze_object(to_jsonable(value), "authority payload")
+
+
+def _record_payloads(
+    values: tuple[object, ...],
+) -> tuple[Mapping[str, FrozenJson], ...]:
+    if not isinstance(values, tuple):
+        raise TypeError("authority record collection must be a tuple")
+    return tuple(
+        _freeze_object(to_jsonable(value), "authority payload")
+        for value in values
+    )
 
 
 def _freeze_object(
@@ -489,6 +557,81 @@ def _freeze_authority_payloads(packet: ContextPacket) -> None:
                 "latest_frame_review_payload",
             ),
         )
+
+
+def _freeze_measurement_payloads(packet: ContextPacket) -> None:
+    collection_fields = (
+        "available_measurement_resolution_payloads",
+        "available_evidence_obligation_payloads",
+        "accepted_query_binding_payloads",
+    )
+    for field_name in collection_fields:
+        values = getattr(packet, field_name)
+        if not isinstance(values, tuple):
+            raise TypeError(f"{field_name} must be a tuple")
+        if len(values) > MAX_CONTEXT_MEASUREMENT_RECORDS:
+            raise ValueError(f"{field_name} exceeds bounded context")
+        frozen_values = tuple(
+            _freeze_object(value, field_name) for value in values
+        )
+        for value in frozen_values:
+            if value.get("case_id") != packet.case_id:
+                raise ValueError(
+                    f"{field_name} contains another case"
+                )
+        object.__setattr__(packet, field_name, frozen_values)
+    for value in packet.available_measurement_resolution_payloads:
+        if value.get("frame_revision_id") != (
+            packet.accepted_frame_revision_id
+        ):
+            raise ValueError(
+                "measurement resolution is outside accepted Frame"
+            )
+    for value in packet.available_evidence_obligation_payloads:
+        if value.get("frame_revision_id") != (
+            packet.accepted_frame_revision_id
+        ):
+            raise ValueError(
+                "evidence obligation is outside accepted Frame"
+            )
+    adoption = packet.accepted_plan_adoption_payload
+    if packet.accepted_plan_revision_id is None:
+        if adoption is not None or packet.accepted_query_binding_payloads:
+            raise ValueError(
+                "plan adoption context requires an accepted Plan"
+            )
+        return
+    if adoption is None:
+        raise ValueError(
+            "accepted Plan context requires its adoption record"
+        )
+    frozen_adoption = _freeze_object(
+        adoption,
+        "accepted_plan_adoption_payload",
+    )
+    if (
+        frozen_adoption.get("case_id") != packet.case_id
+        or frozen_adoption.get("plan_revision_id")
+        != packet.accepted_plan_revision_id
+        or frozen_adoption.get("frame_revision_id")
+        != packet.accepted_frame_revision_id
+    ):
+        raise ValueError("accepted Plan adoption context is inconsistent")
+    object.__setattr__(
+        packet,
+        "accepted_plan_adoption_payload",
+        frozen_adoption,
+    )
+    for value in packet.accepted_query_binding_payloads:
+        if (
+            value.get("plan_revision_id")
+            != packet.accepted_plan_revision_id
+            or value.get("frame_revision_id")
+            != packet.accepted_frame_revision_id
+        ):
+            raise ValueError(
+                "query binding is outside accepted Plan"
+            )
 
 
 def _validate_typed_index(

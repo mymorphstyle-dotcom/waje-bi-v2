@@ -17,11 +17,14 @@ from gate1_fixtures import (
     make_frame,
     make_measurement_design,
     make_operation,
-    make_plan,
     make_question,
-    make_resolution_admission,
-    make_resolution_verifier,
     record_reviewed_frame,
+)
+from gate3_plan_fixtures import record_plan_bundle
+from test_gate3_3_measurement_resolver import (
+    make_derivation_authority,
+    make_trusted_signer,
+    make_trusted_verifier,
 )
 from waje_vnext.domain.async_runtime import MailboxMessageKind
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
@@ -67,6 +70,15 @@ SHA_C = "c" * 64
 SHA_D = "d" * 64
 SHA_E = "e" * 64
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def make_resolution_admission(outcome):
+    return make_trusted_signer()._issue_resolution_admission(
+        outcome=outcome,
+        registry_content_sha256=content_sha256("registry"),
+        resolver_input_bundle_sha256=content_sha256("input-bundle"),
+        resolution_context_sha256=content_sha256("context"),
+    )
 
 
 def make_resolved_outcome(frame):
@@ -234,6 +246,10 @@ def make_resolved_outcome(frame):
         estimand_id=estimand.estimand_id,
         semantic_measurement_id=frame.semantic_measurement_ids[0],
         authority_binding_id=frame.authority_binding_ids[0],
+        derivation_authority=make_derivation_authority(
+            frame,
+            mailbox_authority_epoch=1,
+        ),
         kind=ResolutionOutcomeKind.RESOLVED_INSTANCE,
         resolved_instance=instance,
         boundary=None,
@@ -505,7 +521,7 @@ class CalendarAndScopeBoundaryTest(unittest.TestCase):
 class MeasurementStorageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryAuthorityStore(
-            resolution_input_verifier=make_resolution_verifier()
+            resolution_input_verifier=make_trusted_verifier()
         )
         case = self.store.open_case(
             case_id="case-1",
@@ -523,13 +539,13 @@ class MeasurementStorageTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=NOW,
         )
-        self.plan = make_plan()
-        self.case = self.store.accept_plan(
-            self.plan,
-            expected_head_version=case.head_version,
-            event_id="event-plan",
-            recorded_at=NOW,
+        self.case, self.plan_bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=self.frame,
+            created_at=NOW,
         )
+        self.plan = self.plan_bundle.plan
 
     def test_forged_frame_identity_is_rejected(self) -> None:
         forged = replace(
@@ -572,39 +588,22 @@ class MeasurementStorageTest(unittest.TestCase):
             ),
             admission,
         )
-        requirement = self.frame.measurement_design.evidence_requirements[0]
-        obligation = ResolvedEvidenceObligation(
-            obligation_id=SHA_D,
-            case_id="case-1",
-            frame_revision_id="frame-1",
-            estimand_id=self.frame.measurement_design.estimands[0].estimand_id,
-            evidence_requirement_id=requirement.evidence_requirement_id,
-            evidence_requirement_sha256=content_sha256(requirement),
-            resolution_outcome_id=outcome.resolution_outcome_id,
-            execution_disposition=(
-                ObligationExecutionDisposition.EXECUTABLE
-            ),
-            boundary_code=None,
-            closure_definition_sha256=SHA_A,
-            field_derivation_proof_sha256=SHA_B,
-            created_at=NOW,
+        obligation = self.store.list_evidence_obligations(
+            self.frame.frame_revision_id
+        )[0]
+        self.assertEqual(
+            obligation.estimand_id,
+            self.frame.measurement_design.estimands[0].estimand_id,
         )
-        stored = self.store.record_evidence_obligation(
-            obligation,
-            expected_head_version=self.case.head_version,
-            event_id="event-obligation",
-        )
-        self.assertEqual(stored, obligation)
 
         with self.assertRaisesRegex(
             InvalidAuthorityTransition,
-            "changes its evidence requirement",
+            "exact derivation replay",
         ):
             self.store.record_evidence_obligation(
                 replace(
                     obligation,
                     obligation_id=SHA_E,
-                    evidence_requirement_sha256=SHA_E,
                 ),
                 expected_head_version=self.case.head_version,
                 event_id="event-obligation-forged",

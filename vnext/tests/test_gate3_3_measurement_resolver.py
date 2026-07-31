@@ -25,6 +25,7 @@ from waje_vnext.domain.measurement import (
     ExposureFactSourceKind,
     ExposureNormalization,
     IntervalBoundary,
+    MeasurementDerivationAuthority,
     ObligationExecutionDisposition,
     MissingExposurePolicy,
     RequirementBoundaryPolicy,
@@ -57,6 +58,19 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 TRUSTED_ISSUER_REF = "trusted-resolution-input-issuer:test:v1"
 TRUSTED_PRIVATE_KEY = b"waje-vnext-ed25519-test-key-001!"
+
+
+def make_derivation_authority(
+    frame,
+    *,
+    mailbox_authority_epoch: int = 0,
+) -> MeasurementDerivationAuthority:
+    return MeasurementDerivationAuthority(
+        case_id=frame.case_id,
+        mailbox_authority_epoch=mailbox_authority_epoch,
+        accepted_question_revision_id=frame.question_revision_id,
+        accepted_frame_revision_id=frame.frame_revision_id,
+    )
 
 
 def make_context(
@@ -485,6 +499,10 @@ def resolve_measurement(**kwargs):
         make_trusted_verifier(),
     )
     kwargs.pop("trusted_input_verifier", None)
+    kwargs.setdefault(
+        "derivation_authority",
+        make_derivation_authority(kwargs["frame"]),
+    )
     outcome = make_trusted_resolver().resolve_measurement(**kwargs)
     _RESOLUTION_CASE_FILES[outcome.resolution_outcome_id] = (
         context,
@@ -887,6 +905,7 @@ class CalendarResolverPropertyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not admitted"):
             make_trusted_resolver().resolve_measurement(
                 frame=frame,
+                derivation_authority=make_derivation_authority(frame),
                 estimand_id=(
                     frame.measurement_design.estimands[0].estimand_id
                 ),
@@ -910,6 +929,7 @@ class CalendarResolverPropertyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "signature is invalid"):
             make_trusted_resolver().resolve_measurement(
                 frame=frame,
+                derivation_authority=make_derivation_authority(frame),
                 estimand_id=(
                     frame.measurement_design.estimands[0].estimand_id
                 ),
@@ -925,6 +945,7 @@ class CalendarResolverPropertyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "context is not admitted"):
             make_trusted_resolver().resolve_measurement(
                 frame=frame,
+                derivation_authority=make_derivation_authority(frame),
                 estimand_id=(
                     frame.measurement_design.estimands[0].estimand_id
                 ),
@@ -961,6 +982,7 @@ class CalendarResolverPropertyTest(unittest.TestCase):
         )
         outcome = resolver.resolve_measurement(
             frame=frame,
+            derivation_authority=make_derivation_authority(frame),
             estimand_id=frame.measurement_design.estimands[0].estimand_id,
             context=context,
             request=request,
@@ -994,6 +1016,7 @@ class CalendarResolverPropertyTest(unittest.TestCase):
         )
         outcome = resolver.resolve_measurement(
             frame=frame,
+            derivation_authority=make_derivation_authority(frame),
             estimand_id=frame.measurement_design.estimands[0].estimand_id,
             context=context,
             request=request,
@@ -1672,6 +1695,7 @@ class MeasurementAlgebraTest(unittest.TestCase):
         registry = make_trusted_registry(request)
         outcome = make_trusted_resolver().resolve_measurement(
             frame=frame,
+            derivation_authority=make_derivation_authority(frame),
             estimand_id=frame.measurement_design.estimands[0].estimand_id,
             context=context,
             request=request,
@@ -1681,13 +1705,20 @@ class MeasurementAlgebraTest(unittest.TestCase):
         forged = replace(
             outcome,
             case_id="case-forged",
+            derivation_authority=replace(
+                outcome.derivation_authority,
+                case_id="case-forged",
+            ),
             resolution_outcome_id="0" * 64,
         )
         forged = replace(
             forged,
             resolution_outcome_id=compute_resolution_outcome_id(forged),
         )
-        with self.assertRaisesRegex(ValueError, "reproduced"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "derivation authority does not bind the Frame",
+        ):
             make_trusted_resolver().compile_evidence_obligations(
                 frame=frame,
                 outcome=forged,

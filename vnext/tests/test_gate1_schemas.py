@@ -61,6 +61,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             "contracts/domain/controller-state.v1.schema.json",
             "contracts/domain/async-runtime.v1.schema.json",
             "contracts/domain/runtime-amendment.v1.schema.json",
+            "contracts/domain/planning.v1.schema.json",
             "contracts/events/journal-entry.v1.schema.json",
         )
         for path in paths:
@@ -132,8 +133,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             issued_at=NOW,
             payload=CallCapabilityPayload(
                 task_id="task-pattern",
-                capability_name="periodic_pattern_compare",
-                parameters={"limit": 10},
+                query_binding_id="a" * 64,
             ),
         )
         packet = build_context_packet(
@@ -363,8 +363,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             issued_at=NOW,
             payload=CallCapabilityPayload(
                 task_id="task-pattern",
-                capability_name="periodic_pattern_compare",
-                parameters={"limit": 10},
+                query_binding_id="a" * 64,
             ),
         )
         invalid = to_jsonable(

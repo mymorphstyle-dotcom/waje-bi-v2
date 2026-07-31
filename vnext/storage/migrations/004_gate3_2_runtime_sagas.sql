@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE waje_vnext.frame_candidate_records (
     frame_candidate_id text PRIMARY KEY,
     case_id text NOT NULL REFERENCES waje_vnext.investigation_cases(case_id),
@@ -304,5 +302,3 @@ BEGIN
     END LOOP;
 END;
 $$;
-
-COMMIT;
