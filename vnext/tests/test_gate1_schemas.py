@@ -19,7 +19,11 @@ from waje_vnext.domain.actions import (
     AgentActionProposal,
     CallCapabilityPayload,
 )
-from waje_vnext.domain.async_runtime import AsyncJobKind, OperationIdentity
+from waje_vnext.domain.async_runtime import (
+    AsyncJobKind,
+    AuthoritySnapshot,
+    OperationIdentity,
+)
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
 from waje_vnext.domain.context import (
     ContextEvidenceItem,
@@ -56,6 +60,7 @@ class JsonSchemaContractTest(unittest.TestCase):
             "contracts/domain/runtime-state.v1.schema.json",
             "contracts/domain/controller-state.v1.schema.json",
             "contracts/domain/async-runtime.v1.schema.json",
+            "contracts/domain/runtime-amendment.v1.schema.json",
             "contracts/events/journal-entry.v1.schema.json",
         )
         for path in paths:
@@ -302,6 +307,34 @@ class JsonSchemaContractTest(unittest.TestCase):
                 ),
                 expected_head_version=2,
                 expected_authority_epoch=1,
+                authority_snapshot=AuthoritySnapshot(
+                    case_id="case-1",
+                    head_version=2,
+                    mailbox_authority_epoch=1,
+                    accepted_question_revision_id="question-1",
+                    accepted_frame_revision_id="frame-1",
+                    accepted_plan_revision_id="plan-1",
+                    active_frame_candidate_generation=0,
+                    active_frame_candidate_sha256=None,
+                    obligation_state_version=0,
+                    evidence_admission_state_version=0,
+                    contradiction_state_version=0,
+                ),
+                authority_snapshot_sha256=content_sha256(
+                    AuthoritySnapshot(
+                        case_id="case-1",
+                        head_version=2,
+                        mailbox_authority_epoch=1,
+                        accepted_question_revision_id="question-1",
+                        accepted_frame_revision_id="frame-1",
+                        accepted_plan_revision_id="plan-1",
+                        active_frame_candidate_generation=0,
+                        active_frame_candidate_sha256=None,
+                        obligation_state_version=0,
+                        evidence_admission_state_version=0,
+                        contradiction_state_version=0,
+                    )
+                ),
                 idempotency_key="effect-key-1",
                 destination="capability-fabric",
                 contract_ref="capability-request.v1",

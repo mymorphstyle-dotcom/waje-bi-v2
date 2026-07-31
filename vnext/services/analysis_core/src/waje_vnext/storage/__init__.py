@@ -6,6 +6,7 @@ from .postgres import (
     apply_gate1_migration,
     apply_gate2_migration,
     apply_gate3_1_migration,
+    apply_gate3_2_migration,
 )
 from .ports import (
     AuthorityConflict,
@@ -30,4 +31,5 @@ __all__ = [
     "apply_gate1_migration",
     "apply_gate2_migration",
     "apply_gate3_1_migration",
+    "apply_gate3_2_migration",
 ]

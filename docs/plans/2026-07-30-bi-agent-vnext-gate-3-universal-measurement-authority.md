@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | G3.E0 authority foundation 已实现；formal admission 仍为 `deny_g3_1`；G3.1 local implementation 已按用户 development override 完成 |
+| 状态 | G3.1/G3.2/G3.3 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.4+ 尚未进入 |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 已确认 public GitHub Actions + Artifact Attestations/Sigstore |
@@ -14,6 +14,7 @@
 | Durable async amendment | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
 | 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-3-plan-adversarial-review.md` |
 | Durable async 对抗式审计 | `docs/reviews/2026-07-30-bi-agent-vnext-durable-async-gate3-adversarial-review.md` |
+| G3.2/G3.3 实施审查 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-2-3-implementation.md` |
 
 Gate 1 与 Gate 2 的历史验收事实继续成立。G3.1、G3.2 是进入 Gate 3 业务闭环实现前的
 强制修订包；在这两个包完成前，不创建新的生产 EvidenceRecord、AnswerVersion 或 Workflow
@@ -1233,17 +1234,38 @@ G3.1 的 local implementation exit 已完成。G3.E0 formal admission 仍为
 
 Exit：
 
-- [ ] correction 并发 fencing 测试通过；
-- [ ] correction-vs-review、parallel obligations、out-of-order completion、duplicate
+- [x] correction 并发 fencing 测试通过；
+- [x] correction-vs-review、parallel obligations、out-of-order completion、duplicate
   delivery、worker crash/lease takeover 与 stale-result rejection 通过；
-- [ ] terminal job disposition 与 completion/supersede journal 原子且按 outbox ID 唯一；
-- [ ] periodic heartbeat failure 阻止旧 worker authority commit；
-- [ ] operation lineage 从 ingress 到 provisional Answer 闭合；
-- [ ] crash/resume 继续同一 message binding/candidate/review；
-- [ ] blocking objection 无 closure proof 时 Frame 无法接受；
-- [ ] provider 不能提交 system ID；
-- [ ] LLM 调用不跨数据库事务；
-- [ ] accepted heads 只从 InvestigationCase CAS row 读取。
+- [x] terminal job disposition 与 completion/supersede journal 原子且按 outbox ID 唯一；
+- [x] dispatcher scan cursor 持久化且只能单调前进；pending recovery 不以游标跳过未终结旧 job；
+- [x] periodic heartbeat failure 阻止旧 worker authority commit；
+- [x] operation lineage 从 ingress 到 provisional Answer 闭合；
+- [x] crash/resume 继续同一 message binding/candidate/review；
+- [x] blocking objection 必须引用旧 review 的精确 objection；system 重算前后 Frame
+  差异，被指出的 measurement node 未发生变化时拒绝 closure；
+- [x] mailbox 按 sequence 逐条 binding，后到 correction 不覆盖中间消息；material
+  ambiguity 不能以 `ACCEPTED` 进入 authority；
+- [x] provider outbound attempt 在调用前持久化，receipt 与 typed result 在 authority
+  admission 前持久化；commit crash 后复用 durable result，不二次调用模型；
+- [x] obligation schedule/dispatch/completion/checkpoint 与 outbox 持久化，依赖 fan-in、
+  restart、duplicate completion 和 lease fence 通过；schedule/首批 dispatch 以及
+  completion/后继 fan-out 分别在一个事务内提交，authority drift 与失败 prerequisite
+  形成可恢复的 terminal state；
+- [x] stale worker completion 自身触发旧 schedule 全量 supersede；repository 根据
+  obligation DAG、disposition、dispatch 与 authority drift 重算唯一合法 completion，
+  coordinator 前缀或直接存储调用不能伪造系统终态；
+- [x] schedule correlation 从 active durable checkpoint 的 run ID 派生，调用方不能注入
+  平行 correlation；
+- [x] terminal run 后同一 case 可开启新 analysis cycle；每轮 correlation 形成独立、
+  self-verifying RunTrace；
+- [x] G3.2-owned case/run/operation/revision/candidate/binding/review/job ID 由 controller
+  绑定；accepted question ID 从 provider tool schema 移除并由 controller 注入。G3.4 task
+  identity 与 G3.5 claim identity 分别在对应工作包收口；
+- [x] LLM 调用不跨数据库事务；
+- [x] provider 永久失败或统一重试耗尽后形成 attempt trace、terminal disposition 与
+  `blocked` checkpoint，不遗留伪 pending job；
+- [x] accepted heads 只从 InvestigationCase CAS row 读取。
 
 ### G3.3 Measurement algebra and resolver
 
@@ -1257,12 +1279,32 @@ Exit：
 
 Exit：
 
-- [ ] 所有支持的 ClaimTargetKind 形成 executable design；
-- [ ] unsupported case 返回 expectation package 允许的 typed boundary；
-- [ ] source-backed claim 不能用局部 boundary 逃逸，known gap 不能充当量化证据；
-- [ ] calendar/exposure property tests 通过；
-- [ ] resolver outcome 无 accepted head，boundary 不伪造 instance；
-- [ ] obligation definition immutable，无 fulfillment state。
+- [x] 所有 13 个 ClaimTargetKind 都有显式最小 validation contract；缺失必要语义节点在
+  Frame acceptance 前拒绝。G3.3 resolver 执行通用时间、exposure、unit 与 requirement
+  resolution；物理查询执行继续由 G3.4/G3.5 承接；
+- [x] unsupported case 只从 versioned boundary registry 返回 requirement-scoped typed
+  boundary；`BLOCK` policy 形成 blocked obligation，不能伪装 boundary；
+- [x] source-backed claim 不能用局部 boundary 逃逸，known gap 不能充当量化证据；
+- [x] calendar/exposure property tests 覆盖 1999–2032 全部月份、跨年、闰年、28/29/30/31
+  天、不同窗口长度、缺失日期、incomplete coverage、business calendar 与 DST 23/25 小时；
+- [x] calendar window 与 exposure fact 分离；expected/observed/valid/invalid/missing/at-risk
+  exposure 分别保存，unit algebra 机械验证 numerator/exposure/output；
+- [x] resolver 只接受已进入 trusted input registry 的 calendar/snapshot/unit bundle；
+  registry 由 resolver composition root 的 Ed25519 signer 签发、verify-only public key
+  验签，ResolutionContext hash 同时进入 admission；target period、anchor、
+  timezone/cutoff、as-of、release、watermark、late-arrival 与 business calendar version
+  任一不一致均 fail closed；
+- [x] resolver verifier 由 `TrustedMeasurementResolver` 的 composition root 私有绑定；
+  resolution 持久化需要 exact deterministic replay 后签发的
+  `MeasurementResolutionAdmission`，store 核验 outcome/frame/estimand、registry、input
+  bundle、context identity 与 Ed25519 receipt；outcome 与 receipt 同事务不可变持久化；
+  重算普通 boundary/outcome hash 不能获得 authority admission；
+- [x] aggregation order、normalization、zero/missing exposure policy 与 minimum exposure
+  threshold 进入可执行代数；metric numerator/denominator unit 机械推导，estimator、
+  estimand 与 requirement exposure identity 一致；raw total 不能在 exposure 不可比时
+  编译可执行方向结论；
+- [x] resolver outcome 无 accepted head，boundary 不伪造 instance；
+- [x] obligation definition immutable、无 fulfillment state，compiler 重放 identity 稳定。
 
 ### G3.4 Plan and logical query continuity
 

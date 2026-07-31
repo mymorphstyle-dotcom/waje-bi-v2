@@ -11,6 +11,9 @@ export type WAJEVNextControllerStateV1 = {
   phase:
     | "ready_for_agent"
     | "waiting_for_llm"
+    | "waiting_for_message_binding"
+    | "waiting_for_measurement_review"
+    | "waiting_for_evidence_admission"
     | "waiting_for_user"
     | "waiting_for_effect"
     | "waiting_for_review"

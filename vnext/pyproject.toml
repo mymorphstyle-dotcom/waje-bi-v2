@@ -8,6 +8,7 @@ version = "0.0.0"
 description = "Clean-slate WAJE BI Agent vNext analysis core"
 requires-python = ">=3.12"
 dependencies = [
+  "cryptography>=45,<47",
   "psycopg[binary]>=3.2,<4",
 ]
 

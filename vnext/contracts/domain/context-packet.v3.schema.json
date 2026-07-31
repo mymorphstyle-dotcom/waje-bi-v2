@@ -54,6 +54,9 @@
         "accepted_frame_payload",
         "accepted_plan_payload",
         "accepted_answer_payload",
+        "accepted_message_binding_payload",
+        "active_frame_candidate_payload",
+        "latest_frame_review_payload",
         "user_messages",
         "relevant_event_cursor_start",
         "relevant_event_cursor_end",
@@ -154,6 +157,45 @@
           ]
         },
         "accepted_answer_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_message_binding_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_frame_candidate_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_frame_review_payload": {
           "anyOf": [
             {
               "type": "object",

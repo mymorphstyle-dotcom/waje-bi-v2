@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import ContextManager, Protocol
 
 from waje_vnext.domain.async_runtime import (
+    AuthoritySnapshot,
     JobLease,
     MailboxHead,
     MailboxMessage,
@@ -43,6 +44,32 @@ from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
     OutboxMessage,
+)
+from waje_vnext.domain.obligation_scheduler import (
+    ObligationCompletionRecord,
+    ObligationDispatchRecord,
+    ObligationScheduleCheckpoint,
+    ObligationScheduleRecord,
+)
+from waje_vnext.domain.measurement_resolver import (
+    MeasurementResolutionAdmission,
+)
+from waje_vnext.domain.runtime_amendment import (
+    DispatcherRecoveryCursor,
+    DurableModelResult,
+    FrameAdmissionProof,
+    FrameCandidateRecord,
+    FrameCandidateSupersessionRecord,
+    FrameReviewRecord,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageImpactBinding,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceManifest,
 )
 
 
@@ -84,6 +111,7 @@ class AuthorityStore(Protocol):
         thread_id: str,
         event_id: str,
         opened_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
 
     def get_case(self, case_id: str) -> InvestigationCase: ...
@@ -117,16 +145,219 @@ class AuthorityStore(Protocol):
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
+
+    def record_message_ingress(
+        self,
+        record: MessageIngressRecord,
+    ) -> MessageIngressRecord: ...
+
+    def list_message_ingress_records(
+        self,
+        case_id: str,
+    ) -> tuple[MessageIngressRecord, ...]: ...
+
+    def record_pending_user_message(
+        self,
+        record: PendingUserMessage,
+    ) -> PendingUserMessage: ...
+
+    def get_pending_user_message(
+        self,
+        pending_message_id: str,
+    ) -> PendingUserMessage: ...
+
+    def record_message_impact_binding(
+        self,
+        binding: MessageImpactBinding,
+    ) -> MessageImpactBinding: ...
+
+    def get_message_impact_binding(
+        self,
+        binding_id: str,
+    ) -> MessageImpactBinding: ...
+
+    def list_message_impact_bindings(
+        self,
+        case_id: str,
+    ) -> tuple[MessageImpactBinding, ...]: ...
+
+    def record_logical_model_job(
+        self,
+        record: LogicalModelJob,
+    ) -> LogicalModelJob: ...
+
+    def get_logical_model_job(
+        self,
+        logical_model_job_id: str,
+    ) -> LogicalModelJob: ...
+
+    def list_logical_model_jobs(
+        self,
+        case_id: str,
+    ) -> tuple[LogicalModelJob, ...]: ...
+
+    def record_provider_attempt_request(
+        self,
+        record: ProviderAttemptRequest,
+    ) -> ProviderAttemptRequest: ...
+
+    def get_provider_attempt_request(
+        self,
+        provider_attempt_id: str,
+    ) -> ProviderAttemptRequest: ...
+
+    def record_provider_attempt_receipt(
+        self,
+        record: ProviderAttemptReceipt,
+    ) -> ProviderAttemptReceipt: ...
+
+    def get_provider_attempt_receipt(
+        self,
+        provider_attempt_receipt_id: str,
+    ) -> ProviderAttemptReceipt: ...
+
+    def list_provider_attempt_receipts(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptReceipt, ...]: ...
+
+    def record_durable_model_result(
+        self,
+        record: DurableModelResult,
+    ) -> DurableModelResult: ...
+
+    def get_durable_model_result(
+        self,
+        logical_model_job_id: str,
+    ) -> DurableModelResult | None: ...
+
+    def record_obligation_schedule(
+        self,
+        record: ObligationScheduleRecord,
+    ) -> ObligationScheduleRecord: ...
+
+    def get_obligation_schedule(
+        self,
+        schedule_id: str,
+    ) -> ObligationScheduleRecord: ...
+
+    def record_obligation_dispatch(
+        self,
+        record: ObligationDispatchRecord,
+    ) -> ObligationDispatchRecord: ...
+
+    def list_obligation_dispatches(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationDispatchRecord, ...]: ...
+
+    def record_obligation_completion(
+        self,
+        record: ObligationCompletionRecord,
+    ) -> ObligationCompletionRecord: ...
+
+    def list_obligation_completions(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationCompletionRecord, ...]: ...
+
+    def record_obligation_schedule_checkpoint(
+        self,
+        record: ObligationScheduleCheckpoint,
+    ) -> ObligationScheduleCheckpoint: ...
+
+    def list_obligation_schedule_checkpoints(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationScheduleCheckpoint, ...]: ...
+
+    def record_run_trace_manifest(
+        self,
+        record: RunTraceManifest,
+    ) -> RunTraceManifest: ...
+
+    def get_run_trace_manifest(
+        self,
+        trace_manifest_id: str,
+    ) -> RunTraceManifest: ...
 
     def accept_frame(
         self,
         frame: AnalysisFrameRevision,
         *,
+        frame_admission_proof_id: str,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
+
+    def record_frame_candidate(
+        self,
+        candidate: FrameCandidateRecord,
+    ) -> FrameCandidateRecord: ...
+
+    def get_frame_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameCandidateRecord: ...
+
+    def get_active_frame_candidate(
+        self,
+        case_id: str,
+    ) -> FrameCandidateRecord | None: ...
+
+    def list_frame_candidates(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateRecord, ...]: ...
+
+    def supersede_active_frame_candidate(
+        self,
+        record: FrameCandidateSupersessionRecord,
+    ) -> FrameCandidateSupersessionRecord: ...
+
+    def list_frame_candidate_supersessions(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateSupersessionRecord, ...]: ...
+
+    def record_objection_closure(
+        self,
+        closure: ObjectionClosureRecord,
+    ) -> ObjectionClosureRecord: ...
+
+    def get_objection_closure(
+        self,
+        objection_closure_id: str,
+    ) -> ObjectionClosureRecord: ...
+
+    def record_frame_review(
+        self,
+        review: FrameReviewRecord,
+    ) -> FrameReviewRecord: ...
+
+    def get_frame_review(
+        self,
+        frame_review_id: str,
+    ) -> FrameReviewRecord: ...
+
+    def get_frame_review_for_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameReviewRecord | None: ...
+
+    def list_frame_reviews(
+        self,
+        case_id: str,
+    ) -> tuple[FrameReviewRecord, ...]: ...
+
+    def record_frame_admission_proof(
+        self,
+        proof: FrameAdmissionProof,
+    ) -> FrameAdmissionProof: ...
 
     def accept_plan(
         self,
@@ -135,6 +366,7 @@ class AuthorityStore(Protocol):
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
 
     def record_evidence(
@@ -153,12 +385,14 @@ class AuthorityStore(Protocol):
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
 
     def record_measurement_resolution(
         self,
         outcome: MeasurementResolutionOutcome,
         *,
+        admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
     ) -> MeasurementResolutionOutcome: ...
@@ -167,6 +401,11 @@ class AuthorityStore(Protocol):
         self,
         resolution_outcome_id: str,
     ) -> MeasurementResolutionOutcome: ...
+
+    def get_measurement_resolution_admission(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionAdmission: ...
 
     def record_evidence_obligation(
         self,
@@ -212,6 +451,7 @@ class AuthorityStore(Protocol):
         event_id: str,
         action_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
 
     def record_interpretation(
@@ -247,7 +487,7 @@ class AuthorityStore(Protocol):
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
-        operation: OperationIdentity | None = None,
+        operation: OperationIdentity,
     ) -> EventJournalEntry: ...
 
     def append_mailbox_message(
@@ -262,6 +502,8 @@ class AuthorityStore(Protocol):
     ) -> MailboxMessage: ...
 
     def get_mailbox_head(self, case_id: str) -> MailboxHead: ...
+
+    def get_authority_snapshot(self, case_id: str) -> AuthoritySnapshot: ...
 
     def list_mailbox_messages(
         self,
@@ -319,6 +561,37 @@ class AuthorityStore(Protocol):
         case_id: str | None = None,
     ) -> tuple[OutboxMessage, ...]: ...
 
+    def list_pending_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]: ...
+
+    def record_job_disposition(
+        self,
+        disposition: JobDispositionRecord,
+    ) -> JobDispositionRecord: ...
+
+    def get_job_disposition(
+        self,
+        outbox_message_id: str,
+    ) -> JobDispositionRecord | None: ...
+
+    def list_job_dispositions(
+        self,
+        case_id: str,
+    ) -> tuple[JobDispositionRecord, ...]: ...
+
+    def advance_dispatcher_recovery_cursor(
+        self,
+        cursor: DispatcherRecoveryCursor,
+    ) -> DispatcherRecoveryCursor: ...
+
+    def get_dispatcher_recovery_cursor(
+        self,
+        dispatcher_id: str,
+    ) -> DispatcherRecoveryCursor | None: ...
+
     def acquire_job_lease(
         self,
         *,
@@ -334,6 +607,13 @@ class AuthorityStore(Protocol):
         *,
         heartbeat_at: datetime,
         expires_at: datetime,
+    ) -> JobLease: ...
+
+    def assert_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        checked_at: datetime,
     ) -> JobLease: ...
 
     def release_job_lease(self, lease: JobLease) -> None: ...

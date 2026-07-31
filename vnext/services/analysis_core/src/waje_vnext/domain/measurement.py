@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import StrEnum
 from typing import Iterable
 
@@ -204,6 +204,24 @@ class RequirementBoundaryPolicy(StrEnum):
 class ResolutionOutcomeKind(StrEnum):
     RESOLVED_INSTANCE = "resolved_instance"
     TYPED_RESOLUTION_BOUNDARY = "typed_resolution_boundary"
+
+
+class ObligationExecutionDisposition(StrEnum):
+    EXECUTABLE = "executable"
+    TYPED_BOUNDARY = "typed_boundary"
+    BLOCKED = "blocked"
+
+
+class AmbiguousLocalTimePolicy(StrEnum):
+    EARLIEST_FOLD = "earliest_fold"
+    LATEST_FOLD = "latest_fold"
+    REJECT = "reject"
+
+
+class ExposureFactSourceKind(StrEnum):
+    CONTRACT_CATALOG = "contract_catalog"
+    SNAPSHOT_CATALOG = "snapshot_catalog"
+    CALENDAR_DERIVATION = "calendar_derivation"
 
 
 class EvidenceValidityStatus(StrEnum):
@@ -1115,9 +1133,201 @@ class EpistemicCompletionSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class DefinitionTargetSpec:
+    defined_concept_ref: str
+    definition_contract_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DataQualityTargetSpec:
+    assessed_object_ref: str
+    quality_predicate_refs: tuple[str, ...]
+    decision_rule_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+        _validate_string_tuple_fields(self, ("quality_predicate_refs",))
+        if not self.quality_predicate_refs:
+            raise ValueError("data-quality target requires predicates")
+
+
+@dataclass(frozen=True, slots=True)
+class PointQuantityTargetSpec:
+    quantity_operator_ref: str
+    scalar_result_contract_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DistributionTargetSpec:
+    distribution_operator_ref: str
+    support_contract_ref: str
+    statistic_parameter_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+        _validate_string_tuple_fields(self, ("statistic_parameter_refs",))
+        if not self.statistic_parameter_refs:
+            raise ValueError(
+                "distribution target requires statistic parameters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalPatternTargetSpec:
+    cadence_ref: str
+    pattern_operator_ref: str
+    minimum_cycle_count: int
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+        if self.minimum_cycle_count < 2:
+            raise ValueError(
+                "temporal-pattern target requires at least two cycles"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ContrastTargetSpec:
+    contrast_id: str
+    effect_scale_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CompositionTargetSpec:
+    whole_variable_id: str
+    component_variable_ids: tuple[str, ...]
+    completeness_rule_ref: str
+    exclusivity_rule_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+        _validate_string_tuple_fields(self, ("component_variable_ids",))
+        if len(self.component_variable_ids) < 2:
+            raise ValueError(
+                "composition target requires at least two components"
+            )
+        if self.whole_variable_id in self.component_variable_ids:
+            raise ValueError("composition whole cannot be a component")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountingDecompositionTargetSpec:
+    reconciliation_id: str
+    residual_policy_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CohortOutcomeTargetSpec:
+    cohort_risk_set_id: str
+    horizon_ref: str
+    maturity_policy_ref: str
+    censoring_policy_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FunnelTransitionTargetSpec:
+    sequence_id: str
+    stage_order_ref: str
+    transition_denominator_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AssociationTargetSpec:
+    relationship_id: str
+    association_measure_ref: str
+    adjustment_set_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CausalEffectTargetSpec:
+    relationship_id: str
+    identification_id: str
+    causal_contrast_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticSetTargetSpec:
+    member_estimand_ids: tuple[str, ...]
+    ranking_rule_ref: str
+    joint_stop_rule_ref: str
+
+    def __post_init__(self) -> None:
+        _validate_nonempty_dataclass_strings(self)
+        _validate_string_tuple_fields(self, ("member_estimand_ids",))
+        if len(self.member_estimand_ids) < 2:
+            raise ValueError(
+                "diagnostic-set target requires at least two members"
+            )
+
+
+type ClaimTargetSpec = (
+    DefinitionTargetSpec
+    | DataQualityTargetSpec
+    | PointQuantityTargetSpec
+    | DistributionTargetSpec
+    | TemporalPatternTargetSpec
+    | ContrastTargetSpec
+    | CompositionTargetSpec
+    | AccountingDecompositionTargetSpec
+    | CohortOutcomeTargetSpec
+    | FunnelTransitionTargetSpec
+    | AssociationTargetSpec
+    | CausalEffectTargetSpec
+    | DiagnosticSetTargetSpec
+)
+
+
+CLAIM_TARGET_SPEC_TYPES: Mapping[
+    ClaimTargetKind,
+    type[ClaimTargetSpec],
+] = {
+    ClaimTargetKind.DEFINITION: DefinitionTargetSpec,
+    ClaimTargetKind.DATA_QUALITY_STATE: DataQualityTargetSpec,
+    ClaimTargetKind.POINT_QUANTITY: PointQuantityTargetSpec,
+    ClaimTargetKind.DISTRIBUTION: DistributionTargetSpec,
+    ClaimTargetKind.TEMPORAL_PATTERN: TemporalPatternTargetSpec,
+    ClaimTargetKind.CONTRAST: ContrastTargetSpec,
+    ClaimTargetKind.COMPOSITION: CompositionTargetSpec,
+    ClaimTargetKind.ACCOUNTING_DECOMPOSITION: (
+        AccountingDecompositionTargetSpec
+    ),
+    ClaimTargetKind.COHORT_OUTCOME: CohortOutcomeTargetSpec,
+    ClaimTargetKind.FUNNEL_TRANSITION: FunnelTransitionTargetSpec,
+    ClaimTargetKind.ASSOCIATION: AssociationTargetSpec,
+    ClaimTargetKind.CAUSAL_EFFECT: CausalEffectTargetSpec,
+    ClaimTargetKind.DIAGNOSTIC_SET: DiagnosticSetTargetSpec,
+}
+
+
+@dataclass(frozen=True, slots=True)
 class EstimandSpec:
     estimand_id: str
     claim_target_kind: ClaimTargetKind
+    claim_target_spec: ClaimTargetSpec
     variable_ids: tuple[str, ...]
     event_ids: tuple[str, ...]
     population_id: str | None
@@ -1148,6 +1358,13 @@ class EstimandSpec:
             ClaimTargetKind,
             "claim_target_kind",
         )
+        expected_target_type = CLAIM_TARGET_SPEC_TYPES[
+            self.claim_target_kind
+        ]
+        if not isinstance(self.claim_target_spec, expected_target_type):
+            raise TypeError(
+                "claim_target_spec does not match claim_target_kind"
+            )
         _require_enum(
             self.claim_strength_ceiling,
             ClaimStrengthCeiling,
@@ -1320,6 +1537,19 @@ class MeasurementDesign:
                 raise ValueError(
                     "estimand references unknown evidence requirement"
                 )
+            for requirement_id in estimand.evidence_requirement_ids:
+                requirement = next(
+                    item
+                    for item in self.evidence_requirements
+                    if item.evidence_requirement_id == requirement_id
+                )
+                if estimand.estimand_id not in (
+                    requirement.target_estimand_ids
+                ):
+                    raise ValueError(
+                        "estimand and evidence requirement must target "
+                        "each other"
+                    )
             _validate_estimand_shape(estimand)
             if not any(
                 estimand.estimand_id in completion.target_estimand_ids
@@ -1396,6 +1626,7 @@ class ResolutionContext:
     as_of_instant: datetime
     timezone: str
     business_day_cutoff: str
+    ambiguous_local_time_policy: AmbiguousLocalTimePolicy
     calendar_version_ref: str
     holiday_version_ref: str | None
     fiscal_version_ref: str | None
@@ -1416,6 +1647,19 @@ class ResolutionContext:
             "late_arrival_policy_ref",
         ):
             require_nonempty(getattr(self, field_name), field_name)
+        try:
+            parsed_cutoff = time.fromisoformat(self.business_day_cutoff)
+        except ValueError as exc:
+            raise ValueError(
+                "business_day_cutoff must be an ISO local time"
+            ) from exc
+        if parsed_cutoff.tzinfo is not None:
+            raise ValueError("business_day_cutoff must be a local wall time")
+        _require_enum(
+            self.ambiguous_local_time_policy,
+            AmbiguousLocalTimePolicy,
+            "ambiguous_local_time_policy",
+        )
         _validate_optional_ref(
             self.holiday_version_ref,
             "holiday_version_ref",
@@ -1427,33 +1671,40 @@ class ResolutionContext:
 
 
 @dataclass(frozen=True, slots=True)
-class ResolvedWindow:
-    operand_id: str
-    window_rule_id: str
-    anchor_date: date
-    period_offset: int
-    actual_start: date
-    actual_end: date
-    actual_calendar_days: int
+class ResolvedExposureFact:
+    exposure_id: str
+    basis: ExposureBasis
+    unit_ref: str
     expected_exposure_decimal: str
     observed_exposure_decimal: str
     valid_exposure_decimal: str
+    invalid_exposure_decimal: str
     missing_exposure_decimal: str
+    coverage_ratio_decimal: str
     at_risk_exposure_decimal: str | None
+    source_kind: ExposureFactSourceKind
+    source_receipt_sha256: str
 
     def __post_init__(self) -> None:
-        require_nonempty(self.operand_id, "operand_id")
-        require_nonempty(self.window_rule_id, "window_rule_id")
-        if self.actual_end < self.actual_start:
-            raise ValueError("resolved window end precedes start")
-        expected_days = (self.actual_end - self.actual_start).days + 1
-        if self.actual_calendar_days != expected_days:
-            raise ValueError("actual calendar days do not match date interval")
+        for field_name in ("exposure_id", "unit_ref"):
+            require_nonempty(getattr(self, field_name), field_name)
+        _require_enum(self.basis, ExposureBasis, "basis")
+        _require_enum(
+            self.source_kind,
+            ExposureFactSourceKind,
+            "source_kind",
+        )
+        require_sha256(
+            self.source_receipt_sha256,
+            "source_receipt_sha256",
+        )
         for field_name in (
             "expected_exposure_decimal",
             "observed_exposure_decimal",
             "valid_exposure_decimal",
+            "invalid_exposure_decimal",
             "missing_exposure_decimal",
+            "coverage_ratio_decimal",
         ):
             _require_nonnegative_decimal(
                 getattr(self, field_name),
@@ -1464,20 +1715,119 @@ class ResolvedWindow:
         expected = Decimal(self.expected_exposure_decimal)
         observed = Decimal(self.observed_exposure_decimal)
         valid = Decimal(self.valid_exposure_decimal)
+        invalid = Decimal(self.invalid_exposure_decimal)
         missing = Decimal(self.missing_exposure_decimal)
+        coverage = Decimal(self.coverage_ratio_decimal)
         if not valid <= observed <= expected:
             raise ValueError(
                 "resolved exposure must satisfy valid <= observed <= expected"
+            )
+        if invalid != observed - valid:
+            raise ValueError(
+                "invalid exposure must equal observed minus valid"
             )
         if missing != expected - observed:
             raise ValueError(
                 "missing exposure must equal expected minus observed"
             )
+        expected_coverage = valid / expected if expected else Decimal("0")
+        if coverage != expected_coverage:
+            raise ValueError(
+                "coverage ratio must equal valid divided by expected"
+            )
+        if coverage > 1:
+            raise ValueError("coverage ratio cannot exceed one")
         if self.at_risk_exposure_decimal is not None:
             _require_nonnegative_decimal(
                 self.at_risk_exposure_decimal,
                 "at_risk_exposure_decimal",
             )
+            if Decimal(self.at_risk_exposure_decimal) > expected:
+                raise ValueError(
+                    "at-risk exposure cannot exceed expected exposure"
+                )
+        if (
+            self.basis is ExposureBasis.AT_RISK
+            and self.at_risk_exposure_decimal is None
+        ):
+            raise ValueError("at-risk basis requires at-risk exposure")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedWindow:
+    operand_id: str
+    window_rule_id: str
+    anchor_date: date
+    period_offset: int
+    actual_start: date
+    actual_end: date
+    start_instant: datetime
+    end_instant: datetime
+    elapsed_seconds: int
+    actual_calendar_days: int
+    selected_calendar_dates_count: int
+    observed_calendar_dates_count: int
+    valid_calendar_dates_count: int
+    selected_calendar_dates_sha256: str
+    calendar_coverage_receipt_sha256: str
+    exposure_facts: tuple[ResolvedExposureFact, ...]
+
+    def __post_init__(self) -> None:
+        require_nonempty(self.operand_id, "operand_id")
+        require_nonempty(self.window_rule_id, "window_rule_id")
+        if self.actual_end < self.actual_start:
+            raise ValueError("resolved window end precedes start")
+        require_aware_datetime(self.start_instant, "start_instant")
+        require_aware_datetime(self.end_instant, "end_instant")
+        if self.end_instant <= self.start_instant:
+            raise ValueError("resolved instant interval must be positive")
+        from datetime import UTC
+
+        expected_elapsed = int(
+            (
+                self.end_instant.astimezone(UTC)
+                - self.start_instant.astimezone(UTC)
+            ).total_seconds()
+        )
+        if self.elapsed_seconds != expected_elapsed:
+            raise ValueError(
+                "elapsed seconds do not match resolved instant interval"
+            )
+        expected_days = (self.actual_end - self.actual_start).days + 1
+        if self.actual_calendar_days != expected_days:
+            raise ValueError("actual calendar days do not match date interval")
+        if not 1 <= self.selected_calendar_dates_count <= (
+            self.actual_calendar_days
+        ):
+            raise ValueError(
+                "selected calendar date count must fit the actual interval"
+            )
+        if not (
+            0
+            <= self.valid_calendar_dates_count
+            <= self.observed_calendar_dates_count
+            <= self.selected_calendar_dates_count
+        ):
+            raise ValueError(
+                "calendar coverage must satisfy valid <= observed <= selected"
+            )
+        require_sha256(
+            self.selected_calendar_dates_sha256,
+            "selected_calendar_dates_sha256",
+        )
+        require_sha256(
+            self.calendar_coverage_receipt_sha256,
+            "calendar_coverage_receipt_sha256",
+        )
+        _require_tuple_of(
+            self.exposure_facts,
+            ResolvedExposureFact,
+            "exposure_facts",
+        )
+        exposure_ids = tuple(
+            fact.exposure_id for fact in self.exposure_facts
+        )
+        _require_unique_ids(exposure_ids, "resolved exposure")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1495,6 +1845,8 @@ class ResolvedMeasurementInstance:
     expected_unit_ref: str
     expected_exposure_id: str | None
     eligibility_id: str | None
+    resolver_contract_ref: str
+    resolver_input_bundle_sha256: str
     field_derivation_proof_sha256: str
 
     def __post_init__(self) -> None:
@@ -1505,6 +1857,7 @@ class ResolvedMeasurementInstance:
             "expected_scope_id",
             "expected_grain_ref",
             "expected_unit_ref",
+            "resolver_contract_ref",
         ):
             require_nonempty(getattr(self, field_name), field_name)
         require_sha256(self.resolution_id, "resolution_id")
@@ -1513,6 +1866,10 @@ class ResolvedMeasurementInstance:
             "semantic_measurement_id",
         )
         require_sha256(self.authority_binding_id, "authority_binding_id")
+        require_sha256(
+            self.resolver_input_bundle_sha256,
+            "resolver_input_bundle_sha256",
+        )
         require_sha256(
             self.field_derivation_proof_sha256,
             "field_derivation_proof_sha256",
@@ -1530,6 +1887,7 @@ class ResolvedMeasurementInstance:
 @dataclass(frozen=True, slots=True)
 class TypedResolutionBoundary:
     boundary_code: str
+    boundary_policy_ref: str
     failed_requirement_ids: tuple[str, ...]
     failed_contract_refs: tuple[str, ...]
     inspection_evidence_refs: tuple[str, ...]
@@ -1538,6 +1896,7 @@ class TypedResolutionBoundary:
 
     def __post_init__(self) -> None:
         require_nonempty(self.boundary_code, "boundary_code")
+        require_nonempty(self.boundary_policy_ref, "boundary_policy_ref")
         _validate_string_tuple_fields(
             self,
             (
@@ -1548,6 +1907,46 @@ class TypedResolutionBoundary:
         )
         if not self.failed_requirement_ids:
             raise ValueError("resolution boundary requires failed requirements")
+        _require_enum(
+            self.allowed_claim_ceiling,
+            ClaimStrengthCeiling,
+            "allowed_claim_ceiling",
+        )
+        require_sha256(
+            self.derivation_proof_sha256,
+            "derivation_proof_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RequirementResolutionBoundary:
+    evidence_requirement_id: str
+    boundary_code: str
+    boundary_policy_ref: str
+    failed_contract_refs: tuple[str, ...]
+    inspection_evidence_refs: tuple[str, ...]
+    allowed_claim_ceiling: ClaimStrengthCeiling
+    derivation_proof_sha256: str
+
+    def __post_init__(self) -> None:
+        require_nonempty(
+            self.evidence_requirement_id,
+            "evidence_requirement_id",
+        )
+        require_nonempty(self.boundary_code, "boundary_code")
+        require_nonempty(self.boundary_policy_ref, "boundary_policy_ref")
+        _validate_string_tuple_fields(
+            self,
+            ("failed_contract_refs", "inspection_evidence_refs"),
+        )
+        if not self.failed_contract_refs:
+            raise ValueError(
+                "requirement boundary requires failed contracts"
+            )
+        if not self.inspection_evidence_refs:
+            raise ValueError(
+                "requirement boundary requires inspection evidence"
+            )
         _require_enum(
             self.allowed_claim_ceiling,
             ClaimStrengthCeiling,
@@ -1571,6 +1970,7 @@ class MeasurementResolutionOutcome:
     kind: ResolutionOutcomeKind
     resolved_instance: ResolvedMeasurementInstance | None
     boundary: TypedResolutionBoundary | None
+    requirement_boundaries: tuple[RequirementResolutionBoundary, ...]
     created_at: datetime
     schema_epoch: int = SCHEMA_EPOCH
 
@@ -1592,6 +1992,19 @@ class MeasurementResolutionOutcome:
         )
         require_sha256(self.authority_binding_id, "authority_binding_id")
         _require_enum(self.kind, ResolutionOutcomeKind, "kind")
+        _require_tuple_of(
+            self.requirement_boundaries,
+            RequirementResolutionBoundary,
+            "requirement_boundaries",
+        )
+        requirement_ids = tuple(
+            item.evidence_requirement_id
+            for item in self.requirement_boundaries
+        )
+        _require_unique_ids(
+            requirement_ids,
+            "requirement resolution boundary",
+        )
         if (
             self.kind is ResolutionOutcomeKind.RESOLVED_INSTANCE
             and (
@@ -1605,6 +2018,7 @@ class MeasurementResolutionOutcome:
             and (
                 self.boundary is None
                 or self.resolved_instance is not None
+                or self.requirement_boundaries
             )
         ):
             raise ValueError("boundary outcome requires only a boundary")
@@ -1626,6 +2040,8 @@ class ResolvedEvidenceObligation:
     evidence_requirement_id: str
     evidence_requirement_sha256: str
     resolution_outcome_id: str
+    execution_disposition: ObligationExecutionDisposition
+    boundary_code: str | None
     closure_definition_sha256: str
     field_derivation_proof_sha256: str
     created_at: datetime
@@ -1647,6 +2063,25 @@ class ResolvedEvidenceObligation:
             "field_derivation_proof_sha256",
         ):
             require_sha256(getattr(self, field_name), field_name)
+        _require_enum(
+            self.execution_disposition,
+            ObligationExecutionDisposition,
+            "execution_disposition",
+        )
+        if (
+            self.execution_disposition
+            is ObligationExecutionDisposition.EXECUTABLE
+        ):
+            if self.boundary_code is not None:
+                raise ValueError(
+                    "executable obligation cannot carry a boundary"
+                )
+        elif self.boundary_code is None:
+            raise ValueError(
+                "boundary obligation requires a boundary code"
+            )
+        if self.boundary_code is not None:
+            require_nonempty(self.boundary_code, "boundary_code")
         require_aware_datetime(self.created_at, "created_at")
         if self.schema_epoch != SCHEMA_EPOCH:
             raise ValueError("obligation requires schema epoch 3")

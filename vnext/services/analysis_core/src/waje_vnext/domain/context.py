@@ -232,6 +232,9 @@ class ContextPacket:
     accepted_frame_payload: Mapping[str, FrozenJson] | None
     accepted_plan_payload: Mapping[str, FrozenJson] | None
     accepted_answer_payload: Mapping[str, FrozenJson] | None
+    accepted_message_binding_payload: Mapping[str, FrozenJson] | None
+    active_frame_candidate_payload: Mapping[str, FrozenJson] | None
+    latest_frame_review_payload: Mapping[str, FrozenJson] | None
     user_messages: tuple[ContextUserMessageItem, ...]
     relevant_event_cursor_start: int
     relevant_event_cursor_end: int
@@ -307,6 +310,9 @@ def build_context_packet(
     accepted_frame: AnalysisFrameRevision | None,
     accepted_plan: WorkPlanRevision | None,
     accepted_answer: AnswerVersion | None,
+    accepted_message_binding: object | None = None,
+    active_frame_candidate: object | None = None,
+    latest_frame_review: object | None = None,
     recent_events: tuple[ContextEventItem, ...],
     evidence_index: tuple[ContextEvidenceItem, ...],
     decision_index: tuple[ContextDecisionItem, ...],
@@ -317,6 +323,9 @@ def build_context_packet(
     frame_payload = _record_payload(accepted_frame)
     plan_payload = _record_payload(accepted_plan)
     answer_payload = _record_payload(accepted_answer)
+    message_binding_payload = _record_payload(accepted_message_binding)
+    frame_candidate_payload = _record_payload(active_frame_candidate)
+    frame_review_payload = _record_payload(latest_frame_review)
     content = {
         "case_id": case.case_id,
         "head_version": case.head_version,
@@ -330,6 +339,9 @@ def build_context_packet(
         "accepted_frame_payload": frame_payload,
         "accepted_plan_payload": plan_payload,
         "accepted_answer_payload": answer_payload,
+        "accepted_message_binding_payload": message_binding_payload,
+        "active_frame_candidate_payload": frame_candidate_payload,
+        "latest_frame_review_payload": frame_review_payload,
         "user_messages": user_messages,
         "relevant_event_cursor_start": relevant_event_cursor_start,
         "relevant_event_cursor_end": relevant_event_cursor_end,
@@ -352,6 +364,9 @@ def build_context_packet(
         accepted_frame_payload=frame_payload,
         accepted_plan_payload=plan_payload,
         accepted_answer_payload=answer_payload,
+        accepted_message_binding_payload=message_binding_payload,
+        active_frame_candidate_payload=frame_candidate_payload,
+        latest_frame_review_payload=frame_review_payload,
         user_messages=user_messages,
         relevant_event_cursor_start=relevant_event_cursor_start,
         relevant_event_cursor_end=relevant_event_cursor_end,
@@ -378,6 +393,13 @@ def _context_content(packet: ContextPacket) -> dict[str, object]:
         "accepted_frame_payload": packet.accepted_frame_payload,
         "accepted_plan_payload": packet.accepted_plan_payload,
         "accepted_answer_payload": packet.accepted_answer_payload,
+        "accepted_message_binding_payload": (
+            packet.accepted_message_binding_payload
+        ),
+        "active_frame_candidate_payload": (
+            packet.active_frame_candidate_payload
+        ),
+        "latest_frame_review_payload": packet.latest_frame_review_payload,
         "user_messages": packet.user_messages,
         "relevant_event_cursor_start": packet.relevant_event_cursor_start,
         "relevant_event_cursor_end": packet.relevant_event_cursor_end,
@@ -445,6 +467,28 @@ def _freeze_authority_payloads(packet: ContextPacket) -> None:
         if frozen.get("case_id") != packet.case_id:
             raise ValueError("{} case does not match packet".format(payload_field))
         object.__setattr__(packet, payload_field, frozen)
+    for payload_field in (
+        "accepted_message_binding_payload",
+        "active_frame_candidate_payload",
+    ):
+        payload = getattr(packet, payload_field)
+        if payload is None:
+            continue
+        frozen = _freeze_object(payload, payload_field)
+        if frozen.get("case_id") != packet.case_id:
+            raise ValueError(
+                "{} case does not match packet".format(payload_field)
+            )
+        object.__setattr__(packet, payload_field, frozen)
+    if packet.latest_frame_review_payload is not None:
+        object.__setattr__(
+            packet,
+            "latest_frame_review_payload",
+            _freeze_object(
+                packet.latest_frame_review_payload,
+                "latest_frame_review_payload",
+            ),
+        )
 
 
 def _validate_typed_index(

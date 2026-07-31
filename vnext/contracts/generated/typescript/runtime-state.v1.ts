@@ -52,6 +52,8 @@ export interface OutboxMessage {
   operation: OperationIdentity;
   expected_head_version: number;
   expected_authority_epoch: number;
+  authority_snapshot: AuthoritySnapshot;
+  authority_snapshot_sha256: Sha256;
   idempotency_key: Id;
   destination: Id;
   contract_ref: Id;
@@ -66,4 +68,17 @@ export interface OperationIdentity {
   correlation_id: Id;
   authority_revision: number;
   payload_sha256: Sha256;
+}
+export interface AuthoritySnapshot {
+  case_id: Id;
+  head_version: number;
+  mailbox_authority_epoch: number;
+  accepted_question_revision_id: Id | null;
+  accepted_frame_revision_id: Id | null;
+  accepted_plan_revision_id: Id | null;
+  active_frame_candidate_generation: number;
+  active_frame_candidate_sha256: Sha256 | null;
+  obligation_state_version: number;
+  evidence_admission_state_version: number;
+  contradiction_state_version: number;
 }

@@ -26,12 +26,14 @@ class MailboxMessageKind(StrEnum):
 
 class AsyncJobKind(StrEnum):
     CONTROLLER_WAKE = "controller_wake"
+    MESSAGE_BINDING = "message_binding"
     PRIMARY_AGENT = "primary_agent"
     SEMANTIC_INSPECTION = "semantic_inspection"
     DATA_PROBE = "data_probe"
     CAPABILITY = "capability"
     SENSITIVITY = "sensitivity"
     REVIEWER = "reviewer"
+    OBLIGATION = "obligation"
     PROJECTION = "projection"
 
 
@@ -142,3 +144,55 @@ class JobLease:
             raise ValueError("heartbeat cannot precede acquisition")
         if self.expires_at <= self.heartbeat_at:
             raise ValueError("job lease expiry must follow heartbeat")
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoritySnapshot:
+    case_id: str
+    head_version: int
+    mailbox_authority_epoch: int
+    accepted_question_revision_id: str | None
+    accepted_frame_revision_id: str | None
+    accepted_plan_revision_id: str | None
+    active_frame_candidate_generation: int
+    active_frame_candidate_sha256: str | None
+    obligation_state_version: int
+    evidence_admission_state_version: int
+    contradiction_state_version: int
+
+    def __post_init__(self) -> None:
+        require_nonempty(self.case_id, "case_id")
+        for field_name in (
+            "head_version",
+            "mailbox_authority_epoch",
+            "active_frame_candidate_generation",
+            "obligation_state_version",
+            "evidence_admission_state_version",
+            "contradiction_state_version",
+        ):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        for field_name in (
+            "accepted_question_revision_id",
+            "accepted_frame_revision_id",
+            "accepted_plan_revision_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                require_nonempty(value, field_name)
+        if self.active_frame_candidate_generation == 0:
+            if self.active_frame_candidate_sha256 is not None:
+                raise ValueError(
+                    "empty candidate generation cannot carry a digest"
+                )
+        elif self.active_frame_candidate_sha256 is None:
+            raise ValueError("active candidate generation requires a digest")
+        if self.active_frame_candidate_sha256 is not None:
+            require_sha256(
+                self.active_frame_candidate_sha256,
+                "active_frame_candidate_sha256",
+            )
+
+    @property
+    def content_sha256(self) -> str:
+        return content_sha256(self)

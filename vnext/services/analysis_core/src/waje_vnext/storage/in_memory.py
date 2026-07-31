@@ -14,6 +14,7 @@ from waje_vnext.domain.actions import (
 )
 from waje_vnext.domain.async_runtime import (
     AsyncJobKind,
+    AuthoritySnapshot,
     JobLease,
     MailboxHead,
     MailboxMessage,
@@ -50,16 +51,53 @@ from waje_vnext.domain.identity import (
 from waje_vnext.domain.measurement import (
     EvidenceValidityRecord,
     MeasurementResolutionOutcome,
+    ObligationExecutionDisposition,
     ObligationSatisfactionRecord,
     QuestionRevision,
     ResolvedEvidenceObligation,
     ResolutionOutcomeKind,
     SettlementPreconditionReport,
 )
+from waje_vnext.domain.measurement_resolver import (
+    MeasurementResolutionAdmission,
+    TrustedResolutionInputVerifier,
+    validate_executable_design,
+)
+from waje_vnext.domain.obligation_scheduler import (
+    ObligationCompletionRecord,
+    ObligationDispatchRecord,
+    ObligationScheduleCheckpoint,
+    ObligationScheduleRecord,
+    ObligationTerminalStatus,
+    same_obligation_business_authority,
+    validate_persisted_obligation_completion,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
     OutboxMessage,
+)
+from waje_vnext.domain.runtime_amendment import (
+    DispatcherRecoveryCursor,
+    DurableModelResult,
+    FrameAdmissionProof,
+    FrameCandidateRecord,
+    FrameCandidateSupersessionRecord,
+    FrameReviewDisposition,
+    FrameReviewRecord,
+    JobDisposition,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageImpactBinding,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptDisposition,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceManifest,
+    derive_changed_measurement_node_ids,
+    measurement_paths_overlap,
 )
 
 from .ports import (
@@ -70,6 +108,7 @@ from .ports import (
     LeaseFenceLost,
     StaleHead,
 )
+from .trace_validation import validate_run_trace_manifest_references
 
 
 RecordT = TypeVar("RecordT")
@@ -90,8 +129,15 @@ _ACTION_JOB_KINDS = {
 class InMemoryAuthorityStore:
     """Reference adapter used by contract tests and deterministic runtime tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        resolution_input_verifier: (
+            TrustedResolutionInputVerifier | None
+        ) = None,
+    ) -> None:
         self._lock = RLock()
+        self._resolution_input_verifier = resolution_input_verifier
         self._cases: dict[str, InvestigationCase] = {}
         self._questions: dict[str, QuestionRevision] = {}
         self._frames: dict[str, AnalysisFrameRevision] = {}
@@ -101,6 +147,10 @@ class InMemoryAuthorityStore:
         self._resolution_outcomes: dict[
             str,
             MeasurementResolutionOutcome,
+        ] = {}
+        self._resolution_admissions: dict[
+            str,
+            MeasurementResolutionAdmission,
         ] = {}
         self._evidence_obligations: dict[
             str,
@@ -126,6 +176,41 @@ class InMemoryAuthorityStore:
         self._checkpoints: dict[str, CheckpointRecord] = {}
         self._checkpoint_event_keys: dict[tuple[str, int], str] = {}
         self._outbox: dict[str, OutboxMessage] = {}
+        self._job_dispositions: dict[str, JobDispositionRecord] = {}
+        self._dispatcher_recovery_cursors: dict[
+            str,
+            DispatcherRecoveryCursor,
+        ] = {}
+        self._message_ingress_records: dict[str, MessageIngressRecord] = {}
+        self._pending_user_messages: dict[str, PendingUserMessage] = {}
+        self._message_impact_bindings: dict[str, MessageImpactBinding] = {}
+        self._logical_model_jobs: dict[str, LogicalModelJob] = {}
+        self._provider_attempt_requests: dict[
+            str,
+            ProviderAttemptRequest,
+        ] = {}
+        self._provider_attempt_receipts: dict[
+            str,
+            ProviderAttemptReceipt,
+        ] = {}
+        self._durable_model_results: dict[str, DurableModelResult] = {}
+        self._obligation_schedules: dict[
+            str,
+            ObligationScheduleRecord,
+        ] = {}
+        self._obligation_dispatch_records: dict[
+            str,
+            ObligationDispatchRecord,
+        ] = {}
+        self._obligation_completion_records: dict[
+            str,
+            ObligationCompletionRecord,
+        ] = {}
+        self._obligation_schedule_checkpoints: dict[
+            str,
+            ObligationScheduleCheckpoint,
+        ] = {}
+        self._run_trace_manifests: dict[str, RunTraceManifest] = {}
         self._decision_requests: dict[str, UserDecisionRequest] = {}
         self._decision_request_action_keys: dict[tuple[str, str], str] = {}
         self._effect_attempts: dict[str, EffectAttemptRecord] = {}
@@ -133,6 +218,16 @@ class InMemoryAuthorityStore:
         self._lease_tokens: dict[str, int] = {}
         self._job_leases: dict[str, JobLease] = {}
         self._job_lease_tokens: dict[str, int] = {}
+        self._frame_candidates: dict[str, FrameCandidateRecord] = {}
+        self._active_frame_candidate_ids: dict[str, str] = {}
+        self._frame_candidate_supersessions: dict[
+            str,
+            FrameCandidateSupersessionRecord,
+        ] = {}
+        self._frame_reviews: dict[str, FrameReviewRecord] = {}
+        self._objection_closures: dict[str, ObjectionClosureRecord] = {}
+        self._frame_admission_proofs: dict[str, FrameAdmissionProof] = {}
+        self._frame_admission_proof_by_frame: dict[str, str] = {}
         self._events: dict[str, list[EventJournalEntry]] = {}
         self._events_by_id: dict[str, EventJournalEntry] = {}
         self._mailbox_heads: dict[str, MailboxHead] = {}
@@ -155,6 +250,7 @@ class InMemoryAuthorityStore:
         thread_id: str,
         event_id: str,
         opened_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock:
             existing_event = self._events_by_id.get(event_id)
@@ -199,6 +295,15 @@ class InMemoryAuthorityStore:
                 authority_ref=case_id,
                 payload={"thread_id": thread_id},
                 customer_projection={"state": "open"},
+                operation=(
+                    None
+                    if operation is None
+                    else _causal_event_operation(
+                        causal_operation=operation,
+                        event_id=event_id,
+                        payload={"thread_id": thread_id},
+                    )
+                ),
             )
             return case
 
@@ -272,6 +377,69 @@ class InMemoryAuthorityStore:
             self.get_case(case_id)
             return self._mailbox_heads[case_id]
 
+    def get_authority_snapshot(self, case_id: str) -> AuthoritySnapshot:
+        with self._lock:
+            case = self.get_case(case_id)
+            mailbox = self.get_mailbox_head(case_id)
+            evidence_ids = {
+                record.evidence_record_id
+                for record in self._evidence.values()
+                if record.case_id == case_id
+            }
+            obligation_ids = {
+                record.obligation_id
+                for record in self._evidence_obligations.values()
+                if record.case_id == case_id
+            }
+            active_candidate = (
+                None
+                if case_id not in self._active_frame_candidate_ids
+                else self._frame_candidates[
+                    self._active_frame_candidate_ids[case_id]
+                ]
+            )
+            return AuthoritySnapshot(
+                case_id=case_id,
+                head_version=case.head_version,
+                mailbox_authority_epoch=mailbox.authority_epoch,
+                accepted_question_revision_id=(
+                    case.accepted_question_revision_id
+                ),
+                accepted_frame_revision_id=case.accepted_frame_revision_id,
+                accepted_plan_revision_id=case.accepted_plan_revision_id,
+                active_frame_candidate_generation=(
+                    0
+                    if active_candidate is None
+                    else active_candidate.candidate_generation
+                ),
+                active_frame_candidate_sha256=(
+                    None
+                    if active_candidate is None
+                    else active_candidate.proposed_frame_content_sha256
+                ),
+                obligation_state_version=(
+                    len(obligation_ids)
+                    + sum(
+                        1
+                        for item in self._obligation_satisfaction.values()
+                        if item.obligation_id in obligation_ids
+                    )
+                ),
+                evidence_admission_state_version=(
+                    len(evidence_ids)
+                    + sum(
+                        1
+                        for item in self._evidence_validity.values()
+                        if item.evidence_record_id in evidence_ids
+                    )
+                ),
+                contradiction_state_version=sum(
+                    1
+                    for item in self._objections.values()
+                    if item.case_id == case_id
+                ),
+            )
+
     def list_mailbox_messages(
         self,
         case_id: str,
@@ -290,6 +458,724 @@ class InMemoryAuthorityStore:
                     ),
                     key=lambda message: message.sequence,
                 )
+            )
+
+    def record_message_ingress(
+        self,
+        record: MessageIngressRecord,
+    ) -> MessageIngressRecord:
+        with self._lock:
+            message = _get(
+                self._mailbox_messages,
+                record.message_id,
+                "mailbox message",
+            )
+            if (
+                message.case_id != record.case_id
+                or message.sequence != record.mailbox_sequence
+                or message.authority_epoch != record.authority_epoch
+                or message.operation != record.operation
+                or message.operation.payload_sha256
+                != record.message_payload_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "message ingress record does not bind mailbox authority"
+                )
+            _put_idempotent_immutable(
+                self._message_ingress_records,
+                record.ingress_record_id,
+                record,
+                "message ingress record",
+            )
+            return record
+
+    def list_message_ingress_records(
+        self,
+        case_id: str,
+    ) -> tuple[MessageIngressRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._message_ingress_records.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: item.mailbox_sequence,
+                )
+            )
+
+    def record_pending_user_message(
+        self,
+        record: PendingUserMessage,
+    ) -> PendingUserMessage:
+        with self._lock:
+            ingress = _get(
+                self._message_ingress_records,
+                record.ingress_record_id,
+                "message ingress record",
+            )
+            if (
+                ingress.case_id != record.case_id
+                or ingress.message_id != record.message_id
+                or ingress.authority_epoch != record.authority_epoch
+                or ingress.operation.operation_id
+                != record.source_operation_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "pending message does not bind ingress record"
+                )
+            _put_idempotent_immutable(
+                self._pending_user_messages,
+                record.pending_message_id,
+                record,
+                "pending user message",
+            )
+            return record
+
+    def get_pending_user_message(
+        self,
+        pending_message_id: str,
+    ) -> PendingUserMessage:
+        with self._lock:
+            return _get(
+                self._pending_user_messages,
+                pending_message_id,
+                "pending user message",
+            )
+
+    def record_message_impact_binding(
+        self,
+        binding: MessageImpactBinding,
+    ) -> MessageImpactBinding:
+        with self._lock:
+            pending = _get(
+                self._pending_user_messages,
+                binding.pending_message_id,
+                "pending user message",
+            )
+            message = _get(
+                self._mailbox_messages,
+                pending.message_id,
+                "mailbox message",
+            )
+            if (
+                binding.case_id != pending.case_id
+                or binding.message_id != pending.message_id
+                or binding.authority_epoch != pending.authority_epoch
+                or binding.source_payload_sha256
+                != message.operation.payload_sha256
+                or binding.logical_model_job_id
+                != pending.binding_job_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "message impact binding is stale or misbound"
+                )
+            prior = next(
+                (
+                    item
+                    for item in self._message_impact_bindings.values()
+                    if item.pending_message_id
+                    == binding.pending_message_id
+                ),
+                None,
+            )
+            if prior is not None and prior != binding:
+                raise AuthorityConflict(
+                    "pending message already has another binding"
+                )
+            _put_idempotent_immutable(
+                self._message_impact_bindings,
+                binding.binding_id,
+                binding,
+                "message impact binding",
+            )
+            return binding
+
+    def get_message_impact_binding(
+        self,
+        binding_id: str,
+    ) -> MessageImpactBinding:
+        with self._lock:
+            return _get(
+                self._message_impact_bindings,
+                binding_id,
+                "message impact binding",
+            )
+
+    def list_message_impact_bindings(
+        self,
+        case_id: str,
+    ) -> tuple[MessageImpactBinding, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._message_impact_bindings.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: (
+                        item.authority_epoch,
+                        item.binding_id,
+                    ),
+                )
+            )
+
+    def record_logical_model_job(
+        self,
+        record: LogicalModelJob,
+    ) -> LogicalModelJob:
+        with self._lock:
+            self.get_case(record.case_id)
+            message = self.get_outbox_message(record.job_id)
+            if (
+                message.case_id != record.case_id
+                or message.operation.operation_id
+                != record.operation_id
+                or message.authority_snapshot_sha256
+                != record.authority_snapshot_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "logical model job does not bind its outbox authority"
+                )
+            prior = next(
+                (
+                    item
+                    for item in self._logical_model_jobs.values()
+                    if item.job_id == record.job_id
+                ),
+                None,
+            )
+            if prior is not None and prior != record:
+                raise AuthorityConflict(
+                    "outbox job already has another logical model job"
+                )
+            _put_idempotent_immutable(
+                self._logical_model_jobs,
+                record.logical_model_job_id,
+                record,
+                "logical model job",
+            )
+            return record
+
+    def get_logical_model_job(
+        self,
+        logical_model_job_id: str,
+    ) -> LogicalModelJob:
+        with self._lock:
+            return _get(
+                self._logical_model_jobs,
+                logical_model_job_id,
+                "logical model job",
+            )
+
+    def list_logical_model_jobs(
+        self,
+        case_id: str,
+    ) -> tuple[LogicalModelJob, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._logical_model_jobs.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: (
+                        item.created_at,
+                        item.logical_model_job_id,
+                    ),
+                )
+            )
+
+    def record_provider_attempt_request(
+        self,
+        record: ProviderAttemptRequest,
+    ) -> ProviderAttemptRequest:
+        with self._lock:
+            self.get_logical_model_job(record.logical_model_job_id)
+            prior_attempts = tuple(
+                item
+                for item in self._provider_attempt_requests.values()
+                if item.logical_model_job_id
+                == record.logical_model_job_id
+            )
+            expected_number = len(prior_attempts) + 1
+            if record.attempt_number != expected_number:
+                existing = self._provider_attempt_requests.get(
+                    record.provider_attempt_id
+                )
+                if existing == record:
+                    return existing
+                raise InvalidAuthorityTransition(
+                    "provider attempt does not extend logical job history"
+                )
+            expected_prior = (
+                None
+                if not prior_attempts
+                else max(
+                    prior_attempts,
+                    key=lambda item: item.attempt_number,
+                ).provider_attempt_id
+            )
+            if record.prior_provider_attempt_id != expected_prior:
+                raise InvalidAuthorityTransition(
+                    "provider attempt prior identity is stale"
+                )
+            _put_idempotent_immutable(
+                self._provider_attempt_requests,
+                record.provider_attempt_id,
+                record,
+                "provider attempt request",
+            )
+            return record
+
+    def record_provider_attempt_receipt(
+        self,
+        record: ProviderAttemptReceipt,
+    ) -> ProviderAttemptReceipt:
+        with self._lock:
+            request = _get(
+                self._provider_attempt_requests,
+                record.provider_attempt_id,
+                "provider attempt request",
+            )
+            if (
+                request.logical_model_job_id
+                != record.logical_model_job_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "provider receipt belongs to another logical job"
+                )
+            prior = next(
+                (
+                    item
+                    for item in self._provider_attempt_receipts.values()
+                    if item.provider_attempt_id
+                    == record.provider_attempt_id
+                ),
+                None,
+            )
+            if prior is not None and prior != record:
+                raise AuthorityConflict(
+                    "provider attempt already has another receipt"
+                )
+            _put_idempotent_immutable(
+                self._provider_attempt_receipts,
+                record.provider_attempt_receipt_id,
+                record,
+                "provider attempt receipt",
+            )
+            return record
+
+    def get_provider_attempt_request(
+        self,
+        provider_attempt_id: str,
+    ) -> ProviderAttemptRequest:
+        with self._lock:
+            return _get(
+                self._provider_attempt_requests,
+                provider_attempt_id,
+                "provider attempt request",
+            )
+
+    def get_provider_attempt_receipt(
+        self,
+        provider_attempt_receipt_id: str,
+    ) -> ProviderAttemptReceipt:
+        with self._lock:
+            return _get(
+                self._provider_attempt_receipts,
+                provider_attempt_receipt_id,
+                "provider attempt receipt",
+            )
+
+    def list_provider_attempt_receipts(
+        self,
+        logical_model_job_id: str,
+    ) -> tuple[ProviderAttemptReceipt, ...]:
+        with self._lock:
+            self.get_logical_model_job(logical_model_job_id)
+            request_by_id = self._provider_attempt_requests
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item
+                        in self._provider_attempt_receipts.values()
+                        if item.logical_model_job_id
+                        == logical_model_job_id
+                    ),
+                    key=lambda item: request_by_id[
+                        item.provider_attempt_id
+                    ].attempt_number,
+                )
+            )
+
+    def record_durable_model_result(
+        self,
+        record: DurableModelResult,
+    ) -> DurableModelResult:
+        with self._lock:
+            self.get_logical_model_job(record.logical_model_job_id)
+            request = self.get_provider_attempt_request(
+                record.provider_attempt_id
+            )
+            receipt = next(
+                (
+                    item
+                    for item in self._provider_attempt_receipts.values()
+                    if item.provider_attempt_id
+                    == record.provider_attempt_id
+                ),
+                None,
+            )
+            if (
+                request.logical_model_job_id
+                != record.logical_model_job_id
+                or receipt is None
+                or receipt.disposition
+                is not ProviderAttemptDisposition.SUCCEEDED
+                or receipt.output_sha256 != record.output_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "durable model result lacks its successful attempt"
+                )
+            prior = self._durable_model_results.get(
+                record.logical_model_job_id
+            )
+            if prior is not None:
+                if prior == record:
+                    return prior
+                raise AuthorityConflict(
+                    "logical model job already has a different result"
+                )
+            _put_idempotent_immutable(
+                self._durable_model_results,
+                record.logical_model_job_id,
+                record,
+                "durable model result",
+            )
+            return record
+
+    def get_durable_model_result(
+        self,
+        logical_model_job_id: str,
+    ) -> DurableModelResult | None:
+        with self._lock:
+            self.get_logical_model_job(logical_model_job_id)
+            return self._durable_model_results.get(logical_model_job_id)
+
+    def record_obligation_schedule(
+        self,
+        record: ObligationScheduleRecord,
+    ) -> ObligationScheduleRecord:
+        with self._lock:
+            if self.get_authority_snapshot(record.case_id) != (
+                record.authority_snapshot
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation schedule authority is stale"
+                )
+            _put_idempotent_immutable(
+                self._obligation_schedules,
+                record.schedule_id,
+                record,
+                "obligation schedule",
+            )
+            return record
+
+    def get_obligation_schedule(
+        self,
+        schedule_id: str,
+    ) -> ObligationScheduleRecord:
+        with self._lock:
+            return _get(
+                self._obligation_schedules,
+                schedule_id,
+                "obligation schedule",
+            )
+
+    def record_obligation_dispatch(
+        self,
+        record: ObligationDispatchRecord,
+    ) -> ObligationDispatchRecord:
+        with self._lock:
+            schedule = self.get_obligation_schedule(record.schedule_id)
+            obligation_ids = {
+                item.obligation_id for item in schedule.obligations
+            }
+            message = self.get_outbox_message(
+                record.outbox_message_id
+            )
+            if (
+                record.dispatch.obligation_id not in obligation_ids
+                or record.dispatch.authority_snapshot
+                != schedule.authority_snapshot
+                or message.outbox_message_id
+                != record.outbox_message_id
+                or message.job_kind is not AsyncJobKind.OBLIGATION
+                or str(message.payload.get("schedule_id", ""))
+                != record.schedule_id
+                or str(message.payload.get("obligation_id", ""))
+                != record.dispatch.obligation_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation dispatch does not bind schedule outbox"
+                )
+            _put_idempotent_immutable(
+                self._obligation_dispatch_records,
+                record.dispatch_record_id,
+                record,
+                "obligation dispatch",
+            )
+            return record
+
+    def list_obligation_dispatches(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationDispatchRecord, ...]:
+        with self._lock:
+            self.get_obligation_schedule(schedule_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item
+                        in self._obligation_dispatch_records.values()
+                        if item.schedule_id == schedule_id
+                    ),
+                    key=lambda item: item.dispatch.obligation_id,
+                )
+            )
+
+    def record_obligation_completion(
+        self,
+        record: ObligationCompletionRecord,
+    ) -> ObligationCompletionRecord:
+        with self._lock:
+            schedule = self.get_obligation_schedule(record.schedule_id)
+            current = self.get_authority_snapshot(schedule.case_id)
+            current_hash_matches = (
+                current.content_sha256
+                == record.admitted_authority_snapshot_sha256
+            )
+            superseded_under_drift = (
+                record.completion.status
+                is ObligationTerminalStatus.SUPERSEDED
+                and not same_obligation_business_authority(
+                    schedule.authority_snapshot,
+                    current,
+                )
+            )
+            if (
+                record.completion.status
+                is ObligationTerminalStatus.SUPERSEDED
+                and not superseded_under_drift
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation cannot be superseded without authority drift"
+                )
+            if not current_hash_matches or (
+                not same_obligation_business_authority(
+                    schedule.authority_snapshot,
+                    current,
+                )
+                and not superseded_under_drift
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation completion authority is stale"
+                )
+            obligation = next(
+                (
+                    item
+                    for item in schedule.obligations
+                    if item.obligation_id
+                    == record.completion.obligation_id
+                ),
+                None,
+            )
+            dispatch = next(
+                (
+                    item
+                    for item in self.list_obligation_dispatches(
+                        record.schedule_id
+                    )
+                    if item.dispatch.dispatch_id
+                    == record.completion.dispatch_id
+                    and item.dispatch.obligation_id
+                    == record.completion.obligation_id
+                ),
+                None,
+            )
+            prior = next(
+                (
+                    item
+                    for item
+                    in self._obligation_completion_records.values()
+                    if item.schedule_id == record.schedule_id
+                    and item.completion.obligation_id
+                    == record.completion.obligation_id
+                ),
+                None,
+            )
+            if prior is not None:
+                if prior == record:
+                    return prior
+                raise AuthorityConflict(
+                    "obligation already has another completion"
+                )
+            prior_completions = tuple(
+                item.completion
+                for item in self._obligation_completion_records.values()
+                if item.schedule_id == record.schedule_id
+            )
+            try:
+                validate_persisted_obligation_completion(
+                    schedule=schedule,
+                    completion=record.completion,
+                    prior_completions=prior_completions,
+                    dispatch=(
+                        None if dispatch is None else dispatch.dispatch
+                    ),
+                    current_authority=current,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
+            _put_idempotent_immutable(
+                self._obligation_completion_records,
+                record.completion_record_id,
+                record,
+                "obligation completion",
+            )
+            return record
+
+    def list_obligation_completions(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationCompletionRecord, ...]:
+        with self._lock:
+            self.get_obligation_schedule(schedule_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item
+                        in self._obligation_completion_records.values()
+                        if item.schedule_id == schedule_id
+                    ),
+                    key=lambda item: item.completion.obligation_id,
+                )
+            )
+
+    def record_obligation_schedule_checkpoint(
+        self,
+        record: ObligationScheduleCheckpoint,
+    ) -> ObligationScheduleCheckpoint:
+        with self._lock:
+            schedule = self.get_obligation_schedule(record.schedule_id)
+            checkpoints = self.list_obligation_schedule_checkpoints(
+                record.schedule_id
+            )
+            expected_number = len(checkpoints) + 1
+            expected_prior = (
+                None if not checkpoints else checkpoints[-1].checkpoint_id
+            )
+            dispatched_ids = {
+                item.dispatch.obligation_id
+                for item in self.list_obligation_dispatches(
+                    record.schedule_id
+                )
+            }
+            completed_ids = {
+                item.completion.obligation_id
+                for item in self.list_obligation_completions(
+                    record.schedule_id
+                )
+            }
+            expected_dispatched = tuple(
+                sorted(dispatched_ids - completed_ids)
+            )
+            expected_completed = tuple(sorted(completed_ids))
+            expected_pending = tuple(
+                sorted(
+                    {
+                        item.obligation_id
+                        for item in schedule.obligations
+                    }
+                    - dispatched_ids
+                    - completed_ids
+                )
+            )
+            if (
+                record.checkpoint_number != expected_number
+                or record.prior_checkpoint_id != expected_prior
+                or record.schedule_sha256 != schedule.content_sha256
+                or record.authority_snapshot_sha256
+                != schedule.authority_snapshot_sha256
+                or record.dispatched_obligation_ids
+                != expected_dispatched
+                or record.completed_obligation_ids
+                != expected_completed
+                or record.pending_obligation_ids != expected_pending
+            ):
+                raise InvalidAuthorityTransition(
+                    "obligation checkpoint is not a state derivation"
+                )
+            _put_idempotent_immutable(
+                self._obligation_schedule_checkpoints,
+                record.checkpoint_id,
+                record,
+                "obligation schedule checkpoint",
+            )
+            return record
+
+    def list_obligation_schedule_checkpoints(
+        self,
+        schedule_id: str,
+    ) -> tuple[ObligationScheduleCheckpoint, ...]:
+        with self._lock:
+            self.get_obligation_schedule(schedule_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item
+                        in self._obligation_schedule_checkpoints.values()
+                        if item.schedule_id == schedule_id
+                    ),
+                    key=lambda item: item.checkpoint_number,
+                )
+            )
+
+    def record_run_trace_manifest(
+        self,
+        record: RunTraceManifest,
+    ) -> RunTraceManifest:
+        with self._lock:
+            self.get_case(record.case_id)
+            validate_run_trace_manifest_references(self, record)
+            _put_idempotent_immutable(
+                self._run_trace_manifests,
+                record.trace_manifest_id,
+                record,
+                "run trace manifest",
+            )
+            return record
+
+    def get_run_trace_manifest(
+        self,
+        trace_manifest_id: str,
+    ) -> RunTraceManifest:
+        with self._lock:
+            return _get(
+                self._run_trace_manifests,
+                trace_manifest_id,
+                "run trace manifest",
             )
 
     def get_case(self, case_id: str) -> InvestigationCase:
@@ -384,6 +1270,7 @@ class InMemoryAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock:
             idempotent = self._idempotent_head_result(
@@ -476,6 +1363,7 @@ class InMemoryAuthorityStore:
                     "analysis_cycle_id": question.analysis_cycle_id,
                     "head_version": updated.head_version,
                 },
+                operation=operation,
             )
             return updated
 
@@ -483,9 +1371,11 @@ class InMemoryAuthorityStore:
         self,
         frame: AnalysisFrameRevision,
         *,
+        frame_admission_proof_id: str,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock:
             idempotent = self._idempotent_head_result(
@@ -497,6 +1387,25 @@ class InMemoryAuthorityStore:
             if idempotent is not None:
                 return idempotent
             case = self._cas_case(frame.case_id, expected_head_version)
+            proof = _get(
+                self._frame_admission_proofs,
+                frame_admission_proof_id,
+                "frame admission proof",
+            )
+            if (
+                proof.case_id != frame.case_id
+                or proof.frame_revision_id != frame.frame_revision_id
+                or proof.frame_content_sha256 != frame.content_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame admission proof does not bind this Frame"
+                )
+            if proof.authority_snapshot != self.get_authority_snapshot(
+                frame.case_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame admission proof authority snapshot is stale"
+                )
             if (
                 frame.question_revision_id
                 != case.accepted_question_revision_id
@@ -510,6 +1419,17 @@ class InMemoryAuthorityStore:
                     frame.measurement_design.question_grounding.source_spans
                 )
                 validate_frame_identities(question, frame)
+                findings = validate_executable_design(
+                    frame.measurement_design
+                )
+                if findings:
+                    raise ValueError(
+                        "measurement design is not executable: {}".format(
+                            ",".join(
+                                sorted({item.code for item in findings})
+                            )
+                        )
+                    )
             except ValueError as error:
                 raise InvalidAuthorityTransition(str(error)) from error
             current = (
@@ -560,8 +1480,461 @@ class InMemoryAuthorityStore:
                     "content_sha256": frame.content_sha256,
                     "head_version": updated.head_version,
                 },
+                operation=operation,
             )
             return updated
+
+    def record_frame_candidate(
+        self,
+        candidate: FrameCandidateRecord,
+    ) -> FrameCandidateRecord:
+        with self._lock:
+            case = self.get_case(candidate.case_id)
+            if (
+                candidate.question_revision_id
+                != case.accepted_question_revision_id
+                or candidate.proposed_frame.question_revision_id
+                != case.accepted_question_revision_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame candidate must bind the accepted question"
+                )
+            existing = self._frame_candidates.get(
+                candidate.frame_candidate_id
+            )
+            if existing is not None:
+                if existing == candidate:
+                    return existing
+                raise AuthorityConflict(
+                    "frame candidate ID has different content"
+                )
+            prior = (
+                None
+                if candidate.case_id
+                not in self._active_frame_candidate_ids
+                else self._frame_candidates[
+                    self._active_frame_candidate_ids[candidate.case_id]
+                ]
+            )
+            expected_generation = (
+                1 if prior is None else prior.candidate_generation + 1
+            )
+            expected_prior = (
+                None if prior is None else prior.frame_candidate_id
+            )
+            if (
+                candidate.candidate_generation != expected_generation
+                or candidate.prior_frame_candidate_id != expected_prior
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame candidate does not extend the active candidate"
+                )
+            if prior is not None:
+                prior_review = next(
+                    (
+                        item
+                        for item in self._frame_reviews.values()
+                        if item.frame_candidate_id
+                        == prior.frame_candidate_id
+                    ),
+                    None,
+                )
+                if prior_review is None:
+                    raise InvalidAuthorityTransition(
+                        "replacement candidate requires prior review"
+                    )
+                required_closures = {
+                    item.objection_id
+                    for item in prior_review.objections
+                    if (
+                        prior_review.disposition
+                        is not FrameReviewDisposition.ACCEPT
+                    )
+                }
+                if (
+                    set(candidate.addressed_objection_ids)
+                    != required_closures
+                ):
+                    raise InvalidAuthorityTransition(
+                        "replacement candidate must address every prior objection"
+                    )
+            self._frame_candidates[candidate.frame_candidate_id] = candidate
+            self._active_frame_candidate_ids[candidate.case_id] = (
+                candidate.frame_candidate_id
+            )
+            return candidate
+
+    def get_frame_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameCandidateRecord:
+        with self._lock:
+            return _get(
+                self._frame_candidates,
+                frame_candidate_id,
+                "frame candidate",
+            )
+
+    def get_active_frame_candidate(
+        self,
+        case_id: str,
+    ) -> FrameCandidateRecord | None:
+        with self._lock:
+            self.get_case(case_id)
+            candidate_id = self._active_frame_candidate_ids.get(case_id)
+            return (
+                None
+                if candidate_id is None
+                else self._frame_candidates[candidate_id]
+            )
+
+    def list_frame_candidates(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._frame_candidates.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: item.candidate_generation,
+                )
+            )
+
+    def supersede_active_frame_candidate(
+        self,
+        record: FrameCandidateSupersessionRecord,
+    ) -> FrameCandidateSupersessionRecord:
+        with self._lock:
+            active_id = self._active_frame_candidate_ids.get(
+                record.case_id
+            )
+            if active_id != record.frame_candidate_id:
+                existing = self._frame_candidate_supersessions.get(
+                    record.supersession_record_id
+                )
+                if existing == record:
+                    return existing
+                raise InvalidAuthorityTransition(
+                    "frame candidate supersession does not target active head"
+                )
+            candidate = self.get_frame_candidate(
+                record.frame_candidate_id
+            )
+            question = self.get_question(
+                record.superseded_by_question_revision_id
+            )
+            if (
+                question.case_id != record.case_id
+                or candidate.question_revision_id
+                == question.question_revision_id
+                or record.authority_epoch
+                != self.get_mailbox_head(record.case_id).authority_epoch
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame candidate supersession authority is invalid"
+                )
+            _put_idempotent_immutable(
+                self._frame_candidate_supersessions,
+                record.supersession_record_id,
+                record,
+                "frame candidate supersession",
+            )
+            del self._active_frame_candidate_ids[record.case_id]
+            return record
+
+    def list_frame_candidate_supersessions(
+        self,
+        case_id: str,
+    ) -> tuple[FrameCandidateSupersessionRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item
+                        in self._frame_candidate_supersessions.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: (
+                        item.created_at,
+                        item.supersession_record_id,
+                    ),
+                )
+            )
+
+    def record_objection_closure(
+        self,
+        closure: ObjectionClosureRecord,
+    ) -> ObjectionClosureRecord:
+        with self._lock:
+            source = _get(
+                self._frame_candidates,
+                closure.source_frame_candidate_id,
+                "source frame candidate",
+            )
+            replacement = _get(
+                self._frame_candidates,
+                closure.replacement_frame_candidate_id,
+                "replacement frame candidate",
+            )
+            if source.case_id != replacement.case_id:
+                raise InvalidAuthorityTransition(
+                    "objection closure crosses cases"
+                )
+            if (
+                replacement.prior_frame_candidate_id
+                != source.frame_candidate_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "objection closure must bind adjacent candidates"
+                )
+            if closure.objection_id not in (
+                replacement.addressed_objection_ids
+            ):
+                raise InvalidAuthorityTransition(
+                    "replacement candidate does not address objection"
+                )
+            review = _get(
+                self._frame_reviews,
+                closure.source_frame_review_id,
+                "source frame review",
+            )
+            if review.frame_candidate_id != source.frame_candidate_id:
+                raise InvalidAuthorityTransition(
+                    "objection closure cites another candidate review"
+                )
+            objection = next(
+                (
+                    item
+                    for item in review.objections
+                    if item.objection_id == closure.objection_id
+                ),
+                None,
+            )
+            if (
+                objection is None
+                or closure.objection_content_sha256
+                != content_sha256(objection)
+            ):
+                raise InvalidAuthorityTransition(
+                    "objection closure does not bind an exact objection"
+                )
+            all_changed_node_ids = derive_changed_measurement_node_ids(
+                source.proposed_frame.measurement_design,
+                replacement.proposed_frame.measurement_design,
+            )
+            expected_changed_node_ids = tuple(
+                node_id
+                for node_id in all_changed_node_ids
+                if any(
+                    measurement_paths_overlap(
+                        node_id,
+                        affected_node_id,
+                    )
+                    for affected_node_id in objection.affected_node_ids
+                )
+            )
+            if closure.changed_node_ids != expected_changed_node_ids:
+                raise InvalidAuthorityTransition(
+                    "objection closure change proof does not match Frames"
+                )
+            _put_idempotent_immutable(
+                self._objection_closures,
+                closure.objection_closure_id,
+                closure,
+                "objection closure",
+            )
+            return closure
+
+    def get_objection_closure(
+        self,
+        objection_closure_id: str,
+    ) -> ObjectionClosureRecord:
+        with self._lock:
+            return _get(
+                self._objection_closures,
+                objection_closure_id,
+                "objection closure",
+            )
+
+    def record_frame_review(
+        self,
+        review: FrameReviewRecord,
+    ) -> FrameReviewRecord:
+        with self._lock:
+            candidate = _get(
+                self._frame_candidates,
+                review.frame_candidate_id,
+                "frame candidate",
+            )
+            active_id = self._active_frame_candidate_ids.get(
+                candidate.case_id
+            )
+            if active_id != candidate.frame_candidate_id:
+                raise InvalidAuthorityTransition(
+                    "review targets a superseded frame candidate"
+                )
+            if (
+                review.authority_epoch
+                != self.get_mailbox_head(candidate.case_id).authority_epoch
+                or review.reviewed_frame_content_sha256
+                != candidate.proposed_frame_content_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame review authority or content is stale"
+                )
+            expected_closure_ids = {
+                item.objection_closure_id
+                for item in self._objection_closures.values()
+                if item.replacement_frame_candidate_id
+                == candidate.frame_candidate_id
+            }
+            if set(review.closure_proof_refs) != expected_closure_ids:
+                raise InvalidAuthorityTransition(
+                    "frame review has incomplete objection closure references"
+                )
+            _put_idempotent_immutable(
+                self._frame_reviews,
+                review.frame_review_id,
+                review,
+                "frame review",
+            )
+            return review
+
+    def get_frame_review(
+        self,
+        frame_review_id: str,
+    ) -> FrameReviewRecord:
+        with self._lock:
+            return _get(
+                self._frame_reviews,
+                frame_review_id,
+                "frame review",
+            )
+
+    def get_frame_review_for_candidate(
+        self,
+        frame_candidate_id: str,
+    ) -> FrameReviewRecord | None:
+        with self._lock:
+            matches = tuple(
+                review
+                for review in self._frame_reviews.values()
+                if review.frame_candidate_id == frame_candidate_id
+            )
+            if len(matches) > 1:
+                raise AuthorityConflict(
+                    "frame candidate has multiple immutable reviews"
+            )
+            return matches[0] if matches else None
+
+    def list_frame_reviews(
+        self,
+        case_id: str,
+    ) -> tuple[FrameReviewRecord, ...]:
+        with self._lock:
+            candidates = {
+                item.frame_candidate_id
+                for item in self.list_frame_candidates(case_id)
+            }
+            return tuple(
+                sorted(
+                    (
+                        review
+                        for review in self._frame_reviews.values()
+                        if review.frame_candidate_id in candidates
+                    ),
+                    key=lambda item: (
+                        self._frame_candidates[
+                            item.frame_candidate_id
+                        ].candidate_generation,
+                        item.frame_review_id,
+                    ),
+                )
+            )
+
+    def record_frame_admission_proof(
+        self,
+        proof: FrameAdmissionProof,
+    ) -> FrameAdmissionProof:
+        with self._lock:
+            candidate = _get(
+                self._frame_candidates,
+                proof.frame_candidate_id,
+                "frame candidate",
+            )
+            review = _get(
+                self._frame_reviews,
+                proof.frame_review_id,
+                "frame review",
+            )
+            if (
+                review.frame_candidate_id != candidate.frame_candidate_id
+                or review.disposition is not FrameReviewDisposition.ACCEPT
+                or any(item.blocking for item in review.objections)
+                or proof.candidate_generation
+                != candidate.candidate_generation
+                or proof.frame_revision_id
+                != candidate.proposed_frame_revision_id
+                or proof.frame_content_sha256
+                != candidate.proposed_frame_content_sha256
+                or proof.frame_review_content_sha256
+                != review.content_sha256
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame admission proof lacks an accepting fresh review"
+                )
+            closures = tuple(
+                _get(
+                    self._objection_closures,
+                    closure_id,
+                    "objection closure",
+                )
+                for closure_id in proof.objection_closure_record_ids
+            )
+            if {
+                item.objection_id for item in closures
+            } != set(candidate.addressed_objection_ids):
+                raise InvalidAuthorityTransition(
+                    "frame admission proof has incomplete objection closure"
+                )
+            if any(
+                item.replacement_frame_candidate_id
+                != candidate.frame_candidate_id
+                for item in closures
+            ):
+                raise InvalidAuthorityTransition(
+                    "objection closure targets another candidate"
+                )
+            if proof.authority_snapshot != self.get_authority_snapshot(
+                proof.case_id
+            ):
+                raise InvalidAuthorityTransition(
+                    "frame admission proof authority snapshot is stale"
+                )
+            _put_idempotent_immutable(
+                self._frame_admission_proofs,
+                proof.frame_admission_proof_id,
+                proof,
+                "frame admission proof",
+            )
+            prior = self._frame_admission_proof_by_frame.get(
+                proof.frame_revision_id
+            )
+            if prior is not None and prior != proof.frame_admission_proof_id:
+                raise AuthorityConflict(
+                    "Frame already has another admission proof"
+                )
+            self._frame_admission_proof_by_frame[
+                proof.frame_revision_id
+            ] = proof.frame_admission_proof_id
+            return proof
 
     def accept_plan(
         self,
@@ -570,6 +1943,7 @@ class InMemoryAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock:
             idempotent = self._idempotent_head_result(
@@ -624,6 +1998,7 @@ class InMemoryAuthorityStore:
                     "content_sha256": plan.content_sha256,
                     "head_version": updated.head_version,
                 },
+                operation=operation,
             )
             return updated
 
@@ -683,6 +2058,7 @@ class InMemoryAuthorityStore:
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         with self._lock:
             if answer.status is AnswerStatus.SETTLED:
@@ -759,6 +2135,7 @@ class InMemoryAuthorityStore:
                     "content_sha256": answer.content_sha256,
                     "head_version": updated.head_version,
                 },
+                operation=operation,
             )
             return updated
 
@@ -766,10 +2143,23 @@ class InMemoryAuthorityStore:
         self,
         outcome: MeasurementResolutionOutcome,
         *,
+        admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
     ) -> MeasurementResolutionOutcome:
-        with self._lock:
+        with self.atomic():
+            if self._resolution_input_verifier is None:
+                raise InvalidAuthorityTransition(
+                    "measurement resolution admission verifier is not "
+                    "configured"
+                )
+            try:
+                self._resolution_input_verifier.verify_resolution_admission(
+                    admission=admission,
+                    outcome=outcome,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
             case = self._cas_case(
                 outcome.case_id,
                 expected_head_version,
@@ -823,6 +2213,12 @@ class InMemoryAuthorityStore:
                 validate_resolution_against_frame(frame, outcome)
             except ValueError as error:
                 raise InvalidAuthorityTransition(str(error)) from error
+            _put_idempotent_immutable(
+                self._resolution_admissions,
+                outcome.resolution_outcome_id,
+                admission,
+                "measurement resolution admission",
+            )
             return self._record_derived_locked(
                 records=self._resolution_outcomes,
                 record_id=outcome.resolution_outcome_id,
@@ -845,6 +2241,17 @@ class InMemoryAuthorityStore:
                 self._resolution_outcomes,
                 resolution_outcome_id,
                 "measurement resolution",
+            )
+
+    def get_measurement_resolution_admission(
+        self,
+        resolution_outcome_id: str,
+    ) -> MeasurementResolutionAdmission:
+        with self._lock:
+            return _get(
+                self._resolution_admissions,
+                resolution_outcome_id,
+                "measurement resolution admission",
             )
 
     def record_evidence_obligation(
@@ -1070,6 +2477,7 @@ class InMemoryAuthorityStore:
         event_id: str,
         action_id: str,
         recorded_at: datetime,
+        operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
         if lifecycle not in {CaseLifecycle.STOPPED, CaseLifecycle.CLOSED}:
             raise InvalidAuthorityTransition(
@@ -1110,6 +2518,7 @@ class InMemoryAuthorityStore:
                     "lifecycle": lifecycle.value,
                     "head_version": updated.head_version,
                 },
+                operation=operation,
             )
             return updated
 
@@ -1420,6 +2829,10 @@ class InMemoryAuthorityStore:
                 raise StaleHead("outbox expected case head is stale")
             if message.expected_authority_epoch != mailbox.authority_epoch:
                 raise StaleHead("outbox expected mailbox authority is stale")
+            if message.authority_snapshot != self.get_authority_snapshot(
+                message.case_id
+            ):
+                raise StaleHead("outbox authority snapshot is stale")
             if (
                 message.operation.authority_revision
                 != message.expected_authority_epoch
@@ -1437,17 +2850,37 @@ class InMemoryAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "outbox action case does not match message"
                     )
-                if action.action.kind not in _EFFECT_ACTION_KINDS:
+                is_frame_review = (
+                    message.job_kind is AsyncJobKind.REVIEWER
+                    and action.action.kind is ActionKind.REVISE_FRAME
+                    and message.payload.get("frame_candidate_id")
+                )
+                if (
+                    action.action.kind not in _EFFECT_ACTION_KINDS
+                    and not is_frame_review
+                ):
                     raise InvalidAuthorityTransition(
-                        "outbox requires an effect action"
+                        "outbox action is incompatible with job kind"
                     )
-                if message.job_kind is not _ACTION_JOB_KINDS[
-                    action.action.kind
-                ]:
+                if (
+                    action.action.kind in _EFFECT_ACTION_KINDS
+                    and message.job_kind
+                    is not _ACTION_JOB_KINDS[action.action.kind]
+                ):
                     raise InvalidAuthorityTransition(
                         "outbox job kind does not match action"
                     )
-                if (
+                if is_frame_review:
+                    if (
+                        message.payload.get("frame_candidate_id")
+                        != self.get_active_frame_candidate(
+                            message.case_id
+                        ).frame_candidate_id
+                    ):
+                        raise InvalidAuthorityTransition(
+                            "review outbox does not target active candidate"
+                        )
+                elif (
                     message.payload.get("action_kind")
                     != action.action.kind.value
                 ):
@@ -1508,6 +2941,137 @@ class InMemoryAuthorityStore:
                 )
             )
 
+    def list_pending_outbox_messages(
+        self,
+        *,
+        case_id: str | None = None,
+    ) -> tuple[OutboxMessage, ...]:
+        return tuple(
+            message
+            for message in self.list_outbox_messages(case_id=case_id)
+            if message.outbox_message_id not in self._job_dispositions
+        )
+
+    def record_job_disposition(
+        self,
+        disposition: JobDispositionRecord,
+    ) -> JobDispositionRecord:
+        with self._lock:
+            message = self.get_outbox_message(
+                disposition.outbox_message_id
+            )
+            if (
+                disposition.case_id != message.case_id
+                or disposition.job_kind is not message.job_kind
+                or disposition.operation != message.operation
+                or disposition.expected_authority_epoch
+                != message.expected_authority_epoch
+            ):
+                raise InvalidAuthorityTransition(
+                    "job disposition does not bind its outbox message"
+                )
+            if disposition.disposition is JobDisposition.COMPLETED:
+                if message.job_kind is AsyncJobKind.MESSAGE_BINDING:
+                    if (
+                        disposition.observed_authority_epoch
+                        != message.expected_authority_epoch
+                    ):
+                        raise InvalidAuthorityTransition(
+                            "message binding disposition changed its "
+                            "ordered mailbox authority"
+                        )
+                elif (
+                    disposition.observed_authority_epoch
+                    != self.get_mailbox_head(
+                        message.case_id
+                    ).authority_epoch
+                ):
+                    raise InvalidAuthorityTransition(
+                        "completed disposition observed stale authority"
+                    )
+            if disposition.fencing_token is not None:
+                lease = self._job_leases.get(
+                    disposition.outbox_message_id
+                )
+                if (
+                    lease is None
+                    or lease.owner_id != disposition.owner_id
+                    or lease.fencing_token != disposition.fencing_token
+                    or lease.expires_at <= disposition.completed_at
+                ):
+                    raise LeaseFenceLost(
+                        "job disposition uses a stale delivery fence"
+                    )
+            prior = self._job_dispositions.get(
+                disposition.outbox_message_id
+            )
+            if prior is not None:
+                if prior == disposition:
+                    return prior
+                raise AuthorityConflict(
+                    "outbox job already has another terminal disposition"
+                )
+            self._job_dispositions[
+                disposition.outbox_message_id
+            ] = disposition
+            return disposition
+
+    def get_job_disposition(
+        self,
+        outbox_message_id: str,
+    ) -> JobDispositionRecord | None:
+        with self._lock:
+            self.get_outbox_message(outbox_message_id)
+            return self._job_dispositions.get(outbox_message_id)
+
+    def list_job_dispositions(
+        self,
+        case_id: str,
+    ) -> tuple[JobDispositionRecord, ...]:
+        with self._lock:
+            self.get_case(case_id)
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._job_dispositions.values()
+                        if item.case_id == case_id
+                    ),
+                    key=lambda item: (
+                        item.completed_at,
+                        item.job_disposition_record_id,
+                    ),
+                )
+            )
+
+    def advance_dispatcher_recovery_cursor(
+        self,
+        cursor: DispatcherRecoveryCursor,
+    ) -> DispatcherRecoveryCursor:
+        with self._lock:
+            prior = self._dispatcher_recovery_cursors.get(
+                cursor.dispatcher_id
+            )
+            if prior is not None:
+                if prior.position == cursor.position:
+                    return prior
+                if prior.position is not None and (
+                    cursor.position is None
+                    or cursor.position < prior.position
+                ):
+                    raise InvalidAuthorityTransition(
+                        "dispatcher recovery cursor cannot move backwards"
+                    )
+            self._dispatcher_recovery_cursors[cursor.dispatcher_id] = cursor
+            return cursor
+
+    def get_dispatcher_recovery_cursor(
+        self,
+        dispatcher_id: str,
+    ) -> DispatcherRecoveryCursor | None:
+        with self._lock:
+            return self._dispatcher_recovery_cursors.get(dispatcher_id)
+
     def acquire_job_lease(
         self,
         *,
@@ -1518,6 +3082,10 @@ class InMemoryAuthorityStore:
     ) -> JobLease:
         with self._lock:
             self.get_outbox_message(outbox_message_id)
+            if outbox_message_id in self._job_dispositions:
+                raise LeaseConflict(
+                    "terminally disposed job cannot be claimed"
+                )
             current = self._job_leases.get(outbox_message_id)
             if (
                 current is not None
@@ -1570,6 +3138,20 @@ class InMemoryAuthorityStore:
             if current != lease:
                 raise LeaseFenceLost("job delivery lease fencing token was lost")
             del self._job_leases[lease.outbox_message_id]
+
+    def assert_job_lease(
+        self,
+        lease: JobLease,
+        *,
+        checked_at: datetime,
+    ) -> JobLease:
+        with self._lock:
+            current = self._job_leases.get(lease.outbox_message_id)
+            if current != lease or current.expires_at <= checked_at:
+                raise LeaseFenceLost(
+                    "job delivery lease is stale, expired, or superseded"
+                )
+            return current
 
     def record_decision_request(
         self,
@@ -1760,7 +3342,7 @@ class InMemoryAuthorityStore:
         authority_ref: str | None,
         payload: dict[str, object],
         customer_projection: dict[str, object] | None,
-        operation: OperationIdentity | None = None,
+        operation: OperationIdentity,
     ) -> EventJournalEntry:
         with self._lock:
             self.get_case(case_id)
@@ -1833,7 +3415,17 @@ class InMemoryAuthorityStore:
         action_id: str | None,
         recorded_at: datetime,
         payload: dict[str, object],
+        operation: OperationIdentity | None = None,
     ) -> EventJournalEntry:
+        event_operation = (
+            None
+            if operation is None
+            else _causal_event_operation(
+                causal_operation=operation,
+                event_id=event_id,
+                payload=payload,
+            )
+        )
         return self._append_event_locked(
             case_id=case_id,
             expected_next_cursor=len(self._events[case_id]) + 1,
@@ -1847,6 +3439,7 @@ class InMemoryAuthorityStore:
                 "business_event": event_type.value,
                 "authority_ref": authority_ref,
             },
+            operation=event_operation,
         )
 
     def _append_subordinate_event_locked(
@@ -2035,6 +3628,7 @@ class InMemoryAuthorityStore:
             "_evidence": self._evidence.copy(),
             "_answers": self._answers.copy(),
             "_resolution_outcomes": self._resolution_outcomes.copy(),
+            "_resolution_admissions": self._resolution_admissions.copy(),
             "_evidence_obligations": self._evidence_obligations.copy(),
             "_evidence_validity": self._evidence_validity.copy(),
             "_obligation_satisfaction": (
@@ -2054,6 +3648,42 @@ class InMemoryAuthorityStore:
             "_checkpoints": self._checkpoints.copy(),
             "_checkpoint_event_keys": self._checkpoint_event_keys.copy(),
             "_outbox": self._outbox.copy(),
+            "_job_dispositions": self._job_dispositions.copy(),
+            "_dispatcher_recovery_cursors": (
+                self._dispatcher_recovery_cursors.copy()
+            ),
+            "_message_ingress_records": (
+                self._message_ingress_records.copy()
+            ),
+            "_pending_user_messages": (
+                self._pending_user_messages.copy()
+            ),
+            "_message_impact_bindings": (
+                self._message_impact_bindings.copy()
+            ),
+            "_logical_model_jobs": self._logical_model_jobs.copy(),
+            "_provider_attempt_requests": (
+                self._provider_attempt_requests.copy()
+            ),
+            "_provider_attempt_receipts": (
+                self._provider_attempt_receipts.copy()
+            ),
+            "_durable_model_results": (
+                self._durable_model_results.copy()
+            ),
+            "_obligation_schedules": self._obligation_schedules.copy(),
+            "_obligation_dispatch_records": (
+                self._obligation_dispatch_records.copy()
+            ),
+            "_obligation_completion_records": (
+                self._obligation_completion_records.copy()
+            ),
+            "_obligation_schedule_checkpoints": (
+                self._obligation_schedule_checkpoints.copy()
+            ),
+            "_run_trace_manifests": (
+                self._run_trace_manifests.copy()
+            ),
             "_decision_requests": self._decision_requests.copy(),
             "_decision_request_action_keys": (
                 self._decision_request_action_keys.copy()
@@ -2063,6 +3693,21 @@ class InMemoryAuthorityStore:
             "_lease_tokens": self._lease_tokens.copy(),
             "_job_leases": self._job_leases.copy(),
             "_job_lease_tokens": self._job_lease_tokens.copy(),
+            "_frame_candidates": self._frame_candidates.copy(),
+            "_active_frame_candidate_ids": (
+                self._active_frame_candidate_ids.copy()
+            ),
+            "_frame_candidate_supersessions": (
+                self._frame_candidate_supersessions.copy()
+            ),
+            "_frame_reviews": self._frame_reviews.copy(),
+            "_objection_closures": self._objection_closures.copy(),
+            "_frame_admission_proofs": (
+                self._frame_admission_proofs.copy()
+            ),
+            "_frame_admission_proof_by_frame": (
+                self._frame_admission_proof_by_frame.copy()
+            ),
             "_events": {
                 case_id: list(events)
                 for case_id, events in self._events.items()
@@ -2136,5 +3781,21 @@ def _derived_event_operation(
         causation_id=action_id or event_id,
         correlation_id=case_id,
         authority_revision=authority_revision,
+        payload_sha256=content_sha256(payload),
+    )
+
+
+def _causal_event_operation(
+    *,
+    causal_operation: OperationIdentity,
+    event_id: str,
+    payload: dict[str, object],
+) -> OperationIdentity:
+    return OperationIdentity(
+        operation_id=f"event-operation:{event_id}",
+        idempotency_key=f"event-key:{event_id}",
+        causation_id=causal_operation.operation_id,
+        correlation_id=causal_operation.correlation_id,
+        authority_revision=causal_operation.authority_revision,
         payload_sha256=content_sha256(payload),
     )

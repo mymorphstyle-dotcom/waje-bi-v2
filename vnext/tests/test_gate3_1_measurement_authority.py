@@ -4,7 +4,7 @@ import hashlib
 import json
 import unittest
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,6 +19,9 @@ from gate1_fixtures import (
     make_operation,
     make_plan,
     make_question,
+    make_resolution_admission,
+    make_resolution_verifier,
+    record_reviewed_frame,
 )
 from waje_vnext.domain.async_runtime import MailboxMessageKind
 from waje_vnext.domain.canonical import content_sha256, to_jsonable
@@ -32,12 +35,17 @@ from waje_vnext.domain.identity import (
     semantic_measurement_id,
 )
 from waje_vnext.domain.measurement import (
+    AmbiguousLocalTimePolicy,
     EvidenceValidityRecord,
     EvidenceValidityStatus,
+    ExposureBasis,
+    ExposureFactSourceKind,
     MeasurementResolutionOutcome,
     ObligationSatisfactionRecord,
     ObligationSatisfactionStatus,
+    ObligationExecutionDisposition,
     ResolvedEvidenceObligation,
+    ResolvedExposureFact,
     ResolvedMeasurementInstance,
     ResolvedWindow,
     ResolutionContext,
@@ -69,6 +77,9 @@ def make_resolved_outcome(frame):
         as_of_instant=datetime(2026, 7, 29, 8, tzinfo=UTC),
         timezone="Asia/Shanghai",
         business_day_cutoff="04:00:00",
+        ambiguous_local_time_policy=(
+            AmbiguousLocalTimePolicy.EARLIEST_FOLD
+        ),
         calendar_version_ref="calendar:gregorian:v1",
         holiday_version_ref="holiday:cn:v2026",
         fiscal_version_ref=None,
@@ -93,12 +104,41 @@ def make_resolved_outcome(frame):
                 period_offset=0,
                 actual_start=date(2026, 1, 1),
                 actual_end=date(2026, 1, 7),
+                start_instant=datetime(
+                    2025, 12, 31, 20, tzinfo=UTC
+                ),
+                end_instant=datetime(
+                    2026, 1, 7, 20, tzinfo=UTC
+                ),
+                elapsed_seconds=7 * 86400,
                 actual_calendar_days=7,
-                expected_exposure_decimal="7",
-                observed_exposure_decimal="7",
-                valid_exposure_decimal="6",
-                missing_exposure_decimal="0",
-                at_risk_exposure_decimal=None,
+                selected_calendar_dates_count=7,
+                observed_calendar_dates_count=7,
+                valid_calendar_dates_count=7,
+                selected_calendar_dates_sha256=content_sha256(
+                    tuple(date(2026, 1, day) for day in range(1, 8))
+                ),
+                calendar_coverage_receipt_sha256=SHA_A,
+                exposure_facts=(
+                    ResolvedExposureFact(
+                        exposure_id=design.exposures[0].exposure_id,
+                        basis=ExposureBasis.VALID,
+                        unit_ref=design.exposures[0].unit_ref,
+                        expected_exposure_decimal="7",
+                        observed_exposure_decimal="7",
+                        valid_exposure_decimal="6",
+                        invalid_exposure_decimal="1",
+                        missing_exposure_decimal="0",
+                        coverage_ratio_decimal=str(
+                            Decimal(6) / Decimal(7)
+                        ),
+                        at_risk_exposure_decimal=None,
+                        source_kind=(
+                            ExposureFactSourceKind.SNAPSHOT_CATALOG
+                        ),
+                        source_receipt_sha256=SHA_A,
+                    ),
+                ),
             ),
             ResolvedWindow(
                 operand_id=design.contrasts[0].operands[1].operand_id,
@@ -107,12 +147,39 @@ def make_resolved_outcome(frame):
                 period_offset=-1,
                 actual_start=date(2025, 12, 25),
                 actual_end=date(2025, 12, 31),
+                start_instant=datetime(
+                    2025, 12, 24, 20, tzinfo=UTC
+                ),
+                end_instant=datetime(
+                    2025, 12, 31, 20, tzinfo=UTC
+                ),
+                elapsed_seconds=7 * 86400,
                 actual_calendar_days=7,
-                expected_exposure_decimal="7",
-                observed_exposure_decimal="7",
-                valid_exposure_decimal="7",
-                missing_exposure_decimal="0",
-                at_risk_exposure_decimal=None,
+                selected_calendar_dates_count=7,
+                observed_calendar_dates_count=7,
+                valid_calendar_dates_count=7,
+                selected_calendar_dates_sha256=content_sha256(
+                    tuple(date(2025, 12, day) for day in range(25, 32))
+                ),
+                calendar_coverage_receipt_sha256=SHA_A,
+                exposure_facts=(
+                    ResolvedExposureFact(
+                        exposure_id=design.exposures[0].exposure_id,
+                        basis=ExposureBasis.VALID,
+                        unit_ref=design.exposures[0].unit_ref,
+                        expected_exposure_decimal="7",
+                        observed_exposure_decimal="7",
+                        valid_exposure_decimal="7",
+                        invalid_exposure_decimal="0",
+                        missing_exposure_decimal="0",
+                        coverage_ratio_decimal="1",
+                        at_risk_exposure_decimal=None,
+                        source_kind=(
+                            ExposureFactSourceKind.SNAPSHOT_CATALOG
+                        ),
+                        source_receipt_sha256=SHA_B,
+                    ),
+                ),
             ),
         ),
         expected_scope_id=design.scopes[0].scope_id,
@@ -120,7 +187,40 @@ def make_resolved_outcome(frame):
         expected_unit_ref=design.scopes[0].unit_ref,
         expected_exposure_id=design.exposures[0].exposure_id,
         eligibility_id=design.eligibilities[0].eligibility_id,
+        resolver_contract_ref=(
+            "waje-vnext://measurement-resolver/gregorian.v1"
+        ),
+        resolver_input_bundle_sha256=SHA_B,
         field_derivation_proof_sha256=SHA_B,
+    )
+    instance = replace(
+        instance,
+        field_derivation_proof_sha256=hashlib.sha256(
+            canonical_identity_json_bytes(
+                {
+                    "frame_revision_id": frame.frame_revision_id,
+                    "estimand_id": estimand.estimand_id,
+                    "semantic_measurement_id": (
+                        frame.semantic_measurement_ids[0]
+                    ),
+                    "authority_binding_id": (
+                        frame.authority_binding_ids[0]
+                    ),
+                    "context": context,
+                    "target_period_ref": "target-period:2026-01",
+                    "resolver_contract_ref": (
+                        instance.resolver_contract_ref
+                    ),
+                    "resolver_input_bundle_sha256": (
+                        instance.resolver_input_bundle_sha256
+                    ),
+                    "windows": instance.windows,
+                    "scope": design.scopes[0],
+                    "exposure": design.exposures[0],
+                    "eligibility": design.eligibilities[0],
+                }
+            )
+        ).hexdigest(),
     )
     instance = replace(
         instance,
@@ -137,6 +237,7 @@ def make_resolved_outcome(frame):
         kind=ResolutionOutcomeKind.RESOLVED_INSTANCE,
         resolved_instance=instance,
         boundary=None,
+        requirement_boundaries=(),
         created_at=NOW,
     )
     return replace(
@@ -294,16 +395,56 @@ class CalendarAndScopeBoundaryTest(unittest.TestCase):
                     period_offset=0,
                     actual_start=start,
                     actual_end=end,
+                    start_instant=datetime.combine(
+                        start,
+                        datetime.min.time(),
+                        tzinfo=UTC,
+                    ),
+                    end_instant=datetime.combine(
+                        end + timedelta(days=1),
+                        datetime.min.time(),
+                        tzinfo=UTC,
+                    ),
+                    elapsed_seconds=days * 86400,
                     actual_calendar_days=days,
-                    expected_exposure_decimal=str(days),
-                    observed_exposure_decimal=str(days - 1),
-                    valid_exposure_decimal=str(days - 2),
-                    missing_exposure_decimal="1",
-                    at_risk_exposure_decimal=None,
+                    selected_calendar_dates_count=days,
+                    observed_calendar_dates_count=days,
+                    valid_calendar_dates_count=days,
+                    selected_calendar_dates_sha256=content_sha256(
+                        tuple(
+                            start + timedelta(days=offset)
+                            for offset in range(days)
+                        )
+                    ),
+                    calendar_coverage_receipt_sha256=SHA_A,
+                    exposure_facts=(
+                        ResolvedExposureFact(
+                            exposure_id=f"exposure-{index}",
+                            basis=ExposureBasis.CALENDAR,
+                            unit_ref="unit:calendar-day",
+                            expected_exposure_decimal=str(days),
+                            observed_exposure_decimal=str(days - 1),
+                            valid_exposure_decimal=str(days - 2),
+                            invalid_exposure_decimal="1",
+                            missing_exposure_decimal="1",
+                            coverage_ratio_decimal=str(
+                                Decimal(days - 2) / Decimal(days)
+                            ),
+                            at_risk_exposure_decimal=None,
+                            source_kind=(
+                                ExposureFactSourceKind.SNAPSHOT_CATALOG
+                            ),
+                            source_receipt_sha256=SHA_A,
+                        ),
+                    ),
                 )
                 self.assertLess(
-                    Decimal(window.valid_exposure_decimal),
-                    Decimal(window.expected_exposure_decimal),
+                    Decimal(
+                        window.exposure_facts[0].valid_exposure_decimal
+                    ),
+                    Decimal(
+                        window.exposure_facts[0].expected_exposure_decimal
+                    ),
                 )
 
     def test_calendar_day_mismatch_is_rejected(self) -> None:
@@ -315,12 +456,16 @@ class CalendarAndScopeBoundaryTest(unittest.TestCase):
                 period_offset=0,
                 actual_start=date(2024, 2, 1),
                 actual_end=date(2024, 2, 29),
+                start_instant=datetime(2024, 2, 1, tzinfo=UTC),
+                end_instant=datetime(2024, 3, 1, tzinfo=UTC),
+                elapsed_seconds=29 * 86400,
                 actual_calendar_days=28,
-                expected_exposure_decimal="29",
-                observed_exposure_decimal="29",
-                valid_exposure_decimal="29",
-                missing_exposure_decimal="0",
-                at_risk_exposure_decimal=None,
+                selected_calendar_dates_count=29,
+                observed_calendar_dates_count=29,
+                valid_calendar_dates_count=29,
+                selected_calendar_dates_sha256=SHA_A,
+                calendar_coverage_receipt_sha256=SHA_A,
+                exposure_facts=(),
             )
 
     def test_scope_relation_fails_closed_without_contract_proof(self) -> None:
@@ -359,7 +504,9 @@ class CalendarAndScopeBoundaryTest(unittest.TestCase):
 
 class MeasurementStorageTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = InMemoryAuthorityStore()
+        self.store = InMemoryAuthorityStore(
+            resolution_input_verifier=make_resolution_verifier()
+        )
         case = self.store.open_case(
             case_id="case-1",
             thread_id="thread-1",
@@ -368,8 +515,10 @@ class MeasurementStorageTest(unittest.TestCase):
         )
         case, self.question = accept_initial_question(self.store, case)
         self.frame = make_frame(question=self.question)
+        frame_proof_id = record_reviewed_frame(self.store, self.frame)
         case = self.store.accept_frame(
             self.frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=case.head_version,
             event_id="event-frame",
             recorded_at=NOW,
@@ -396,8 +545,13 @@ class MeasurementStorageTest(unittest.TestCase):
             InvalidAuthorityTransition,
             "stale or forged",
         ):
+            forged_proof_id = record_reviewed_frame(
+                self.store,
+                forged,
+            )
             self.store.accept_frame(
                 forged,
+                frame_admission_proof_id=forged_proof_id,
                 expected_head_version=self.case.head_version,
                 event_id="event-frame-forged",
                 recorded_at=NOW,
@@ -405,10 +559,18 @@ class MeasurementStorageTest(unittest.TestCase):
 
     def test_resolution_and_obligation_cannot_change_estimand(self) -> None:
         outcome = make_resolved_outcome(self.frame)
+        admission = make_resolution_admission(outcome)
         self.store.record_measurement_resolution(
             outcome,
+            admission=admission,
             expected_head_version=self.case.head_version,
             event_id="event-resolution",
+        )
+        self.assertEqual(
+            self.store.get_measurement_resolution_admission(
+                outcome.resolution_outcome_id
+            ),
+            admission,
         )
         requirement = self.frame.measurement_design.evidence_requirements[0]
         obligation = ResolvedEvidenceObligation(
@@ -419,6 +581,10 @@ class MeasurementStorageTest(unittest.TestCase):
             evidence_requirement_id=requirement.evidence_requirement_id,
             evidence_requirement_sha256=content_sha256(requirement),
             resolution_outcome_id=outcome.resolution_outcome_id,
+            execution_disposition=(
+                ObligationExecutionDisposition.EXECUTABLE
+            ),
+            boundary_code=None,
             closure_definition_sha256=SHA_A,
             field_derivation_proof_sha256=SHA_B,
             created_at=NOW,
@@ -466,6 +632,7 @@ class MeasurementStorageTest(unittest.TestCase):
         ):
             self.store.record_measurement_resolution(
                 drifted,
+                admission=make_resolution_admission(drifted),
                 expected_head_version=self.case.head_version,
                 event_id="event-resolution-calendar-drift",
             )
@@ -501,6 +668,7 @@ class MeasurementStorageTest(unittest.TestCase):
         ):
             self.store.record_measurement_resolution(
                 drifted,
+                admission=make_resolution_admission(drifted),
                 expected_head_version=self.case.head_version,
                 event_id="event-resolution-rehashed-offset-drift",
             )
@@ -517,8 +685,26 @@ class MeasurementStorageTest(unittest.TestCase):
         ):
             self.store.record_measurement_resolution(
                 outcome,
+                admission=make_resolution_admission(outcome),
                 expected_head_version=self.case.head_version,
                 event_id="event-resolution-outcome-forged",
+            )
+
+    def test_resolution_persistence_requires_matching_trust_receipt(
+        self,
+    ) -> None:
+        outcome = make_resolved_outcome(self.frame)
+        admission = make_resolution_admission(outcome)
+        forged = replace(outcome, resolution_outcome_id=SHA_E)
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "admission identity is stale",
+        ):
+            self.store.record_measurement_resolution(
+                forged,
+                admission=admission,
+                expected_head_version=self.case.head_version,
+                event_id="event-resolution-untrusted-rehash",
             )
 
     def test_evidence_validity_is_an_append_only_cas_chain(self) -> None:
@@ -672,3 +858,4 @@ def _revive_identity_vector(value):
 
 if __name__ == "__main__":
     unittest.main()
+    ResolvedExposureFact,

@@ -11,6 +11,7 @@ from gate1_fixtures import (
     make_frame,
     make_objection,
     make_plan,
+    record_reviewed_frame,
 )
 from waje_vnext.domain.actions import (
     ActionEnvelope,
@@ -21,6 +22,7 @@ from waje_vnext.domain.actions import (
     RunSensitivityPayload,
 )
 from waje_vnext.domain.admission import admit_action
+from waje_vnext.domain.async_runtime import OperationIdentity
 from waje_vnext.domain.authority import (
     AnswerStatus,
     CaseLifecycle,
@@ -38,6 +40,7 @@ from waje_vnext.domain.context import (
     ContextUserMessageItem,
     build_context_packet,
 )
+from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.events import JournalEventType
 from waje_vnext.storage import (
     AuthorityConflict,
@@ -195,8 +198,10 @@ class TypedActionTest(unittest.TestCase):
 
     def test_capability_action_does_not_create_revision(self) -> None:
         frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
         case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -251,8 +256,10 @@ class TypedActionTest(unittest.TestCase):
 
     def test_sensitivity_action_requires_a_known_plan_task(self) -> None:
         frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
         case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -412,8 +419,10 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
 
     def _accept_frame_and_plan(self) -> None:
         frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
         self.case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -439,14 +448,17 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
 
     def test_head_mutation_uses_cas_and_event_retry_is_idempotent(self) -> None:
         frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
         accepted = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
         retried = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -457,12 +469,18 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
         self.assertEqual(len(self.store.list_events("case-1")), 3)
 
         with self.assertRaises(StaleHead):
+            frame_2 = make_frame(
+                revision_number=2,
+                frame_id="frame-2",
+                prior_id="frame-1",
+            )
+            frame_2_proof_id = record_reviewed_frame(
+                self.store,
+                frame_2,
+            )
             self.store.accept_frame(
-                make_frame(
-                    revision_number=2,
-                    frame_id="frame-2",
-                    prior_id="frame-1",
-                ),
+                frame_2,
+                frame_admission_proof_id=frame_2_proof_id,
                 expected_head_version=0,
                 event_id="event-frame-2",
                 recorded_at=NOW,
@@ -546,9 +564,11 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             frame_id="frame-2",
             prior_id="frame-1",
         )
+        frame_2_proof_id = record_reviewed_frame(self.store, frame_2)
 
         self.case = self.store.accept_frame(
             frame_2,
+            frame_admission_proof_id=frame_2_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame-2",
             recorded_at=frame_2.created_at,
@@ -611,8 +631,13 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
                 authority_ref=None,
                 payload={},
                 customer_projection=None,
+                operation=_journal_operation(
+                    "event-checkpoint-invalid",
+                    {},
+                ),
             )
 
+        checkpoint_payload = {"checkpoint": "checkpoint-1"}
         event = self.store.append_event(
             case_id="case-1",
             expected_next_cursor=3,
@@ -621,8 +646,12 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             recorded_at=NOW,
             action_id=None,
             authority_ref=None,
-            payload={"checkpoint": "checkpoint-1"},
+            payload=checkpoint_payload,
             customer_projection=None,
+            operation=_journal_operation(
+                "event-checkpoint",
+                checkpoint_payload,
+            ),
         )
         retried = self.store.append_event(
             case_id="case-1",
@@ -632,8 +661,12 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
             recorded_at=NOW,
             action_id=None,
             authority_ref=None,
-            payload={"checkpoint": "checkpoint-1"},
+            payload=checkpoint_payload,
             customer_projection=None,
+            operation=_journal_operation(
+                "event-checkpoint",
+                checkpoint_payload,
+            ),
         )
 
         self.assertEqual(event, retried)
@@ -641,8 +674,10 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
 
     def test_plan_for_non_current_frame_is_rejected(self) -> None:
         frame = make_frame()
+        frame_proof_id = record_reviewed_frame(self.store, frame)
         self.case = self.store.accept_frame(
             frame,
+            frame_admission_proof_id=frame_proof_id,
             expected_head_version=self.case.head_version,
             event_id="event-frame",
             recorded_at=frame.created_at,
@@ -728,6 +763,20 @@ class InMemoryAuthorityStoreTest(unittest.TestCase):
                 event_id="event-evidence-other",
                 recorded_at=evidence.created_at,
             )
+
+
+def _journal_operation(
+    operation_id: str,
+    payload: dict[str, object],
+) -> OperationIdentity:
+    return OperationIdentity(
+        operation_id=operation_id,
+        idempotency_key=f"{operation_id}:key",
+        causation_id="test-journal",
+        correlation_id="case-1",
+        authority_revision=0,
+        payload_sha256=content_sha256(payload),
+    )
 
 
 if __name__ == "__main__":

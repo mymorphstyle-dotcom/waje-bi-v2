@@ -202,7 +202,8 @@
       "required": [
         "question_revision_id",
         "revision_reason_ref",
-        "measurement_design"
+        "measurement_design",
+        "objection_closures"
       ],
       "properties": {
         "question_revision_id": {
@@ -213,6 +214,12 @@
         },
         "measurement_design": {
           "$ref": "#/$defs/MeasurementDesign"
+        },
+        "objection_closures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposedObjectionClosure"
+          }
         }
       }
     },
@@ -1722,6 +1729,7 @@
       "required": [
         "estimand_id",
         "claim_target_kind",
+        "claim_target_spec",
         "variable_ids",
         "event_ids",
         "population_id",
@@ -1764,6 +1772,49 @@
             "association",
             "causal_effect",
             "diagnostic_set"
+          ]
+        },
+        "claim_target_spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DefinitionTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/DataQualityTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/PointQuantityTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/DistributionTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/TemporalPatternTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/ContrastTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/CompositionTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/AccountingDecompositionTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/CohortOutcomeTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/FunnelTransitionTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/AssociationTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/CausalEffectTargetSpec"
+            },
+            {
+              "$ref": "#/$defs/DiagnosticSetTargetSpec"
+            }
           ]
         },
         "variable_ids": {
@@ -1940,6 +1991,286 @@
             "associational",
             "causal"
           ]
+        }
+      }
+    },
+    "DefinitionTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defined_concept_ref",
+        "definition_contract_ref"
+      ],
+      "properties": {
+        "defined_concept_ref": {
+          "type": "string"
+        },
+        "definition_contract_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "DataQualityTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assessed_object_ref",
+        "quality_predicate_refs",
+        "decision_rule_ref"
+      ],
+      "properties": {
+        "assessed_object_ref": {
+          "type": "string"
+        },
+        "quality_predicate_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decision_rule_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "PointQuantityTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quantity_operator_ref",
+        "scalar_result_contract_ref"
+      ],
+      "properties": {
+        "quantity_operator_ref": {
+          "type": "string"
+        },
+        "scalar_result_contract_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "DistributionTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distribution_operator_ref",
+        "support_contract_ref",
+        "statistic_parameter_refs"
+      ],
+      "properties": {
+        "distribution_operator_ref": {
+          "type": "string"
+        },
+        "support_contract_ref": {
+          "type": "string"
+        },
+        "statistic_parameter_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TemporalPatternTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cadence_ref",
+        "pattern_operator_ref",
+        "minimum_cycle_count"
+      ],
+      "properties": {
+        "cadence_ref": {
+          "type": "string"
+        },
+        "pattern_operator_ref": {
+          "type": "string"
+        },
+        "minimum_cycle_count": {
+          "type": "integer"
+        }
+      }
+    },
+    "ContrastTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contrast_id",
+        "effect_scale_ref"
+      ],
+      "properties": {
+        "contrast_id": {
+          "type": "string"
+        },
+        "effect_scale_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "CompositionTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "whole_variable_id",
+        "component_variable_ids",
+        "completeness_rule_ref",
+        "exclusivity_rule_ref"
+      ],
+      "properties": {
+        "whole_variable_id": {
+          "type": "string"
+        },
+        "component_variable_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "completeness_rule_ref": {
+          "type": "string"
+        },
+        "exclusivity_rule_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "AccountingDecompositionTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reconciliation_id",
+        "residual_policy_ref"
+      ],
+      "properties": {
+        "reconciliation_id": {
+          "type": "string"
+        },
+        "residual_policy_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "CohortOutcomeTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cohort_risk_set_id",
+        "horizon_ref",
+        "maturity_policy_ref",
+        "censoring_policy_ref"
+      ],
+      "properties": {
+        "cohort_risk_set_id": {
+          "type": "string"
+        },
+        "horizon_ref": {
+          "type": "string"
+        },
+        "maturity_policy_ref": {
+          "type": "string"
+        },
+        "censoring_policy_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "FunnelTransitionTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence_id",
+        "stage_order_ref",
+        "transition_denominator_ref"
+      ],
+      "properties": {
+        "sequence_id": {
+          "type": "string"
+        },
+        "stage_order_ref": {
+          "type": "string"
+        },
+        "transition_denominator_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "AssociationTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relationship_id",
+        "association_measure_ref",
+        "adjustment_set_ref"
+      ],
+      "properties": {
+        "relationship_id": {
+          "type": "string"
+        },
+        "association_measure_ref": {
+          "type": "string"
+        },
+        "adjustment_set_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "CausalEffectTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relationship_id",
+        "identification_id",
+        "causal_contrast_ref"
+      ],
+      "properties": {
+        "relationship_id": {
+          "type": "string"
+        },
+        "identification_id": {
+          "type": "string"
+        },
+        "causal_contrast_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "DiagnosticSetTargetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_estimand_ids",
+        "ranking_rule_ref",
+        "joint_stop_rule_ref"
+      ],
+      "properties": {
+        "member_estimand_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ranking_rule_ref": {
+          "type": "string"
+        },
+        "joint_stop_rule_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "ProposedObjectionClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objection_id",
+        "explanation"
+      ],
+      "properties": {
+        "objection_id": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
         }
       }
     },

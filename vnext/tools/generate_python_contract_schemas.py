@@ -11,7 +11,14 @@ from dataclasses import fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    TypeAliasType,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from waje_vnext.domain.actions import (
     ACTION_PAYLOAD_TYPES,
@@ -35,6 +42,23 @@ from waje_vnext.domain.measurement import (
     ResolvedEvidenceObligation,
     SettlementPreconditionReport,
 )
+from waje_vnext.domain.runtime_amendment import (
+    DispatcherRecoveryCursor,
+    FrameAdmissionProof,
+    FrameCandidateRecord,
+    FrameReviewRecord,
+    JobDispositionRecord,
+    LogicalModelJob,
+    MessageBindingRequest,
+    MessageImpactBinding,
+    MessageImpactProposal,
+    MessageIngressRecord,
+    ObjectionClosureRecord,
+    PendingUserMessage,
+    ProviderAttemptReceipt,
+    ProviderAttemptRequest,
+    RunTraceManifest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +76,7 @@ EPOCH_3_RECORDS = {
 }
 SHA256_FIELDS = {
     "authority_binding_id",
+    "authority_snapshot_sha256",
     "closure_definition_sha256",
     "content_sha256",
     "derived_input_sha256",
@@ -59,13 +84,24 @@ SHA256_FIELDS = {
     "evidence_requirement_sha256",
     "expected_prior_content_sha256",
     "field_derivation_proof_sha256",
+    "frame_content_sha256",
+    "frame_review_content_sha256",
     "input_set_sha256",
+    "input_sha256",
+    "lineage_sha256",
+    "message_payload_sha256",
     "obligation_id",
     "payload_sha256",
+    "proposed_frame_content_sha256",
+    "request_sha256",
+    "reviewed_frame_content_sha256",
     "resolution_id",
     "resolution_outcome_id",
     "selected_text_sha256",
+    "semantic_binding_sha256",
     "semantic_measurement_id",
+    "source_payload_sha256",
+    "output_sha256",
 }
 SHA256_ARRAY_FIELDS = {
     "authority_binding_ids",
@@ -107,6 +143,8 @@ class SchemaBuilder:
     def schema_for(self, expected_type: object) -> dict[str, object]:
         if expected_type is FrozenJson or expected_type in (Any, object):
             return dict(JSON_VALUE_REF)
+        if isinstance(expected_type, TypeAliasType):
+            return self.schema_for(expected_type.__value__)
         origin = get_origin(expected_type)
         arguments = get_args(expected_type)
         if origin in (types.UnionType, Union):
@@ -311,6 +349,27 @@ def main() -> None:
             schema_id="urn:waje-vnext:domain:context-packet:v3",
             title="WAJE vNext ContextPacket v3",
             roots=(ContextPacket,),
+        ),
+        DOMAIN / "runtime-amendment.v1.schema.json": _document(
+            schema_id="urn:waje-vnext:domain:runtime-amendment:v1",
+            title="WAJE vNext Gate 3 durable runtime amendment",
+            roots=(
+                MessageIngressRecord,
+                PendingUserMessage,
+                MessageBindingRequest,
+                MessageImpactProposal,
+                MessageImpactBinding,
+                FrameCandidateRecord,
+                ObjectionClosureRecord,
+                FrameReviewRecord,
+                FrameAdmissionProof,
+                JobDispositionRecord,
+                DispatcherRecoveryCursor,
+                LogicalModelJob,
+                ProviderAttemptRequest,
+                ProviderAttemptReceipt,
+                RunTraceManifest,
+            ),
         ),
     }
     check_only = "--check" in sys.argv

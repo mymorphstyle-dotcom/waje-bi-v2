@@ -32,6 +32,7 @@ from waje_vnext.domain.measurement import (
     ContrastOperandSpec,
     ContrastOperator,
     ContrastSpec,
+    ContrastTargetSpec,
     DecisionObjective,
     DecisionObjectiveKind,
     EpistemicCompletionSpec,
@@ -69,10 +70,55 @@ from waje_vnext.domain.measurement import (
     WindowSelectionKind,
     EligibilitySpec,
 )
+from waje_vnext.domain.runtime_amendment import (
+    FrameAdmissionProof,
+    FrameCandidateRecord,
+    FrameReviewDisposition,
+    FrameReviewRecord,
+)
+from waje_vnext.domain.measurement_resolver import (
+    MeasurementResolutionAdmission,
+    TrustedResolutionInputSigner,
+    TrustedResolutionInputVerifier,
+)
 
 
 NOW = datetime(2026, 7, 29, 8, 0, tzinfo=UTC)
 QUESTION_TEXT = "比较目标月月初与上一个月月末的日均付费金额。"
+RESOLUTION_TEST_ISSUER_REF = "trusted-resolution-test-issuer:v1"
+RESOLUTION_TEST_KEY = b"waje-vnext-resolution-test-key01"
+
+
+def make_resolution_signer() -> TrustedResolutionInputSigner:
+    return TrustedResolutionInputSigner(
+        issuer_ref=RESOLUTION_TEST_ISSUER_REF,
+        private_key_bytes=RESOLUTION_TEST_KEY,
+    )
+
+
+def make_resolution_verifier() -> TrustedResolutionInputVerifier:
+    signer = make_resolution_signer()
+    return TrustedResolutionInputVerifier(
+        issuer_ref=RESOLUTION_TEST_ISSUER_REF,
+        public_key_bytes=signer.public_key_bytes,
+    )
+
+
+def make_resolution_admission(
+    outcome,
+) -> MeasurementResolutionAdmission:
+    return make_resolution_signer()._issue_resolution_admission(
+        outcome=outcome,
+        registry_content_sha256=content_sha256(
+            {"test": "trusted-resolution-registry"}
+        ),
+        resolver_input_bundle_sha256=content_sha256(
+            {"test": "trusted-resolution-inputs"}
+        ),
+        resolution_context_sha256=content_sha256(
+            {"test": "trusted-resolution-context"}
+        ),
+    )
 
 
 def make_operation(
@@ -349,6 +395,10 @@ def make_measurement_design(
     estimand = EstimandSpec(
         estimand_id=estimand_id,
         claim_target_kind=ClaimTargetKind.CONTRAST,
+        claim_target_spec=ContrastTargetSpec(
+            contrast_id=contrast.contrast_id,
+            effect_scale_ref="effect-scale:difference-in-daily-rate:v1",
+        ),
         variable_ids=(paid_amount.variable_id,),
         event_ids=(),
         population_id=population.population_id,
@@ -453,6 +503,68 @@ def make_frame(
         revision_reason_ref="reason:define-current-measurement",
         measurement_design=design,
     )
+
+
+def record_reviewed_frame(store, frame: AnalysisFrameRevision) -> str:
+    """Persist a fresh, objection-free review proof for storage tests."""
+
+    before = store.get_authority_snapshot(frame.case_id)
+    generation = before.active_frame_candidate_generation + 1
+    candidate_id = f"{frame.case_id}:candidate:{generation}"
+    candidate = FrameCandidateRecord(
+        frame_candidate_id=candidate_id,
+        case_id=frame.case_id,
+        message_binding_id=f"{frame.case_id}:binding:{generation}",
+        question_revision_id=frame.question_revision_id,
+        proposed_frame_revision_id=frame.frame_revision_id,
+        proposed_frame_content_sha256=frame.content_sha256,
+        proposed_frame=frame,
+        candidate_generation=generation,
+        prior_frame_candidate_id=(
+            None
+            if generation == 1
+            else f"{frame.case_id}:candidate:{generation - 1}"
+        ),
+        addressed_objection_ids=(),
+        authority_epoch=store.get_mailbox_head(
+            frame.case_id
+        ).authority_epoch,
+        source_action_id=frame.created_by_action_id,
+        source_operation_id=f"{frame.case_id}:operation:{generation}",
+        review_job_id=f"{frame.case_id}:review-job:{generation}",
+        created_at=frame.created_at,
+    )
+    store.record_frame_candidate(candidate)
+    review = FrameReviewRecord(
+        frame_review_id=f"{frame.case_id}:review:{generation}",
+        frame_candidate_id=candidate.frame_candidate_id,
+        reviewer_job_id=candidate.review_job_id,
+        authority_epoch=candidate.authority_epoch,
+        disposition=FrameReviewDisposition.ACCEPT,
+        objections=(),
+        closure_proof_refs=(),
+        reviewed_frame_content_sha256=frame.content_sha256,
+        logical_model_job_id=f"{frame.case_id}:model-job:{generation}",
+        created_at=frame.created_at,
+    )
+    store.record_frame_review(review)
+    snapshot = store.get_authority_snapshot(frame.case_id)
+    proof = FrameAdmissionProof(
+        frame_admission_proof_id=f"{frame.case_id}:proof:{generation}",
+        case_id=frame.case_id,
+        frame_candidate_id=candidate.frame_candidate_id,
+        candidate_generation=generation,
+        frame_revision_id=frame.frame_revision_id,
+        frame_content_sha256=frame.content_sha256,
+        frame_review_id=review.frame_review_id,
+        frame_review_content_sha256=review.content_sha256,
+        objection_closure_record_ids=(),
+        authority_snapshot=snapshot,
+        authority_snapshot_sha256=snapshot.content_sha256,
+        created_at=frame.created_at,
+    )
+    store.record_frame_admission_proof(proof)
+    return proof.frame_admission_proof_id
 
 
 def accept_initial_question(store, case):

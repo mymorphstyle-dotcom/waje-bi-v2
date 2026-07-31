@@ -4,26 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import calendar
 import unicodedata
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
-from .canonical import require_nonempty, require_sha256
+from .canonical import content_sha256, require_nonempty, require_sha256
 from .measurement import (
     IDENTITY_ALGORITHM_VERSION,
     AnalysisFrameRevision,
+    AmbiguousLocalTimePolicy,
     ClaimStrengthCeiling,
     EstimandSpec,
     MeasurementDesign,
     MeasurementResolutionOutcome,
     QuestionRevision,
+    RequirementResolutionBoundary,
     ResolvedMeasurementInstance,
     ResolutionOutcomeKind,
     ScopeExpression,
     TypedResolutionBoundary,
+    WindowRuleKind,
+    WindowSelectionKind,
 )
 
 
@@ -43,6 +49,27 @@ class ScopeRelationKind(StrEnum):
     LAWFUL_AGGREGATION = "lawful_aggregation"
     DISJOINT = "disjoint"
     UNKNOWN = "unknown"
+
+
+TRUSTED_RESOLVER_CONTRACT_REFS = frozenset(
+    {"waje-vnext://measurement-resolver/gregorian.v1"}
+)
+TRUSTED_BOUNDARY_POLICY_REFS = frozenset(
+    {"waje-vnext://measurement-boundary-policy/registry.v1"}
+)
+TRUSTED_RESOLUTION_BOUNDARY_CODES = frozenset(
+    {
+        "missing_anchor",
+        "unsupported_calendar",
+        "missing_calendar_contract",
+        "invalid_window_rule",
+        "snapshot_out_of_range",
+        "incomplete_period",
+        "insufficient_valid_exposure",
+        "incompatible_unit",
+        "incomparable_exposure",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,6 +342,7 @@ def resolution_outcome_preimage(
         "kind": outcome.kind,
         "resolved_instance": None,
         "boundary": None,
+        "requirement_boundaries": outcome.requirement_boundaries,
     }
     if outcome.kind is ResolutionOutcomeKind.RESOLVED_INSTANCE:
         instance = outcome.resolved_instance
@@ -339,9 +367,104 @@ def compute_resolution_outcome_id(
     return resolution_outcome_preimage(outcome).identity_sha256
 
 
+def compute_typed_boundary_derivation_proof(
+    outcome: MeasurementResolutionOutcome,
+) -> str:
+    """Recompute the resolver-owned proof for a whole-estimand boundary."""
+
+    boundary = outcome.boundary
+    if (
+        outcome.kind
+        is not ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY
+        or boundary is None
+    ):
+        raise ValueError("typed boundary proof requires a boundary outcome")
+    return content_sha256(
+        {
+            "frame_revision_id": outcome.frame_revision_id,
+            "estimand_id": outcome.estimand_id,
+            "semantic_measurement_id": outcome.semantic_measurement_id,
+            "authority_binding_id": outcome.authority_binding_id,
+            "boundary_code": boundary.boundary_code,
+            "boundary_policy_ref": boundary.boundary_policy_ref,
+            "failed_requirement_ids": boundary.failed_requirement_ids,
+            "failed_contract_refs": boundary.failed_contract_refs,
+            "inspection_evidence_refs": (
+                boundary.inspection_evidence_refs
+            ),
+            "allowed_claim_ceiling": (
+                boundary.allowed_claim_ceiling.value
+            ),
+        }
+    )
+
+
+def compute_requirement_boundary_derivation_proof(
+    outcome: MeasurementResolutionOutcome,
+    requirement_boundary: RequirementResolutionBoundary,
+) -> str:
+    """Recompute the proof for one requirement-local typed boundary."""
+
+    return content_sha256(
+        {
+            "frame_revision_id": outcome.frame_revision_id,
+            "estimand_id": outcome.estimand_id,
+            "evidence_requirement_id": (
+                requirement_boundary.evidence_requirement_id
+            ),
+            "boundary_code": requirement_boundary.boundary_code,
+            "boundary_policy_ref": (
+                requirement_boundary.boundary_policy_ref
+            ),
+            "failed_contract_refs": (
+                requirement_boundary.failed_contract_refs
+            ),
+            "inspection_evidence_refs": (
+                requirement_boundary.inspection_evidence_refs
+            ),
+            "allowed_claim_ceiling": (
+                requirement_boundary.allowed_claim_ceiling.value
+            ),
+        }
+    )
+
+
 def validate_resolution_identities(
     outcome: MeasurementResolutionOutcome,
 ) -> None:
+    for requirement_boundary in outcome.requirement_boundaries:
+        if (
+            requirement_boundary.boundary_code
+            not in TRUSTED_RESOLUTION_BOUNDARY_CODES
+        ):
+            raise ValueError(
+                "requirement boundary code is outside the trusted registry"
+            )
+        if (
+            requirement_boundary.derivation_proof_sha256
+            != compute_requirement_boundary_derivation_proof(
+                outcome,
+                requirement_boundary,
+            )
+        ):
+            raise ValueError(
+                "requirement boundary derivation proof is stale or forged"
+            )
+    if outcome.kind is ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY:
+        boundary = outcome.boundary
+        if boundary is None:
+            raise ValueError("boundary outcome is missing its boundary")
+        if boundary.boundary_code not in TRUSTED_RESOLUTION_BOUNDARY_CODES:
+            raise ValueError(
+                "resolution boundary code is outside the trusted registry"
+            )
+        if (
+            boundary.derivation_proof_sha256
+            != compute_typed_boundary_derivation_proof(outcome)
+        ):
+            raise ValueError(
+                "resolution boundary derivation proof is stale or forged"
+            )
     if outcome.kind is ResolutionOutcomeKind.RESOLVED_INSTANCE:
         instance = outcome.resolved_instance
         if instance is None:
@@ -371,10 +494,47 @@ def validate_resolution_against_frame(
     )
     if estimand is None:
         raise ValueError("resolution targets an unknown frame estimand")
+    requirements = {
+        item.evidence_requirement_id: item
+        for item in design.evidence_requirements
+        if item.evidence_requirement_id
+        in estimand.evidence_requirement_ids
+    }
+    for requirement_boundary in outcome.requirement_boundaries:
+        if (
+            requirement_boundary.boundary_policy_ref
+            not in TRUSTED_BOUNDARY_POLICY_REFS
+        ):
+            raise ValueError(
+                "requirement boundary uses an untrusted policy"
+            )
+        requirement = requirements.get(
+            requirement_boundary.evidence_requirement_id
+        )
+        if requirement is None:
+            raise ValueError(
+                "requirement boundary changes Frame requirements"
+            )
+        if (
+            requirement.boundary_policy.value != "allow_typed_boundary"
+            or requirement_boundary.boundary_code
+            not in requirement.allowed_boundary_codes
+        ) and (
+            requirement_boundary.allowed_claim_ceiling
+            is not ClaimStrengthCeiling.BOUNDARY_ONLY
+        ):
+            raise ValueError(
+                "unapproved requirement boundary exceeds boundary-only ceiling"
+            )
     if outcome.kind is ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY:
         boundary = outcome.boundary
         if boundary is None:
             raise ValueError("boundary outcome is missing its boundary")
+        if (
+            boundary.boundary_policy_ref
+            not in TRUSTED_BOUNDARY_POLICY_REFS
+        ):
+            raise ValueError("resolution boundary uses an untrusted policy")
         unknown_requirements = set(boundary.failed_requirement_ids) - set(
             estimand.evidence_requirement_ids
         )
@@ -396,11 +556,30 @@ def validate_resolution_against_frame(
             raise ValueError(
                 "resolution boundary exceeds the Frame claim ceiling"
             )
+        for requirement_id in boundary.failed_requirement_ids:
+            requirement = requirements[requirement_id]
+            if (
+                requirement.boundary_policy.value
+                != "allow_typed_boundary"
+                or boundary.boundary_code
+                not in requirement.allowed_boundary_codes
+            ) and (
+                boundary.allowed_claim_ceiling
+                is not ClaimStrengthCeiling.BOUNDARY_ONLY
+            ):
+                raise ValueError(
+                    "unapproved boundary exceeds boundary-only ceiling"
+                )
         return
 
     instance = outcome.resolved_instance
     if instance is None:
         raise ValueError("resolved outcome is missing its instance")
+    if (
+        instance.resolver_contract_ref
+        not in TRUSTED_RESOLVER_CONTRACT_REFS
+    ):
+        raise ValueError("resolution uses an untrusted resolver contract")
     scope = next(
         (
             candidate
@@ -440,6 +619,55 @@ def validate_resolution_against_frame(
             raise ValueError("resolution uses an unknown Frame window rule")
         if window.period_offset != rule.period_offset:
             raise ValueError("resolution changes the Frame window offset")
+        _validate_resolved_calendar_window(rule, window)
+        _validate_resolved_instants(instance.context, window)
+    exposure = next(
+        (
+            candidate
+            for candidate in design.exposures
+            if candidate.exposure_id == estimand.exposure_id
+        ),
+        None,
+    )
+    eligibility = next(
+        (
+            candidate
+            for candidate in design.eligibilities
+            if candidate.eligibility_id == estimand.eligibility_id
+        ),
+        None,
+    )
+    expected_proof_sha256 = hashlib.sha256(
+        canonical_identity_json_bytes(
+            {
+                "frame_revision_id": frame.frame_revision_id,
+                "estimand_id": estimand.estimand_id,
+                "semantic_measurement_id": (
+                    instance.semantic_measurement_id
+                ),
+                "authority_binding_id": instance.authority_binding_id,
+                "context": instance.context,
+                "target_period_ref": instance.target_period_ref,
+                "resolver_contract_ref": (
+                    instance.resolver_contract_ref
+                ),
+                "resolver_input_bundle_sha256": (
+                    instance.resolver_input_bundle_sha256
+                ),
+                "windows": instance.windows,
+                "scope": scope,
+                "exposure": exposure,
+                "eligibility": eligibility,
+            }
+        )
+    ).hexdigest()
+    if (
+        instance.field_derivation_proof_sha256
+        != expected_proof_sha256
+    ):
+        raise ValueError(
+            "resolution derivation proof does not match resolved fields"
+        )
     if estimand.contrast_id is not None:
         contrast = next(
             (
@@ -524,6 +752,253 @@ def scope_relation(
         contract_proof_refs=contract_proof_refs,
         input_sha256=input_sha256,
     )
+
+
+def _validate_resolved_calendar_window(rule, window) -> None:
+    if rule.rule_kind is WindowRuleKind.ABSOLUTE_INTERVAL:
+        expected_start = rule.absolute_start
+        expected_end = rule.absolute_end
+    elif rule.rule_kind is WindowRuleKind.RELATIVE_CALENDAR:
+        expected_start, expected_end = _identity_shifted_period(
+            window.anchor_date,
+            rule.calendar_unit.value,
+            rule.period_offset,
+        )
+    elif rule.rule_kind is WindowRuleKind.ROLLING_INTERVAL:
+        if (
+            rule.selection_kind is not WindowSelectionKind.ROLLING_LENGTH
+            or rule.selection_count is None
+        ):
+            raise ValueError("rolling Frame window rule is invalid")
+        rolling_end = _identity_shift_anchor(
+            window.anchor_date,
+            rule.calendar_unit.value,
+            rule.period_offset,
+        )
+        expected_start = rolling_end - timedelta(
+            days=rule.selection_count - 1
+        )
+        expected_end = rolling_end
+    else:
+        expected_start, expected_end = _identity_shifted_period(
+            window.anchor_date,
+            rule.calendar_unit.value,
+            rule.period_offset,
+        )
+        expected_selected_count = rule.selection_count
+        if expected_selected_count is not None:
+            if rule.start_boundary.value == "exclusive":
+                expected_selected_count -= 1
+            if rule.end_boundary.value == "exclusive":
+                expected_selected_count -= 1
+        if (
+            rule.selection_count is None
+            or window.selected_calendar_dates_count
+            != expected_selected_count
+            or window.actual_start < expected_start
+            or window.actual_end > expected_end
+        ):
+            raise ValueError(
+                "business-calendar resolution violates Frame bounds"
+            )
+        # Exact membership remains bound by the versioned calendar receipt
+        # and resolver input bundle carried by the instance.
+        return
+    if expected_start is None or expected_end is None:
+        raise ValueError("Frame window has no resolvable interval")
+    selection = rule.selection_kind
+    if selection is WindowSelectionKind.FIRST_N_CALENDAR_DAYS:
+        assert rule.selection_count is not None
+        expected_end = expected_start + timedelta(
+            days=rule.selection_count - 1
+        )
+    elif selection is WindowSelectionKind.LAST_N_CALENDAR_DAYS:
+        assert rule.selection_count is not None
+        expected_start = expected_end - timedelta(
+            days=rule.selection_count - 1
+        )
+    elif selection is WindowSelectionKind.ORDINAL_RANGE:
+        assert rule.ordinal_start is not None
+        assert rule.ordinal_end is not None
+        period_start = expected_start
+        expected_start = period_start + timedelta(
+            days=rule.ordinal_start - 1
+        )
+        expected_end = period_start + timedelta(
+            days=rule.ordinal_end - 1
+        )
+    if rule.start_boundary.value == "exclusive":
+        expected_start += timedelta(days=1)
+    if rule.end_boundary.value == "exclusive":
+        expected_end -= timedelta(days=1)
+    if (
+        window.actual_start != expected_start
+        or window.actual_end != expected_end
+    ):
+        raise ValueError(
+            "resolution dates do not derive from the Frame window rule"
+        )
+    expected_dates = tuple(
+        expected_start + timedelta(days=offset)
+        for offset in range((expected_end - expected_start).days + 1)
+    )
+    if (
+        window.selected_calendar_dates_count != len(expected_dates)
+        or window.selected_calendar_dates_sha256
+        != content_sha256(expected_dates)
+    ):
+        raise ValueError(
+            "resolution date-set proof does not match the Frame window rule"
+        )
+
+
+def _validate_resolved_instants(context, window) -> None:
+    expected_start = _identity_local_instant(
+        local_date=window.actual_start,
+        context=context,
+    )
+    expected_end = _identity_local_instant(
+        local_date=window.actual_end + timedelta(days=1),
+        context=context,
+    )
+    if expected_start is None or expected_end is None:
+        raise ValueError("resolution instant cannot be derived from context")
+    if (
+        window.start_instant != expected_start
+        or window.end_instant != expected_end
+    ):
+        raise ValueError(
+            "resolution instants do not match timezone and business cutoff"
+        )
+    if window.end_instant > context.as_of_instant:
+        raise ValueError("resolution extends beyond the as-of instant")
+
+
+def _identity_local_instant(*, local_date: date, context) -> datetime | None:
+    zone = ZoneInfo(context.timezone)
+    cutoff = time.fromisoformat(context.business_day_cutoff)
+    naive = datetime.combine(local_date, cutoff)
+    candidates: list[datetime] = []
+    for fold in (0, 1):
+        candidate = naive.replace(tzinfo=zone, fold=fold)
+        round_trip = candidate.astimezone(UTC).astimezone(zone)
+        if round_trip.replace(tzinfo=None) == naive:
+            candidates.append(candidate)
+    unique = {
+        candidate.astimezone(UTC): candidate for candidate in candidates
+    }
+    if not unique:
+        return None
+    ordered = tuple(unique[key] for key in sorted(unique))
+    if len(ordered) == 1:
+        return ordered[0]
+    if (
+        context.ambiguous_local_time_policy
+        is AmbiguousLocalTimePolicy.REJECT
+    ):
+        return None
+    if (
+        context.ambiguous_local_time_policy
+        is AmbiguousLocalTimePolicy.EARLIEST_FOLD
+    ):
+        return ordered[0]
+    return ordered[-1]
+
+
+def _identity_shifted_period(
+    anchor: date,
+    unit: str,
+    offset: int,
+) -> tuple[date, date]:
+    if unit == "day":
+        shifted = anchor + timedelta(days=offset)
+        return shifted, shifted
+    if unit == "week":
+        start = anchor - timedelta(days=anchor.weekday())
+        start += timedelta(weeks=offset)
+        return start, start + timedelta(days=6)
+    if unit == "month":
+        year, month = _identity_shift_month(
+            anchor.year,
+            anchor.month,
+            offset,
+        )
+        return (
+            date(year, month, 1),
+            date(year, month, calendar.monthrange(year, month)[1]),
+        )
+    if unit == "quarter":
+        quarter = (anchor.month - 1) // 3
+        absolute = anchor.year * 4 + quarter + offset
+        year, shifted_quarter = divmod(absolute, 4)
+        month = shifted_quarter * 3 + 1
+        end_year, end_month = _identity_shift_month(year, month, 2)
+        return (
+            date(year, month, 1),
+            date(
+                end_year,
+                end_month,
+                calendar.monthrange(end_year, end_month)[1],
+            ),
+        )
+    if unit == "year":
+        year = anchor.year + offset
+        return date(year, 1, 1), date(year, 12, 31)
+    raise ValueError("Frame calendar unit requires a versioned resolver")
+
+
+def _identity_shift_anchor(
+    anchor: date,
+    unit: str,
+    offset: int,
+) -> date:
+    if unit == "day":
+        return anchor + timedelta(days=offset)
+    if unit == "week":
+        return anchor + timedelta(weeks=offset)
+    if unit == "month":
+        year, month = _identity_shift_month(
+            anchor.year,
+            anchor.month,
+            offset,
+        )
+        return date(
+            year,
+            month,
+            min(anchor.day, calendar.monthrange(year, month)[1]),
+        )
+    if unit == "quarter":
+        year, month = _identity_shift_month(
+            anchor.year,
+            anchor.month,
+            offset * 3,
+        )
+        return date(
+            year,
+            month,
+            min(anchor.day, calendar.monthrange(year, month)[1]),
+        )
+    if unit == "year":
+        year = anchor.year + offset
+        return date(
+            year,
+            anchor.month,
+            min(
+                anchor.day,
+                calendar.monthrange(year, anchor.month)[1],
+            ),
+        )
+    raise ValueError("rolling calendar unit is unsupported")
+
+
+def _identity_shift_month(
+    year: int,
+    month: int,
+    offset: int,
+) -> tuple[int, int]:
+    absolute = year * 12 + month - 1 + offset
+    shifted_year, shifted_month = divmod(absolute, 12)
+    return shifted_year, shifted_month + 1
 
 
 def canonical_identity_json_bytes(value: Any) -> bytes:
@@ -830,6 +1305,7 @@ def _resolution_boundary_material(
 ) -> Mapping[str, object]:
     return {
         "boundary_code": boundary.boundary_code,
+        "boundary_policy_ref": boundary.boundary_policy_ref,
         "failed_requirement_ids": sorted(
             boundary.failed_requirement_ids
         ),
