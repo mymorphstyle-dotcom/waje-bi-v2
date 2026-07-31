@@ -10,6 +10,7 @@
     "generate:eval-ledger:gate3": ".venv/bin/python tools/validate_gate3_eval_catalog.py evals/gate3/catalog/gate3-authoring-candidates.json --report evals/gate3/coverage-ledger.json",
     "generate:eval-readiness:gate3": ".venv/bin/python tools/verify_gate3_e0.py --write-manifest",
     "check:eval-views:gate3": ".venv/bin/python tools/compile_gate3_eval_views.py --check",
+    "check:eval-execution:gate3": "PYTHONPATH=services/analysis_core/src:tests:. .venv/bin/python -m unittest tests.test_gate3_6_execution_authority",
     "check:evals:gate3": ".venv/bin/python tools/verify_gate3_e0.py --check",
     "check:evals:gate3:policy-ready": ".venv/bin/python tools/verify_gate3_e0.py --check --require-ready",
     "gate3:enter:g3.1": ".venv/bin/python tools/assert_gate3_1_entry.py",

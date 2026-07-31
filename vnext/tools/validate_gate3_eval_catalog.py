@@ -22,7 +22,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from jsonschema import Draft202012Validator, FormatChecker
 import yaml
 
-from compile_gate3_eval_views import agent_accessible_world_refs
+try:
+    from tools.compile_gate3_eval_views import agent_accessible_world_refs
+except ModuleNotFoundError:  # direct execution from vnext/tools
+    from compile_gate3_eval_views import agent_accessible_world_refs
 
 
 ROOT = Path(__file__).resolve().parents[1]

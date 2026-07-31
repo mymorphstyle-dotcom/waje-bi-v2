@@ -42,6 +42,10 @@ readiness live outside the Episode. An Episode cannot declare itself reviewed or
 - the Python 3.12.13 clean-copy suite passes 222 tests with 8
   environment-bound skips;
 - G3.E0 remains `blocked`; `entry_decision=deny_g3_1`.
+- G3.6.0 execution-authority development is in progress. The repository now
+  contains hash-bound execution manifest, attempt, model invocation, trace,
+  relation, hard-check, cell, suite and protected-receipt contracts. Formal
+  admission remains blocked, and no real-provider full-matrix result exists.
 
 The blocked state is intentional. All 41 case-file authorities still need
 independent content-bound review. Source provenance, independent Episode double
@@ -94,6 +98,16 @@ gate3/
 ├── github-provider-state.schema.json
 ├── gate3-e0-trust.schema.json
 ├── gate3-eval-policy.json
+├── gate3-execution-manifest.schema.json
+├── gate3-execution-attempt-journal.schema.json
+├── gate3-model-invocation.schema.json
+├── gate3-trace-bundle.schema.json
+├── gate3-trace-artifact-index.schema.json
+├── gate3-hard-check-result.schema.json
+├── gate3-relation-result.schema.json
+├── gate3-execution-cell-result.schema.json
+├── gate3-suite-result.schema.json
+├── gate3-run-execution-receipt.schema.json
 ├── taxonomy/
 │   └── coverage-taxonomy.json
 ├── candidates/
@@ -109,10 +123,12 @@ gate3/
 │   ├── source-registry.json
 │   ├── review-registry.json
 │   ├── corpus-registry.json
-│   └── grader-registry.json
+│   ├── grader-registry.json
+│   └── mutation-operator-registry.json
 ├── profiles/
 │   ├── authority-conformance-profiles.json
-│   └── cross-gate-world-profiles.json
+│   ├── cross-gate-world-profiles.json
+│   └── execution-trace-profiles.json
 ├── promotion/
 │   └── review-packages.json
 ├── calibration/
@@ -164,6 +180,23 @@ including fail, blocked and invalid, binds the frozen manifest, the exact
 grader-registry hash and a runner artifact index. Missing artifacts, a blocked
 or invalid layer, or oracle leakage cannot be averaged away.
 
+G3.6 keeps the Evaluation Reviewer blind to hard-check verdicts. Product
+behavior is derived mechanically from the Reviewer's typed scores and critical
+findings, and the Review must cover the exact product predicate set registered
+for the run. Authority-conformance and implementation verdicts are derived from
+the complete check sets registered for those layers. A cell cannot omit a
+registered check or override the strict aggregate. The underlying local check
+observations remain runner-self-attested during G3.6.0, so local hashes prove
+repository-level consistency only. Formal admission requires a protected
+external execution receipt and independent recomputation from the actual
+artifact bytes.
+
+An execution attempt's artifact-set identity is recomputed from the complete
+TraceArtifactIndex. Synchronizing arbitrary hashes across the attempt, cell and
+hard-check artifacts cannot create a locally valid cell. This still does not
+attest the underlying bytes or provider receipt; that trust boundary remains an
+explicit protected-executor prerequisite.
+
 For measurement gold, each claim target has its own design ceiling, and each
 claim case has an evaluation turn, effective ceiling and local disposition. A truth
 fact marked identifiable must cite eligible world facts the Agent can discover
@@ -214,9 +247,17 @@ npm run generate:eval-readiness:gate3
 npm run check:evals:gate3
 npm run check:evals:gate3:policy-ready
 npm run gate3:enter:g3.1
+npm run check:eval-execution:gate3
+.venv/bin/python tools/gate3_execution_authority.py <execution-manifest.json>
 ```
 
 The three generation commands are explicit authoring actions. Both checks are read-only.
 `check:evals:gate3` verifies structural integrity while preserving honest blocked conditions.
 `check:evals:gate3:policy-ready` and `gate3:enter:g3.1` currently exit nonzero. Every future G3.1
 entrypoint must depend on the latter hard gate.
+
+The execution-authority command validates one G3.6 manifest. The canonical
+candidate corpus still lacks the new typed `ClaimTargetKind` epoch, independent
+world coverage and protected execution inputs, so it cannot yet produce a
+formal G3.6 pass. Synthetic unit fixtures exercise the contracts without
+claiming corpus readiness.

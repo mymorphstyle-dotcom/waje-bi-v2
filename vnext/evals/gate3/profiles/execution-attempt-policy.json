@@ -1,0 +1,14 @@
+{
+  "artifact_type": "gate3_execution_attempt_policy",
+  "artifact_version": "gate3.execution-attempt-policy.v1",
+  "maximum_attempts_per_cell": 3,
+  "terminal_selection": "first_terminal_attempt",
+  "retain_all_attempts": true,
+  "retryable_reason_codes": [
+    "provider_rate_limited",
+    "provider_timeout",
+    "provider_transient_error",
+    "provider_unavailable",
+    "transport_interrupted"
+  ]
+}

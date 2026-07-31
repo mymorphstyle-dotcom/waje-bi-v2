@@ -61,6 +61,7 @@ class ChatCompletionsProviderSettings:
     base_url: str
     api_key: str = field(repr=False)
     model: str
+    thinking: str = "disabled"
     max_attempts: int = 3
     timeout_seconds: float | None = None
 
@@ -82,6 +83,10 @@ class ChatCompletionsProviderSettings:
             )
         if self.max_attempts < 1:
             raise ProviderConfigurationError("max_attempts must be positive")
+        if self.thinking not in {"enabled", "disabled"}:
+            raise ProviderConfigurationError(
+                "thinking must be enabled or disabled"
+            )
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ProviderConfigurationError(
                 "timeout_seconds must be positive when configured"
@@ -105,6 +110,10 @@ class ChatCompletionsProviderSettings:
             base_url=source.get(ENV_PREFIX + "BASE_URL", "").strip(),
             api_key=source.get(ENV_PREFIX + "API_KEY", "").strip(),
             model=source.get(ENV_PREFIX + "MODEL", "").strip(),
+            thinking=(
+                source.get(ENV_PREFIX + "THINKING", "disabled").strip()
+                or "disabled"
+            ),
             max_attempts=attempts,
             timeout_seconds=timeout,
         )
@@ -196,6 +205,7 @@ class ChatCompletionsProvider:
                 "provider_name": self._settings.provider_name,
                 "base_url": self._settings.base_url,
                 "model": self._settings.model,
+                "thinking": self._settings.thinking,
                 "max_attempts": self._settings.max_attempts,
                 "timeout_seconds": self._settings.timeout_seconds,
             }
@@ -221,6 +231,7 @@ class ChatCompletionsProvider:
     def propose(self, request: PrimaryAgentRequest) -> AgentActionProposal:
         payload = {
             "model": self._settings.model,
+            "thinking": {"type": self._settings.thinking},
             "messages": [
                 {
                     "role": "system",
@@ -257,6 +268,7 @@ class ChatCompletionsProvider:
     def review(self, request: FrameReviewRequest) -> FrameReviewProposal:
         payload = {
             "model": self._settings.model,
+            "thinking": {"type": self._settings.thinking},
             "messages": [
                 {
                     "role": "system",
@@ -296,6 +308,7 @@ class ChatCompletionsProvider:
     ) -> MessageImpactProposal:
         payload = {
             "model": self._settings.model,
+            "thinking": {"type": self._settings.thinking},
             "messages": [
                 {
                     "role": "system",

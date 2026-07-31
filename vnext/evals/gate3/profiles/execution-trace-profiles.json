@@ -1,0 +1,62 @@
+{
+  "artifact_type": "gate3_execution_trace_profiles",
+  "artifact_version": "gate3.execution-trace-profiles.v1",
+  "profiles": [
+    {
+      "profile_id": "TRACE-SEMANTIC-FRAME-V1",
+      "lane": "semantic_frame",
+      "required_stage_ids": [
+        "message_ingress",
+        "typed_binding",
+        "frame_proposal",
+        "frame_review",
+        "frame_disposition",
+        "evaluation_review"
+      ],
+      "required_predecessors": {
+        "message_ingress": [],
+        "typed_binding": ["message_ingress"],
+        "frame_proposal": ["typed_binding"],
+        "frame_review": ["frame_proposal"],
+        "frame_disposition": ["frame_review"],
+        "evaluation_review": ["frame_disposition"]
+      }
+    },
+    {
+      "profile_id": "TRACE-FULL-AUTHORITY-V1",
+      "lane": "full_authority",
+      "required_stage_ids": [
+        "message_ingress",
+        "typed_binding",
+        "frame_proposal",
+        "frame_review",
+        "frame_disposition",
+        "plan_acceptance",
+        "effect_dispatch",
+        "effect_receipt",
+        "evidence_disposition",
+        "claim_proposal",
+        "runtime_review",
+        "settlement_boundary",
+        "workflow_projection",
+        "evaluation_review"
+      ],
+      "required_predecessors": {
+        "message_ingress": [],
+        "typed_binding": ["message_ingress"],
+        "frame_proposal": ["typed_binding"],
+        "frame_review": ["frame_proposal"],
+        "frame_disposition": ["frame_review"],
+        "plan_acceptance": ["frame_disposition"],
+        "effect_dispatch": ["plan_acceptance"],
+        "effect_receipt": ["effect_dispatch"],
+        "evidence_disposition": ["effect_receipt"],
+        "claim_proposal": ["evidence_disposition"],
+        "runtime_review": ["claim_proposal"],
+        "settlement_boundary": ["runtime_review"],
+        "workflow_projection": ["settlement_boundary"],
+        "evaluation_review": ["workflow_projection"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/execution-attempt-journal.v1.schema.json",
+  "title": "WAJE Gate 3 Execution Attempt Journal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_manifest_sha256",
+    "cell_attempts"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_execution_attempt_journal"},
+    "artifact_version": {"const": "gate3.execution-attempt-journal.v1"},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "cell_attempts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/cellAttempts"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "cellAttempts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_cell_id", "attempts"],
+      "properties": {
+        "execution_cell_id": {"$ref": "#/$defs/nonEmptyString"},
+        "attempts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/attempt"}
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "attempt_number",
+        "prior_attempt_id",
+        "disposition",
+        "reason_code",
+        "artifact_set_sha256",
+        "recorded_at"
+      ],
+      "properties": {
+        "attempt_id": {"$ref": "#/$defs/nonEmptyString"},
+        "attempt_number": {"type": "integer", "minimum": 1},
+        "prior_attempt_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/nonEmptyString"}
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "retryable_failure",
+            "terminal_success",
+            "terminal_failure",
+            "superseded"
+          ]
+        },
+        "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"},
+        "artifact_set_sha256": {"$ref": "#/$defs/sha256"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

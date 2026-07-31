@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6+ pending |
+| 当前 Gate | Gate 2 complete；G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6.0 in progress |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -570,8 +570,8 @@ Exit evidence：
   已完成 capability result T1/T2、immutable Evidence admission/validity/use/satisfaction、
   provisional Answer claim precheck、system-derived settlement precondition、journal-driven
   Workflow 四轴投影、migration 006 与 InMemory/PostgreSQL parity。该实现仍拒绝 production
-  Evidence、settled publication 和 delivered Workflow；G3.6 real-provider behavior eval
-  尚未进入。
+  Evidence、settled publication 和 delivered Workflow。G3.6.0 已开始建立运行权威与
+  provider configuration 合同；真实 provider lanes 和 full matrix 尚未开放。
 
 **交付物**
 
@@ -902,7 +902,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6+ pending | G3.2–G3.5 本 Gate 无需用户决策；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、真实来源与独立双审待关闭 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-5-implementation.md` |
+| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6.0 in progress | G3.2–G3.6 本 Gate 无需用户决策；G3.6 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 合同，typed corpus epoch 与 runtime lane 前置仍待关闭 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -940,3 +940,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-31 | Gate 3 eval 投影、结果与 calibration 统一收紧时序和不可变绑定 | 多智能体对抗审查 | 每类投影对象按自身 turn 可见；claim 不得使用未来 truth support；全部 verdict 绑定 frozen manifest、grader registry 与 runner artifact index；typed veto 绑定 failed check；calibration label 绑定专用 human review、Episode/core、result 和 artifact index |
 | 2026-07-31 | G3.5 关闭 Evidence、provisional Answer、settlement precondition 与 Workflow 连续性 | 本 Gate 无需用户决策；实现与对抗审查 | capability result 采用 T1/T2 durable admission；claim 只消费 accepted EvidenceUseBinding；settlement exact replay persisted trace/reviewer/evidence heads；Workflow 从 journal 重建并在 Gate 3 硬拒绝 settled/delivered/completed |
 | 2026-07-31 | G3.E0 机器 authoring/materialization 收口 | 多智能体实现 + 全量对抗复核 | 36 个 Episode、120 个 sibling、41 个 authority、52 个 materialization 全部通过结构、重放、hash 与 clean-copy 验证；formal admission 仅保留真人双审、truth/source/calibration/held-out/promotion/run 与 protected GitHub/Sigstore authority |
+| 2026-07-31 | 开始 G3.6 通用测量行为评测 | 本 Gate 无需用户决策；先封闭运行权威，再开放真实 provider lane | execution manifest 固定运行坐标与三角色配置；attempt、trace、relation、hard-check、cell/suite 形成严格派生链；本地运行与 formal admission 分离，typed corpus/runtime 前置未满足前保持 blocked |

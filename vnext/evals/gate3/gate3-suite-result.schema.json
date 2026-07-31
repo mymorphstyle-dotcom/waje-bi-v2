@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/suite-result.v1.schema.json",
+  "title": "WAJE Gate 3 Suite Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_manifest_sha256",
+    "run_mode",
+    "expected_cell_count",
+    "observed_cell_count",
+    "missing_cell_ids",
+    "duplicate_cell_ids",
+    "unexpected_cell_ids",
+    "expected_relation_count",
+    "observed_relation_count",
+    "missing_relation_group_ids",
+    "duplicate_relation_group_ids",
+    "unexpected_relation_group_ids",
+    "relation_verdict_counts",
+    "cell_verdict_counts",
+    "trace_complete_cell_count",
+    "trace_incomplete_cell_count",
+    "critical_episode_count",
+    "historical_regression_episode_count",
+    "critical_veto_count",
+    "claim_target_kind_world_counts",
+    "coverage_admission_status",
+    "coverage_blockers",
+    "local_evidence_trust",
+    "local_execution_status",
+    "formal_admission_status",
+    "formal_blockers"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_suite_result"},
+    "artifact_version": {"const": "gate3.suite-result.v1"},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "run_mode": {"enum": ["smoke", "slice", "full"]},
+    "expected_cell_count": {"type": "integer", "minimum": 1},
+    "observed_cell_count": {"type": "integer", "minimum": 0},
+    "missing_cell_ids": {"$ref": "#/$defs/stringArray"},
+    "duplicate_cell_ids": {"$ref": "#/$defs/stringArray"},
+    "unexpected_cell_ids": {"$ref": "#/$defs/stringArray"},
+    "expected_relation_count": {"type": "integer", "minimum": 0},
+    "observed_relation_count": {"type": "integer", "minimum": 0},
+    "missing_relation_group_ids": {"$ref": "#/$defs/stringArray"},
+    "duplicate_relation_group_ids": {"$ref": "#/$defs/stringArray"},
+    "unexpected_relation_group_ids": {"$ref": "#/$defs/stringArray"},
+    "relation_verdict_counts": {"$ref": "#/$defs/verdictCounts"},
+    "cell_verdict_counts": {
+      "$ref": "#/$defs/verdictCounts"
+    },
+    "trace_complete_cell_count": {"type": "integer", "minimum": 0},
+    "trace_incomplete_cell_count": {"type": "integer", "minimum": 0},
+    "critical_episode_count": {"type": "integer", "minimum": 0},
+    "historical_regression_episode_count": {"type": "integer", "minimum": 0},
+    "critical_veto_count": {"type": "integer", "minimum": 0},
+    "claim_target_kind_world_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "coverage_admission_status": {"enum": ["pass", "blocked"]},
+    "coverage_blockers": {"$ref": "#/$defs/stringArray"},
+    "local_evidence_trust": {"const": "runner_self_attested"},
+    "local_execution_status": {"enum": ["pass", "fail", "blocked", "invalid"]},
+    "formal_admission_status": {
+      "enum": ["not_requested", "blocked", "eligible_for_external_admission", "admitted"]
+    },
+    "formal_blockers": {"$ref": "#/$defs/stringArray"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "verdictCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "blocked", "invalid"],
+      "properties": {
+        "pass": {"type": "integer", "minimum": 0},
+        "fail": {"type": "integer", "minimum": 0},
+        "blocked": {"type": "integer", "minimum": 0},
+        "invalid": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

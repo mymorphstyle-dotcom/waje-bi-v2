@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/trace-bundle.v1.schema.json",
+  "title": "WAJE Gate 3 Trace Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "execution_manifest_sha256",
+    "execution_cell_id",
+    "run_id",
+    "case_id",
+    "correlation_id",
+    "trace_profile_ref",
+    "trace_profile_sha256",
+    "persisted_run_trace_manifest_ref",
+    "persisted_run_trace_manifest_sha256",
+    "stages"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_trace_bundle"},
+    "artifact_version": {"const": "gate3.trace-bundle.v1"},
+    "execution_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_cell_id": {"$ref": "#/$defs/nonEmptyString"},
+    "run_id": {"$ref": "#/$defs/nonEmptyString"},
+    "case_id": {"$ref": "#/$defs/nonEmptyString"},
+    "correlation_id": {"$ref": "#/$defs/nonEmptyString"},
+    "trace_profile_ref": {"$ref": "#/$defs/nonEmptyString"},
+    "trace_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "persisted_run_trace_manifest_ref": {"$ref": "#/$defs/nonEmptyString"},
+    "persisted_run_trace_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/stage"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage_id",
+        "artifact_ref",
+        "artifact_sha256",
+        "journal_cursor",
+        "authority_snapshot_sha256",
+        "predecessor_stage_ids"
+      ],
+      "properties": {
+        "stage_id": {"$ref": "#/$defs/nonEmptyString"},
+        "artifact_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "journal_cursor": {"type": "integer", "minimum": 1},
+        "authority_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "predecessor_stage_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        }
+      }
+    }
+  }
+}

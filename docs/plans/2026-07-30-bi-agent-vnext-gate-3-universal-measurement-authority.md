@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6+ 尚未进入 |
+| 状态 | G3.1–G3.5 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.6.0 in progress |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 已确认 public GitHub Actions + Artifact Attestations/Sigstore |
@@ -1359,6 +1359,13 @@ Local closeout evidence：
 - formal G3.E0 状态保持 `deny_g3_1`。
 
 ### G3.6 Universal measurement eval
+
+详细实施与对抗审查见
+`docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md`。G3.6.0 先封闭
+execution manifest、attempt journal、relation authority、protected execution receipt、
+ClaimTargetKind coverage 与 local/formal 双状态；这些合同和 AgentWorldView、DecisionLedger、
+resolution/obligation、Answer Reviewer、provider atomic recovery、trusted realm 前置关闭前，
+real-provider full matrix 保持禁用。
 
 交付：
 
