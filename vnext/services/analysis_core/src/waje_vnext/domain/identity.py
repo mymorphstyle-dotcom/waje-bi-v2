@@ -337,6 +337,7 @@ def resolution_outcome_preimage(
     material: dict[str, object] = {
         "semantic_measurement_id": outcome.semantic_measurement_id,
         "authority_binding_id": outcome.authority_binding_id,
+        "derivation_authority": outcome.derivation_authority,
         "frame_revision_id": outcome.frame_revision_id,
         "estimand_id": outcome.estimand_id,
         "kind": outcome.kind,

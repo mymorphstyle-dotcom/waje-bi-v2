@@ -5,7 +5,6 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from pathlib import Path
 
 import psycopg
 from gate1_fixtures import (
@@ -15,52 +14,36 @@ from gate1_fixtures import (
     make_evidence,
     make_frame,
     make_objection,
-    make_plan,
-    make_resolution_admission,
-    make_resolution_verifier,
     record_reviewed_frame,
 )
+from postgres_test_support import (
+    bootstrap_postgres_test_schema,
+    reset_postgres_test_data,
+)
+from gate3_plan_fixtures import record_plan_bundle
+from test_gate3_3_measurement_resolver import make_trusted_verifier
 from waje_vnext.domain.authority import (
     AnalysisFrameRevision,
     AnswerStatus,
     ReviewerObjectionStatus,
 )
 from waje_vnext.domain.canonical import content_sha256
-from waje_vnext.domain.identity import (
-    compute_resolution_outcome_id,
-    compute_typed_boundary_derivation_proof,
-)
 from waje_vnext.domain.measurement import (
-    ClaimStrengthCeiling,
     EvidenceValidityRecord,
     EvidenceValidityStatus,
-    MeasurementResolutionOutcome,
-    ObligationExecutionDisposition,
     ObligationSatisfactionRecord,
     ObligationSatisfactionStatus,
-    ResolvedEvidenceObligation,
-    ResolutionOutcomeKind,
     SettlementPreconditionReport,
     SettlementPreconditionStatus,
-    TypedResolutionBoundary,
 )
 from waje_vnext.storage import (
     AuthorityConflict,
     PostgresAuthorityStore,
     StaleHead,
-    apply_gate1_migration,
-    apply_gate3_1_migration,
-    apply_gate3_2_migration,
 )
 
 
 DSN = os.environ.get("WAJE_VNEXT_DATABASE_URL")
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "storage/migrations/001_gate1_authority.sql"
-MIGRATION_3 = (
-    ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
-)
-MIGRATION_4 = ROOT / "storage/migrations/004_gate3_2_runtime_sagas.sql"
 
 
 @unittest.skipUnless(DSN, "WAJE_VNEXT_DATABASE_URL is not configured")
@@ -68,18 +51,14 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         assert DSN is not None
-        first = apply_gate1_migration(DSN, migration_path=MIGRATION)
-        second = apply_gate1_migration(DSN, migration_path=MIGRATION)
-        if first != second:
-            raise AssertionError("migration checksum changed across idempotent apply")
-        apply_gate3_1_migration(DSN, migration_path=MIGRATION_3)
-        apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
+        bootstrap_postgres_test_schema(DSN)
 
     def setUp(self) -> None:
         assert DSN is not None
+        reset_postgres_test_data(DSN)
         self.store = PostgresAuthorityStore.connect(
             DSN,
-            resolution_input_verifier=make_resolution_verifier(),
+            resolution_input_verifier=make_trusted_verifier(),
         )
 
     def tearDown(self) -> None:
@@ -165,67 +144,19 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             event_id="case-g3-derived:event:frame",
             recorded_at=NOW,
         )
-        plan = make_plan(
-            case_id=case.case_id,
-            frame_id=frame.frame_revision_id,
-            plan_id="case-g3-derived:plan:1",
-        )
-        case = self.store.accept_plan(
-            plan,
-            expected_head_version=case.head_version,
-            event_id="case-g3-derived:event:plan",
-            recorded_at=NOW,
-        )
-        estimand = frame.measurement_design.estimands[0]
-        requirement = frame.measurement_design.evidence_requirements[0]
-        outcome = MeasurementResolutionOutcome(
-            resolution_outcome_id="a" * 64,
-            case_id=case.case_id,
-            question_revision_id=question.question_revision_id,
-            frame_revision_id=frame.frame_revision_id,
-            estimand_id=estimand.estimand_id,
-            semantic_measurement_id=frame.semantic_measurement_ids[0],
-            authority_binding_id=frame.authority_binding_ids[0],
-            kind=ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY,
-            resolved_instance=None,
-            boundary=TypedResolutionBoundary(
-                boundary_code="incomplete_period",
-                boundary_policy_ref=(
-                    "waje-vnext://measurement-boundary-policy/"
-                    "registry.v1"
-                ),
-                failed_requirement_ids=(
-                    requirement.evidence_requirement_id,
-                ),
-                failed_contract_refs=("coverage:watermark:v1",),
-                inspection_evidence_refs=("inspection:coverage:1",),
-                allowed_claim_ceiling=(
-                    ClaimStrengthCeiling.BOUNDARY_ONLY
-                ),
-                derivation_proof_sha256="b" * 64,
-            ),
-            requirement_boundaries=(),
+        case, bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame,
             created_at=NOW,
+            plan_revision_id="case-g3-derived:plan:1",
         )
-        outcome = replace(
-            outcome,
-            boundary=replace(
-                outcome.boundary,
-                derivation_proof_sha256=(
-                    compute_typed_boundary_derivation_proof(outcome)
-                ),
-            ),
-        )
-        outcome = replace(
-            outcome,
-            resolution_outcome_id=compute_resolution_outcome_id(outcome),
-        )
-        admission = make_resolution_admission(outcome)
-        self.store.record_measurement_resolution(
-            outcome,
-            admission=admission,
-            expected_head_version=case.head_version,
-            event_id="case-g3-derived:event:resolution",
+        plan = bundle.plan
+        outcome = self.store.list_measurement_resolutions(
+            frame.frame_revision_id
+        )[0]
+        admission = self.store.get_measurement_resolution_admission(
+            outcome.resolution_outcome_id
         )
         self.assertEqual(
             self.store.get_measurement_resolution_admission(
@@ -233,27 +164,9 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             ),
             admission,
         )
-        obligation = ResolvedEvidenceObligation(
-            obligation_id="c" * 64,
-            case_id=case.case_id,
-            frame_revision_id=frame.frame_revision_id,
-            estimand_id=estimand.estimand_id,
-            evidence_requirement_id=requirement.evidence_requirement_id,
-            evidence_requirement_sha256=content_sha256(requirement),
-            resolution_outcome_id=outcome.resolution_outcome_id,
-            execution_disposition=(
-                ObligationExecutionDisposition.TYPED_BOUNDARY
-            ),
-            boundary_code="incomplete_period",
-            closure_definition_sha256="d" * 64,
-            field_derivation_proof_sha256="e" * 64,
-            created_at=NOW,
-        )
-        self.store.record_evidence_obligation(
-            obligation,
-            expected_head_version=case.head_version,
-            event_id="case-g3-derived:event:obligation",
-        )
+        obligation = self.store.list_evidence_obligations(
+            frame.frame_revision_id
+        )[0]
         evidence = make_evidence(
             case_id=case.case_id,
             frame_id=frame.frame_revision_id,
@@ -346,13 +259,13 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             event_id="event-frame",
             recorded_at=frame.created_at,
         )
-        plan = make_plan()
-        case = self.store.accept_plan(
-            plan,
-            expected_head_version=case.head_version,
-            event_id="event-plan",
-            recorded_at=plan.created_at,
+        case, bundle = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame,
+            created_at=NOW,
         )
+        plan = bundle.plan
         evidence = make_evidence()
         self.store.record_evidence(
             evidence,
@@ -372,7 +285,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
         self.assertEqual(case.accepted_answer_version_id, "answer-1")
         self.assertEqual(
             tuple(event.cursor for event in self.store.list_events("case-1")),
-            (1, 2, 3, 4, 5, 6),
+            tuple(range(1, 9)),
         )
         self.assertEqual(self.store.get_frame("frame-1"), frame)
         self.assertEqual(self.store.get_plan("plan-1"), plan)
@@ -395,7 +308,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
         )
         self.assertEqual(
             tuple(event.cursor for event in self.store.list_events("case-1")),
-            (1, 2, 3, 4, 5, 6, 7, 8),
+            tuple(range(1, 11)),
         )
 
         retried = self.store.accept_frame(
@@ -448,18 +361,15 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
             event_id="event-frame-2",
             recorded_at=frame_2.created_at,
         )
-        plan_2 = make_plan(
-            frame_id="frame-2",
-            revision_number=2,
-            plan_id="plan-2",
-            prior_id="plan-1",
+        case, bundle_2 = record_plan_bundle(
+            store=self.store,
+            case=case,
+            frame=frame_2,
+            created_at=frame_2.created_at,
+            plan_revision_id="plan-2",
+            prior_plan=plan,
         )
-        case = self.store.accept_plan(
-            plan_2,
-            expected_head_version=case.head_version,
-            event_id="event-plan-2",
-            recorded_at=plan_2.created_at,
-        )
+        plan_2 = bundle_2.plan
         evidence_2 = make_evidence(
             evidence_id="evidence-2",
             frame_id="frame-2",
@@ -490,7 +400,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
         self.assertEqual(case.accepted_answer_version_id, "answer-2")
         self.assertEqual(
             tuple(event.cursor for event in self.store.list_events("case-1")),
-            tuple(range(1, 13)),
+            tuple(range(1, 17)),
         )
 
         assert DSN is not None
@@ -521,6 +431,38 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                 )
                 connection.execute(
                     """
+                    INSERT INTO waje_vnext.action_records (
+                        action_id,
+                        case_id,
+                        expected_head_version,
+                        idempotency_key,
+                        operation_id,
+                        causation_id,
+                        correlation_id,
+                        authority_revision,
+                        payload_sha256,
+                        proposal_sha256,
+                        payload,
+                        recorded_at
+                    ) VALUES (
+                        'action-receipt-1',
+                        'case-1',
+                        7,
+                        'receipt-action-key-1',
+                        'operation-receipt-1',
+                        'event-answer-2',
+                        'case-1',
+                        1,
+                        %s,
+                        %s,
+                        '{}'::jsonb,
+                        %s
+                    )
+                    """,
+                    ("b" * 64, "c" * 64, NOW),
+                )
+                connection.execute(
+                    """
                     INSERT INTO waje_vnext.action_receipts (
                         case_id,
                         idempotency_key,
@@ -536,7 +478,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                         'action-receipt-1',
                         %s,
                         %s,
-                        12,
+                        16,
                         '{}'::jsonb,
                         %s
                     )
@@ -559,7 +501,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                         'checkpoint-1',
                         'case-1',
                         7,
-                        12,
+                        16,
                         'packet-1',
                         %s,
                         %s,
@@ -592,7 +534,7 @@ class PostgresAuthorityStoreTest(unittest.TestCase):
                     ) VALUES (
                         'outbox-1',
                         'case-1',
-                        12,
+                        16,
                         NULL,
                         'controller_wake',
                         'operation-outbox-1',

@@ -29,7 +29,6 @@ from waje_vnext.domain.authority import (
     ReviewerObjectionStatus,
     ReviewerSeverity,
     WorkPlanRevision,
-    WorkTask,
 )
 from waje_vnext.domain.canonical import to_jsonable
 from waje_vnext.domain.context import (
@@ -85,6 +84,12 @@ from waje_vnext.domain.obligation_scheduler import (
 )
 from waje_vnext.domain.measurement_resolver import (
     MeasurementResolutionAdmission,
+)
+from waje_vnext.domain.planning import (
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
+    PlanAdoptionRecord,
+    QueryBindingEnvelope,
 )
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
@@ -258,27 +263,39 @@ def decode_run_trace_manifest(
 
 
 def decode_plan(payload: Mapping[str, Any]) -> WorkPlanRevision:
-    return WorkPlanRevision(
-        plan_revision_id=payload["plan_revision_id"],
-        case_id=payload["case_id"],
-        frame_revision_id=payload["frame_revision_id"],
-        revision_number=payload["revision_number"],
-        prior_plan_revision_id=payload["prior_plan_revision_id"],
-        created_by_action_id=payload["created_by_action_id"],
-        created_at=_datetime(payload["created_at"]),
-        revision_reason=payload["revision_reason"],
-        tasks=tuple(
-            WorkTask(
-                task_id=task["task_id"],
-                business_purpose=task["business_purpose"],
-                capability_intent=task["capability_intent"],
-                target_claim_ids=tuple(task["target_claim_ids"]),
-                depends_on_task_ids=tuple(task["depends_on_task_ids"]),
-                success_conditions=tuple(task["success_conditions"]),
-                stop_conditions=tuple(task["stop_conditions"]),
-            )
-            for task in payload["tasks"]
-        ),
+    return decode_typed_dataclass(
+        WorkPlanRevision,
+        payload,
+    )
+
+
+def decode_plan_adoption(
+    payload: Mapping[str, Any],
+) -> PlanAdoptionRecord:
+    return decode_typed_dataclass(PlanAdoptionRecord, payload)
+
+
+def decode_query_binding(
+    payload: Mapping[str, Any],
+) -> QueryBindingEnvelope:
+    return decode_typed_dataclass(QueryBindingEnvelope, payload)
+
+
+def decode_conformance_execution_spec(
+    payload: Mapping[str, Any],
+) -> ConformanceExecutionSpec:
+    return decode_typed_dataclass(
+        ConformanceExecutionSpec,
+        payload,
+    )
+
+
+def decode_logical_execution_attempt(
+    payload: Mapping[str, Any],
+) -> LogicalExecutionAttempt:
+    return decode_typed_dataclass(
+        LogicalExecutionAttempt,
+        payload,
     )
 
 
@@ -458,6 +475,18 @@ def decode_context_packet(payload: Mapping[str, Any]) -> ContextPacket:
         latest_frame_review_payload=payload[
             "latest_frame_review_payload"
         ],
+        available_measurement_resolution_payloads=tuple(
+            payload["available_measurement_resolution_payloads"]
+        ),
+        available_evidence_obligation_payloads=tuple(
+            payload["available_evidence_obligation_payloads"]
+        ),
+        accepted_plan_adoption_payload=payload[
+            "accepted_plan_adoption_payload"
+        ],
+        accepted_query_binding_payloads=tuple(
+            payload["accepted_query_binding_payloads"]
+        ),
         user_messages=tuple(
             ContextUserMessageItem(
                 message_id=item["message_id"],

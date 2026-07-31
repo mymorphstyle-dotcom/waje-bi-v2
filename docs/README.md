@@ -1,5 +1,16 @@
 # WAJE BI v2 Documentation
 
+## WAJE BI Agent vNext（当前独立开发线）
+
+- [vNext 总开发计划](./plans/2026-07-29-bi-agent-vnext-development-plan.md)
+- [Gate 3 Universal Measurement Authority](./plans/2026-07-30-bi-agent-vnext-gate-3-universal-measurement-authority.md)
+- [G3.4 Plan 与逻辑查询连续性](./plans/2026-07-31-bi-agent-vnext-gate-3-4-plan-query-continuity.md)
+- [G3.2/G3.3 实施审查](./reviews/2026-07-31-bi-agent-vnext-gate-3-2-3-implementation.md)
+- [G3.4 实施审查](./reviews/2026-07-31-bi-agent-vnext-gate-3-4-implementation.md)
+
+vNext 生产实现只位于 `vnext/`。下列 WAJE BI v2 文档保留为历史参考，不能作为 vNext
+运行时依赖或当前合同来源。
+
 ## Product and delivery
 
 - [Product requirements](./prd.md)

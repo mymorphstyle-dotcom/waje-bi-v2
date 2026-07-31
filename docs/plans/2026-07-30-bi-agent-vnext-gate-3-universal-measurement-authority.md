@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-07-30 |
-| 状态 | G3.1/G3.2/G3.3 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.4+ 尚未进入 |
+| 状态 | G3.1–G3.4 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.5+ 尚未进入 |
 | Gate | 3 |
 | 前置代码基线 | Gate 2 + durable async amendment；见本表下一行审计记录 |
 | Entry interview | 已确认 public GitHub Actions + Artifact Attestations/Sigstore |
@@ -1318,11 +1318,11 @@ Exit：
 
 Exit：
 
-- [ ] Plan 无法降低 Frame requirement；
-- [ ] envelope 无开放业务参数；
-- [ ] technical retry 保持 logical identity；
-- [ ] 业务语义变化创建 FrameRevision；
-- [ ] Gate 4 物理 compiler 边界清晰。
+- [x] Plan 无法降低 Frame requirement；
+- [x] envelope 无开放业务参数；
+- [x] technical retry 保持 logical identity；
+- [x] 业务语义变化创建 FrameRevision；
+- [x] Gate 4 物理 compiler 边界清晰。
 
 ### G3.5 Evidence, Answer and projection continuity
 

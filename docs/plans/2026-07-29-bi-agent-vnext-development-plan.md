@@ -9,7 +9,7 @@
 | 实现根目录 | `vnext/` |
 | 适用阶段 | Gate 0–Gate 7 |
 | 产品阶段 | 无线上用户、无 production artifact、无兼容义务 |
-| 当前 Gate | Gate 2 complete；G3.1/G3.2/G3.3 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.4+ pending |
+| 当前 Gate | Gate 2 complete；G3.1–G3.4 local complete；G3.E0 formal admission 仍为 `deny_g3_1`；G3.5+ pending |
 | 计划权威 | 本文负责开发顺序、Gate 验收和范围控制；各 Gate 接受后的合同、ADR、schema 与 eval package 负责对应实现细节 |
 
 本文是 WAJE BI Agent vNext 的持久化执行计划。旧 `bi_agent/`、`app/`、`components/`、
@@ -559,6 +559,12 @@ Exit evidence：
   completion 由 durable schedule 自行终结，repository 重算 system terminal，measurement
   persistence 需要 trusted resolver exact-replay admission receipt。该实现完成度不改写
   G3.E0 外部 trust、人工双审、calibration、held-out、promotion 或 run freeze 状态。
+- G3.4 local implementation：
+  `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-4-implementation.md`；已完成 Plan
+  obligation closure、唯一 resolution adoption、immutable QueryBindingEnvelope、
+  conformance logical execution、canonical system ID、technical retry/persisted prior
+  continuity、InMemory/PostgreSQL parity 与 migration atomicity。三路对抗审查
+  Blocking=0、Major=0；G3.5 尚未开始。
 
 **交付物**
 
@@ -889,7 +895,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.1/G3.2/G3.3 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.4+ pending | G3.2/G3.3 本 Gate 无需用户决策；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、真实来源与独立双审待关闭 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-2-3-implementation.md` |
+| Gate 3 | G3.1–G3.4 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.5+ pending | G3.2–G3.4 本 Gate 无需用户决策；protected review、trusted workflow revision、首个 bundle、canonical provider entry、receipt CAS、authority roots、真实来源与独立双审待关闭 | `docs/reviews/2026-07-31-bi-agent-vnext-gate-3-4-implementation.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |

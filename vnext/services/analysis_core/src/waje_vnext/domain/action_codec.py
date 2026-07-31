@@ -21,8 +21,9 @@ from waje_vnext.domain.actions import (
     RunSensitivityPayload,
     StopPayload,
 )
-from waje_vnext.domain.authority import DecisionOption, WorkTask
+from waje_vnext.domain.authority import DecisionOption
 from waje_vnext.domain.measurement import MeasurementDesign
+from waje_vnext.domain.planning import ProposedWorkTask
 from waje_vnext.domain.typed_decode import decode_typed_dataclass
 
 
@@ -83,28 +84,30 @@ def _decode_revise_plan(value: Mapping[str, Any]) -> RevisePlanPayload:
     )
 
 
-def _decode_task(value: Mapping[str, Any]) -> WorkTask:
+def _decode_task(value: Mapping[str, Any]) -> ProposedWorkTask:
     _require_exact_keys(
         value,
         {
-            "task_id",
+            "proposal_task_key",
             "business_purpose",
-            "capability_intent",
-            "target_claim_ids",
-            "depends_on_task_ids",
-            "success_conditions",
-            "stop_conditions",
+            "capability_intent_ref",
+            "obligation_ids",
+            "depends_on_task_keys",
         },
         "work task",
     )
-    return WorkTask(
-        task_id=_string(value, "task_id"),
+    return ProposedWorkTask(
+        proposal_task_key=_string(value, "proposal_task_key"),
         business_purpose=_string(value, "business_purpose"),
-        capability_intent=_string(value, "capability_intent"),
-        target_claim_ids=_string_tuple(value, "target_claim_ids"),
-        depends_on_task_ids=_string_tuple(value, "depends_on_task_ids"),
-        success_conditions=_string_tuple(value, "success_conditions"),
-        stop_conditions=_string_tuple(value, "stop_conditions"),
+        capability_intent_ref=_string(
+            value,
+            "capability_intent_ref",
+        ),
+        obligation_ids=_string_tuple(value, "obligation_ids"),
+        depends_on_task_keys=_string_tuple(
+            value,
+            "depends_on_task_keys",
+        ),
     )
 
 
@@ -125,12 +128,23 @@ def _decode_inspect_semantics(
 def _decode_run_probe(value: Mapping[str, Any]) -> RunProbePayload:
     _require_exact_keys(
         value,
-        {"probe_kind", "parameters"},
+        {
+            "probe_contract_ref",
+            "target_authority_refs",
+            "requested_output_refs",
+        },
         "run_probe payload",
     )
     return RunProbePayload(
-        probe_kind=_string(value, "probe_kind"),
-        parameters=_object(value, "parameters"),
+        probe_contract_ref=_string(value, "probe_contract_ref"),
+        target_authority_refs=_string_tuple(
+            value,
+            "target_authority_refs",
+        ),
+        requested_output_refs=_string_tuple(
+            value,
+            "requested_output_refs",
+        ),
     )
 
 
@@ -139,13 +153,12 @@ def _decode_call_capability(
 ) -> CallCapabilityPayload:
     _require_exact_keys(
         value,
-        {"task_id", "capability_name", "parameters"},
+        {"task_id", "query_binding_id"},
         "call_capability payload",
     )
     return CallCapabilityPayload(
         task_id=_string(value, "task_id"),
-        capability_name=_string(value, "capability_name"),
-        parameters=_object(value, "parameters"),
+        query_binding_id=_string(value, "query_binding_id"),
     )
 
 
@@ -154,13 +167,13 @@ def _decode_run_sensitivity(
 ) -> RunSensitivityPayload:
     _require_exact_keys(
         value,
-        {"task_id", "variant_label", "parameters"},
+        {"task_id", "query_binding_id", "sensitivity_id"},
         "run_sensitivity payload",
     )
     return RunSensitivityPayload(
         task_id=_string(value, "task_id"),
-        variant_label=_string(value, "variant_label"),
-        parameters=_object(value, "parameters"),
+        query_binding_id=_string(value, "query_binding_id"),
+        sensitivity_id=_string(value, "sensitivity_id"),
     )
 
 

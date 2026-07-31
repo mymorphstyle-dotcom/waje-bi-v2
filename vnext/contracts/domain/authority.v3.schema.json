@@ -2416,6 +2416,7 @@
         "created_by_action_id",
         "created_at",
         "revision_reason",
+        "resolution_outcome_ids",
         "tasks"
       ],
       "properties": {
@@ -2452,6 +2453,15 @@
         "revision_reason": {
           "type": "string"
         },
+        "resolution_outcome_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
         "tasks": {
           "type": "array",
           "items": {
@@ -2465,42 +2475,79 @@
       "additionalProperties": false,
       "required": [
         "task_id",
+        "proposal_task_key",
         "business_purpose",
-        "capability_intent",
-        "target_claim_ids",
-        "depends_on_task_ids",
-        "success_conditions",
-        "stop_conditions"
+        "capability_intent_ref",
+        "target_estimand_ids",
+        "obligation_ids",
+        "query_binding_ids",
+        "completion_spec_ids",
+        "execution_success_policy_refs",
+        "execution_degrade_policy_refs",
+        "execution_stop_policy_refs",
+        "depends_on_task_ids"
       ],
       "properties": {
         "task_id": {
           "type": "string"
         },
+        "proposal_task_key": {
+          "type": "string"
+        },
         "business_purpose": {
           "type": "string"
         },
-        "capability_intent": {
+        "capability_intent_ref": {
           "type": "string"
         },
-        "target_claim_ids": {
+        "target_estimand_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "obligation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "query_binding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "completion_spec_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "execution_success_policy_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "execution_degrade_policy_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "execution_stop_policy_refs": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "depends_on_task_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "success_conditions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "stop_conditions": {
           "type": "array",
           "items": {
             "type": "string"
@@ -2824,6 +2871,7 @@
         "estimand_id",
         "semantic_measurement_id",
         "authority_binding_id",
+        "derivation_authority",
         "kind",
         "resolved_instance",
         "boundary",
@@ -2855,6 +2903,9 @@
         "authority_binding_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "derivation_authority": {
+          "$ref": "#/$defs/MeasurementDerivationAuthority"
         },
         "kind": {
           "type": "string",
@@ -2895,6 +2946,30 @@
         },
         "schema_epoch": {
           "const": 3
+        }
+      }
+    },
+    "MeasurementDerivationAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "mailbox_authority_epoch",
+        "accepted_question_revision_id",
+        "accepted_frame_revision_id"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "mailbox_authority_epoch": {
+          "type": "integer"
+        },
+        "accepted_question_revision_id": {
+          "type": "string"
+        },
+        "accepted_frame_revision_id": {
+          "type": "string"
         }
       }
     },
@@ -3332,7 +3407,9 @@
         "estimand_id",
         "evidence_requirement_id",
         "evidence_requirement_sha256",
+        "evidence_type_refs",
         "resolution_outcome_id",
+        "derivation_authority",
         "execution_disposition",
         "boundary_code",
         "closure_definition_sha256",
@@ -3361,9 +3438,18 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
+        "evidence_type_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "resolution_outcome_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "derivation_authority": {
+          "$ref": "#/$defs/MeasurementDerivationAuthority"
         },
         "execution_disposition": {
           "type": "string",

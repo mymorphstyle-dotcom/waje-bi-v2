@@ -7,6 +7,7 @@ from datetime import date, datetime, time
 from enum import StrEnum
 from typing import Iterable
 
+from .async_runtime import AuthoritySnapshot
 from .canonical import (
     content_sha256,
     require_aware_datetime,
@@ -1091,8 +1092,15 @@ class EvidenceRequirementSpec:
         )
         _validate_optional_ref(self.exposure_id, "exposure_id")
         if self.composition is EvidenceComposition.AT_LEAST:
-            if self.minimum_count is None or self.minimum_count < 1:
+            if (
+                type(self.minimum_count) is not int
+                or self.minimum_count < 1
+            ):
                 raise ValueError("at_least composition requires minimum_count")
+            if self.minimum_count > len(self.required_evidence_type_refs):
+                raise ValueError(
+                    "minimum_count cannot exceed required evidence slots"
+                )
         elif self.minimum_count is not None:
             raise ValueError("minimum_count only applies to at_least")
         if (
@@ -1959,6 +1967,61 @@ class RequirementResolutionBoundary:
 
 
 @dataclass(frozen=True, slots=True)
+class MeasurementDerivationAuthority:
+    """Business authority under which measurement facts were derived."""
+
+    case_id: str
+    mailbox_authority_epoch: int
+    accepted_question_revision_id: str
+    accepted_frame_revision_id: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "case_id",
+            "accepted_question_revision_id",
+            "accepted_frame_revision_id",
+        ):
+            require_nonempty(getattr(self, field_name), field_name)
+        if self.mailbox_authority_epoch < 0:
+            raise ValueError(
+                "mailbox_authority_epoch must be non-negative"
+            )
+
+    @classmethod
+    def from_authority_snapshot(
+        cls,
+        snapshot: AuthoritySnapshot,
+    ) -> MeasurementDerivationAuthority:
+        if snapshot.accepted_question_revision_id is None:
+            raise ValueError(
+                "measurement derivation requires an accepted question"
+            )
+        if snapshot.accepted_frame_revision_id is None:
+            raise ValueError(
+                "measurement derivation requires an accepted Frame"
+            )
+        return cls(
+            case_id=snapshot.case_id,
+            mailbox_authority_epoch=snapshot.mailbox_authority_epoch,
+            accepted_question_revision_id=(
+                snapshot.accepted_question_revision_id
+            ),
+            accepted_frame_revision_id=snapshot.accepted_frame_revision_id,
+        )
+
+    def matches(self, snapshot: AuthoritySnapshot) -> bool:
+        try:
+            current = self.from_authority_snapshot(snapshot)
+        except ValueError:
+            return False
+        return self == current
+
+    @property
+    def content_sha256(self) -> str:
+        return content_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementResolutionOutcome:
     resolution_outcome_id: str
     case_id: str
@@ -1967,6 +2030,7 @@ class MeasurementResolutionOutcome:
     estimand_id: str
     semantic_measurement_id: str
     authority_binding_id: str
+    derivation_authority: MeasurementDerivationAuthority
     kind: ResolutionOutcomeKind
     resolved_instance: ResolvedMeasurementInstance | None
     boundary: TypedResolutionBoundary | None
@@ -1991,6 +2055,23 @@ class MeasurementResolutionOutcome:
             "semantic_measurement_id",
         )
         require_sha256(self.authority_binding_id, "authority_binding_id")
+        if not isinstance(
+            self.derivation_authority,
+            MeasurementDerivationAuthority,
+        ):
+            raise TypeError(
+                "derivation_authority must be MeasurementDerivationAuthority"
+            )
+        if (
+            self.derivation_authority.case_id != self.case_id
+            or self.derivation_authority.accepted_question_revision_id
+            != self.question_revision_id
+            or self.derivation_authority.accepted_frame_revision_id
+            != self.frame_revision_id
+        ):
+            raise ValueError(
+                "derivation authority does not bind outcome authority"
+            )
         _require_enum(self.kind, ResolutionOutcomeKind, "kind")
         _require_tuple_of(
             self.requirement_boundaries,
@@ -2039,7 +2120,9 @@ class ResolvedEvidenceObligation:
     estimand_id: str
     evidence_requirement_id: str
     evidence_requirement_sha256: str
+    evidence_type_refs: tuple[str, ...]
     resolution_outcome_id: str
+    derivation_authority: MeasurementDerivationAuthority
     execution_disposition: ObligationExecutionDisposition
     boundary_code: str | None
     closure_definition_sha256: str
@@ -2063,6 +2146,30 @@ class ResolvedEvidenceObligation:
             "field_derivation_proof_sha256",
         ):
             require_sha256(getattr(self, field_name), field_name)
+        if not isinstance(
+            self.derivation_authority,
+            MeasurementDerivationAuthority,
+        ):
+            raise TypeError(
+                "derivation_authority must be MeasurementDerivationAuthority"
+            )
+        if (
+            self.derivation_authority.case_id != self.case_id
+            or self.derivation_authority.accepted_frame_revision_id
+            != self.frame_revision_id
+        ):
+            raise ValueError(
+                "derivation authority does not bind obligation authority"
+            )
+        _validate_string_tuple_fields(self, ("evidence_type_refs",))
+        if not self.evidence_type_refs:
+            raise ValueError(
+                "obligation requires at least one evidence type"
+            )
+        if len(self.evidence_type_refs) != 1:
+            raise ValueError(
+                "resolved obligation must own one evidence type slot"
+            )
         _require_enum(
             self.execution_disposition,
             ObligationExecutionDisposition,

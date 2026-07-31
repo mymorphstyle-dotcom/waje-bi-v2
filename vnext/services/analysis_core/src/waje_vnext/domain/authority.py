@@ -103,23 +103,66 @@ class InvestigationCase:
 @dataclass(frozen=True, slots=True)
 class WorkTask:
     task_id: str
+    proposal_task_key: str
     business_purpose: str
-    capability_intent: str
-    target_claim_ids: tuple[str, ...]
+    capability_intent_ref: str
+    target_estimand_ids: tuple[str, ...]
+    obligation_ids: tuple[str, ...]
+    query_binding_ids: tuple[str, ...]
+    completion_spec_ids: tuple[str, ...]
+    execution_success_policy_refs: tuple[str, ...]
+    execution_degrade_policy_refs: tuple[str, ...]
+    execution_stop_policy_refs: tuple[str, ...]
     depends_on_task_ids: tuple[str, ...]
-    success_conditions: tuple[str, ...]
-    stop_conditions: tuple[str, ...]
 
     def __post_init__(self) -> None:
         require_nonempty(self.task_id, "task_id")
+        require_nonempty(self.proposal_task_key, "proposal_task_key")
         require_nonempty(self.business_purpose, "business_purpose")
-        require_nonempty(self.capability_intent, "capability_intent")
+        require_nonempty(
+            self.capability_intent_ref,
+            "capability_intent_ref",
+        )
         if self.task_id in self.depends_on_task_ids:
             raise ValueError("task cannot depend on itself")
-        _require_nonempty_members(self.target_claim_ids, "target_claim_ids")
+        _require_nonempty_members(
+            self.target_estimand_ids,
+            "target_estimand_ids",
+        )
+        _require_nonempty_members(self.obligation_ids, "obligation_ids")
+        _require_nonempty_members(
+            self.query_binding_ids,
+            "query_binding_ids",
+        )
+        _require_nonempty_members(
+            self.completion_spec_ids,
+            "completion_spec_ids",
+        )
+        _require_nonempty_members(
+            self.execution_success_policy_refs,
+            "execution_success_policy_refs",
+        )
+        _require_nonempty_members(
+            self.execution_degrade_policy_refs,
+            "execution_degrade_policy_refs",
+        )
+        _require_nonempty_members(
+            self.execution_stop_policy_refs,
+            "execution_stop_policy_refs",
+        )
         _require_nonempty_members(self.depends_on_task_ids, "depends_on_task_ids")
-        _require_nonempty_members(self.success_conditions, "success_conditions")
-        _require_nonempty_members(self.stop_conditions, "stop_conditions")
+        if not self.obligation_ids:
+            raise ValueError("work task must close at least one obligation")
+        if not self.target_estimand_ids:
+            raise ValueError("work task requires target estimands")
+        if not self.completion_spec_ids:
+            raise ValueError("work task requires completion specs")
+        if not self.execution_success_policy_refs:
+            raise ValueError("work task requires success policy refs")
+        if not self.execution_degrade_policy_refs:
+            raise ValueError("work task requires degrade policy refs")
+        if not self.execution_stop_policy_refs:
+            raise ValueError("work task requires stop policy refs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +175,7 @@ class WorkPlanRevision:
     created_by_action_id: str
     created_at: datetime
     revision_reason: str
+    resolution_outcome_ids: tuple[str, ...]
     tasks: tuple[WorkTask, ...]
 
     def __post_init__(self) -> None:
@@ -150,12 +194,43 @@ class WorkPlanRevision:
         if self.revision_number > 1 and not self.prior_plan_revision_id:
             raise ValueError("later plan revisions require prior_plan_revision_id")
         require_aware_datetime(self.created_at, "created_at")
+        _require_nonempty_members(
+            self.resolution_outcome_ids,
+            "resolution_outcome_ids",
+        )
+        if not self.resolution_outcome_ids:
+            raise ValueError(
+                "work plan must adopt measurement resolution outcomes"
+            )
         _require_tuple_of(self.tasks, WorkTask, "tasks")
         if not self.tasks:
             raise ValueError("work plan must contain at least one task")
         task_ids = tuple(task.task_id for task in self.tasks)
         if len(task_ids) != len(set(task_ids)):
             raise ValueError("work plan task IDs must be unique")
+        proposal_task_keys = tuple(
+            task.proposal_task_key for task in self.tasks
+        )
+        if len(proposal_task_keys) != len(set(proposal_task_keys)):
+            raise ValueError("work plan proposal task keys must be unique")
+        obligation_ids = tuple(
+            obligation_id
+            for task in self.tasks
+            for obligation_id in task.obligation_ids
+        )
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError(
+                "work plan obligations must have one closure owner"
+            )
+        query_binding_ids = tuple(
+            query_binding_id
+            for task in self.tasks
+            for query_binding_id in task.query_binding_ids
+        )
+        if len(query_binding_ids) != len(set(query_binding_ids)):
+            raise ValueError(
+                "work plan query bindings must have one task owner"
+            )
         known_tasks = set(task_ids)
         for task in self.tasks:
             unknown = set(task.depends_on_task_ids) - known_tasks

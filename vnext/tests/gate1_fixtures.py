@@ -606,8 +606,28 @@ def make_plan(
     action_id: str | None = None,
     case_id: str = "case-1",
 ) -> WorkPlanRevision:
+    resolved_plan_id = plan_id or f"plan-{revision_number}"
+    task_id = content_sha256(
+        {
+            "kind": "work-task.v1",
+            "plan_revision_id": resolved_plan_id,
+            "proposal_task_key": "measure-accepted-contrast",
+        }
+    )
+    obligation_id = content_sha256(
+        {
+            "kind": "test-obligation",
+            "frame_id": frame_id,
+        }
+    )
+    query_binding_id = content_sha256(
+        {
+            "kind": "test-query-binding",
+            "task_id": task_id,
+        }
+    )
     return WorkPlanRevision(
-        plan_revision_id=plan_id or f"plan-{revision_number}",
+        plan_revision_id=resolved_plan_id,
         case_id=case_id,
         frame_revision_id=frame_id,
         revision_number=revision_number,
@@ -616,15 +636,37 @@ def make_plan(
         created_at=NOW
         + timedelta(minutes=60 * (revision_number - 1) + 11),
         revision_reason="Investigate the accepted frame",
+        resolution_outcome_ids=(
+            content_sha256(
+                {
+                    "kind": "test-resolution-outcome",
+                    "frame_id": frame_id,
+                }
+            ),
+        ),
         tasks=(
             WorkTask(
-                task_id="task-pattern",
+                task_id=task_id,
+                proposal_task_key="measure-accepted-contrast",
                 business_purpose="Measure the accepted window contrast",
-                capability_intent="descriptive contrast with valid exposure",
-                target_claim_ids=("claim-pattern",),
+                capability_intent_ref=(
+                    "waje-vnext://capability-intent/"
+                    "descriptive-contrast.v1"
+                ),
+                target_estimand_ids=("estimand-payment-window-comparison",),
+                obligation_ids=(obligation_id,),
+                query_binding_ids=(query_binding_id,),
+                completion_spec_ids=("completion-payment-comparison",),
+                execution_success_policy_refs=(
+                    "completion:all-required-evidence:v1",
+                ),
+                execution_degrade_policy_refs=(
+                    "degrade:provisional-with-local-boundary:v1",
+                ),
+                execution_stop_policy_refs=(
+                    "stop:insufficient-coverage:v1",
+                ),
                 depends_on_task_ids=(),
-                success_conditions=("Accepted estimand evidence is measured",),
-                stop_conditions=("Coverage is insufficient",),
             ),
         ),
     )
@@ -649,7 +691,13 @@ def make_evidence(
         case_id=case_id,
         frame_revision_id=frame_id,
         plan_revision_id=plan_id,
-        task_id="task-pattern",
+        task_id=content_sha256(
+            {
+                "kind": "work-task.v1",
+                "plan_revision_id": plan_id,
+                "proposal_task_key": "measure-accepted-contrast",
+            }
+        ),
         capability_name="descriptive_contrast",
         query_spec_ref="query-spec-1",
         semantic_contract_refs=("metric:paid_amount:v1",),

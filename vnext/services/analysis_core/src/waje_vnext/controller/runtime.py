@@ -73,6 +73,10 @@ from waje_vnext.domain.measurement import (
 from waje_vnext.domain.measurement_resolver import (
     validate_executable_design,
 )
+from waje_vnext.domain.planning import (
+    compile_plan_bundle,
+    same_business_authority,
+)
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
     CheckpointRecord,
@@ -2753,6 +2757,13 @@ class WAJEController:
                     case=case,
                     action=action,
                     current_plan=plan,
+                    current_query_bindings=(
+                        ()
+                        if plan is None
+                        else self._store.list_query_bindings(
+                            plan.plan_revision_id
+                        )
+                    ),
                 )
                 admission_event = self._append_action_event(
                     action=action,
@@ -2795,13 +2806,6 @@ class WAJEController:
                     admission_cursor=admission_event.cursor,
                     now=now,
                 )
-                self._record_receipt(
-                    action=action,
-                    event_cursor=outcome_cursor,
-                    state=next_state,
-                    result_code="accepted",
-                    now=now,
-                )
                 self._record_job_disposition(
                     message=message,
                     disposition=JobDisposition.COMPLETED,
@@ -2828,6 +2832,7 @@ class WAJEController:
         pending_job_ids: tuple[str, ...] = ()
         pending_decision_id: str | None = None
         outcome_cursor = admission_cursor
+        deferred_effect_outbox: OutboxMessage | None = None
 
         if action.kind is ActionKind.REVISE_FRAME:
             assert isinstance(payload, ReviseFramePayload)
@@ -3073,14 +3078,54 @@ class WAJEController:
         elif action.kind is ActionKind.REVISE_PLAN:
             assert isinstance(payload, RevisePlanPayload)
             prior = self._latest_plan(case.case_id)
-            plan = WorkPlanRevision(
+            frame = self._store.get_frame(
+                case.accepted_frame_revision_id or ""
+            )
+            authority_snapshot = self._store.get_authority_snapshot(
+                case.case_id
+            )
+            available_outcomes = self._store.list_measurement_resolutions(
+                frame.frame_revision_id
+            )
+            obligations = self._store.list_evidence_obligations(
+                frame.frame_revision_id
+            )
+            proposed_obligation_ids = {
+                obligation_id
+                for task in payload.tasks
+                for obligation_id in task.obligation_ids
+            }
+            selected_outcome_ids = {
+                obligation.resolution_outcome_id
+                for obligation in obligations
+                if obligation.obligation_id
+                in proposed_obligation_ids
+            }
+            outcomes = tuple(
+                outcome
+                for outcome in available_outcomes
+                if outcome.resolution_outcome_id
+                in selected_outcome_ids
+            )
+            admissions = tuple(
+                self._store.get_measurement_resolution_admission(
+                    item.resolution_outcome_id
+                )
+                for item in outcomes
+            )
+            bundle = compile_plan_bundle(
+                case=case,
+                authority_snapshot=authority_snapshot,
+                frame=frame,
+                outcomes=outcomes,
+                admissions=admissions,
+                obligations=obligations,
+                proposed_tasks=payload.tasks,
                 plan_revision_id=_stable_id(
                     "plan",
                     action.action_id,
                     payload.revision_reason,
                 ),
-                case_id=case.case_id,
-                frame_revision_id=case.accepted_frame_revision_id or "",
                 revision_number=1 if prior is None else prior.revision_number + 1,
                 prior_plan_revision_id=(
                     None if prior is None else prior.plan_revision_id
@@ -3088,12 +3133,15 @@ class WAJEController:
                 created_by_action_id=action.action_id,
                 created_at=now,
                 revision_reason=payload.revision_reason,
-                tasks=payload.tasks,
             )
-            case = self._store.accept_plan(
-                plan,
+            case = self._store.accept_plan_bundle(
+                bundle,
                 expected_head_version=case.head_version,
-                event_id=_stable_id("event", plan.plan_revision_id, "accepted"),
+                event_id=_stable_id(
+                    "event",
+                    bundle.plan.plan_revision_id,
+                    "accepted",
+                ),
                 recorded_at=now,
                 operation=action.operation,
             )
@@ -3258,7 +3306,7 @@ class WAJEController:
                 now=now,
             )
             outbox = replace(outbox, source_event_cursor=event.cursor)
-            self._store.enqueue_outbox(outbox)
+            deferred_effect_outbox = outbox
             outcome_cursor = event.cursor
             phase = ControllerPhase.WAITING_FOR_EFFECT
             pending_job_ids = (outbox.outbox_message_id,)
@@ -3286,6 +3334,15 @@ class WAJEController:
             consecutive_rejections=0,
             now=now,
         )
+        self._record_receipt(
+            action=action,
+            event_cursor=outcome_cursor,
+            state=next_state,
+            result_code="accepted",
+            now=now,
+        )
+        if deferred_effect_outbox is not None:
+            self._store.enqueue_outbox(deferred_effect_outbox)
         return next_state, outcome_cursor
 
     def _commit_effect_attempt(
@@ -3614,6 +3671,32 @@ class WAJEController:
             if case.accepted_plan_revision_id is None
             else self._store.get_plan(case.accepted_plan_revision_id)
         )
+        resolutions = (
+            ()
+            if frame is None
+            else self._store.list_measurement_resolutions(
+                frame.frame_revision_id
+            )
+        )
+        obligations = (
+            ()
+            if frame is None
+            else self._store.list_evidence_obligations(
+                frame.frame_revision_id
+            )
+        )
+        plan_adoption = (
+            None
+            if plan is None
+            else self._store.get_plan_adoption(plan.plan_revision_id)
+        )
+        query_bindings = (
+            ()
+            if plan is None
+            else self._store.list_query_bindings(
+                plan.plan_revision_id
+            )
+        )
         answer = (
             None
             if case.accepted_answer_version_id is None
@@ -3669,6 +3752,10 @@ class WAJEController:
             accepted_message_binding=binding,
             active_frame_candidate=frame_candidate,
             latest_frame_review=frame_review,
+            available_measurement_resolutions=resolutions,
+            available_evidence_obligations=obligations,
+            accepted_plan_adoption=plan_adoption,
+            accepted_query_bindings=query_bindings,
             recent_events=business_events,
             evidence_index=tuple(
                 ContextEvidenceItem.from_record(record)
@@ -4385,10 +4472,18 @@ class WAJEController:
             self._store.release_lease(controller_lease)
 
     def _job_is_stale(self, message: OutboxMessage) -> bool:
-        return (
-            self._store.get_authority_snapshot(message.case_id)
-            != message.authority_snapshot
-        )
+        current = self._store.get_authority_snapshot(message.case_id)
+        if message.job_kind in {
+            AsyncJobKind.SEMANTIC_INSPECTION,
+            AsyncJobKind.DATA_PROBE,
+            AsyncJobKind.CAPABILITY,
+            AsyncJobKind.SENSITIVITY,
+        }:
+            return not same_business_authority(
+                message.authority_snapshot,
+                current,
+            )
+        return current != message.authority_snapshot
 
     def _supersede_job(
         self,
@@ -4747,9 +4842,9 @@ def _effect_destination(action: ActionEnvelope) -> str:
     if isinstance(payload, RunProbePayload):
         return "analysis_probe"
     if isinstance(payload, CallCapabilityPayload):
-        return "capability:{}".format(payload.capability_name)
+        return "capability"
     if isinstance(payload, RunSensitivityPayload):
-        return "sensitivity:{}".format(payload.variant_label)
+        return "sensitivity"
     raise TypeError("action is not an effect action")
 
 

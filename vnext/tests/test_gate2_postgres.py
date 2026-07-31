@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import os
 import unittest
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
-from pathlib import Path
 from threading import Barrier, Event
 
 import psycopg
+from postgres_test_support import (
+    bootstrap_postgres_test_schema,
+    reset_postgres_test_data,
+)
+from gate3_plan_fixtures import record_measurement_authority
+from test_gate3_3_measurement_resolver import make_trusted_verifier
 from tests.test_gate2_controller import (
     NOW,
     capability_proposal,
@@ -22,6 +27,7 @@ from waje_vnext.controller import (
     WAJEController,
 )
 from waje_vnext.domain.async_runtime import MailboxMessageKind
+from waje_vnext.domain.canonical import content_sha256
 from waje_vnext.domain.controller import ControllerPhase
 from waje_vnext.domain.events import JournalEventType
 from waje_vnext.domain.runtime_amendment import DispatcherRecoveryCursor
@@ -31,21 +37,10 @@ from waje_vnext.storage import (
     LeaseConflict,
     LeaseFenceLost,
     PostgresAuthorityStore,
-    apply_gate1_migration,
-    apply_gate2_migration,
-    apply_gate3_1_migration,
-    apply_gate3_2_migration,
 )
 
 
 DSN = os.environ.get("WAJE_VNEXT_DATABASE_URL")
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATION_1 = ROOT / "storage/migrations/001_gate1_authority.sql"
-MIGRATION_2 = ROOT / "storage/migrations/002_gate2_controller.sql"
-MIGRATION_3 = (
-    ROOT / "storage/migrations/003_gate3_1_measurement_authority.sql"
-)
-MIGRATION_4 = ROOT / "storage/migrations/004_gate3_2_runtime_sagas.sql"
 
 
 @unittest.skipUnless(DSN, "WAJE_VNEXT_DATABASE_URL is not configured")
@@ -53,20 +48,15 @@ class PostgresControllerStoreTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         assert DSN is not None
-        apply_gate1_migration(DSN, migration_path=MIGRATION_1)
-        first = apply_gate2_migration(DSN, migration_path=MIGRATION_2)
-        second = apply_gate2_migration(DSN, migration_path=MIGRATION_2)
-        if first != second:
-            raise AssertionError("Gate 2 migration is not idempotent")
-        apply_gate3_1_migration(DSN, migration_path=MIGRATION_3)
-        first = apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
-        second = apply_gate3_2_migration(DSN, migration_path=MIGRATION_4)
-        if first != second:
-            raise AssertionError("Gate 3.2 migration is not idempotent")
+        bootstrap_postgres_test_schema(DSN)
 
     def setUp(self) -> None:
         assert DSN is not None
-        self.store = PostgresAuthorityStore.connect(DSN)
+        reset_postgres_test_data(DSN)
+        self.store = PostgresAuthorityStore.connect(
+            DSN,
+            resolution_input_verifier=make_trusted_verifier(),
+        )
 
     def tearDown(self) -> None:
         self.store.close()
@@ -75,8 +65,6 @@ class PostgresControllerStoreTest(unittest.TestCase):
         provider = ScriptedPrimaryAgentProvider(
             (
                 frame_proposal("case-gate2-pg"),
-                plan_proposal(),
-                capability_proposal(),
             )
         )
         effects = ScriptedEffectExecutor(
@@ -105,12 +93,90 @@ class PostgresControllerStoreTest(unittest.TestCase):
         controller.advance("case-gate2-pg")
         controller.deliver_pending_llm("case-gate2-pg")
         controller.deliver_pending_frame_review("case-gate2-pg")
+        case = self.store.get_case("case-gate2-pg")
+        frame = self.store.get_frame(
+            case.accepted_frame_revision_id or ""
+        )
+        _, _, obligations = record_measurement_authority(
+            store=self.store,
+            case=case,
+            frame=frame,
+            created_at=NOW,
+        )
+        proposed_plan = plan_proposal()
+        provider.enqueue_proposals(
+            replace(
+                proposed_plan,
+                payload=replace(
+                    proposed_plan.payload,
+                    tasks=tuple(
+                        replace(
+                            task,
+                            obligation_ids=(
+                                obligations[index].obligation_id,
+                            ),
+                        )
+                        for index, task in enumerate(
+                            proposed_plan.payload.tasks
+                        )
+                    ),
+                ),
+            )
+        )
         controller.advance("case-gate2-pg")
         controller.deliver_pending_llm("case-gate2-pg")
+        case = self.store.get_case("case-gate2-pg")
+        plan = self.store.get_plan(
+            case.accepted_plan_revision_id or ""
+        )
+        binding = self.store.list_query_bindings(
+            plan.plan_revision_id
+        )[0]
+        proposed_capability = capability_proposal()
+        provider.enqueue_proposals(
+            replace(
+                proposed_capability,
+                payload=replace(
+                    proposed_capability.payload,
+                    task_id=plan.tasks[0].task_id,
+                    query_binding_id=binding.query_binding_id,
+                ),
+            )
+        )
         waiting = controller.advance("case-gate2-pg")
         self.assertEqual(waiting.phase, ControllerPhase.WAITING_FOR_LLM)
         waiting = controller.deliver_pending_llm("case-gate2-pg")
         self.assertEqual(waiting.phase, ControllerPhase.WAITING_FOR_EFFECT)
+        effect_message = self.store.get_outbox_message(
+            waiting.pending_job_ids[0]
+        )
+        self.assertEqual(
+            self.store.enqueue_outbox(effect_message),
+            effect_message,
+        )
+        request = dict(effect_message.payload["request"])
+        request["query_binding_id"] = "f" * 64
+        forged_payload = {
+            **dict(effect_message.payload),
+            "request": request,
+        }
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "exact admitted action request",
+        ):
+            self.store.enqueue_outbox(
+                replace(
+                    effect_message,
+                    payload=forged_payload,
+                    payload_sha256=content_sha256(forged_payload),
+                    operation=replace(
+                        effect_message.operation,
+                        payload_sha256=content_sha256(
+                            forged_payload
+                        ),
+                    ),
+                )
+            )
         head = self.store.get_case("case-gate2-pg").head_version
 
         retrying = controller.deliver_pending_effect("case-gate2-pg")
@@ -548,11 +614,13 @@ class PostgresControllerStoreTest(unittest.TestCase):
                     kind=MailboxMessageKind.USER_CORRECTION,
                     idempotency_key="pg-fence-correction",
                 )
-                with self.assertRaises(FutureTimeout):
-                    correction_future.result(timeout=0.2)
-                allow_commit.set()
-                delivered = delivery.result(timeout=5)
                 correction_receipt = correction_future.result(timeout=5)
+                allow_commit.set()
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "authority snapshot does not match job fence",
+                ):
+                    delivery.result(timeout=5)
 
             self.assertIsNone(
                 worker_store.get_case(
@@ -562,30 +630,25 @@ class PostgresControllerStoreTest(unittest.TestCase):
             events = worker_store.list_events(
                 "case-gate2-fence-linearization"
             )
-            review_cursor = next(
-                event.cursor
-                for event in events
-                if event.event_type
-                is JournalEventType.REVIEWER_JOB_ENQUEUED
-            )
             correction_cursor = next(
                 event.cursor
                 for event in events
                 if event.event_type is JournalEventType.MESSAGE_INGRESSED
                 and event.authority_ref == correction_receipt.message_id
             )
-            self.assertLess(review_cursor, correction_cursor)
-            self.assertEqual(1, delivered.authority_epoch)
-            self.assertEqual(2, correction_receipt.authority_epoch)
-            superseded = worker.deliver_pending_frame_review(
-                "case-gate2-fence-linearization"
+            self.assertFalse(
+                any(
+                    event.event_type
+                    is JournalEventType.REVIEWER_JOB_ENQUEUED
+                    for event in events[correction_cursor:]
+                )
             )
+            self.assertEqual(2, correction_receipt.authority_epoch)
             self.assertIsNone(
                 worker_store.get_case(
                     "case-gate2-fence-linearization"
                 ).accepted_frame_revision_id
             )
-            self.assertEqual(superseded.authority_epoch, 2)
         finally:
             allow_commit.set()
             worker_store.close()

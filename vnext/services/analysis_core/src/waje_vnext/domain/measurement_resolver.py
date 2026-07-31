@@ -55,6 +55,7 @@ from .measurement import (
     CausalEffectTargetSpec,
     CohortOutcomeTargetSpec,
     DiagnosticSetTargetSpec,
+    EvidenceRequirementSpec,
     EstimandSpec,
     EstimatorFamily,
     ExposureBasis,
@@ -63,6 +64,7 @@ from .measurement import (
     ExposureSpec,
     FunnelTransitionTargetSpec,
     MeasurementDesign,
+    MeasurementDerivationAuthority,
     MeasurementResolutionOutcome,
     MissingExposurePolicy,
     ObligationExecutionDisposition,
@@ -908,6 +910,7 @@ class TrustedMeasurementResolver:
         self,
         *,
         frame: AnalysisFrameRevision,
+        derivation_authority: MeasurementDerivationAuthority,
         estimand_id: str,
         context: ResolutionContext,
         request: CalendarResolutionRequest,
@@ -916,6 +919,7 @@ class TrustedMeasurementResolver:
     ) -> MeasurementResolutionOutcome:
         return _resolve_measurement(
             frame=frame,
+            derivation_authority=derivation_authority,
             estimand_id=estimand_id,
             context=context,
             request=request,
@@ -955,6 +959,7 @@ class TrustedMeasurementResolver:
     ) -> MeasurementResolutionAdmission:
         expected = _resolve_measurement(
             frame=frame,
+            derivation_authority=outcome.derivation_authority,
             estimand_id=outcome.estimand_id,
             context=context,
             request=request,
@@ -1432,6 +1437,7 @@ def _validate_trusted_resolution_inputs(
 def _resolve_measurement(
     *,
     frame: AnalysisFrameRevision,
+    derivation_authority: MeasurementDerivationAuthority,
     estimand_id: str,
     context: ResolutionContext,
     request: CalendarResolutionRequest,
@@ -1441,6 +1447,16 @@ def _resolve_measurement(
 ) -> MeasurementResolutionOutcome:
     """Resolve one accepted estimand or return a claim-scoped boundary."""
 
+    if (
+        derivation_authority.case_id != frame.case_id
+        or derivation_authority.accepted_question_revision_id
+        != frame.question_revision_id
+        or derivation_authority.accepted_frame_revision_id
+        != frame.frame_revision_id
+    ):
+        raise ValueError(
+            "measurement derivation authority does not bind the Frame"
+        )
     design = frame.measurement_design
     _validate_trusted_resolution_inputs(
         context=context,
@@ -1471,6 +1487,7 @@ def _resolve_measurement(
     if context_error is not None:
         return _boundary_outcome(
             frame=frame,
+            derivation_authority=derivation_authority,
             estimand=estimand,
             semantic_id=semantic_id,
             binding_id=binding_id,
@@ -1495,6 +1512,7 @@ def _resolve_measurement(
         if rule is None:
             return _boundary_outcome(
                 frame=frame,
+                derivation_authority=derivation_authority,
                 estimand=estimand,
                 semantic_id=semantic_id,
                 binding_id=binding_id,
@@ -1518,6 +1536,7 @@ def _resolve_measurement(
         if isinstance(result, _WindowBoundary):
             return _boundary_outcome(
                 frame=frame,
+                derivation_authority=derivation_authority,
                 estimand=estimand,
                 semantic_id=semantic_id,
                 binding_id=binding_id,
@@ -1584,6 +1603,7 @@ def _resolve_measurement(
         else:
             return _boundary_outcome(
                 frame=frame,
+                derivation_authority=derivation_authority,
                 estimand=estimand,
                 semantic_id=semantic_id,
                 binding_id=binding_id,
@@ -1611,6 +1631,7 @@ def _resolve_measurement(
     ):
         return _boundary_outcome(
             frame=frame,
+            derivation_authority=derivation_authority,
             estimand=estimand,
             semantic_id=semantic_id,
             binding_id=binding_id,
@@ -1679,6 +1700,7 @@ def _resolve_measurement(
         estimand_id=estimand.estimand_id,
         semantic_measurement_id=semantic_id,
         authority_binding_id=binding_id,
+        derivation_authority=derivation_authority,
         kind=ResolutionOutcomeKind.RESOLVED_INSTANCE,
         resolved_instance=instance,
         boundary=None,
@@ -1705,6 +1727,7 @@ def _compile_evidence_obligations(
 
     expected_outcome = _resolve_measurement(
         frame=frame,
+        derivation_authority=outcome.derivation_authority,
         estimand_id=outcome.estimand_id,
         context=context,
         request=resolution_request,
@@ -1773,62 +1796,193 @@ def _compile_evidence_obligations(
                 "requirement exposure does not bind estimand exposure"
             )
         requirement_boundary = requirement_boundaries.get(requirement_id)
-        definition = {
-            "frame_revision_id": frame.frame_revision_id,
-            "estimand_id": estimand.estimand_id,
-            "semantic_measurement_id": semantic_id,
-            "authority_binding_id": binding_id,
-            "resolution_outcome_id": outcome.resolution_outcome_id,
-            "requirement": requirement,
+        obligations.extend(
+            _build_resolved_evidence_obligation(
+                frame=frame,
+                estimand=estimand,
+                semantic_measurement_id=semantic_id,
+                authority_binding_id=binding_id,
+                outcome=outcome,
+                requirement=requirement,
+                evidence_type_refs=(evidence_type_ref,),
+                requirement_boundary=requirement_boundary,
+                created_at=created_at,
+            )
+            for evidence_type_ref
+            in requirement.required_evidence_type_refs
+        )
+    return tuple(obligations)
+
+
+def validate_evidence_obligation_derivation(
+    *,
+    frame: AnalysisFrameRevision,
+    outcome: MeasurementResolutionOutcome,
+    obligation: ResolvedEvidenceObligation,
+) -> None:
+    """Rebuild one immutable obligation from admitted measurement authority."""
+
+    validate_resolution_identities(outcome)
+    validate_resolution_against_frame(frame, outcome)
+    if any(
+        (
+            obligation.case_id != frame.case_id,
+            obligation.frame_revision_id != frame.frame_revision_id,
+            obligation.resolution_outcome_id
+            != outcome.resolution_outcome_id,
+            obligation.estimand_id != outcome.estimand_id,
+        )
+    ):
+        raise ValueError("obligation does not bind its Frame and outcome")
+    estimand, semantic_id, binding_id = _frame_estimand_identity(
+        frame,
+        outcome.estimand_id,
+    )
+    if (
+        outcome.semantic_measurement_id != semantic_id
+        or outcome.authority_binding_id != binding_id
+    ):
+        raise ValueError("obligation outcome changes Frame identity")
+    if (
+        obligation.evidence_requirement_id
+        not in estimand.evidence_requirement_ids
+    ):
+        raise ValueError("obligation requirement is outside estimand")
+    requirement = next(
+        item
+        for item in frame.measurement_design.evidence_requirements
+        if (
+            item.evidence_requirement_id
+            == obligation.evidence_requirement_id
+        )
+    )
+    scope = next(
+        item
+        for item in frame.measurement_design.scopes
+        if item.scope_id == requirement.scope_id
+    )
+    if outcome.resolved_instance is not None:
+        resolved_rule_ids = {
+            item.window_rule_id
+            for item in outcome.resolved_instance.windows
         }
-        closure_sha = content_sha256(definition)
-        obligation_id = content_sha256(
+        if set(scope.time_window_rule_ids) != resolved_rule_ids:
+            raise ValueError(
+                "obligation requirement scope changes resolved windows"
+            )
+    if requirement.exposure_id != estimand.exposure_id:
+        raise ValueError(
+            "obligation requirement changes estimand exposure"
+        )
+    requirement_boundary = next(
+        (
+            item
+            for item in outcome.requirement_boundaries
+            if (
+                item.evidence_requirement_id
+                == requirement.evidence_requirement_id
+            )
+        ),
+        None,
+    )
+    if (
+        requirement_boundary is None
+        and outcome.boundary is not None
+        and requirement.evidence_requirement_id
+        in outcome.boundary.failed_requirement_ids
+    ):
+        requirement_boundary = outcome.boundary
+    if (
+        not set(obligation.evidence_type_refs)
+        <= set(requirement.required_evidence_type_refs)
+    ):
+        raise ValueError(
+            "obligation evidence types are outside Frame requirement"
+        )
+    expected = _build_resolved_evidence_obligation(
+        frame=frame,
+        estimand=estimand,
+        semantic_measurement_id=semantic_id,
+        authority_binding_id=binding_id,
+        outcome=outcome,
+        requirement=requirement,
+        evidence_type_refs=obligation.evidence_type_refs,
+        requirement_boundary=requirement_boundary,
+        created_at=obligation.created_at,
+    )
+    if expected != obligation:
+        raise ValueError(
+            "evidence obligation exact derivation replay failed"
+        )
+
+
+def _build_resolved_evidence_obligation(
+    *,
+    frame: AnalysisFrameRevision,
+    estimand: EstimandSpec,
+    semantic_measurement_id: str,
+    authority_binding_id: str,
+    outcome: MeasurementResolutionOutcome,
+    requirement: EvidenceRequirementSpec,
+    evidence_type_refs: tuple[str, ...],
+    requirement_boundary: TypedResolutionBoundary | None,
+    created_at,
+) -> ResolvedEvidenceObligation:
+    definition = {
+        "frame_revision_id": frame.frame_revision_id,
+        "estimand_id": estimand.estimand_id,
+        "semantic_measurement_id": semantic_measurement_id,
+        "authority_binding_id": authority_binding_id,
+        "resolution_outcome_id": outcome.resolution_outcome_id,
+        "requirement": requirement,
+        "evidence_type_refs": evidence_type_refs,
+    }
+    closure_sha = content_sha256(definition)
+    requirement_sha = content_sha256(requirement)
+    return ResolvedEvidenceObligation(
+        obligation_id=content_sha256(
             {
                 "kind": "resolved-evidence-obligation.v1",
                 "definition_sha256": closure_sha,
             }
-        )
-        obligations.append(
-            ResolvedEvidenceObligation(
-                obligation_id=obligation_id,
-                case_id=frame.case_id,
-                frame_revision_id=frame.frame_revision_id,
-                estimand_id=estimand.estimand_id,
-                evidence_requirement_id=requirement_id,
-                evidence_requirement_sha256=content_sha256(requirement),
-                resolution_outcome_id=outcome.resolution_outcome_id,
-                execution_disposition=(
-                    ObligationExecutionDisposition.EXECUTABLE
-                    if requirement_boundary is None
-                    else (
-                        ObligationExecutionDisposition.TYPED_BOUNDARY
-                        if (
-                            requirement.boundary_policy
-                            is RequirementBoundaryPolicy.ALLOW_TYPED_BOUNDARY
-                            and requirement_boundary.boundary_code
-                            in requirement.allowed_boundary_codes
-                        )
-                        else ObligationExecutionDisposition.BLOCKED
-                    )
-                ),
-                boundary_code=(
-                    None
-                    if requirement_boundary is None
-                    else requirement_boundary.boundary_code
-                ),
-                closure_definition_sha256=closure_sha,
-                field_derivation_proof_sha256=content_sha256(
-                    {
-                        "resolution_outcome_id": (
-                            outcome.resolution_outcome_id
-                        ),
-                        "requirement_sha256": content_sha256(requirement),
-                    }
-                ),
-                created_at=created_at,
+        ),
+        case_id=frame.case_id,
+        frame_revision_id=frame.frame_revision_id,
+        estimand_id=estimand.estimand_id,
+        evidence_requirement_id=requirement.evidence_requirement_id,
+        evidence_requirement_sha256=requirement_sha,
+        evidence_type_refs=evidence_type_refs,
+        resolution_outcome_id=outcome.resolution_outcome_id,
+        derivation_authority=outcome.derivation_authority,
+        execution_disposition=(
+            ObligationExecutionDisposition.EXECUTABLE
+            if requirement_boundary is None
+            else (
+                ObligationExecutionDisposition.TYPED_BOUNDARY
+                if (
+                    requirement.boundary_policy
+                    is RequirementBoundaryPolicy.ALLOW_TYPED_BOUNDARY
+                    and requirement_boundary.boundary_code
+                    in requirement.allowed_boundary_codes
+                )
+                else ObligationExecutionDisposition.BLOCKED
             )
-        )
-    return tuple(obligations)
+        ),
+        boundary_code=(
+            None
+            if requirement_boundary is None
+            else requirement_boundary.boundary_code
+        ),
+        closure_definition_sha256=closure_sha,
+        field_derivation_proof_sha256=content_sha256(
+            {
+                "resolution_outcome_id": outcome.resolution_outcome_id,
+                "requirement_sha256": requirement_sha,
+                "evidence_type_refs": evidence_type_refs,
+            }
+        ),
+        created_at=created_at,
+    )
 
 
 def comparable_estimate(
@@ -2835,6 +2989,7 @@ def _string_proof_refs(value) -> set[str]:
 def _boundary_outcome(
     *,
     frame: AnalysisFrameRevision,
+    derivation_authority: MeasurementDerivationAuthority,
     estimand: EstimandSpec,
     semantic_id: str,
     binding_id: str,
@@ -2931,6 +3086,7 @@ def _boundary_outcome(
         estimand_id=estimand.estimand_id,
         semantic_measurement_id=semantic_id,
         authority_binding_id=binding_id,
+        derivation_authority=derivation_authority,
         kind=ResolutionOutcomeKind.TYPED_RESOLUTION_BOUNDARY,
         resolved_instance=None,
         boundary=boundary,

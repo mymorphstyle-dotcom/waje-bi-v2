@@ -12,6 +12,7 @@ from waje_vnext.domain.actions import (
     ActionKind,
     AskUserPayload,
 )
+from waje_vnext.domain.admission import validate_effect_outbox_binding
 from waje_vnext.domain.async_runtime import (
     AsyncJobKind,
     AuthoritySnapshot,
@@ -61,6 +62,7 @@ from waje_vnext.domain.measurement import (
 from waje_vnext.domain.measurement_resolver import (
     MeasurementResolutionAdmission,
     TrustedResolutionInputVerifier,
+    validate_evidence_obligation_derivation,
     validate_executable_design,
 )
 from waje_vnext.domain.obligation_scheduler import (
@@ -70,7 +72,20 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationScheduleRecord,
     ObligationTerminalStatus,
     same_obligation_business_authority,
+    validate_obligation_dispatch_admission,
+    validate_schedule_plan_binding,
     validate_persisted_obligation_completion,
+)
+from waje_vnext.domain.planning import (
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
+    PlanAdoptionRecord,
+    PlanBundle,
+    QueryBindingEnvelope,
+    same_business_authority,
+    validate_conformance_execution_spec_authority,
+    validate_logical_execution_attempt_authority,
+    validate_plan_bundle,
 )
 from waje_vnext.domain.runtime_state import (
     ActionReceipt,
@@ -142,6 +157,22 @@ class InMemoryAuthorityStore:
         self._questions: dict[str, QuestionRevision] = {}
         self._frames: dict[str, AnalysisFrameRevision] = {}
         self._plans: dict[str, WorkPlanRevision] = {}
+        self._plan_adoptions: dict[str, PlanAdoptionRecord] = {}
+        self._plan_adoption_by_plan: dict[str, str] = {}
+        self._query_bindings: dict[str, QueryBindingEnvelope] = {}
+        self._conformance_execution_specs: dict[
+            str,
+            ConformanceExecutionSpec,
+        ] = {}
+        self._conformance_spec_by_logical_execution: dict[
+            str,
+            str,
+        ] = {}
+        self._conformance_spec_by_query_binding: dict[str, str] = {}
+        self._logical_execution_attempts: dict[
+            str,
+            LogicalExecutionAttempt,
+        ] = {}
         self._evidence: dict[str, EvidenceRecord] = {}
         self._answers: dict[str, AnswerVersion] = {}
         self._resolution_outcomes: dict[
@@ -875,12 +906,40 @@ class InMemoryAuthorityStore:
         record: ObligationScheduleRecord,
     ) -> ObligationScheduleRecord:
         with self._lock:
+            if self.get_case(record.case_id).lifecycle in {
+                CaseLifecycle.STOPPED,
+                CaseLifecycle.CLOSED,
+            }:
+                raise InvalidAuthorityTransition(
+                    "terminal case fences obligation schedule"
+                )
             if self.get_authority_snapshot(record.case_id) != (
                 record.authority_snapshot
             ):
                 raise InvalidAuthorityTransition(
                     "obligation schedule authority is stale"
                 )
+            plan = self.get_plan(record.plan_revision_id)
+            adoption = self.get_plan_adoption(
+                record.plan_revision_id
+            )
+            query_bindings = self.list_query_bindings(
+                record.plan_revision_id
+            )
+            obligations = tuple(
+                self.get_evidence_obligation(obligation_id)
+                for obligation_id in adoption.obligation_ids
+            )
+            try:
+                validate_schedule_plan_binding(
+                    schedule=record,
+                    plan=plan,
+                    adoption=adoption,
+                    query_bindings=query_bindings,
+                    obligations=obligations,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
             _put_idempotent_immutable(
                 self._obligation_schedules,
                 record.schedule_id,
@@ -902,30 +961,127 @@ class InMemoryAuthorityStore:
 
     def record_obligation_dispatch(
         self,
+        *,
+        message: OutboxMessage,
         record: ObligationDispatchRecord,
     ) -> ObligationDispatchRecord:
         with self._lock:
             schedule = self.get_obligation_schedule(record.schedule_id)
-            obligation_ids = {
-                item.obligation_id for item in schedule.obligations
+            case = self.get_case(schedule.case_id)
+            if case.lifecycle in {
+                CaseLifecycle.STOPPED,
+                CaseLifecycle.CLOSED,
+            }:
+                raise InvalidAuthorityTransition(
+                    "terminal case fences obligation dispatch"
+                )
+            mailbox = self.get_mailbox_head(message.case_id)
+            if message.expected_head_version != case.head_version:
+                raise StaleHead("outbox expected case head is stale")
+            if message.expected_authority_epoch != mailbox.authority_epoch:
+                raise StaleHead("outbox expected mailbox authority is stale")
+            if message.authority_snapshot != self.get_authority_snapshot(
+                message.case_id
+            ):
+                raise StaleHead("outbox authority snapshot is stale")
+            self._require_event_cursor(
+                message.case_id,
+                message.source_event_cursor,
+            )
+            source_event = self._events[message.case_id][
+                message.source_event_cursor - 1
+            ]
+            expected_event_payload = {
+                key: value
+                for key, value in message.payload.items()
+                if key != "obligation"
             }
-            message = self.get_outbox_message(
-                record.outbox_message_id
+            expected_event_payload["outbox_message_id"] = (
+                message.outbox_message_id
             )
             if (
-                record.dispatch.obligation_id not in obligation_ids
-                or record.dispatch.authority_snapshot
-                != schedule.authority_snapshot
-                or message.outbox_message_id
-                != record.outbox_message_id
-                or message.job_kind is not AsyncJobKind.OBLIGATION
-                or str(message.payload.get("schedule_id", ""))
-                != record.schedule_id
-                or str(message.payload.get("obligation_id", ""))
-                != record.dispatch.obligation_id
+                source_event.event_type
+                is not JournalEventType.OBLIGATION_DISPATCH_ENQUEUED
+                or source_event.authority_ref
+                != record.dispatch.dispatch_id
+                or source_event.payload != expected_event_payload
+                or source_event.operation.causation_id
+                != schedule.schedule_id
+                or source_event.operation.correlation_id
+                != schedule.correlation_id
+                or message.operation.causation_id
+                != source_event.operation.operation_id
             ):
                 raise InvalidAuthorityTransition(
-                    "obligation dispatch does not bind schedule outbox"
+                    "obligation dispatch outbox lacks its schedule event"
+                )
+            persisted_obligation = self.get_evidence_obligation(
+                record.dispatch.obligation_id
+            )
+            scheduled_obligation = next(
+                (
+                    item
+                    for item in schedule.obligations
+                    if item.obligation_id
+                    == record.dispatch.obligation_id
+                ),
+                None,
+            )
+            if scheduled_obligation != persisted_obligation:
+                raise InvalidAuthorityTransition(
+                    "obligation dispatch does not bind persisted obligation"
+                )
+            try:
+                validate_obligation_dispatch_admission(
+                    schedule=schedule,
+                    record=record,
+                    message=message,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
+            prior_dispatch = next(
+                (
+                    candidate
+                    for candidate
+                    in self._obligation_dispatch_records.values()
+                    if candidate.schedule_id == record.schedule_id
+                    and candidate.dispatch.obligation_id
+                    == record.dispatch.obligation_id
+                ),
+                None,
+            )
+            if prior_dispatch is not None:
+                prior_message = self._outbox.get(
+                    prior_dispatch.outbox_message_id
+                )
+                if (
+                    prior_dispatch == record
+                    and prior_message == message
+                ):
+                    return prior_dispatch
+                raise AuthorityConflict(
+                    "obligation already has another dispatch"
+                )
+            duplicate_key = next(
+                (
+                    candidate
+                    for candidate in self._outbox.values()
+                    if candidate.case_id == message.case_id
+                    and candidate.idempotency_key
+                    == message.idempotency_key
+                ),
+                None,
+            )
+            if duplicate_key is not None and duplicate_key != message:
+                raise AuthorityConflict(
+                    "outbox idempotency key already has different content"
+                )
+            if duplicate_key is None:
+                _put_immutable(
+                    self._outbox,
+                    message.outbox_message_id,
+                    message,
+                    "outbox message",
                 )
             _put_idempotent_immutable(
                 self._obligation_dispatch_records,
@@ -959,6 +1115,14 @@ class InMemoryAuthorityStore:
     ) -> ObligationCompletionRecord:
         with self._lock:
             schedule = self.get_obligation_schedule(record.schedule_id)
+            case = self.get_case(schedule.case_id)
+            if case.lifecycle in {
+                CaseLifecycle.STOPPED,
+                CaseLifecycle.CLOSED,
+            }:
+                raise InvalidAuthorityTransition(
+                    "terminal case fences obligation completion"
+                )
             current = self.get_authority_snapshot(schedule.case_id)
             current_hash_matches = (
                 current.content_sha256
@@ -1078,6 +1242,13 @@ class InMemoryAuthorityStore:
     ) -> ObligationScheduleCheckpoint:
         with self._lock:
             schedule = self.get_obligation_schedule(record.schedule_id)
+            if self.get_case(schedule.case_id).lifecycle in {
+                CaseLifecycle.STOPPED,
+                CaseLifecycle.CLOSED,
+            }:
+                raise InvalidAuthorityTransition(
+                    "terminal case fences obligation checkpoint"
+                )
             checkpoints = self.list_obligation_schedule_checkpoints(
                 record.schedule_id
             )
@@ -1936,25 +2107,89 @@ class InMemoryAuthorityStore:
             ] = proof.frame_admission_proof_id
             return proof
 
-    def accept_plan(
+    def accept_plan_bundle(
         self,
-        plan: WorkPlanRevision,
+        bundle: PlanBundle,
         *,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
         operation: OperationIdentity | None = None,
     ) -> InvestigationCase:
-        with self._lock:
-            idempotent = self._idempotent_head_result(
-                event_id,
-                JournalEventType.PLAN_ACCEPTED,
-                plan.plan_revision_id,
+        with self.atomic():
+            plan = bundle.plan
+            existing_event = self._events_by_id.get(event_id)
+            if existing_event is not None:
+                if (
+                    existing_event.event_type
+                    is JournalEventType.PLAN_ACCEPTED
+                    and existing_event.authority_ref
+                    == plan.plan_revision_id
+                    and existing_event.case_id == plan.case_id
+                ):
+                    existing_bundle = PlanBundle(
+                        plan=self.get_plan(plan.plan_revision_id),
+                        query_bindings=self.list_query_bindings(
+                            plan.plan_revision_id
+                        ),
+                        adoption=self.get_plan_adoption(
+                            plan.plan_revision_id
+                        ),
+                    )
+                    expected_replay_operation = (
+                        _derived_event_operation(
+                            case_id=plan.case_id,
+                            event_id=event_id,
+                            action_id=plan.created_by_action_id,
+                            authority_ref=plan.plan_revision_id,
+                            payload=dict(existing_event.payload),
+                        )
+                        if operation is None
+                        else _causal_event_operation(
+                            causal_operation=operation,
+                            event_id=event_id,
+                            payload=dict(existing_event.payload),
+                        )
+                    )
+                    if (
+                        existing_bundle != bundle
+                        or existing_event.operation
+                        != expected_replay_operation
+                    ):
+                        raise AuthorityConflict(
+                            "plan event replay changes bundle content"
+                        )
+                    return self.get_case(plan.case_id)
+                raise AuthorityConflict(
+                    "event ID already has different content"
+                )
+
+            case = self._cas_case(
                 plan.case_id,
+                expected_head_version,
             )
-            if idempotent is not None:
-                return idempotent
-            case = self._cas_case(plan.case_id, expected_head_version)
+            if (
+                bundle.adoption.expected_head_version
+                != expected_head_version
+            ):
+                raise InvalidAuthorityTransition(
+                    "plan adoption expected head is stale"
+                )
+            current_snapshot = self.get_authority_snapshot(
+                plan.case_id
+            )
+            if current_snapshot != bundle.adoption.authority_snapshot:
+                raise StaleHead(
+                    "plan adoption authority snapshot is stale"
+                )
+            if (
+                operation is not None
+                and operation.authority_revision
+                != current_snapshot.mailbox_authority_epoch
+            ):
+                raise StaleHead(
+                    "plan operation authority epoch is stale"
+                )
             if plan.frame_revision_id != case.accepted_frame_revision_id:
                 raise InvalidAuthorityTransition(
                     "plan must bind the currently accepted frame"
@@ -1968,16 +2203,73 @@ class InMemoryAuthorityStore:
                 key=lambda candidate: candidate.revision_number,
                 default=None,
             )
-            expected_revision = 1 if current is None else current.revision_number + 1
-            expected_prior = None if current is None else current.plan_revision_id
+            expected_revision = (
+                1 if current is None else current.revision_number + 1
+            )
+            expected_prior = (
+                None if current is None else current.plan_revision_id
+            )
             if (
                 plan.revision_number != expected_revision
                 or plan.prior_plan_revision_id != expected_prior
+                or (
+                    case.accepted_plan_revision_id is not None
+                    and plan.prior_plan_revision_id
+                    != case.accepted_plan_revision_id
+                )
             ):
                 raise InvalidAuthorityTransition(
                     "plan revision does not extend the accepted plan"
                 )
-            _put_immutable(self._plans, plan.plan_revision_id, plan, "plan")
+            frame = self.get_frame(plan.frame_revision_id)
+            outcomes = tuple(
+                self.get_measurement_resolution(outcome_id)
+                for outcome_id
+                in bundle.adoption.resolution_outcome_ids
+            )
+            admissions = tuple(
+                self.get_measurement_resolution_admission(outcome_id)
+                for outcome_id
+                in bundle.adoption.resolution_outcome_ids
+            )
+            obligations = self.list_evidence_obligations(
+                plan.frame_revision_id
+            )
+            validate_plan_bundle(
+                bundle=bundle,
+                case=case,
+                authority_snapshot=current_snapshot,
+                frame=frame,
+                outcomes=outcomes,
+                admissions=admissions,
+                obligations=obligations,
+            )
+            _put_immutable(
+                self._plans,
+                plan.plan_revision_id,
+                plan,
+                "plan",
+            )
+            for binding in bundle.query_bindings:
+                _put_immutable(
+                    self._query_bindings,
+                    binding.query_binding_id,
+                    binding,
+                    "query binding",
+                )
+            _put_immutable(
+                self._plan_adoptions,
+                bundle.adoption.plan_adoption_id,
+                bundle.adoption,
+                "plan adoption",
+            )
+            if plan.plan_revision_id in self._plan_adoption_by_plan:
+                raise AuthorityConflict(
+                    "plan already has an adoption record"
+                )
+            self._plan_adoption_by_plan[
+                plan.plan_revision_id
+            ] = bundle.adoption.plan_adoption_id
             updated = replace(
                 case,
                 head_version=case.head_version + 1,
@@ -1996,11 +2288,229 @@ class InMemoryAuthorityStore:
                 payload={
                     "revision_number": plan.revision_number,
                     "content_sha256": plan.content_sha256,
+                    "plan_adoption_id": (
+                        bundle.adoption.plan_adoption_id
+                    ),
+                    "plan_adoption_sha256": (
+                        bundle.adoption.content_sha256
+                    ),
+                    "query_binding_ids": tuple(
+                        item.query_binding_id
+                        for item in bundle.query_bindings
+                    ),
                     "head_version": updated.head_version,
                 },
                 operation=operation,
             )
             return updated
+
+    def get_plan_adoption(
+        self,
+        plan_revision_id: str,
+    ) -> PlanAdoptionRecord:
+        with self._lock:
+            adoption_id = _get(
+                self._plan_adoption_by_plan,
+                plan_revision_id,
+                "plan adoption binding",
+            )
+            return _get(
+                self._plan_adoptions,
+                adoption_id,
+                "plan adoption",
+            )
+
+    def get_query_binding(
+        self,
+        query_binding_id: str,
+    ) -> QueryBindingEnvelope:
+        with self._lock:
+            return _get(
+                self._query_bindings,
+                query_binding_id,
+                "query binding",
+            )
+
+    def list_query_bindings(
+        self,
+        plan_revision_id: str,
+    ) -> tuple[QueryBindingEnvelope, ...]:
+        with self._lock:
+            return tuple(
+                item
+                for item in self._query_bindings.values()
+                if item.plan_revision_id == plan_revision_id
+            )
+
+    def record_conformance_execution_spec(
+        self,
+        spec: ConformanceExecutionSpec,
+        *,
+        expected_authority_snapshot: AuthoritySnapshot,
+    ) -> ConformanceExecutionSpec:
+        with self._lock:
+            existing = self._conformance_execution_specs.get(
+                spec.conformance_execution_spec_id
+            )
+            if existing is not None:
+                if existing == spec:
+                    return existing
+                raise AuthorityConflict(
+                    "conformance execution spec ID has different content"
+                )
+            current = self.get_authority_snapshot(spec.case_id)
+            if current != expected_authority_snapshot:
+                raise StaleHead(
+                    "conformance execution authority is stale"
+                )
+            binding = self.get_query_binding(
+                spec.query_binding_id
+            )
+            try:
+                validate_conformance_execution_spec_authority(
+                    spec=spec,
+                    binding=binding,
+                    current_authority=current,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(
+                    str(error)
+                ) from error
+            existing_logical = (
+                self._conformance_spec_by_logical_execution.get(
+                    spec.logical_execution_id
+                )
+            )
+            existing_binding = (
+                self._conformance_spec_by_query_binding.get(
+                    spec.query_binding_id
+                )
+            )
+            if (
+                existing_logical is not None
+                and existing_logical
+                != spec.conformance_execution_spec_id
+            ):
+                raise AuthorityConflict(
+                    "logical execution already has another spec"
+                )
+            if (
+                existing_binding is not None
+                and existing_binding
+                != spec.conformance_execution_spec_id
+            ):
+                raise AuthorityConflict(
+                    "query binding already has another execution spec"
+                )
+            _put_idempotent_immutable(
+                self._conformance_execution_specs,
+                spec.conformance_execution_spec_id,
+                spec,
+                "conformance execution spec",
+            )
+            self._conformance_spec_by_logical_execution[
+                spec.logical_execution_id
+            ] = spec.conformance_execution_spec_id
+            self._conformance_spec_by_query_binding[
+                spec.query_binding_id
+            ] = spec.conformance_execution_spec_id
+            return spec
+
+    def get_conformance_execution_spec(
+        self,
+        conformance_execution_spec_id: str,
+    ) -> ConformanceExecutionSpec:
+        with self._lock:
+            return _get(
+                self._conformance_execution_specs,
+                conformance_execution_spec_id,
+                "conformance execution spec",
+            )
+
+    def record_logical_execution_attempt(
+        self,
+        attempt: LogicalExecutionAttempt,
+    ) -> LogicalExecutionAttempt:
+        with self._lock:
+            existing = self._logical_execution_attempts.get(
+                attempt.logical_execution_attempt_id
+            )
+            if existing is not None:
+                if existing == attempt:
+                    return existing
+                raise AuthorityConflict(
+                    "logical execution attempt ID has different content"
+                )
+            spec = self.get_conformance_execution_spec(
+                attempt.conformance_execution_spec_id
+            )
+            binding = self.get_query_binding(
+                attempt.query_binding_id
+            )
+            current = self.get_authority_snapshot(attempt.case_id)
+            if not same_business_authority(
+                current,
+                attempt.authority_snapshot,
+            ):
+                raise StaleHead(
+                    "logical execution attempt authority is stale"
+                )
+            prior_attempts = self.list_logical_execution_attempts(
+                attempt.logical_execution_id
+            )
+            prior_attempt = (
+                None if not prior_attempts else prior_attempts[-1]
+            )
+            try:
+                validate_logical_execution_attempt_authority(
+                    attempt=attempt,
+                    spec=spec,
+                    binding=binding,
+                    current_authority=current,
+                    prior_attempt=prior_attempt,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(
+                    str(error)
+                ) from error
+            if attempt.attempt_number != len(prior_attempts) + 1:
+                raise InvalidAuthorityTransition(
+                    "logical attempt number is not contiguous"
+                )
+            if prior_attempts:
+                if (
+                    attempt.prior_attempt_id
+                    != prior_attempts[-1].logical_execution_attempt_id
+                ):
+                    raise InvalidAuthorityTransition(
+                        "logical retry does not extend prior attempt"
+                    )
+            _put_immutable(
+                self._logical_execution_attempts,
+                attempt.logical_execution_attempt_id,
+                attempt,
+                "logical execution attempt",
+            )
+            return attempt
+
+    def list_logical_execution_attempts(
+        self,
+        logical_execution_id: str,
+    ) -> tuple[LogicalExecutionAttempt, ...]:
+        with self._lock:
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in (
+                            self._logical_execution_attempts.values()
+                        )
+                        if item.logical_execution_id
+                        == logical_execution_id
+                    ),
+                    key=lambda item: item.attempt_number,
+                )
+            )
 
     def record_evidence(
         self,
@@ -2146,6 +2656,7 @@ class InMemoryAuthorityStore:
         admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> MeasurementResolutionOutcome:
         with self.atomic():
             if self._resolution_input_verifier is None:
@@ -2164,6 +2675,23 @@ class InMemoryAuthorityStore:
                 outcome.case_id,
                 expected_head_version,
             )
+            current_authority = self.get_authority_snapshot(
+                outcome.case_id
+            )
+            if not outcome.derivation_authority.matches(
+                current_authority
+            ):
+                raise StaleHead(
+                    "measurement derivation authority is stale"
+                )
+            if (
+                operation is not None
+                and operation.authority_revision
+                != outcome.derivation_authority.mailbox_authority_epoch
+            ):
+                raise StaleHead(
+                    "measurement operation authority is stale"
+                )
             if (
                 outcome.question_revision_id
                 != case.accepted_question_revision_id
@@ -2230,6 +2758,7 @@ class InMemoryAuthorityStore:
                 ),
                 created_at=outcome.created_at,
                 label="measurement resolution",
+                operation=operation,
             )
 
     def get_measurement_resolution(
@@ -2241,6 +2770,22 @@ class InMemoryAuthorityStore:
                 self._resolution_outcomes,
                 resolution_outcome_id,
                 "measurement resolution",
+            )
+
+    def list_measurement_resolutions(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[MeasurementResolutionOutcome, ...]:
+        with self._lock:
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._resolution_outcomes.values()
+                        if item.frame_revision_id == frame_revision_id
+                    ),
+                    key=lambda item: item.estimand_id,
+                )
             )
 
     def get_measurement_resolution_admission(
@@ -2260,12 +2805,30 @@ class InMemoryAuthorityStore:
         *,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> ResolvedEvidenceObligation:
         with self._lock:
             case = self._cas_case(
                 obligation.case_id,
                 expected_head_version,
             )
+            current_authority = self.get_authority_snapshot(
+                obligation.case_id
+            )
+            if not obligation.derivation_authority.matches(
+                current_authority
+            ):
+                raise StaleHead(
+                    "obligation derivation authority is stale"
+                )
+            if (
+                operation is not None
+                and operation.authority_revision
+                != obligation.derivation_authority.mailbox_authority_epoch
+            ):
+                raise StaleHead(
+                    "obligation operation authority is stale"
+                )
             if obligation.frame_revision_id != case.accepted_frame_revision_id:
                 raise InvalidAuthorityTransition(
                     "obligation must bind the accepted frame"
@@ -2277,6 +2840,8 @@ class InMemoryAuthorityStore:
                 outcome.case_id != obligation.case_id
                 or outcome.frame_revision_id != obligation.frame_revision_id
                 or outcome.estimand_id != obligation.estimand_id
+                or outcome.derivation_authority
+                != obligation.derivation_authority
             ):
                 raise InvalidAuthorityTransition(
                     "obligation resolution binding is inconsistent"
@@ -2304,6 +2869,14 @@ class InMemoryAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "obligation changes its evidence requirement"
                 )
+            try:
+                validate_evidence_obligation_derivation(
+                    frame=frame,
+                    outcome=outcome,
+                    obligation=obligation,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
             return self._record_derived_locked(
                 records=self._evidence_obligations,
                 record_id=obligation.obligation_id,
@@ -2313,6 +2886,7 @@ class InMemoryAuthorityStore:
                 event_type=JournalEventType.EVIDENCE_OBLIGATION_RECORDED,
                 created_at=obligation.created_at,
                 label="evidence obligation",
+                operation=operation,
             )
 
     def get_evidence_obligation(
@@ -2324,6 +2898,26 @@ class InMemoryAuthorityStore:
                 self._evidence_obligations,
                 obligation_id,
                 "evidence obligation",
+            )
+
+    def list_evidence_obligations(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[ResolvedEvidenceObligation, ...]:
+        with self._lock:
+            return tuple(
+                sorted(
+                    (
+                        item
+                        for item in self._evidence_obligations.values()
+                        if item.frame_revision_id == frame_revision_id
+                    ),
+                    key=lambda item: (
+                        item.estimand_id,
+                        item.evidence_requirement_id,
+                        item.obligation_id,
+                    ),
+                )
             )
 
     def record_evidence_validity(
@@ -2823,6 +3417,10 @@ class InMemoryAuthorityStore:
 
     def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
         with self._lock:
+            if message.job_kind is AsyncJobKind.OBLIGATION:
+                raise InvalidAuthorityTransition(
+                    "obligation outbox requires schedule dispatch admission"
+                )
             case = self.get_case(message.case_id)
             mailbox = self.get_mailbox_head(message.case_id)
             if message.expected_head_version != case.head_version:
@@ -2840,7 +3438,7 @@ class InMemoryAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "outbox operation authority does not match its fence"
                 )
-            self._require_event_cursor(
+            source_event = self._require_event_cursor(
                 message.case_id,
                 message.source_event_cursor,
             )
@@ -2887,6 +3485,58 @@ class InMemoryAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "outbox payload kind does not match action"
                     )
+                if action.action.kind in _EFFECT_ACTION_KINDS:
+                    admission_event = next(
+                        (
+                            event
+                            for event in self.list_events(
+                                message.case_id
+                            )
+                            if (
+                                event.event_type
+                                is JournalEventType.ACTION_ADMITTED
+                                and event.action_id
+                                == action.action.action_id
+                            )
+                        ),
+                        None,
+                    )
+                    receipt = self.get_action_receipt(
+                        action.action.case_id,
+                        action.action.idempotency_key,
+                    )
+                    if admission_event is None or receipt is None:
+                        raise InvalidAuthorityTransition(
+                            "effect outbox lacks admission proof"
+                        )
+                    current_plan = (
+                        None
+                        if case.accepted_plan_revision_id is None
+                        else self.get_plan(
+                            case.accepted_plan_revision_id
+                        )
+                    )
+                    try:
+                        validate_effect_outbox_binding(
+                            case=case,
+                            message=message,
+                            action=action.action,
+                            admission_event=admission_event,
+                            source_event=source_event,
+                            receipt=receipt,
+                            current_plan=current_plan,
+                            current_query_bindings=(
+                                ()
+                                if current_plan is None
+                                else self.list_query_bindings(
+                                    current_plan.plan_revision_id
+                                )
+                            ),
+                        )
+                    except ValueError as error:
+                        raise InvalidAuthorityTransition(
+                            str(error)
+                        ) from error
             elif message.job_kind in set(_ACTION_JOB_KINDS.values()):
                 raise InvalidAuthorityTransition(
                     "effect outbox requires an admitted action"
@@ -3593,6 +4243,7 @@ class InMemoryAuthorityStore:
         event_type: JournalEventType,
         created_at: datetime,
         label: str,
+        operation: OperationIdentity | None = None,
     ) -> RecordT:
         existing_event = self._events_by_id.get(event_id)
         if existing_event is not None:
@@ -3616,6 +4267,7 @@ class InMemoryAuthorityStore:
             payload={
                 "content_sha256": content_sha256(record),
             },
+            operation=operation,
         )
         return record
 
@@ -3625,6 +4277,23 @@ class InMemoryAuthorityStore:
             "_questions": self._questions.copy(),
             "_frames": self._frames.copy(),
             "_plans": self._plans.copy(),
+            "_plan_adoptions": self._plan_adoptions.copy(),
+            "_plan_adoption_by_plan": (
+                self._plan_adoption_by_plan.copy()
+            ),
+            "_query_bindings": self._query_bindings.copy(),
+            "_conformance_execution_specs": (
+                self._conformance_execution_specs.copy()
+            ),
+            "_conformance_spec_by_logical_execution": (
+                self._conformance_spec_by_logical_execution.copy()
+            ),
+            "_conformance_spec_by_query_binding": (
+                self._conformance_spec_by_query_binding.copy()
+            ),
+            "_logical_execution_attempts": (
+                self._logical_execution_attempts.copy()
+            ),
             "_evidence": self._evidence.copy(),
             "_answers": self._answers.copy(),
             "_resolution_outcomes": self._resolution_outcomes.copy(),
@@ -3791,9 +4460,12 @@ def _causal_event_operation(
     event_id: str,
     payload: dict[str, object],
 ) -> OperationIdentity:
+    causal_operation_sha256 = content_sha256(causal_operation)
     return OperationIdentity(
         operation_id=f"event-operation:{event_id}",
-        idempotency_key=f"event-key:{event_id}",
+        idempotency_key=(
+            f"event-key:{event_id}:{causal_operation_sha256}"
+        ),
         causation_id=causal_operation.operation_id,
         correlation_id=causal_operation.correlation_id,
         authority_revision=causal_operation.authority_revision,

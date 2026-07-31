@@ -19,6 +19,7 @@ from waje_vnext.domain.actions import (
     ActionKind,
     AskUserPayload,
 )
+from waje_vnext.domain.admission import validate_effect_outbox_binding
 from waje_vnext.domain.async_runtime import (
     AsyncJobKind,
     AuthoritySnapshot,
@@ -58,7 +59,19 @@ from waje_vnext.domain.measurement import (
 from waje_vnext.domain.measurement_resolver import (
     MeasurementResolutionAdmission,
     TrustedResolutionInputVerifier,
+    validate_evidence_obligation_derivation,
     validate_executable_design,
+)
+from waje_vnext.domain.planning import (
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
+    PlanAdoptionRecord,
+    PlanBundle,
+    QueryBindingEnvelope,
+    same_business_authority,
+    validate_conformance_execution_spec_authority,
+    validate_logical_execution_attempt_authority,
+    validate_plan_bundle,
 )
 from waje_vnext.domain.obligation_scheduler import (
     ObligationCompletionRecord,
@@ -67,6 +80,8 @@ from waje_vnext.domain.obligation_scheduler import (
     ObligationScheduleRecord,
     ObligationTerminalStatus,
     same_obligation_business_authority,
+    validate_obligation_dispatch_admission,
+    validate_schedule_plan_binding,
     validate_persisted_obligation_completion,
 )
 from waje_vnext.domain.context import ContextPacket
@@ -127,6 +142,7 @@ from .codec import (
     decode_interpretation,
     decode_job_disposition,
     decode_logical_model_job,
+    decode_logical_execution_attempt,
     decode_message_impact_binding,
     decode_message_ingress_record,
     decode_objection,
@@ -136,6 +152,7 @@ from .codec import (
     decode_obligation_schedule,
     decode_obligation_schedule_checkpoint,
     decode_pending_user_message,
+    decode_plan_adoption,
     decode_provider_attempt_receipt,
     decode_provider_attempt_request,
     decode_run_trace_manifest,
@@ -144,6 +161,8 @@ from .codec import (
     decode_persisted_action,
     decode_plan,
     decode_question,
+    decode_query_binding,
+    decode_conformance_execution_spec,
     decode_measurement_resolution,
     decode_measurement_resolution_admission,
     decode_settlement_precondition,
@@ -233,6 +252,21 @@ def apply_gate3_2_migration(
         migration_path=migration_path,
         version=4,
         name="gate3_2_runtime_sagas",
+    )
+
+
+def apply_gate3_4_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+) -> str:
+    """Apply the Gate 3.4 Plan and logical query continuity amendment."""
+
+    return _apply_migration(
+        dsn,
+        migration_path=migration_path,
+        version=5,
+        name="gate3_4_plan_query_continuity",
     )
 
 
@@ -1160,16 +1194,62 @@ class PostgresAuthorityStore:
         payload = encode_record(record)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                if (
-                    self._authority_snapshot_from_cursor(
-                        cursor,
-                        record.case_id,
+                case, current = self._lock_authority_commit_fence(
+                    cursor,
+                    case_id=record.case_id,
+                    expected_head_version=(
+                        record.authority_snapshot.head_version
+                    ),
+                    operation=None,
+                )
+                if case.lifecycle in {
+                    CaseLifecycle.STOPPED,
+                    CaseLifecycle.CLOSED,
+                }:
+                    raise InvalidAuthorityTransition(
+                        "terminal case fences obligation schedule"
                     )
-                    != record.authority_snapshot
-                ):
+                if current != record.authority_snapshot:
                     raise InvalidAuthorityTransition(
                         "obligation schedule authority is stale"
                     )
+                plan = self._get_plan(
+                    cursor,
+                    record.plan_revision_id,
+                )
+                adoption = self._get_plan_adoption_for_plan(
+                    cursor,
+                    record.plan_revision_id,
+                )
+                query_bindings = (
+                    self._list_query_bindings_for_plan(
+                        cursor,
+                        record.plan_revision_id,
+                    )
+                )
+                obligations = tuple(
+                    self._get_payload(
+                        cursor,
+                        table="resolved_evidence_obligations",
+                        id_column="obligation_id",
+                        record_id=obligation_id,
+                        label="evidence obligation",
+                        decoder=decode_evidence_obligation,
+                    )
+                    for obligation_id in adoption.obligation_ids
+                )
+                try:
+                    validate_schedule_plan_binding(
+                        schedule=record,
+                        plan=plan,
+                        adoption=adoption,
+                        query_bindings=query_bindings,
+                        obligations=obligations,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(
+                        str(error)
+                    ) from error
                 self._insert_idempotent_immutable(
                     cursor,
                     table="obligation_schedules",
@@ -1208,9 +1288,12 @@ class PostgresAuthorityStore:
 
     def record_obligation_dispatch(
         self,
+        *,
+        message: OutboxMessage,
         record: ObligationDispatchRecord,
     ) -> ObligationDispatchRecord:
-        payload = encode_record(record)
+        record_payload = encode_record(record)
+        message_payload = encode_record(message)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
                 schedule = self._get_payload(
@@ -1221,53 +1304,182 @@ class PostgresAuthorityStore:
                     label="obligation schedule",
                     decoder=decode_obligation_schedule,
                 )
-                message = self._get_payload(
+                case = self._get_case(
                     cursor,
-                    table="outbox_messages",
-                    id_column="outbox_message_id",
-                    record_id=record.outbox_message_id,
-                    label="outbox message",
-                    decoder=decode_outbox_message,
+                    schedule.case_id,
+                    for_update=True,
+                )
+                if case.lifecycle in {
+                    CaseLifecycle.STOPPED,
+                    CaseLifecycle.CLOSED,
+                }:
+                    raise InvalidAuthorityTransition(
+                        "terminal case fences obligation dispatch"
+                    )
+                if (
+                    case.head_version
+                    != schedule.authority_snapshot.head_version
+                ):
+                    raise StaleHead(
+                        "outbox expected case head is stale"
+                    )
+                cursor.execute(
+                    """
+                    SELECT authority_epoch
+                    FROM waje_vnext.case_mailbox_heads
+                    WHERE case_id = %s
+                    """,
+                    (schedule.case_id,),
+                )
+                mailbox_epoch = cursor.fetchone()["authority_epoch"]
+                if (
+                    message.expected_authority_epoch != mailbox_epoch
+                    or message.authority_snapshot
+                    != self._authority_snapshot_from_cursor(
+                        cursor,
+                        schedule.case_id,
+                    )
+                ):
+                    raise StaleHead(
+                        "obligation outbox authority fence is stale"
+                    )
+                source_event = self._require_event_cursor(
+                    cursor,
+                    message.case_id,
+                    message.source_event_cursor,
+                )
+                expected_event_payload = {
+                    key: value
+                    for key, value in message.payload.items()
+                    if key != "obligation"
+                }
+                expected_event_payload["outbox_message_id"] = (
+                    message.outbox_message_id
                 )
                 if (
-                    record.dispatch.obligation_id
-                    not in {
-                        item.obligation_id
-                        for item in schedule.obligations
-                    }
-                    or record.dispatch.authority_snapshot
-                    != schedule.authority_snapshot
-                    or message.job_kind is not AsyncJobKind.OBLIGATION
-                    or str(message.payload.get("schedule_id", ""))
-                    != record.schedule_id
-                    or str(message.payload.get("obligation_id", ""))
-                    != record.dispatch.obligation_id
+                    source_event.event_type
+                    is not JournalEventType.OBLIGATION_DISPATCH_ENQUEUED
+                    or source_event.authority_ref
+                    != record.dispatch.dispatch_id
+                    or source_event.payload != expected_event_payload
+                    or source_event.operation.causation_id
+                    != schedule.schedule_id
+                    or source_event.operation.correlation_id
+                    != schedule.correlation_id
+                    or message.operation.causation_id
+                    != source_event.operation.operation_id
                 ):
                     raise InvalidAuthorityTransition(
-                        "obligation dispatch does not bind schedule outbox"
+                        "obligation dispatch outbox lacks its schedule event"
                     )
-                self._insert_idempotent_immutable(
+                persisted_obligation = self._get_payload(
                     cursor,
-                    table="obligation_dispatch_records",
-                    id_column="dispatch_record_id",
-                    record_id=record.dispatch_record_id,
-                    columns=(
-                        "schedule_id",
-                        "obligation_id",
-                        "outbox_message_id",
-                        "payload",
-                        "created_at",
-                    ),
-                    values=(
-                        record.schedule_id,
-                        record.dispatch.obligation_id,
-                        record.outbox_message_id,
-                        Jsonb(payload),
-                        record.created_at,
-                    ),
-                    payload=payload,
-                    label="obligation dispatch",
+                    table="resolved_evidence_obligations",
+                    id_column="obligation_id",
+                    record_id=record.dispatch.obligation_id,
+                    label="evidence obligation",
+                    decoder=decode_evidence_obligation,
                 )
+                scheduled_obligation = next(
+                    (
+                        item
+                        for item in schedule.obligations
+                        if item.obligation_id
+                        == record.dispatch.obligation_id
+                    ),
+                    None,
+                )
+                if scheduled_obligation != persisted_obligation:
+                    raise InvalidAuthorityTransition(
+                        "obligation dispatch does not bind persisted "
+                        "obligation"
+                    )
+                try:
+                    validate_obligation_dispatch_admission(
+                        schedule=schedule,
+                        record=record,
+                        message=message,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(
+                        str(error)
+                    ) from error
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="outbox_messages",
+                        id_column="outbox_message_id",
+                        record_id=message.outbox_message_id,
+                        columns=(
+                            "case_id",
+                            "source_event_cursor",
+                            "action_id",
+                            "job_kind",
+                            "operation_id",
+                            "idempotency_key",
+                            "causation_id",
+                            "correlation_id",
+                            "authority_revision",
+                            "expected_head_version",
+                            "expected_authority_epoch",
+                            "destination",
+                            "contract_ref",
+                            "payload_sha256",
+                            "payload",
+                            "created_at",
+                        ),
+                        values=(
+                            message.case_id,
+                            message.source_event_cursor,
+                            message.action_id,
+                            message.job_kind.value,
+                            message.operation.operation_id,
+                            message.idempotency_key,
+                            message.operation.causation_id,
+                            message.operation.correlation_id,
+                            message.operation.authority_revision,
+                            message.expected_head_version,
+                            message.expected_authority_epoch,
+                            message.destination,
+                            message.contract_ref,
+                            message.payload_sha256,
+                            Jsonb(message_payload),
+                            message.created_at,
+                        ),
+                        payload=message_payload,
+                        label="outbox message",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "outbox idempotency key already has different content"
+                    ) from error
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="obligation_dispatch_records",
+                        id_column="dispatch_record_id",
+                        record_id=record.dispatch_record_id,
+                        columns=(
+                            "schedule_id",
+                            "obligation_id",
+                            "outbox_message_id",
+                            "payload",
+                            "created_at",
+                        ),
+                        values=(
+                            record.schedule_id,
+                            record.dispatch.obligation_id,
+                            record.outbox_message_id,
+                            Jsonb(record_payload),
+                            record.created_at,
+                        ),
+                        payload=record_payload,
+                        label="obligation dispatch",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "obligation already has another dispatch"
+                    ) from error
                 return record
 
     def list_obligation_dispatches(
@@ -1313,6 +1525,18 @@ class PostgresAuthorityStore:
                     label="obligation schedule",
                     decoder=decode_obligation_schedule,
                 )
+                case = self._get_case(
+                    cursor,
+                    schedule.case_id,
+                    for_update=True,
+                )
+                if case.lifecycle in {
+                    CaseLifecycle.STOPPED,
+                    CaseLifecycle.CLOSED,
+                }:
+                    raise InvalidAuthorityTransition(
+                        "terminal case fences obligation completion"
+                    )
                 current = self._authority_snapshot_from_cursor(
                     cursor,
                     schedule.case_id,
@@ -1470,6 +1694,18 @@ class PostgresAuthorityStore:
                     label="obligation schedule",
                     decoder=decode_obligation_schedule,
                 )
+                case = self._get_case(
+                    cursor,
+                    schedule.case_id,
+                    for_update=True,
+                )
+                if case.lifecycle in {
+                    CaseLifecycle.STOPPED,
+                    CaseLifecycle.CLOSED,
+                }:
+                    raise InvalidAuthorityTransition(
+                        "terminal case fences obligation checkpoint"
+                    )
                 cursor.execute(
                     """
                     SELECT checkpoint_id, checkpoint_number
@@ -1673,6 +1909,27 @@ class PostgresAuthorityStore:
             decoder=decode_measurement_resolution,
         )
 
+    def list_measurement_resolutions(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[MeasurementResolutionOutcome, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_frame(cursor, frame_revision_id)
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.measurement_resolution_outcomes
+                    WHERE frame_revision_id = %s
+                    ORDER BY estimand_id, resolution_outcome_id
+                    """,
+                    (frame_revision_id,),
+                )
+                return tuple(
+                    decode_measurement_resolution(row["payload"])
+                    for row in cursor.fetchall()
+                )
+
     def get_measurement_resolution_admission(
         self,
         resolution_outcome_id: str,
@@ -1696,6 +1953,27 @@ class PostgresAuthorityStore:
             label="evidence obligation",
             decoder=decode_evidence_obligation,
         )
+
+    def list_evidence_obligations(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[ResolvedEvidenceObligation, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_frame(cursor, frame_revision_id)
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.resolved_evidence_obligations
+                    WHERE frame_revision_id = %s
+                    ORDER BY estimand_id, evidence_requirement_id, obligation_id
+                    """,
+                    (frame_revision_id,),
+                )
+                return tuple(
+                    decode_evidence_obligation(row["payload"])
+                    for row in cursor.fetchall()
+                )
 
     def get_plan(self, plan_revision_id: str) -> WorkPlanRevision:
         return self._get_authority(
@@ -2631,7 +2909,14 @@ class PostgresAuthorityStore:
                 )
                 if idempotent is not None:
                     return idempotent
-                case = self._lock_case(cursor, frame.case_id, expected_head_version)
+                case, authority_snapshot = (
+                    self._lock_authority_commit_fence(
+                        cursor,
+                        case_id=frame.case_id,
+                        expected_head_version=expected_head_version,
+                        operation=operation,
+                    )
+                )
                 proof = self._get_payload(
                     cursor,
                     table="frame_admission_proofs",
@@ -2649,11 +2934,7 @@ class PostgresAuthorityStore:
                         "frame admission proof does not bind this Frame"
                     )
                 if (
-                    proof.authority_snapshot
-                    != self._authority_snapshot_from_cursor(
-                        cursor,
-                        frame.case_id,
-                    )
+                    proof.authority_snapshot != authority_snapshot
                 ):
                     raise InvalidAuthorityTransition(
                         "frame admission proof authority snapshot is stale"
@@ -2786,9 +3067,9 @@ class PostgresAuthorityStore:
                 )
                 return updated
 
-    def accept_plan(
+    def accept_plan_bundle(
         self,
-        plan: WorkPlanRevision,
+        bundle: PlanBundle,
         *,
         expected_head_version: int,
         event_id: str,
@@ -2797,16 +3078,76 @@ class PostgresAuthorityStore:
     ) -> InvestigationCase:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                idempotent = self._idempotent_head_event(
-                    cursor,
-                    event_id=event_id,
-                    event_type=JournalEventType.PLAN_ACCEPTED,
-                    authority_ref=plan.plan_revision_id,
-                    case_id=plan.case_id,
+                plan = bundle.plan
+                existing_event = self._event_by_id(cursor, event_id)
+                if existing_event is not None:
+                    if (
+                        existing_event.event_type
+                        is JournalEventType.PLAN_ACCEPTED
+                        and existing_event.authority_ref
+                        == plan.plan_revision_id
+                        and existing_event.case_id == plan.case_id
+                    ):
+                        existing_bundle = PlanBundle(
+                            plan=self._get_plan(
+                                cursor,
+                                plan.plan_revision_id,
+                            ),
+                            query_bindings=(
+                                self._list_query_bindings_for_plan(
+                                    cursor,
+                                    plan.plan_revision_id,
+                                )
+                            ),
+                            adoption=self._get_plan_adoption_for_plan(
+                                cursor,
+                                plan.plan_revision_id,
+                            ),
+                        )
+                        expected_replay_operation = (
+                            _derived_event_operation(
+                                case_id=plan.case_id,
+                                event_id=event_id,
+                                action_id=plan.created_by_action_id,
+                                authority_ref=plan.plan_revision_id,
+                                payload=dict(existing_event.payload),
+                            )
+                            if operation is None
+                            else _causal_event_operation(
+                                causal_operation=operation,
+                                event_id=event_id,
+                                payload=dict(existing_event.payload),
+                            )
+                        )
+                        if (
+                            existing_bundle != bundle
+                            or existing_event.operation
+                            != expected_replay_operation
+                        ):
+                            raise AuthorityConflict(
+                                "plan event replay changes bundle content"
+                            )
+                        return self._get_case(cursor, plan.case_id)
+                    raise AuthorityConflict(
+                        "event ID already has different content"
+                    )
+                case, authority_snapshot = (
+                    self._lock_authority_commit_fence(
+                        cursor,
+                        case_id=plan.case_id,
+                        expected_head_version=expected_head_version,
+                        operation=operation,
+                    )
                 )
-                if idempotent is not None:
-                    return idempotent
-                case = self._lock_case(cursor, plan.case_id, expected_head_version)
+                if (
+                    bundle.adoption.expected_head_version
+                    != expected_head_version
+                    or bundle.adoption.authority_snapshot
+                    != authority_snapshot
+                ):
+                    raise StaleHead(
+                        "plan adoption authority snapshot is stale"
+                    )
                 if plan.frame_revision_id != case.accepted_frame_revision_id:
                     raise InvalidAuthorityTransition(
                         "plan must bind the currently accepted frame"
@@ -2821,11 +3162,71 @@ class PostgresAuthorityStore:
                 if (
                     plan.revision_number != expected_revision
                     or plan.prior_plan_revision_id != expected_prior
+                    or (
+                        case.accepted_plan_revision_id is not None
+                        and plan.prior_plan_revision_id
+                        != case.accepted_plan_revision_id
+                    )
                 ):
                     raise InvalidAuthorityTransition(
                         "plan revision does not extend the accepted plan"
                     )
-                payload = encode_record(plan)
+                frame = self._get_frame(cursor, plan.frame_revision_id)
+                outcomes = tuple(
+                    self._get_payload(
+                        cursor,
+                        table="measurement_resolution_outcomes",
+                        id_column="resolution_outcome_id",
+                        record_id=outcome_id,
+                        label="measurement resolution",
+                        decoder=decode_measurement_resolution,
+                    )
+                    for outcome_id
+                    in bundle.adoption.resolution_outcome_ids
+                )
+                admissions = tuple(
+                    self._get_payload(
+                        cursor,
+                        table="measurement_resolution_admissions",
+                        id_column="resolution_outcome_id",
+                        record_id=outcome_id,
+                        label="measurement resolution admission",
+                        decoder=(
+                            decode_measurement_resolution_admission
+                        ),
+                    )
+                    for outcome_id
+                    in bundle.adoption.resolution_outcome_ids
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.resolved_evidence_obligations
+                    WHERE frame_revision_id = %s
+                    ORDER BY
+                        estimand_id,
+                        evidence_requirement_id,
+                        obligation_id
+                    """,
+                    (plan.frame_revision_id,),
+                )
+                obligations = tuple(
+                    decode_evidence_obligation(row["payload"])
+                    for row in cursor.fetchall()
+                )
+                try:
+                    validate_plan_bundle(
+                        bundle=bundle,
+                        case=case,
+                        authority_snapshot=authority_snapshot,
+                        frame=frame,
+                        outcomes=outcomes,
+                        admissions=admissions,
+                        obligations=obligations,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(str(error)) from error
+                plan_payload = encode_record(plan)
                 self._insert_immutable(
                     cursor,
                     table="work_plan_revisions",
@@ -2846,11 +3247,92 @@ class PostgresAuthorityStore:
                         plan.revision_number,
                         plan.prior_plan_revision_id,
                         plan.content_sha256,
-                        Jsonb(payload),
+                        Jsonb(plan_payload),
                         plan.created_at,
                     ),
-                    payload=payload,
+                    payload=plan_payload,
                     label="plan",
+                )
+                for binding_ordinal, binding in enumerate(
+                    bundle.query_bindings,
+                    start=1,
+                ):
+                    binding_payload = encode_record(binding)
+                    self._insert_immutable(
+                        cursor,
+                        table="query_binding_envelopes",
+                        id_column="query_binding_id",
+                        record_id=binding.query_binding_id,
+                        columns=(
+                            "case_id",
+                            "question_revision_id",
+                            "frame_revision_id",
+                            "plan_revision_id",
+                            "binding_ordinal",
+                            "task_id",
+                            "estimand_id",
+                            "evidence_requirement_id",
+                            "obligation_id",
+                            "resolution_outcome_id",
+                            "content_sha256",
+                            "payload",
+                            "created_at",
+                            "schema_epoch",
+                        ),
+                        values=(
+                            binding.case_id,
+                            binding.question_revision_id,
+                            binding.frame_revision_id,
+                            binding.plan_revision_id,
+                            binding_ordinal,
+                            binding.task_id,
+                            binding.estimand_id,
+                            binding.evidence_requirement_id,
+                            binding.obligation_id,
+                            binding.resolution_outcome_id,
+                            binding.content_sha256,
+                            Jsonb(binding_payload),
+                            binding.created_at,
+                            binding.schema_epoch,
+                        ),
+                        payload=binding_payload,
+                        label="query binding",
+                    )
+                adoption = bundle.adoption
+                adoption_payload = encode_record(adoption)
+                self._insert_immutable(
+                    cursor,
+                    table="plan_adoption_records",
+                    id_column="plan_adoption_id",
+                    record_id=adoption.plan_adoption_id,
+                    columns=(
+                        "case_id",
+                        "question_revision_id",
+                        "frame_revision_id",
+                        "plan_revision_id",
+                        "expected_head_version",
+                        "authority_snapshot_sha256",
+                        "derivation_proof_sha256",
+                        "content_sha256",
+                        "payload",
+                        "created_at",
+                        "schema_epoch",
+                    ),
+                    values=(
+                        adoption.case_id,
+                        adoption.question_revision_id,
+                        adoption.frame_revision_id,
+                        adoption.plan_revision_id,
+                        adoption.expected_head_version,
+                        adoption.authority_snapshot_sha256,
+                        adoption.derivation_proof_sha256,
+                        adoption.content_sha256,
+                        Jsonb(adoption_payload),
+                        adoption.created_at,
+                        adoption.schema_epoch,
+                    ),
+                    payload=adoption_payload,
+                    label="plan adoption",
                 )
                 updated = self._move_heads(
                     cursor,
@@ -2871,11 +3353,333 @@ class PostgresAuthorityStore:
                     payload={
                         "revision_number": plan.revision_number,
                         "content_sha256": plan.content_sha256,
+                        "plan_adoption_id": adoption.plan_adoption_id,
+                        "plan_adoption_sha256": adoption.content_sha256,
+                        "query_binding_ids": tuple(
+                            item.query_binding_id
+                            for item in bundle.query_bindings
+                        ),
                         "head_version": updated.head_version,
                     },
                     operation=operation,
                 )
                 return updated
+
+    def get_plan_adoption(
+        self,
+        plan_revision_id: str,
+    ) -> PlanAdoptionRecord:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                return self._get_plan_adoption_for_plan(
+                    cursor,
+                    plan_revision_id,
+                )
+
+    def get_query_binding(
+        self,
+        query_binding_id: str,
+    ) -> QueryBindingEnvelope:
+        return self._get_authority(
+            table="query_binding_envelopes",
+            id_column="query_binding_id",
+            record_id=query_binding_id,
+            label="query binding",
+            decoder=decode_query_binding,
+        )
+
+    def list_query_bindings(
+        self,
+        plan_revision_id: str,
+    ) -> tuple[QueryBindingEnvelope, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                self._get_plan(cursor, plan_revision_id)
+                return self._list_query_bindings_for_plan(
+                    cursor,
+                    plan_revision_id,
+                )
+
+    def record_conformance_execution_spec(
+        self,
+        spec: ConformanceExecutionSpec,
+        *,
+        expected_authority_snapshot: AuthoritySnapshot,
+    ) -> ConformanceExecutionSpec:
+        payload = encode_record(spec)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.conformance_execution_specs
+                    WHERE conformance_execution_spec_id = %s
+                    """,
+                    (spec.conformance_execution_spec_id,),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row is not None:
+                    existing = decode_conformance_execution_spec(
+                        existing_row["payload"]
+                    )
+                    if existing == spec:
+                        return existing
+                    raise AuthorityConflict(
+                        "conformance execution spec ID has different "
+                        "content"
+                    )
+                _, current = self._lock_authority_commit_fence(
+                    cursor,
+                    case_id=spec.case_id,
+                    expected_head_version=(
+                        expected_authority_snapshot.head_version
+                    ),
+                    operation=None,
+                )
+                if current != expected_authority_snapshot:
+                    raise StaleHead(
+                        "conformance execution authority is stale"
+                    )
+                binding = self._get_payload(
+                    cursor,
+                    table="query_binding_envelopes",
+                    id_column="query_binding_id",
+                    record_id=spec.query_binding_id,
+                    label="query binding",
+                    decoder=decode_query_binding,
+                )
+                try:
+                    validate_conformance_execution_spec_authority(
+                        spec=spec,
+                        binding=binding,
+                        current_authority=current,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(
+                        str(error)
+                    ) from error
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="conformance_execution_specs",
+                        id_column="conformance_execution_spec_id",
+                        record_id=spec.conformance_execution_spec_id,
+                        columns=(
+                            "logical_execution_id",
+                            "case_id",
+                            "frame_revision_id",
+                            "plan_revision_id",
+                            "task_id",
+                            "obligation_id",
+                            "query_binding_id",
+                            "content_sha256",
+                            "payload",
+                            "created_at",
+                            "schema_epoch",
+                        ),
+                        values=(
+                            spec.logical_execution_id,
+                            spec.case_id,
+                            spec.frame_revision_id,
+                            spec.plan_revision_id,
+                            spec.task_id,
+                            spec.obligation_id,
+                            spec.query_binding_id,
+                            spec.content_sha256,
+                            Jsonb(payload),
+                            spec.created_at,
+                            spec.schema_epoch,
+                        ),
+                        payload=payload,
+                        label="conformance execution spec",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "logical execution already has another spec"
+                    ) from error
+                return spec
+
+    def get_conformance_execution_spec(
+        self,
+        conformance_execution_spec_id: str,
+    ) -> ConformanceExecutionSpec:
+        return self._get_authority(
+            table="conformance_execution_specs",
+            id_column="conformance_execution_spec_id",
+            record_id=conformance_execution_spec_id,
+            label="conformance execution spec",
+            decoder=decode_conformance_execution_spec,
+        )
+
+    def record_logical_execution_attempt(
+        self,
+        attempt: LogicalExecutionAttempt,
+    ) -> LogicalExecutionAttempt:
+        payload = encode_record(attempt)
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.logical_execution_attempts
+                    WHERE logical_execution_attempt_id = %s
+                    """,
+                    (attempt.logical_execution_attempt_id,),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row is not None:
+                    existing = decode_logical_execution_attempt(
+                        existing_row["payload"]
+                    )
+                    if existing == attempt:
+                        return existing
+                    raise AuthorityConflict(
+                        "logical execution attempt ID has different content"
+                    )
+                _, current = self._lock_authority_commit_fence(
+                    cursor,
+                    case_id=attempt.case_id,
+                    expected_head_version=(
+                        attempt.authority_snapshot.head_version
+                    ),
+                    operation=None,
+                    allow_head_advance=True,
+                )
+                if not same_business_authority(
+                    current,
+                    attempt.authority_snapshot,
+                ):
+                    raise StaleHead(
+                        "logical execution attempt authority is stale"
+                    )
+                spec = self._get_payload(
+                    cursor,
+                    table="conformance_execution_specs",
+                    id_column="conformance_execution_spec_id",
+                    record_id=attempt.conformance_execution_spec_id,
+                    label="conformance execution spec",
+                    decoder=decode_conformance_execution_spec,
+                )
+                binding = self._get_payload(
+                    cursor,
+                    table="query_binding_envelopes",
+                    id_column="query_binding_id",
+                    record_id=attempt.query_binding_id,
+                    label="query binding",
+                    decoder=decode_query_binding,
+                )
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.logical_execution_attempts
+                    WHERE logical_execution_id = %s
+                    ORDER BY attempt_number DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (attempt.logical_execution_id,),
+                )
+                prior_row = cursor.fetchone()
+                prior = (
+                    None
+                    if prior_row is None
+                    else decode_logical_execution_attempt(
+                        prior_row["payload"]
+                    )
+                )
+                try:
+                    validate_logical_execution_attempt_authority(
+                        attempt=attempt,
+                        spec=spec,
+                        binding=binding,
+                        current_authority=current,
+                        prior_attempt=prior,
+                    )
+                except ValueError as error:
+                    raise InvalidAuthorityTransition(
+                        str(error)
+                    ) from error
+                expected_number = (
+                    1 if prior is None else prior.attempt_number + 1
+                )
+                expected_prior = (
+                    None
+                    if prior is None
+                    else prior.logical_execution_attempt_id
+                )
+                if (
+                    attempt.attempt_number != expected_number
+                    or attempt.prior_attempt_id != expected_prior
+                ):
+                    raise InvalidAuthorityTransition(
+                        "logical retry does not extend current attempt"
+                    )
+                try:
+                    self._insert_idempotent_immutable(
+                        cursor,
+                        table="logical_execution_attempts",
+                        id_column="logical_execution_attempt_id",
+                        record_id=attempt.logical_execution_attempt_id,
+                        columns=(
+                            "logical_execution_id",
+                            "conformance_execution_spec_id",
+                            "query_binding_id",
+                            "case_id",
+                            "frame_revision_id",
+                            "plan_revision_id",
+                            "task_id",
+                            "attempt_number",
+                            "prior_attempt_id",
+                            "attempt_kind",
+                            "content_sha256",
+                            "payload",
+                            "requested_at",
+                            "schema_epoch",
+                        ),
+                        values=(
+                            attempt.logical_execution_id,
+                            attempt.conformance_execution_spec_id,
+                            attempt.query_binding_id,
+                            attempt.case_id,
+                            attempt.frame_revision_id,
+                            attempt.plan_revision_id,
+                            attempt.task_id,
+                            attempt.attempt_number,
+                            attempt.prior_attempt_id,
+                            attempt.attempt_kind.value,
+                            attempt.content_sha256,
+                            Jsonb(payload),
+                            attempt.requested_at,
+                            attempt.schema_epoch,
+                        ),
+                        payload=payload,
+                        label="logical execution attempt",
+                    )
+                except errors.UniqueViolation as error:
+                    raise AuthorityConflict(
+                        "logical execution attempt number already exists"
+                    ) from error
+                return attempt
+
+    def list_logical_execution_attempts(
+        self,
+        logical_execution_id: str,
+    ) -> tuple[LogicalExecutionAttempt, ...]:
+        with self._lock, self._connection.transaction():
+            with self._cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT payload
+                    FROM waje_vnext.logical_execution_attempts
+                    WHERE logical_execution_id = %s
+                    ORDER BY attempt_number
+                    """,
+                    (logical_execution_id,),
+                )
+                return tuple(
+                    decode_logical_execution_attempt(row["payload"])
+                    for row in cursor.fetchall()
+                )
 
     def record_evidence(
         self,
@@ -3077,6 +3881,7 @@ class PostgresAuthorityStore:
         admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> MeasurementResolutionOutcome:
         def validate(
             cursor: Cursor[Mapping[str, Any]],
@@ -3094,11 +3899,18 @@ class PostgresAuthorityStore:
                 )
             except ValueError as error:
                 raise InvalidAuthorityTransition(str(error)) from error
-            case = self._lock_case(
+            case, current_authority = self._lock_authority_commit_fence(
                 cursor,
-                record.case_id,
-                expected_head_version,
+                case_id=record.case_id,
+                expected_head_version=expected_head_version,
+                operation=operation,
             )
+            if not record.derivation_authority.matches(
+                current_authority
+            ):
+                raise StaleHead(
+                    "measurement derivation authority is stale"
+                )
             if (
                 record.question_revision_id
                 != case.accepted_question_revision_id
@@ -3189,6 +4001,7 @@ class PostgresAuthorityStore:
                 recorded_at=outcome.created_at,
                 validator=validate,
                 label="measurement resolution",
+                operation=operation,
             )
             admission_payload = encode_record(admission)
             with self._cursor() as cursor:
@@ -3224,16 +4037,24 @@ class PostgresAuthorityStore:
         *,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> ResolvedEvidenceObligation:
         def validate(
             cursor: Cursor[Mapping[str, Any]],
             record: ResolvedEvidenceObligation,
         ) -> None:
-            case = self._lock_case(
+            case, current_authority = self._lock_authority_commit_fence(
                 cursor,
-                record.case_id,
-                expected_head_version,
+                case_id=record.case_id,
+                expected_head_version=expected_head_version,
+                operation=operation,
             )
+            if not record.derivation_authority.matches(
+                current_authority
+            ):
+                raise StaleHead(
+                    "obligation derivation authority is stale"
+                )
             if record.frame_revision_id != case.accepted_frame_revision_id:
                 raise InvalidAuthorityTransition(
                     "obligation must bind the accepted frame"
@@ -3250,6 +4071,8 @@ class PostgresAuthorityStore:
                 outcome.case_id != record.case_id
                 or outcome.frame_revision_id != record.frame_revision_id
                 or outcome.estimand_id != record.estimand_id
+                or outcome.derivation_authority
+                != record.derivation_authority
             ):
                 raise InvalidAuthorityTransition(
                     "obligation resolution binding is inconsistent"
@@ -3273,6 +4096,14 @@ class PostgresAuthorityStore:
                 raise InvalidAuthorityTransition(
                     "obligation changes its evidence requirement"
                 )
+            try:
+                validate_evidence_obligation_derivation(
+                    frame=frame,
+                    outcome=outcome,
+                    obligation=record,
+                )
+            except ValueError as error:
+                raise InvalidAuthorityTransition(str(error)) from error
 
         return self._record_subordinate(
             record=obligation,
@@ -3308,6 +4139,7 @@ class PostgresAuthorityStore:
             recorded_at=obligation.created_at,
             validator=validate,
             label="evidence obligation",
+            operation=operation,
         )
 
     def record_evidence_validity(
@@ -3980,31 +4812,33 @@ class PostgresAuthorityStore:
                 )
 
     def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
+        if message.job_kind is AsyncJobKind.OBLIGATION:
+            raise InvalidAuthorityTransition(
+                "obligation outbox requires schedule dispatch admission"
+            )
         payload = encode_record(message)
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
-                case = self._get_case(cursor, message.case_id)
-                if message.expected_head_version != case.head_version:
-                    raise StaleHead("outbox expected case head is stale")
-                cursor.execute(
-                    """
-                    SELECT authority_epoch
-                    FROM waje_vnext.case_mailbox_heads
-                    WHERE case_id = %s
-                    """,
-                    (message.case_id,),
+                case, current_authority = (
+                    self._lock_authority_commit_fence(
+                        cursor,
+                        case_id=message.case_id,
+                        expected_head_version=(
+                            message.expected_head_version
+                        ),
+                        operation=message.operation,
+                    )
                 )
-                mailbox_epoch = cursor.fetchone()["authority_epoch"]
-                if message.expected_authority_epoch != mailbox_epoch:
+                if (
+                    message.expected_authority_epoch
+                    != current_authority.mailbox_authority_epoch
+                ):
                     raise StaleHead(
                         "outbox expected mailbox authority is stale"
                     )
                 if (
                     message.authority_snapshot
-                    != self._authority_snapshot_from_cursor(
-                        cursor,
-                        message.case_id,
-                    )
+                    != current_authority
                 ):
                     raise StaleHead("outbox authority snapshot is stale")
                 if (
@@ -4014,7 +4848,7 @@ class PostgresAuthorityStore:
                     raise InvalidAuthorityTransition(
                         "outbox operation authority does not match its fence"
                     )
-                self._require_event_cursor(
+                source_event = self._require_event_cursor(
                     cursor,
                     message.case_id,
                     message.source_event_cursor,
@@ -4077,6 +4911,65 @@ class PostgresAuthorityStore:
                         raise InvalidAuthorityTransition(
                             "outbox payload kind does not match action"
                         )
+                    if action.action.kind in _EFFECT_ACTION_KINDS:
+                        cursor.execute(
+                            """
+                            SELECT *
+                            FROM waje_vnext.event_journal
+                            WHERE case_id = %s
+                              AND action_id = %s
+                              AND event_type = %s
+                            ORDER BY cursor
+                            LIMIT 1
+                            """,
+                            (
+                                message.case_id,
+                                action.action.action_id,
+                                JournalEventType.ACTION_ADMITTED.value,
+                            ),
+                        )
+                        admission_row = cursor.fetchone()
+                        receipt = self._get_action_receipt(
+                            cursor,
+                            action.action.case_id,
+                            action.action.idempotency_key,
+                        )
+                        if admission_row is None or receipt is None:
+                            raise InvalidAuthorityTransition(
+                                "effect outbox lacks admission proof"
+                            )
+                        current_plan = (
+                            None
+                            if case.accepted_plan_revision_id is None
+                            else self._get_plan(
+                                cursor,
+                                case.accepted_plan_revision_id,
+                            )
+                        )
+                        try:
+                            validate_effect_outbox_binding(
+                                case=case,
+                                message=message,
+                                action=action.action,
+                                admission_event=self._event_from_row(
+                                    admission_row
+                                ),
+                                source_event=source_event,
+                                receipt=receipt,
+                                current_plan=current_plan,
+                                current_query_bindings=(
+                                    ()
+                                    if current_plan is None
+                                    else self._list_query_bindings_for_plan(
+                                        cursor,
+                                        current_plan.plan_revision_id,
+                                    )
+                                ),
+                            )
+                        except ValueError as error:
+                            raise InvalidAuthorityTransition(
+                                str(error)
+                            ) from error
                 elif message.job_kind in set(_ACTION_JOB_KINDS.values()):
                     raise InvalidAuthorityTransition(
                         "effect outbox requires an admitted action"
@@ -5096,6 +5989,66 @@ class PostgresAuthorityStore:
             )
         return case
 
+    def _lock_authority_commit_fence(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        *,
+        case_id: str,
+        expected_head_version: int,
+        operation: OperationIdentity | None,
+        allow_head_advance: bool = False,
+    ) -> tuple[InvestigationCase, AuthoritySnapshot]:
+        """Lock every mutable row that can invalidate an authority commit.
+
+        The lock order is case, mailbox, then active Frame candidate.  Mailbox
+        ingress only locks the mailbox row, while Frame candidate writers
+        already lock case before candidate, so this order remains acyclic.
+        """
+
+        case = (
+            self._get_case(cursor, case_id, for_update=True)
+            if allow_head_advance
+            else self._lock_case(
+                cursor,
+                case_id,
+                expected_head_version,
+            )
+        )
+        cursor.execute(
+            """
+            SELECT authority_epoch
+            FROM waje_vnext.case_mailbox_heads
+            WHERE case_id = %s
+            FOR UPDATE
+            """,
+            (case_id,),
+        )
+        mailbox = cursor.fetchone()
+        if mailbox is None:
+            raise AuthorityNotFound(
+                "case mailbox head does not exist"
+            )
+        cursor.execute(
+            """
+            SELECT frame_candidate_id
+            FROM waje_vnext.active_frame_candidate_heads
+            WHERE case_id = %s
+            FOR UPDATE
+            """,
+            (case_id,),
+        )
+        cursor.fetchone()
+        snapshot = self._authority_snapshot_from_cursor(cursor, case_id)
+        if (
+            operation is not None
+            and operation.authority_revision
+            != snapshot.mailbox_authority_epoch
+        ):
+            raise StaleHead(
+                "authority epoch changed before commit"
+            )
+        return case, snapshot
+
     def _authority_snapshot_from_cursor(
         self,
         cursor: Cursor[Mapping[str, Any]],
@@ -5298,6 +6251,47 @@ class PostgresAuthorityStore:
             record_id=record_id,
             label="plan",
             decoder=decode_plan,
+        )
+
+    def _get_plan_adoption_for_plan(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        plan_revision_id: str,
+    ) -> PlanAdoptionRecord:
+        cursor.execute(
+            """
+            SELECT payload
+            FROM waje_vnext.plan_adoption_records
+            WHERE plan_revision_id = %s
+            """,
+            (plan_revision_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise AuthorityNotFound(
+                "plan adoption for {!r} does not exist".format(
+                    plan_revision_id
+                )
+            )
+        return decode_plan_adoption(row["payload"])
+
+    def _list_query_bindings_for_plan(
+        self,
+        cursor: Cursor[Mapping[str, Any]],
+        plan_revision_id: str,
+    ) -> tuple[QueryBindingEnvelope, ...]:
+        cursor.execute(
+            """
+            SELECT payload
+            FROM waje_vnext.query_binding_envelopes
+            WHERE plan_revision_id = %s
+            ORDER BY binding_ordinal
+            """,
+            (plan_revision_id,),
+        )
+        return tuple(
+            decode_query_binding(row["payload"])
+            for row in cursor.fetchall()
         )
 
     def _get_evidence(
@@ -5552,6 +6546,7 @@ class PostgresAuthorityStore:
         recorded_at: datetime,
         validator: Callable[[Cursor[Mapping[str, Any]], RecordT], object],
         label: str,
+        operation: OperationIdentity | None = None,
     ) -> RecordT:
         with self._lock, self._connection.transaction():
             with self._cursor() as cursor:
@@ -5601,6 +6596,7 @@ class PostgresAuthorityStore:
                     action_id=action_id,
                     authority_ref=record_id,
                     payload={},
+                    operation=operation,
                 )
                 return record
 
@@ -5929,9 +6925,12 @@ def _causal_event_operation(
     event_id: str,
     payload: dict[str, object],
 ) -> OperationIdentity:
+    causal_operation_sha256 = content_sha256(causal_operation)
     return OperationIdentity(
         operation_id=f"event-operation:{event_id}",
-        idempotency_key=f"event-key:{event_id}",
+        idempotency_key=(
+            f"event-key:{event_id}:{causal_operation_sha256}"
+        ),
         causation_id=causal_operation.operation_id,
         correlation_id=causal_operation.correlation_id,
         authority_revision=causal_operation.authority_revision,

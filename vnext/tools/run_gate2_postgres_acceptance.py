@@ -50,6 +50,27 @@ def _wait_for_postgres(dsn: str, timeout_seconds: float = 30.0) -> None:
     raise RuntimeError("ephemeral PostgreSQL did not become ready") from last_error
 
 
+def _mark_disposable_database(dsn: str, reset_token: str) -> None:
+    with psycopg.connect(dsn) as connection:
+        connection.execute(
+            """
+            CREATE TABLE public.waje_vnext_disposable_test_database_marker (
+                reset_token text PRIMARY KEY,
+                database_name text NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO public.waje_vnext_disposable_test_database_marker (
+                reset_token,
+                database_name
+            ) VALUES (%s, current_database())
+            """,
+            (reset_token,),
+        )
+
+
 def main() -> int:
     docker = shutil.which("docker")
     if docker is None:
@@ -94,10 +115,14 @@ def main() -> int:
             DATABASE_NAME,
         )
         _wait_for_postgres(dsn)
+        reset_token = uuid.uuid4().hex
+        _mark_disposable_database(dsn, reset_token)
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": str(ROOT / "services" / "analysis_core" / "src"),
             "WAJE_VNEXT_DATABASE_URL": dsn,
+            "WAJE_VNEXT_ALLOW_TEST_DATABASE_RESET": "1",
+            "WAJE_VNEXT_TEST_DATABASE_RESET_TOKEN": reset_token,
         }
         completed = _run(
             [

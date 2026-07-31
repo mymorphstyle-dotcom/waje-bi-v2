@@ -43,6 +43,18 @@ export interface ContextPacket {
   latest_frame_review_payload: {
     [k: string]: JsonValue;
   } | null;
+  available_measurement_resolution_payloads: {
+    [k: string]: JsonValue;
+  }[];
+  available_evidence_obligation_payloads: {
+    [k: string]: JsonValue;
+  }[];
+  accepted_plan_adoption_payload: {
+    [k: string]: JsonValue;
+  } | null;
+  accepted_query_binding_payloads: {
+    [k: string]: JsonValue;
+  }[];
   user_messages: ContextUserMessageItem[];
   relevant_event_cursor_start: number;
   relevant_event_cursor_end: number;

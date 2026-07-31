@@ -44,15 +44,6 @@ export type WAJEVNextTypedAgentActionProposalV3 =
       kind: "stop";
       payload: StopPayload;
     };
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | {
-      [k: string]: JsonValue;
-    };
 
 export interface ReviseFramePayload {
   question_revision_id: string;
@@ -490,40 +481,32 @@ export interface ProposedObjectionClosure {
 }
 export interface RevisePlanPayload {
   revision_reason: string;
-  tasks: WorkTask[];
+  tasks: ProposedWorkTask[];
 }
-export interface WorkTask {
-  task_id: string;
+export interface ProposedWorkTask {
+  proposal_task_key: string;
   business_purpose: string;
-  capability_intent: string;
-  target_claim_ids: string[];
-  depends_on_task_ids: string[];
-  success_conditions: string[];
-  stop_conditions: string[];
+  capability_intent_ref: string;
+  obligation_ids: string[];
+  depends_on_task_keys: string[];
 }
 export interface InspectSemanticsPayload {
   question: string;
   contract_refs: string[];
 }
 export interface RunProbePayload {
-  probe_kind: string;
-  parameters: {
-    [k: string]: JsonValue;
-  };
+  probe_contract_ref: string;
+  target_authority_refs: string[];
+  requested_output_refs: string[];
 }
 export interface CallCapabilityPayload {
   task_id: string;
-  capability_name: string;
-  parameters: {
-    [k: string]: JsonValue;
-  };
+  query_binding_id: string;
 }
 export interface RunSensitivityPayload {
   task_id: string;
-  variant_label: string;
-  parameters: {
-    [k: string]: JsonValue;
-  };
+  query_binding_id: string;
+  sensitivity_id: string;
 }
 export interface RecordInterpretationPayload {
   evidence_record_ids: string[];

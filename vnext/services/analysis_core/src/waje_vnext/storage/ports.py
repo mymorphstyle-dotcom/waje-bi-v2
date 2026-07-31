@@ -54,6 +54,13 @@ from waje_vnext.domain.obligation_scheduler import (
 from waje_vnext.domain.measurement_resolver import (
     MeasurementResolutionAdmission,
 )
+from waje_vnext.domain.planning import (
+    ConformanceExecutionSpec,
+    LogicalExecutionAttempt,
+    PlanAdoptionRecord,
+    PlanBundle,
+    QueryBindingEnvelope,
+)
 from waje_vnext.domain.runtime_amendment import (
     DispatcherRecoveryCursor,
     DurableModelResult,
@@ -245,6 +252,8 @@ class AuthorityStore(Protocol):
 
     def record_obligation_dispatch(
         self,
+        *,
+        message: OutboxMessage,
         record: ObligationDispatchRecord,
     ) -> ObligationDispatchRecord: ...
 
@@ -359,15 +368,52 @@ class AuthorityStore(Protocol):
         proof: FrameAdmissionProof,
     ) -> FrameAdmissionProof: ...
 
-    def accept_plan(
+    def accept_plan_bundle(
         self,
-        plan: WorkPlanRevision,
+        bundle: PlanBundle,
         *,
         expected_head_version: int,
         event_id: str,
         recorded_at: datetime,
         operation: OperationIdentity | None = None,
     ) -> InvestigationCase: ...
+
+    def get_plan_adoption(
+        self,
+        plan_revision_id: str,
+    ) -> PlanAdoptionRecord: ...
+
+    def get_query_binding(
+        self,
+        query_binding_id: str,
+    ) -> QueryBindingEnvelope: ...
+
+    def list_query_bindings(
+        self,
+        plan_revision_id: str,
+    ) -> tuple[QueryBindingEnvelope, ...]: ...
+
+    def record_conformance_execution_spec(
+        self,
+        spec: ConformanceExecutionSpec,
+        *,
+        expected_authority_snapshot: AuthoritySnapshot,
+    ) -> ConformanceExecutionSpec: ...
+
+    def get_conformance_execution_spec(
+        self,
+        conformance_execution_spec_id: str,
+    ) -> ConformanceExecutionSpec: ...
+
+    def record_logical_execution_attempt(
+        self,
+        attempt: LogicalExecutionAttempt,
+    ) -> LogicalExecutionAttempt: ...
+
+    def list_logical_execution_attempts(
+        self,
+        logical_execution_id: str,
+    ) -> tuple[LogicalExecutionAttempt, ...]: ...
 
     def record_evidence(
         self,
@@ -395,12 +441,18 @@ class AuthorityStore(Protocol):
         admission: MeasurementResolutionAdmission,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> MeasurementResolutionOutcome: ...
 
     def get_measurement_resolution(
         self,
         resolution_outcome_id: str,
     ) -> MeasurementResolutionOutcome: ...
+
+    def list_measurement_resolutions(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[MeasurementResolutionOutcome, ...]: ...
 
     def get_measurement_resolution_admission(
         self,
@@ -413,12 +465,18 @@ class AuthorityStore(Protocol):
         *,
         expected_head_version: int,
         event_id: str,
+        operation: OperationIdentity | None = None,
     ) -> ResolvedEvidenceObligation: ...
 
     def get_evidence_obligation(
         self,
         obligation_id: str,
     ) -> ResolvedEvidenceObligation: ...
+
+    def list_evidence_obligations(
+        self,
+        frame_revision_id: str,
+    ) -> tuple[ResolvedEvidenceObligation, ...]: ...
 
     def record_evidence_validity(
         self,

@@ -57,6 +57,10 @@
         "accepted_message_binding_payload",
         "active_frame_candidate_payload",
         "latest_frame_review_payload",
+        "available_measurement_resolution_payloads",
+        "available_evidence_obligation_payloads",
+        "accepted_plan_adoption_payload",
+        "accepted_query_binding_payloads",
         "user_messages",
         "relevant_event_cursor_start",
         "relevant_event_cursor_end",
@@ -207,6 +211,46 @@
               "type": "null"
             }
           ]
+        },
+        "available_measurement_resolution_payloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/jsonValue"
+            }
+          }
+        },
+        "available_evidence_obligation_payloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/jsonValue"
+            }
+          }
+        },
+        "accepted_plan_adoption_payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/jsonValue"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_query_binding_payloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/jsonValue"
+            }
+          }
         },
         "user_messages": {
           "type": "array",

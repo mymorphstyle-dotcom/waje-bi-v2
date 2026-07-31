@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event
 
 from gate1_fixtures import make_measurement_design
+from gate3_plan_fixtures import record_measurement_authority
+from test_gate3_3_measurement_resolver import make_trusted_verifier
 from waje_vnext.controller import (
     ControllerConflict,
     EffectExecutionResult,
@@ -20,6 +22,7 @@ from waje_vnext.domain.actions import (
     AgentActionProposal,
     AskUserPayload,
     CallCapabilityPayload,
+    InspectSemanticsPayload,
     ProposeAnswerPayload,
     ProposedClaim,
     ProposedObjectionClosure,
@@ -30,15 +33,25 @@ from waje_vnext.domain.authority import (
     AnswerStatus,
     ClaimVerifierStatus,
     DecisionOption,
-    WorkTask,
 )
-from waje_vnext.domain.async_runtime import MailboxMessageKind
+from waje_vnext.domain.canonical import content_sha256
+from waje_vnext.domain.planning import ProposedWorkTask
+from waje_vnext.domain.async_runtime import (
+    AsyncJobKind,
+    MailboxMessageKind,
+    OperationIdentity,
+)
 from waje_vnext.domain.controller import (
     ControllerPhase,
     EffectAttemptStatus,
     PersistedAction,
 )
 from waje_vnext.domain.events import JournalEventType
+from waje_vnext.domain.measurement import (
+    ObligationSatisfactionRecord,
+    ObligationSatisfactionStatus,
+)
+from waje_vnext.domain.runtime_state import OutboxMessage
 from waje_vnext.domain.runtime_amendment import (
     DispatcherRecoveryCursor,
     FrameReviewDisposition,
@@ -50,12 +63,12 @@ from waje_vnext.domain.runtime_amendment import (
 from waje_vnext.providers import (
     ChatCompletionsProviderSettings,
     ProviderPermanentError,
-    ScriptedPrimaryAgentProvider,
+    ScriptedPrimaryAgentProvider as BaseScriptedPrimaryAgentProvider,
 )
 from waje_vnext.storage import (
     AuthorityConflict,
     AuthorityNotFound,
-    InMemoryAuthorityStore,
+    InMemoryAuthorityStore as BaseInMemoryAuthorityStore,
     InvalidAuthorityTransition,
     LeaseConflict,
     LeaseFenceLost,
@@ -63,6 +76,88 @@ from waje_vnext.storage import (
 
 
 NOW = datetime(2026, 7, 29, 9, 0, tzinfo=UTC)
+
+
+class InMemoryAuthorityStore(BaseInMemoryAuthorityStore):
+    """Gate 2 harness with trusted G3 measurement authority available."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            resolution_input_verifier=make_trusted_verifier()
+        )
+
+    def list_measurement_resolutions(self, frame_revision_id):
+        existing = super().list_measurement_resolutions(
+            frame_revision_id
+        )
+        if existing:
+            return existing
+        frame = self.get_frame(frame_revision_id)
+        case = self.get_case(frame.case_id)
+        record_measurement_authority(
+            store=self,
+            case=case,
+            frame=frame,
+            created_at=NOW,
+            correlation_id=str(
+                self.latest_checkpoint(
+                    frame.case_id
+                ).state_payload["run_id"]
+            ),
+        )
+        return super().list_measurement_resolutions(
+            frame_revision_id
+        )
+
+
+class ScriptedPrimaryAgentProvider(BaseScriptedPrimaryAgentProvider):
+    """Ground scripted intent in the current closed authority packet."""
+
+    def propose(self, request):
+        proposal = super().propose(request)
+        packet = request.context_packet
+        if proposal.kind is ActionKind.REVISE_PLAN:
+            obligation_ids = tuple(
+                str(item["obligation_id"])
+                for item
+                in packet.available_evidence_obligation_payloads
+            )
+            if not obligation_ids:
+                return proposal
+            return replace(
+                proposal,
+                payload=replace(
+                    proposal.payload,
+                    tasks=(
+                        ProposedWorkTask(
+                            proposal_task_key=(
+                                "measure-accepted-contrast"
+                            ),
+                            business_purpose=(
+                                "Measure the accepted comparison"
+                            ),
+                            capability_intent_ref=(
+                                "waje-vnext://capability-intent/"
+                                "measurement-evidence.v1"
+                            ),
+                            obligation_ids=obligation_ids,
+                            depends_on_task_keys=(),
+                        ),
+                    ),
+                ),
+            )
+        if proposal.kind is ActionKind.CALL_CAPABILITY:
+            binding = packet.accepted_query_binding_payloads[0]
+            return replace(
+                proposal,
+                payload=CallCapabilityPayload(
+                    task_id=str(binding["task_id"]),
+                    query_binding_id=str(
+                        binding["query_binding_id"]
+                    ),
+                ),
+            )
+        return proposal
 
 
 class RepairingMeasurementProvider(ScriptedPrimaryAgentProvider):
@@ -166,14 +261,15 @@ def plan_proposal() -> AgentActionProposal:
         payload=RevisePlanPayload(
             revision_reason="Investigate the accepted measurement",
             tasks=(
-                WorkTask(
-                    task_id="task-pattern",
+                ProposedWorkTask(
+                    proposal_task_key="measure-accepted-contrast",
                     business_purpose="Measure the within-month pattern",
-                    capability_intent="periodic pattern comparison",
-                    target_claim_ids=("claim-pattern",),
-                    depends_on_task_ids=(),
-                    success_conditions=("Comparable windows are measured",),
-                    stop_conditions=("Coverage is insufficient",),
+                    capability_intent_ref=(
+                        "waje-vnext://capability-intent/"
+                        "measurement-evidence.v1"
+                    ),
+                    obligation_ids=(content_sha256("placeholder"),),
+                    depends_on_task_keys=(),
                 ),
             ),
         ),
@@ -184,9 +280,8 @@ def capability_proposal() -> AgentActionProposal:
     return AgentActionProposal(
         kind=ActionKind.CALL_CAPABILITY,
         payload=CallCapabilityPayload(
-            task_id="task-pattern",
-            capability_name="periodic_pattern_compare",
-            parameters={"metric": "paid_amount"},
+            task_id="task-placeholder",
+            query_binding_id=content_sha256("query-placeholder"),
         ),
     )
 
@@ -619,7 +714,6 @@ class Gate2ControllerTest(unittest.TestCase):
             replacement.resume("case-gate2").content_sha256,
             state.content_sha256,
         )
-
         event_types = tuple(
             event.event_type for event in store.list_events("case-gate2")
         )
@@ -648,6 +742,223 @@ class Gate2ControllerTest(unittest.TestCase):
                 for event in business_events
             )
         )
+
+    def test_generic_effect_tolerates_sibling_obligation_state(self) -> None:
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=ScriptedPrimaryAgentProvider(
+                (
+                    frame_proposal("case-effect-sibling"),
+                    plan_proposal(),
+                    capability_proposal(),
+                )
+            ),
+            effect_executor=ScriptedEffectExecutor(
+                (
+                    EffectExecutionResult(
+                        payload={"rows": 1},
+                        business_summary="Effect completed",
+                    ),
+                )
+            ),
+            owner_id="worker-effect-sibling",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-effect-sibling",
+            thread_id="thread-effect-sibling",
+            run_id="run-effect-sibling",
+            user_message="调查一个可恢复的业务变化",
+        )
+        complete_agent_turn(controller, "case-effect-sibling")
+        complete_agent_turn(controller, "case-effect-sibling")
+        waiting = complete_agent_turn(
+            controller,
+            "case-effect-sibling",
+        )
+        plan_id = store.get_case(
+            "case-effect-sibling"
+        ).accepted_plan_revision_id
+        assert plan_id is not None
+        obligation_id = store.get_plan_adoption(
+            plan_id
+        ).obligation_ids[0]
+        store.record_obligation_satisfaction(
+            ObligationSatisfactionRecord(
+                satisfaction_record_id=(
+                    "satisfaction-generic-effect-sibling"
+                ),
+                obligation_id=obligation_id,
+                status=ObligationSatisfactionStatus.OPEN,
+                evidence_admission_record_ids=(),
+                evidence_use_binding_ids=(),
+                resolution_boundary_outcome_id=None,
+                contradiction_disposition_refs=(),
+                verifier_policy_version="obligation-satisfaction.v1",
+                input_set_sha256=content_sha256(
+                    {
+                        "obligation_id": obligation_id,
+                        "status": "open",
+                    }
+                ),
+                created_at=NOW,
+            ),
+            event_id="event-generic-effect-sibling",
+        )
+        outbox = store.get_outbox_message(waiting.pending_job_ids[0])
+        self.assertFalse(controller._job_is_stale(outbox))
+
+        resumed = controller.deliver_pending_effect(
+            "case-effect-sibling"
+        )
+        self.assertEqual(resumed.phase, ControllerPhase.READY_FOR_AGENT)
+        self.assertTrue(
+            any(
+                event.event_type is JournalEventType.EFFECT_COMPLETED
+                for event in store.list_events("case-effect-sibling")
+            )
+        )
+
+    def test_effect_outbox_replay_requires_exact_admitted_request(
+        self,
+    ) -> None:
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=BaseScriptedPrimaryAgentProvider(
+                (
+                    AgentActionProposal(
+                        kind=ActionKind.INSPECT_SEMANTICS,
+                        payload=InspectSemanticsPayload(
+                            question="Inspect the governed metric contract",
+                            contract_refs=("metric:payment-amount:v1",),
+                        ),
+                    ),
+                )
+            ),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-effect-outbox",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-effect-outbox",
+            thread_id="thread-effect-outbox",
+            run_id="run-effect-outbox",
+            user_message="检查 effect authority",
+        )
+        waiting = complete_agent_turn(
+            controller,
+            "case-effect-outbox",
+        )
+        message = store.get_outbox_message(
+            waiting.pending_job_ids[0]
+        )
+
+        self.assertEqual(store.enqueue_outbox(message), message)
+        for field_name, forged_value in (
+            ("task_id", "forged-task"),
+            ("query_binding_id", "f" * 64),
+            ("sensitivity_id", "forged-sensitivity"),
+        ):
+            with self.subTest(field_name=field_name):
+                request = dict(message.payload["request"])
+                request[field_name] = forged_value
+                payload = {
+                    **dict(message.payload),
+                    "request": request,
+                }
+                with self.assertRaisesRegex(
+                    InvalidAuthorityTransition,
+                    "exact admitted action request",
+                ):
+                    store.enqueue_outbox(
+                        replace(
+                            message,
+                            payload=payload,
+                            payload_sha256=content_sha256(payload),
+                            operation=replace(
+                                message.operation,
+                                payload_sha256=content_sha256(payload),
+                            ),
+                        )
+                    )
+
+    def test_rejected_effect_action_cannot_be_enqueued(self) -> None:
+        store = InMemoryAuthorityStore()
+        controller = WAJEController(
+            store=store,
+            provider=BaseScriptedPrimaryAgentProvider(
+                (capability_proposal(),)
+            ),
+            effect_executor=ScriptedEffectExecutor(()),
+            owner_id="worker-rejected-effect",
+            clock=lambda: NOW,
+        )
+        controller.start(
+            case_id="case-rejected-effect",
+            thread_id="thread-rejected-effect",
+            run_id="run-rejected-effect",
+            user_message="没有 Plan 时尝试 capability",
+        )
+        complete_agent_turn(controller, "case-rejected-effect")
+        rejected_event = next(
+            event
+            for event in store.list_events("case-rejected-effect")
+            if event.event_type is JournalEventType.ACTION_REJECTED
+        )
+        persisted = store.get_action(rejected_event.action_id or "")
+        case = store.get_case("case-rejected-effect")
+        authority = store.get_authority_snapshot(case.case_id)
+        assert isinstance(
+            persisted.action.payload,
+            CallCapabilityPayload,
+        )
+        payload = {
+            "action_kind": persisted.action.kind.value,
+            "request": {
+                "task_id": persisted.action.payload.task_id,
+                "query_binding_id": (
+                    persisted.action.payload.query_binding_id
+                ),
+            },
+            "expected_head_version": (
+                persisted.action.expected_head_version
+            ),
+        }
+        operation = OperationIdentity(
+            operation_id="operation-rejected-effect-outbox",
+            idempotency_key="rejected-effect-outbox-key",
+            causation_id=persisted.action.operation.operation_id,
+            correlation_id=persisted.action.operation.correlation_id,
+            authority_revision=authority.mailbox_authority_epoch,
+            payload_sha256=content_sha256(payload),
+        )
+        message = OutboxMessage(
+            outbox_message_id="outbox-rejected-effect",
+            case_id=case.case_id,
+            source_event_cursor=rejected_event.cursor,
+            action_id=persisted.action.action_id,
+            job_kind=AsyncJobKind.CAPABILITY,
+            operation=operation,
+            expected_head_version=case.head_version,
+            expected_authority_epoch=(
+                authority.mailbox_authority_epoch
+            ),
+            authority_snapshot=authority,
+            authority_snapshot_sha256=authority.content_sha256,
+            idempotency_key=operation.idempotency_key,
+            destination="capability",
+            contract_ref="waje-vnext://runtime/effect-request.v1",
+            payload=payload,
+            payload_sha256=content_sha256(payload),
+            created_at=NOW,
+        )
+        with self.assertRaisesRegex(
+            InvalidAuthorityTransition,
+            "admission proof|currently admitted",
+        ):
+            store.enqueue_outbox(message)
 
     def test_run_trace_manifest_closes_durable_model_lineage(self) -> None:
         store = InMemoryAuthorityStore()

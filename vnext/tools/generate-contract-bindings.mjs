@@ -17,6 +17,7 @@ const contracts = [
   ["contracts/domain/controller-state.v1.schema.json", "controller-state.v1.ts"],
   ["contracts/domain/async-runtime.v1.schema.json", "async-runtime.v1.ts"],
   ["contracts/domain/runtime-amendment.v1.schema.json", "runtime-amendment.v1.ts"],
+  ["contracts/domain/planning.v1.schema.json", "planning.v1.ts"],
   ["contracts/events/journal-entry.v1.schema.json", "journal-entry.v1.ts"],
 ];
 const bannerComment = [

@@ -5,18 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Mapping
 
 from .async_runtime import OperationIdentity
-from .authority import DecisionOption, WorkTask
+from .authority import DecisionOption
 from .canonical import (
-    FrozenJson,
     content_sha256,
-    freeze_json,
     require_aware_datetime,
     require_nonempty,
 )
 from .measurement import MeasurementDesign
+from .planning import ProposedWorkTask
 
 
 class ActionKind(StrEnum):
@@ -88,11 +86,15 @@ class ReviseFramePayload:
 @dataclass(frozen=True, slots=True)
 class RevisePlanPayload:
     revision_reason: str
-    tasks: tuple[WorkTask, ...]
+    tasks: tuple[ProposedWorkTask, ...]
 
     def __post_init__(self) -> None:
         require_nonempty(self.revision_reason, "revision_reason")
-        _validate_typed_tuple(self.tasks, WorkTask, "tasks")
+        _validate_typed_tuple(
+            self.tasks,
+            ProposedWorkTask,
+            "tasks",
+        )
         if not self.tasks:
             raise ValueError("revise_plan requires at least one task")
 
@@ -109,36 +111,55 @@ class InspectSemanticsPayload:
 
 @dataclass(frozen=True, slots=True)
 class RunProbePayload:
-    probe_kind: str
-    parameters: Mapping[str, FrozenJson]
+    probe_contract_ref: str
+    target_authority_refs: tuple[str, ...]
+    requested_output_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        require_nonempty(self.probe_kind, "probe_kind")
-        _freeze_parameters(self)
+        require_nonempty(
+            self.probe_contract_ref,
+            "probe_contract_ref",
+        )
+        _validate_string_tuple(
+            self.target_authority_refs,
+            "target_authority_refs",
+        )
+        _validate_string_tuple(
+            self.requested_output_refs,
+            "requested_output_refs",
+        )
+        if not self.target_authority_refs:
+            raise ValueError("run_probe requires authority refs")
+        if not self.requested_output_refs:
+            raise ValueError("run_probe requires output refs")
 
 
 @dataclass(frozen=True, slots=True)
 class CallCapabilityPayload:
     task_id: str
-    capability_name: str
-    parameters: Mapping[str, FrozenJson]
+    query_binding_id: str
 
     def __post_init__(self) -> None:
         require_nonempty(self.task_id, "task_id")
-        require_nonempty(self.capability_name, "capability_name")
-        _freeze_parameters(self)
+        require_nonempty(
+            self.query_binding_id,
+            "query_binding_id",
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class RunSensitivityPayload:
     task_id: str
-    variant_label: str
-    parameters: Mapping[str, FrozenJson]
+    query_binding_id: str
+    sensitivity_id: str
 
     def __post_init__(self) -> None:
         require_nonempty(self.task_id, "task_id")
-        require_nonempty(self.variant_label, "variant_label")
-        _freeze_parameters(self)
+        require_nonempty(
+            self.query_binding_id,
+            "query_binding_id",
+        )
+        require_nonempty(self.sensitivity_id, "sensitivity_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,11 +359,6 @@ def _validate_kind_payload(
         )
 
 
-def _freeze_parameters(payload: object) -> None:
-    frozen = freeze_json(getattr(payload, "parameters"))
-    if not isinstance(frozen, Mapping):
-        raise TypeError("action parameters must be a JSON object")
-    object.__setattr__(payload, "parameters", frozen)
 
 
 def _validate_dataclass_strings(value: object) -> None:
