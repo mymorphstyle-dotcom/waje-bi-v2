@@ -79,7 +79,10 @@ head CAS 恢复，不建立第二套 projection outbox authority。
 G3.6.0 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 运行权威，并完成
 typed/open-world corpus epoch：144 个 base 与 12 个 replacement claim targets 绑定 13 类
 `ClaimTargetKind`；business-world independence 从 outcome authority refs 派生；authored
-design 只作非穷尽示例。真实 provider lanes、protected execution 和 full matrix 尚未开放。
+design 只作非穷尽示例。execution-universe compiler 当前从 36 个 Episodes 派生 156 个 case
+variants、1,172 个 exact coordinates 和 2,011 个 Episode relation groups；201 个 paraphrase
+authority slots 与 38 个 operator scenarios（19 类 × 至少 2 个独立业务世界）仍待 author/review，所以真实 provider lanes、
+protected execution 和 full matrix 尚未开放。
 完整逻辑部署边界见 `services/README.md`。Workbench 从 Gate 6 完成产品验收。
 
 真实 provider smoke 只读取 `WAJE_VNEXT_LLM_` 前缀配置：

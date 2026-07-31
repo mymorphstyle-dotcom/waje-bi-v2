@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/execution-universe-readiness.v1.schema.json",
+  "title": "WAJE Gate 3 Execution Universe Readiness",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "authority_hashes",
+    "universe_summary",
+    "operator_coverage",
+    "development_blockers",
+    "formal_blockers",
+    "development_status",
+    "formal_status"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_execution_universe_readiness"},
+    "artifact_version": {"const": "gate3.execution-universe-readiness.v1"},
+    "authority_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_sha256",
+        "catalog_sha256",
+        "paraphrase_registry_sha256",
+        "operator_registry_sha256",
+        "operator_scenario_registry_sha256",
+        "trace_profiles_sha256",
+        "grader_registry_sha256",
+        "source_run_manifest_sha256",
+        "protected_held_out_manifest_sha256",
+        "compiler_release_sha256"
+      ],
+      "properties": {
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "paraphrase_registry_sha256": {"$ref": "#/$defs/sha256"},
+        "operator_registry_sha256": {"$ref": "#/$defs/sha256"},
+        "operator_scenario_registry_sha256": {"$ref": "#/$defs/sha256"},
+        "trace_profiles_sha256": {"$ref": "#/$defs/sha256"},
+        "grader_registry_sha256": {"$ref": "#/$defs/sha256"},
+        "source_run_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "protected_held_out_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "compiler_release_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "universe_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_count",
+        "case_variant_count",
+        "risk_variant_counts",
+        "required_coordinate_count",
+        "required_coordinate_set_sha256",
+        "required_episode_relation_group_count",
+        "required_episode_relation_group_set_sha256",
+        "required_operator_scenario_coordinate_count",
+        "required_operator_scenario_coordinate_set_sha256",
+        "required_operator_scenario_relation_group_count",
+        "required_operator_scenario_relation_group_set_sha256",
+        "required_paraphrase_authority_count",
+        "required_operator_scenario_count"
+      ],
+      "properties": {
+        "episode_count": {"type": "integer", "minimum": 1},
+        "case_variant_count": {"type": "integer", "minimum": 1},
+        "risk_variant_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["medium", "high", "critical"],
+          "properties": {
+            "medium": {"type": "integer", "minimum": 0},
+            "high": {"type": "integer", "minimum": 0},
+            "critical": {"type": "integer", "minimum": 0}
+          }
+        },
+        "required_coordinate_count": {"type": "integer", "minimum": 1},
+        "required_coordinate_set_sha256": {"$ref": "#/$defs/sha256"},
+        "required_episode_relation_group_count": {"type": "integer", "minimum": 1},
+        "required_episode_relation_group_set_sha256": {"$ref": "#/$defs/sha256"},
+        "required_operator_scenario_coordinate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_operator_scenario_coordinate_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "required_operator_scenario_relation_group_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_operator_scenario_relation_group_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "required_paraphrase_authority_count": {"type": "integer", "minimum": 0},
+        "required_operator_scenario_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "operator_coverage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/operatorCoverage"}
+    },
+    "development_blockers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/blocker"}
+    },
+    "formal_blockers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/blocker"}
+    },
+    "development_status": {"enum": ["blocked", "ready"]},
+    "formal_status": {"enum": ["blocked", "ready"]}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "operatorCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator_ref",
+        "operator_sha256",
+        "coverage_source",
+        "authority_refs"
+      ],
+      "properties": {
+        "operator_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "operator_sha256": {"$ref": "#/$defs/sha256"},
+        "coverage_source": {
+          "enum": ["standalone", "episode_relation", "scenario_registry", "missing"]
+        },
+        "authority_refs": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count", "refs"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"},
+        "count": {"type": "integer", "minimum": 1},
+        "refs": {"$ref": "#/$defs/stringArray"}
+      }
+    }
+  }
+}

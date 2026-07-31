@@ -571,8 +571,11 @@ Exit evidence：
   provisional Answer claim precheck、system-derived settlement precondition、journal-driven
   Workflow 四轴投影、migration 006 与 InMemory/PostgreSQL parity。该实现仍拒绝 production
   Evidence、settled publication 和 delivered Workflow。G3.6.0 已建立运行权威与 provider
-  configuration 合同，并完成 typed/open-world corpus epoch；真实 provider lanes 和 full
-  matrix 尚未开放。
+  configuration 合同，并完成 typed/open-world corpus epoch。execution-universe compiler 从
+  36 个 Episodes 派生 156 个 case variants、1,172 个 exact coordinates、2,011 个 Episode
+  relation groups，并把 201 个 paraphrase authority 与 38 个 operator scenario（19 类 × 至少
+  2 个独立业务世界）缺口写入
+  fail-closed readiness；真实 provider lanes 和 full matrix 尚未开放。
 
 **交付物**
 
@@ -903,7 +906,7 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | Gate 0 | Complete | 本 Gate 无需用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-0.md` |
 | Gate 1 | Complete | 已确认 `InvestigationCase`；无其他用户决策 | `docs/reviews/2026-07-29-bi-agent-vnext-gate-1.md` |
 | Gate 2 | Complete + durable async amendment | 已确认 WAJE-owned controller；本 amendment 无需用户决策 | `docs/reviews/2026-07-30-bi-agent-vnext-gate-0-2-durable-async-realignment.md` |
-| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6.0 in progress | G3.2–G3.6 本 Gate 无需用户决策；G3.6 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 合同并完成 typed/open-world corpus epoch；runtime lane 前置仍待关闭 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md` |
+| Gate 3 | G3.1–G3.5 local complete；G3.E0 formal admission remains `deny_g3_1`；G3.6.0 in progress | G3.2–G3.6 本 Gate 无需用户决策；G3.6 已建立 execution/attempt/trace/model/relation/hard-check/cell/suite 合同、typed/open-world corpus epoch 与 exact execution-universe compiler；201 个 paraphrases、38 个 scenarios 和 runtime lane 前置仍待关闭 | `docs/plans/2026-07-31-bi-agent-vnext-gate-3-6-universal-measurement-eval.md` |
 | Gate 4 | Pending | 待执行 | — |
 | Gate 5 | Pending | 待执行 | — |
 | Gate 6 | Pending | 待执行 | — |
@@ -943,3 +946,4 @@ Gate 0 建立 verifier，Gate 7 执行完整协议：
 | 2026-07-31 | G3.E0 机器 authoring/materialization 收口 | 多智能体实现 + 全量对抗复核 | 36 个 Episode、120 个 sibling、41 个 authority、52 个 materialization 全部通过结构、重放、hash 与 clean-copy 验证；formal admission 仅保留真人双审、truth/source/calibration/held-out/promotion/run 与 protected GitHub/Sigstore authority |
 | 2026-07-31 | 开始 G3.6 通用测量行为评测 | 本 Gate 无需用户决策；先封闭运行权威，再开放真实 provider lane | execution manifest 固定运行坐标与三角色配置；attempt、trace、relation、hard-check、cell/suite 形成严格派生链；本地运行与 formal admission 分离，typed corpus/runtime 前置未满足前保持 blocked |
 | 2026-07-31 | G3.6 typed/open-world corpus epoch | 本 Gate 无需用户决策；ClaimTargetKind registry 与 outcome authority 是机器权威 | 144 个 base 与 12 个 replacement targets 全部 typed；36 Episodes 归并为 20 个独立 authority worlds；13 类各有至少 3 个 candidate worlds；同源 snapshot 不重复计数；authored design 只作非穷尽示例；formal admission 仍等待 source/truth/双审/calibration/held-out/runtime lane |
+| 2026-07-31 | G3.6 exact execution universe epoch | 本 Gate 无需用户决策；policy compiler 拥有运行完整性，业务语义仍由 Episode、Agent 与 Reviewer 判断 | 156 个 case variants 编译为 1,172 个 execution coordinates 与 2,011 个 Episode relation groups；manifest 绑定 exact-set hashes；201 个 paraphrase authorities 和 38 个 operator scenarios 未齐前 development full run fail closed；readiness 纳入 G3.E0 evaluated/verifier release |

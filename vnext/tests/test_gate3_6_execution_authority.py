@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from tools.compile_gate3_eval_views import compile_views
+from tools.compile_gate3_execution_universe import build_readiness
 from tools.validate_gate3_eval_catalog import (
     counterfactual_materialization_core,
     materialize_counterfactual_episode,
@@ -46,26 +47,26 @@ def profile_bindings(authority):
     }
 
 
-def execution_cell(authority, *, cell_id="CELL-DEV-001", critical=False):
+def execution_cell(
+    authority,
+    *,
+    cell_id="CELL-DEV-001",
+    episode_id="G3-USER-001",
+):
     trace_profile = next(
         profile
         for profile in authority["trace_profiles"]["profiles"]
         if profile["lane"] == "semantic_frame"
     )
-    operator = next(
-        item
-        for item in authority["mutation_operators"]["operators"]
-        if item["operator_id"] == "episode_outcome"
-    )
     episode = next(
         item
         for item in authority["catalog"]["episodes"]
-        if item["episode_id"] == "G3-USER-001"
+        if item["episode_id"] == episode_id
     )
     corpus_entry = next(
         item
         for item in authority["corpus_registry"]["entries"]
-        if item["episode_id"] == "G3-USER-001"
+        if item["episode_id"] == episode_id
     )
     core_sha = canonical_sha256(episode_core(episode))
     views = compile_views(
@@ -76,35 +77,38 @@ def execution_cell(authority, *, cell_id="CELL-DEV-001", critical=False):
     return {
         "execution_cell_id": cell_id,
         "source_authority_kind": "candidate_episode",
-        "source_run_cell_ref": "candidate:G3-USER-001:base",
-        "episode_id": "G3-USER-001",
+        "source_run_cell_ref": f"candidate:{episode_id}:base",
+        "episode_id": episode_id,
         "episode_core_sha256": core_sha,
         "case_variant": {"kind": "base"},
         "lane": "semantic_frame",
         "wording_variant_id": "base",
+        "wording_authority_ref": f"episode:{episode_id}:base:base",
         "wording_sha256": canonical_sha256(
-            [episode["user_episode"]["messages"][0]["text"]]
+            [
+                message["text"]
+                for message in episode["user_episode"]["messages"]
+                if message["turn"] <= 1
+            ]
         ),
         "visible_turn": 1,
         "paraphrase_index": 0,
         "repeat_index": 1,
         "seed": 731,
-        "critical": critical,
-        "source_pool": "real_user_language",
-        "business_world_id": "WORLD-PAID-AMOUNT-CHANGE-001",
+        "risk_level": episode["decision_stakes"]["risk_level"],
+        "source_pool": episode["source_pool"],
+        "business_world_id": episode["business_world"]["world_id"],
         "business_world_independence_key": episode[
             "business_world_independence_key"
         ],
-        "claim_target_kinds": ["contrast", "accounting_decomposition"],
+        "claim_target_kinds": sorted(
+            {
+                target["claim_target_kind"]
+                for target in episode["acceptable_outcome"]["claim_targets"]
+            }
+        ),
         "coverage_atom_refs": episode_coverage_atom_refs(episode),
-        "historical_regression": False,
-        "relation_binding": {
-            "relation_group_id": f"REL-{cell_id}",
-            "operator_ref": operator["operator_id"],
-            "operator_sha256": canonical_sha256(operator),
-            "member_role": "singleton",
-            "expected_relation": operator["expected_relation"],
-        },
+        "historical_regression": episode["source_pool"] == "historical_failure",
         "agent_world_view_sha256": views["agent_world_view"]["view_sha256"],
         "evaluator_oracle_view_sha256": views[
             "evaluator_oracle_view"
@@ -116,14 +120,19 @@ def execution_cell(authority, *, cell_id="CELL-DEV-001", critical=False):
     }
 
 
-def counterfactual_cell(authority, *, cell_id="CELL-CF-001"):
+def counterfactual_cell(
+    authority,
+    *,
+    cell_id="CELL-CF-001",
+    sibling_index=0,
+):
     cell = execution_cell(authority, cell_id=cell_id)
     episode = next(
         item
         for item in authority["catalog"]["episodes"]
         if item["episode_id"] == "G3-USER-001"
     )
-    sibling = episode["counterfactual_siblings"][0]
+    sibling = episode["counterfactual_siblings"][sibling_index]
     materialized = materialize_counterfactual_episode(episode, sibling)
     materialized_sha256 = canonical_sha256(
         counterfactual_materialization_core(materialized)
@@ -151,6 +160,9 @@ def counterfactual_cell(authority, *, cell_id="CELL-CF-001"):
             "wording_sha256": canonical_sha256(
                 [materialized["user_episode"]["messages"][0]["text"]]
             ),
+            "wording_authority_ref": (
+                f"episode:G3-USER-001:{sibling['sibling_id']}:base"
+            ),
             "coverage_atom_refs": episode_coverage_atom_refs(materialized),
             "business_world_independence_key": materialized[
                 "business_world_independence_key"
@@ -166,10 +178,43 @@ def counterfactual_cell(authority, *, cell_id="CELL-CF-001"):
     return cell
 
 
-def execution_manifest(authority, *, cells=None):
+def execution_manifest(authority, *, cells=None, relation_groups=None):
+    resolved_cells = cells or [execution_cell(authority)]
+    standalone = next(
+        item
+        for item in authority["mutation_operators"]["operators"]
+        if item["operator_id"] == "episode_outcome"
+    )
+    resolved_relation_groups = relation_groups or [
+        {
+            "relation_group_id": f"REL-{cell['execution_cell_id']}",
+            "operator_ref": standalone["operator_id"],
+            "operator_sha256": canonical_sha256(standalone),
+            "expected_relation": standalone["expected_relation"],
+            "scenario_binding": None,
+            "members": [
+                {
+                    "execution_cell_id": cell["execution_cell_id"],
+                    "member_role": "singleton",
+                }
+            ],
+        }
+        for cell in resolved_cells
+    ]
+    readiness = build_readiness(
+        policy=authority["policy"],
+        catalog=authority["catalog"],
+        paraphrase_registry=authority["paraphrase_authority"],
+        operator_registry=authority["mutation_operators"],
+        scenario_registry=authority["operator_scenario_authority"],
+        trace_profiles=authority["trace_profiles"],
+        grader_registry=authority["grader_registry"],
+        source_run_manifest=authority["source_run_manifest"],
+        held_out_manifest=authority["protected_held_out_manifest"],
+    )
     return {
         "artifact_type": "gate3_execution_manifest",
-        "artifact_version": "gate3.execution-manifest.v1",
+        "artifact_version": "gate3.execution-manifest.v2",
         "execution_scope": "development",
         "run_mode": "smoke",
         "status": "draft",
@@ -185,6 +230,30 @@ def execution_manifest(authority, *, cells=None):
         "mutation_operator_registry_sha256": canonical_sha256(
             authority["mutation_operators"]
         ),
+        "paraphrase_authority_registry_sha256": canonical_sha256(
+            authority["paraphrase_authority"]
+        ),
+        "operator_scenario_authority_registry_sha256": canonical_sha256(
+            authority["operator_scenario_authority"]
+        ),
+        "protected_held_out_manifest_sha256": canonical_sha256(
+            authority["protected_held_out_manifest"]
+        ),
+        "execution_universe_compiler_sha256": readiness["authority_hashes"][
+            "compiler_release_sha256"
+        ],
+        "required_coordinate_set_sha256": readiness["universe_summary"][
+            "required_coordinate_set_sha256"
+        ],
+        "required_episode_relation_group_set_sha256": readiness[
+            "universe_summary"
+        ]["required_episode_relation_group_set_sha256"],
+        "required_operator_scenario_coordinate_set_sha256": readiness[
+            "universe_summary"
+        ]["required_operator_scenario_coordinate_set_sha256"],
+        "required_operator_scenario_relation_group_set_sha256": readiness[
+            "universe_summary"
+        ]["required_operator_scenario_relation_group_set_sha256"],
         "trace_profiles_sha256": canonical_sha256(
             authority["trace_profiles"]
         ),
@@ -202,7 +271,8 @@ def execution_manifest(authority, *, cells=None):
                 "retryable_reason_codes",
             )
         },
-        "cells": cells or [execution_cell(authority)],
+        "cells": resolved_cells,
+        "relation_groups": resolved_relation_groups,
     }
 
 
@@ -542,7 +612,10 @@ class Gate36ExecutionAuthorityTest(unittest.TestCase):
         del attacked_episode["acceptable_outcome"]["claim_targets"][0][
             "claim_target_kind"
         ]
-        attacked_manifest = execution_manifest(attacked_authority)
+        attacked_manifest = copy.deepcopy(manifest)
+        attacked_manifest["catalog_sha256"] = canonical_sha256(
+            attacked_authority["catalog"]
+        )
         self.assertTrue(
             any(
                 "lacks typed claim target kinds" in finding
@@ -610,6 +683,162 @@ class Gate36ExecutionAuthorityTest(unittest.TestCase):
         )
         self.assertIn("execution coordinates must be unique", findings)
 
+    def test_one_cell_can_participate_in_outcome_and_mutation_relations(
+        self,
+    ) -> None:
+        anchor = execution_cell(self.authority, cell_id="CELL-ANCHOR-001")
+        subject = counterfactual_cell(
+            self.authority,
+            cell_id="CELL-SUBJECT-001",
+            sibling_index=1,
+        )
+        standalone = next(
+            item
+            for item in self.authority["mutation_operators"]["operators"]
+            if item["operator_id"] == "episode_outcome"
+        )
+        mutation = next(
+            item
+            for item in self.authority["mutation_operators"]["operators"]
+            if item["operator_id"] == "material_semantic_change"
+        )
+        groups = [
+            {
+                "relation_group_id": f"REL-{cell['execution_cell_id']}",
+                "operator_ref": standalone["operator_id"],
+                "operator_sha256": canonical_sha256(standalone),
+                "expected_relation": standalone["expected_relation"],
+                "scenario_binding": None,
+                "members": [
+                    {
+                        "execution_cell_id": cell["execution_cell_id"],
+                        "member_role": "singleton",
+                    }
+                ],
+            }
+            for cell in (anchor, subject)
+        ]
+        groups.append(
+            {
+                "relation_group_id": "REL-MATERIAL-CHANGE-001",
+                "operator_ref": mutation["operator_id"],
+                "operator_sha256": canonical_sha256(mutation),
+                "expected_relation": mutation["expected_relation"],
+                "scenario_binding": None,
+                "members": [
+                    {
+                        "execution_cell_id": anchor["execution_cell_id"],
+                        "member_role": "anchor",
+                    },
+                    {
+                        "execution_cell_id": subject["execution_cell_id"],
+                        "member_role": "subject",
+                    },
+                ],
+            }
+        )
+        manifest = execution_manifest(
+            self.authority,
+            cells=[anchor, subject],
+            relation_groups=groups,
+        )
+        self.assertEqual(
+            [],
+            validate_execution_manifest(manifest, authority=self.authority),
+        )
+
+    def test_smoke_relation_cannot_relabel_a_sibling_operator(self) -> None:
+        anchor = execution_cell(self.authority, cell_id="CELL-ANCHOR-ATTACK")
+        subject = counterfactual_cell(
+            self.authority,
+            cell_id="CELL-SUBJECT-ATTACK",
+            sibling_index=0,
+        )
+        standalone = next(
+            item
+            for item in self.authority["mutation_operators"]["operators"]
+            if item["operator_id"] == "episode_outcome"
+        )
+        wrong_operator = next(
+            item
+            for item in self.authority["mutation_operators"]["operators"]
+            if item["operator_id"] == "material_semantic_change"
+        )
+        groups = [
+            {
+                "relation_group_id": f"REL-{cell['execution_cell_id']}",
+                "operator_ref": standalone["operator_id"],
+                "operator_sha256": canonical_sha256(standalone),
+                "expected_relation": standalone["expected_relation"],
+                "scenario_binding": None,
+                "members": [
+                    {
+                        "execution_cell_id": cell["execution_cell_id"],
+                        "member_role": "singleton",
+                    }
+                ],
+            }
+            for cell in (anchor, subject)
+        ]
+        groups.append(
+            {
+                "relation_group_id": "REL-WRONG-SIBLING-OPERATOR",
+                "operator_ref": wrong_operator["operator_id"],
+                "operator_sha256": canonical_sha256(wrong_operator),
+                "expected_relation": wrong_operator["expected_relation"],
+                "scenario_binding": None,
+                "members": [
+                    {
+                        "execution_cell_id": anchor["execution_cell_id"],
+                        "member_role": "anchor",
+                    },
+                    {
+                        "execution_cell_id": subject["execution_cell_id"],
+                        "member_role": "subject",
+                    },
+                ],
+            }
+        )
+        attacked = execution_manifest(
+            self.authority,
+            cells=[anchor, subject],
+            relation_groups=groups,
+        )
+        self.assertTrue(
+            any(
+                "sibling relation operator drifted" in finding
+                for finding in validate_execution_manifest(
+                    attacked,
+                    authority=self.authority,
+                )
+            )
+        )
+        correct_operator = next(
+            item
+            for item in self.authority["mutation_operators"]["operators"]
+            if item["operator_id"] == "meaning_preserving_case_mutation"
+        )
+        crossed_repeat = copy.deepcopy(attacked)
+        crossed_repeat["cells"][1]["repeat_index"] = 99
+        crossed_repeat["relation_groups"][-1].update(
+            {
+                "operator_ref": correct_operator["operator_id"],
+                "operator_sha256": canonical_sha256(correct_operator),
+                "expected_relation": correct_operator[
+                    "expected_relation"
+                ],
+            }
+        )
+        self.assertTrue(
+            any(
+                "mutation crosses repeat_index" in finding
+                for finding in validate_execution_manifest(
+                    crossed_repeat,
+                    authority=self.authority,
+                )
+            )
+        )
+
     def test_counterfactual_views_bind_materialized_episode(self) -> None:
         manifest = execution_manifest(
             self.authority,
@@ -636,17 +865,18 @@ class Gate36ExecutionAuthorityTest(unittest.TestCase):
     def test_critical_floor_cannot_shrink_repeats(self) -> None:
         attacked = execution_manifest(
             self.authority,
-            cells=[execution_cell(self.authority, critical=True)],
+            cells=[execution_cell(self.authority, episode_id="G3-USER-003")],
         )
+        attacked["run_mode"] = "full"
         findings = validate_execution_manifest(
             attacked,
             authority=self.authority,
         )
         self.assertTrue(
-            any("too few critical semantic paraphrases" in item for item in findings)
+            any("semantic_frame has too few paraphrases" in item for item in findings)
         )
         self.assertTrue(
-            any("too few full-authority paraphrases" in item for item in findings)
+            any("full_authority has too few paraphrases" in item for item in findings)
         )
 
     def test_formal_manifest_rejects_unreviewed_profiles_and_held_out_gap(
@@ -1109,18 +1339,28 @@ class Gate36ExecutionAuthorityTest(unittest.TestCase):
         subject["repeat_index"] = 2
         subject["wording_variant_id"] = "paraphrase-1"
         subject["wording_sha256"] = "9" * 64
-        relation_base = {
+        relation_group = {
             "relation_group_id": "REL-PARAPHRASE-001",
             "operator_ref": operator["operator_id"],
             "operator_sha256": canonical_sha256(operator),
             "expected_relation": operator["expected_relation"],
+            "scenario_binding": None,
+            "members": [
+                {
+                    "execution_cell_id": anchor["execution_cell_id"],
+                    "member_role": "anchor",
+                },
+                {
+                    "execution_cell_id": subject["execution_cell_id"],
+                    "member_role": "subject",
+                },
+            ],
         }
-        anchor["relation_binding"] = {**relation_base, "member_role": "anchor"}
-        subject["relation_binding"] = {
-            **relation_base,
-            "member_role": "subject",
-        }
-        manifest = execution_manifest(self.authority, cells=[anchor, subject])
+        manifest = execution_manifest(
+            self.authority,
+            cells=[anchor, subject],
+            relation_groups=[relation_group],
+        )
         member_results = [
             {"execution_cell_id": "CELL-REL-001", "verdict": "pass"},
             {"execution_cell_id": "CELL-REL-002", "verdict": "pass"},

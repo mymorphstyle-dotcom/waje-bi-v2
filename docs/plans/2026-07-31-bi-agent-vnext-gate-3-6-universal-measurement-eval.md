@@ -29,6 +29,11 @@
   observer 和 Primary/Binding/Reviewer 独立配置。G3.6.0 已让 `thinking` 进入通用 provider
   settings、request 与 configuration identity；durable logical job 仍未绑定 exact prompt/tool/
   request identity。
+- G3.6.0 execution-universe compiler 已从当前 policy 与 36 个 Episodes 派生 156 个
+  base/counterfactual case variants、1,172 个必跑坐标和 2,011 个 Episode relation groups。
+  当前缺 201 个 reviewed paraphrase slots 与 38 个专项 operator scenarios（19 类 × 至少 2 个
+  独立业务世界），因此 development
+  full universe 明确为 `blocked`，smoke/slice 仍可做合同开发。
 
 ### 1.2 访谈判断
 
@@ -122,6 +127,8 @@ manifest 是运行前冻结的工作清单。每个 `RunCellSpec` exact 绑定�
 - base/counterfactual variant 与 materialized digest；
 - lane：`semantic_frame` 或 `full_authority`；
 - wording variant、paraphrase source/hash、repeat index 和 deterministic seed；
+- paraphrase authority、operator-scenario authority、execution-universe compiler release、完整
+  coordinate set 与 Episode relation-group set hash；
 - Primary、Runtime Reviewer、Evaluation Reviewer profile ref/hash；
 - AgentWorldView hash、EvaluatorOracleView hash 和 TraceProfile hash；
 - required stages、required layer checks 和 artifact types；
@@ -129,6 +136,29 @@ manifest 是运行前冻结的工作清单。每个 `RunCellSpec` exact 绑定�
 
 manifest 只扩展 policy floor。运行后删 cell、改 denominator、降低 repeats、换 prompt/model、
 换 view 或减少 trace stage 会让 suite invalid。
+
+完整运行的坐标不得由 runner 自己枚举。`compile_gate3_execution_universe.py` 以 policy、
+catalog、paraphrase registry、operator registry 和 scenario registry 为输入，先生成 exact
+universe readiness；development registry 缺槽位、重复槽位、哈希漂移或非法 stage 时直接
+blocked。当前派生矩阵为：
+
+| 风险 | 必跑 lane | paraphrases × repeats |
+|---|---|---:|
+| medium | semantic/frame | 1 × 1 |
+| high | semantic/frame | 1 × 1 |
+| high | full authority | 2 × 2 |
+| critical | semantic/frame | 3 × 3 |
+| critical | full authority | 2 × 2 |
+
+一个 cell 可以同时进入自己的 `episode_outcome` 组、paraphrase 组和 base/sibling mutation
+组。relation authority 位于顶层集合，cell 内不保存单值 relation，避免多重关系被最后一次
+写入覆盖。
+
+wording paraphrase 与 meaning-preserving case mutation 使用不同 operator。前者保持同一 case
+variant 并比较 canonical wording 与 reviewed 改写；后者保持业务 measurement identity 但允许
+case variant 改变。base/sibling relation 只在 paraphrase index 0 配对，避免两边独立改写造成
+wording confound。所有 relation 还必须保持未被该 operator 改变的 repeat、visible turn 和
+paraphrase 坐标轴。
 
 ### 4.2 `ModelInvocationRecord`
 
@@ -486,6 +516,8 @@ Reviewer trigger 和 ClaimTargetKind 采用分层 calibration；overall 80% 不�
 Exit：
 
 - 漏跑、重复、意外 cell、换 profile/view/prompt、减少 repeat、缺 trace 均不能 pass；
+- full manifest 必须逐项等于编译得到的 1,172 个坐标与 2,011 个 Episode relation groups；
+  集合数量和规范哈希同时绑定，删除或替换单项均失败；
 - product fail 无法由另两层抵消；
 - draft/unreviewed corpus 无法产生 formal pass。
 - 同一角色可在一个调查循环中完成多个独立 logical jobs；每个 logical job 只能接受一个成功
@@ -494,6 +526,18 @@ Exit：
   和 hard-check 三份结果同步伪造；
 - product Reviewer 必须覆盖 grader registry 的完整 predicate set；critical/historical 分母按
   unique Episode 统计，不被 repeat 数量放大。
+- paraphrase authority 逐槽绑定完整多轮消息结构和 wording hash；开放业务语义仍由模型与
+  Reviewer 判断，编译器只校验来源、结构、完整性和 meaning-preservation review 状态；
+- 19 类无法从 Episode sibling 自动产生的 measurement/authority/physical/transport/runtime/
+  schedule/trace operator，必须各覆盖至少 2 个独立业务世界；measurement mutation 同时覆盖
+  semantic/frame 与 full-authority lane，其他类型至少覆盖 full-authority lane，才可开放
+  development full run。
+- scenario metadata 自洽不能证明 mutation 已实际进入模型或 runtime 输入。当前永久保留
+  `operator_scenario_executor_unverified` development blocker；后续必须以独立 resolver
+  registry、mutation artifact、实际输入 artifact 与 `ScenarioApplicationReceipt` 重算器关闭。
+- formal 永久保留 `formal_execution_admission_unverified`，直到 protected held-out expansion、
+  external execution receipt 与受保护 verifier 形成正向可满足路径。checked-in review/status/hash
+  无权解除该 blocker。
 
 ### G3.6.1 Provider profile 与 trace
 
@@ -629,6 +673,7 @@ Exit：
 |---|---|---|
 | Contract | schema、codec、hash、profile、view、manifest、result | 100% |
 | Suite authority | exact cell set、repeat、paraphrase、lane、denominator、artifact index | 100% |
+| Universe compiler | policy matrix、156 variants、1,172 coordinates、2,011 relation groups、201 paraphrase slots、38 scenarios | exact set/hash |
 | Measurement | 13 ClaimTargetKind、时间四层、exposure、ratio/decomposition/cohort/funnel | critical 100% |
 | Relations | base/sibling、metamorphic、mutation、property | critical 100% |
 | Async | correction race、duplicate、乱序、crash、lease、resume、replay | 100% |
@@ -689,7 +734,8 @@ policy/expectation 变更与被测 runtime 修复分开提交。一次 eval fail
 failure classes 已进入实施顺序：
 
 1. runner/grader 可用任意 hash 自证 artifact；
-2. policy 尚不能编译完整 lane/paraphrase/repeat/mutation/schedule cell universe；
+2. policy 已能编译 Episode 主宇宙、paraphrase slots 和 operator scenario 缺口；201 个
+   paraphrase authority 与 38 个 scenario authority 尚待 author/review；
 3. typed ClaimTargetKind 和独立 world coverage 缺失；已由 typed registry、authority-derived
    independence key 和 execution coverage 去重关闭；
 4. protected held-out 未进入 executable suite；
@@ -706,8 +752,9 @@ G3.6.0 的冻结快照又验证了两项已关闭的合同漏洞：动态调查�
 provider receipt 和 append-only PostgreSQL journal 仍需 protected executor 对账，因此本地
 `pass` 继续标记为 `runner_self_attested`。
 
-这些 finding 都是架构/合同问题，不需要新增用户访谈。所有项关闭前，full-matrix runner
-保持禁用。
+这些 finding 都是架构/合同问题，不需要新增用户访谈。execution-universe readiness 已作为
+G3.E0 evaluated artifact 纳入 verifier release；其 development/formal blocker 不与 smoke/slice
+结果混写。所有项关闭前，full-matrix runner 保持禁用。
 
 ### 12.3 自审结论
 

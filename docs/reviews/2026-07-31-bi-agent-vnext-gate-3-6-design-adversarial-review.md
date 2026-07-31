@@ -76,17 +76,43 @@ G3.6 的 behavior-first、Reviewer-centric、两条真实 provider lane 和三�
 - critical/historical 分母按 unique Episode 统计，repeat 不再放大业务覆盖；
 - 缺 cell、重复 cell、profile drift、trace stage/cycle、attempt terminal selection、hard-check
   缺项与 relation member 漂移的单测。
+- risk × lane × paraphrase × repeat policy 已编译成 exact execution universe：36 Episodes、156
+  case variants、1,172 个坐标、2,011 个 Episode relation groups；manifest 绑定 compiler、两类
+  authoring registry 和两个 exact-set hash；
+- relation authority 已从 cell 单值提升为顶层多成员集合，同一 cell 可同时参加 outcome、
+  paraphrase 和 mutation 判定；
+- execution-universe readiness 已进入 G3.E0 evaluated artifact 与 verifier release，删坐标、删
+  relation、改 policy、伪造 paraphrase/operator hash 的攻击测试均 fail closed。
+- wording paraphrase 与 meaning-preserving case mutation 已拆成两个 operator；base/sibling
+  relation 只在 canonical wording 上配对，避免独立改写引入混杂；
+- smoke/slice 同样执行 used-authority readiness：pending paraphrase、pending scenario、不可用
+  executor、错配 sibling operator、跨 repeat/turn/paraphrase relation 都会被拒；
+- paraphrase review 绑定 source/candidate pair，scenario review 绑定 scenario core；compiler 与
+  runner release identity 已纳入实际 import 的 view/counterfactual compilers；
+- 手工推导的 high-risk micro-universe 固定 4 个 variants、20 个 coordinates、37 个 relations，
+  与全量 compiler/property/shrink tests 分离，避免所有期望都由被测编译器反推；
+- 19 类专项 operator 每类至少覆盖 2 个独立业务世界，共 38 个 authoring slots；measurement
+  mutation 同时要求 semantic/frame 与 full-authority lane，其他类型要求 full-authority lane。
 
 复审确认仍 open 的 Blocking：
 
 - production durable model job 尚未绑定 thinking、exact prompt/tool/request/config identity；
 - provider success receipt 与 typed result 尚未原子持久，crash window 未关闭；
 - local hard/relation observations 仍由 runner 产生，需 protected executor 从 artifact bytes 重算；
+- scenario subject 仍缺可重算的 `ScenarioApplicationReceipt`；当前
+  `operator_scenario_executor_unverified` 永久阻断 development full run，后续只有独立 resolver
+  registry、实际输入 artifact 与 receipt verifier 落地后才能移除；
 - canonical corpus 已有 typed ClaimTargetKind、independence key 和 open-world contract；
-  paraphrase authority、pairwise/higher-order coverage、expert/single-estimand/low-context/simple
-  Episode、复合 target 语义拆分仍 open；
+  201 个 paraphrase authority slots 与 38 个专项 operator scenarios（19 类 × 至少 2 个独立
+  业务世界）已精确列出但尚未 author/
+  review；pairwise/higher-order coverage、expert/single-estimand/low-context/simple Episode、复合
+  target 语义拆分仍 open；
 - opaque held-out expansion、frozen run-cell 全链和 protected execution receipt verifier 尚未形成
   正向可满足路径；
+- Primary invocation 仍未绑定可重算的 request artifact 与 AgentWorldView 类型，oracle isolation
+  尚无执行证明；该项留在 G3.6.1；
+- Evaluation Reviewer 仍能看到 illustrative valid-design examples，存在锚定风险；正式输入收敛
+  取决于预注册 A/B 探针，当前不能宣称 Reviewer 对替代设计无偏；
 - Lane A/B 尚未接入 production durable runtime，因此 full matrix 禁止启动。
 
 最终冻结快照继续确认：`request_sha256`、provider response/receipt 和 causation 仍可由同一

@@ -1,7 +1,7 @@
 {
   "catalog_sha256": "079c35e5d783dcbaefbdf847c78e955646f7460b0046faf1d7c4373fb42d1a89",
   "schema_sha256": "e9c229546cbab201cbfa4a3dbeff6e09d2f3d314ffca67f7339643fd154f7513",
-  "policy_sha256": "16c455e04986c4f5059ecff769d86da9d276d4e2dbc3b40b37bae32cb67ed2cd",
+  "policy_sha256": "db5ef397c2612d12bda351c64772c6cd24ea49636151f20d3aea79c6bb5d7203",
   "taxonomy_sha256": "1451a83d59ce8b39a91a2bd1ee2ee7dbe191c71e1c632403a80e6d320cd419b3",
   "policy_version": "gate3.behavior-eval-policy.v5",
   "episode_count": 36,

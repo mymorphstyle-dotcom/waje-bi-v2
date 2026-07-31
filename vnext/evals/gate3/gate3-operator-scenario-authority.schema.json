@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waje.dev/schemas/evals/gate3/operator-scenario-authority.v1.schema.json",
+  "title": "WAJE Gate 3 Operator Scenario Authority Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "registry_epoch",
+    "status",
+    "executor_binding",
+    "scenarios"
+  ],
+  "properties": {
+    "artifact_type": {"const": "gate3_operator_scenario_authority_registry"},
+    "artifact_version": {"const": "gate3.operator-scenario-authority.v1"},
+    "registry_epoch": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["candidate_authoring", "reviewed"]},
+    "executor_binding": {"$ref": "#/$defs/executorBinding"},
+    "scenarios": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/scenario"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "operator_ref",
+        "operator_sha256",
+        "source_episode_id",
+        "source_case_variant_ref",
+        "lane",
+        "stimulus_contract",
+        "required_relation_check_ids",
+        "review_status",
+        "review_binding"
+      ],
+      "properties": {
+        "scenario_id": {
+          "type": "string",
+          "pattern": "^SCENARIO-G3-[A-Z0-9-]+$"
+        },
+        "operator_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "operator_sha256": {"$ref": "#/$defs/sha256"},
+        "source_episode_id": {
+          "type": "string",
+          "pattern": "^G3-[A-Z]+-[0-9]{3}$"
+        },
+        "source_case_variant_ref": {
+          "type": "string",
+          "pattern": "^(base|G3-[A-Z]+-[0-9]{3}-CF[0-9]{2})$"
+        },
+        "lane": {"enum": ["semantic_frame", "full_authority"]},
+        "stimulus_contract": {
+          "$ref": "#/$defs/stimulusContract"
+        },
+        "required_relation_check_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "review_status": {"enum": ["pending", "reviewed"]},
+        "review_binding": {"$ref": "#/$defs/reviewBinding"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"review_status": {"const": "reviewed"}},
+            "required": ["review_status"]
+          },
+          "then": {
+            "properties": {
+              "review_binding": {
+                "properties": {
+                  "reviewed_scenario_sha256": {"$ref": "#/$defs/sha256"},
+                  "review_ref": {"type": "string", "minLength": 1},
+                  "review_sha256": {"$ref": "#/$defs/sha256"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stimulusContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stimulus_kind",
+        "target_stage_ids",
+        "input_contract_ref",
+        "input_contract_sha256",
+        "mutation_artifact_ref",
+        "mutation_artifact_sha256",
+        "resolver_ref",
+        "resolver_release_sha256",
+        "application_receipt_contract_sha256",
+        "expected_observation_kinds"
+      ],
+      "properties": {
+        "stimulus_kind": {
+          "enum": [
+            "measurement_input_mutation",
+            "authority_artifact_mutation",
+            "physical_plan_mutation",
+            "transport_mutation",
+            "runtime_delivery_schedule",
+            "trace_mutation"
+          ]
+        },
+        "target_stage_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "input_contract_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "input_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "mutation_artifact_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "mutation_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "resolver_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "resolver_release_sha256": {"$ref": "#/$defs/sha256"},
+        "application_receipt_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "expected_observation_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        }
+      }
+    },
+    "executorBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "resolver_registry_ref",
+        "resolver_registry_sha256",
+        "application_receipt_contract_sha256",
+        "authorized_resolvers"
+      ],
+      "properties": {
+        "status": {"enum": ["unavailable", "executable"]},
+        "resolver_registry_ref": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "resolver_registry_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "application_receipt_contract_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "authorized_resolvers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/resolverBinding"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "executable"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "resolver_registry_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolver_registry_sha256": {"$ref": "#/$defs/sha256"},
+              "application_receipt_contract_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "authorized_resolvers": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reviewBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewed_scenario_sha256",
+        "review_ref",
+        "review_sha256"
+      ],
+      "properties": {
+        "reviewed_scenario_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "review_ref": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "review_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "resolverBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolver_ref", "resolver_release_sha256"],
+      "properties": {
+        "resolver_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "resolver_release_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

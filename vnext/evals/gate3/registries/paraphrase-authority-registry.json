@@ -1,0 +1,7 @@
+{
+  "artifact_type": "gate3_paraphrase_authority_registry",
+  "artifact_version": "gate3.paraphrase-authority.v1",
+  "registry_epoch": 1,
+  "status": "candidate_authoring",
+  "entries": []
+}

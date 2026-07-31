@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -14,12 +15,30 @@ from jsonschema import Draft202012Validator
 
 try:
     from tools.compile_gate3_eval_views import compile_views
+    from tools.compile_gate3_execution_universe import (
+        AUTOMATIC_OPERATOR_BY_RELATION,
+        build_readiness as build_execution_universe_readiness,
+        compiler_release_sha256 as execution_universe_compiler_sha256,
+        paraphrase_authority_ref,
+        required_coordinates,
+        required_episode_relation_groups,
+        required_operator_scenario_universe,
+    )
     from tools.validate_gate3_eval_catalog import (
         counterfactual_materialization_core,
         materialize_counterfactual_episode,
     )
 except ModuleNotFoundError:  # direct execution from vnext/tools
     from compile_gate3_eval_views import compile_views
+    from compile_gate3_execution_universe import (
+        AUTOMATIC_OPERATOR_BY_RELATION,
+        build_readiness as build_execution_universe_readiness,
+        compiler_release_sha256 as execution_universe_compiler_sha256,
+        paraphrase_authority_ref,
+        required_coordinates,
+        required_episode_relation_groups,
+        required_operator_scenario_universe,
+    )
     from validate_gate3_eval_catalog import (
         counterfactual_materialization_core,
         materialize_counterfactual_episode,
@@ -58,8 +77,26 @@ ATTEMPT_POLICY_PATH = (
 MUTATION_OPERATOR_REGISTRY_PATH = (
     EVAL_ROOT / "registries" / "mutation-operator-registry.json"
 )
+PARAPHRASE_AUTHORITY_REGISTRY_PATH = (
+    EVAL_ROOT / "registries" / "paraphrase-authority-registry.json"
+)
+OPERATOR_SCENARIO_AUTHORITY_REGISTRY_PATH = (
+    EVAL_ROOT / "registries" / "operator-scenario-authority-registry.json"
+)
+PARAPHRASE_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-paraphrase-authority.schema.json"
+)
+OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-operator-scenario-authority.schema.json"
+)
+EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH = (
+    EVAL_ROOT / "gate3-execution-universe-readiness.schema.json"
+)
 RELATION_RESULT_SCHEMA_PATH = EVAL_ROOT / "gate3-relation-result.schema.json"
 SOURCE_RUN_MANIFEST_PATH = EVAL_ROOT / "manifests" / "run-manifest.json"
+PROTECTED_HELD_OUT_MANIFEST_PATH = (
+    EVAL_ROOT / "manifests" / "protected-held-out-manifest.json"
+)
 
 ROLE_NAMES = (
     "primary_business_analysis_agent",
@@ -69,6 +106,8 @@ ROLE_NAMES = (
 LANES = ("semantic_frame", "full_authority")
 RUNNER_RELEASE_PATHS = (
     Path(__file__).resolve(),
+    Path(__file__).resolve().parent / "compile_gate3_eval_views.py",
+    Path(__file__).resolve().parent / "validate_gate3_eval_catalog.py",
     MANIFEST_SCHEMA_PATH,
     CELL_RESULT_SCHEMA_PATH,
     MODEL_INVOCATION_SCHEMA_PATH,
@@ -81,6 +120,10 @@ RUNNER_RELEASE_PATHS = (
     TRACE_PROFILES_PATH,
     ATTEMPT_POLICY_PATH,
     MUTATION_OPERATOR_REGISTRY_PATH,
+    PARAPHRASE_AUTHORITY_SCHEMA_PATH,
+    OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH,
+    EXECUTION_UNIVERSE_READINESS_SCHEMA_PATH,
+    Path(__file__).resolve().parent / "compile_gate3_execution_universe.py",
 )
 
 
@@ -200,7 +243,14 @@ def canonical_authority() -> dict[str, Any]:
         "trace_profiles": load_json(TRACE_PROFILES_PATH),
         "attempt_policy": load_json(ATTEMPT_POLICY_PATH),
         "mutation_operators": load_json(MUTATION_OPERATOR_REGISTRY_PATH),
+        "paraphrase_authority": load_json(PARAPHRASE_AUTHORITY_REGISTRY_PATH),
+        "operator_scenario_authority": load_json(
+            OPERATOR_SCENARIO_AUTHORITY_REGISTRY_PATH
+        ),
         "source_run_manifest": load_json(SOURCE_RUN_MANIFEST_PATH),
+        "protected_held_out_manifest": load_json(
+            PROTECTED_HELD_OUT_MANIFEST_PATH
+        ),
     }
 
 
@@ -213,6 +263,35 @@ def validate_execution_manifest(
     if findings:
         return findings
     authority = authority or canonical_authority()
+    paraphrase_schema_findings = schema_findings(
+        authority["paraphrase_authority"],
+        PARAPHRASE_AUTHORITY_SCHEMA_PATH,
+    )
+    scenario_schema_findings = schema_findings(
+        authority["operator_scenario_authority"],
+        OPERATOR_SCENARIO_AUTHORITY_SCHEMA_PATH,
+    )
+    findings.extend(
+        f"paraphrase authority {finding}"
+        for finding in paraphrase_schema_findings
+    )
+    findings.extend(
+        f"operator scenario authority {finding}"
+        for finding in scenario_schema_findings
+    )
+    if paraphrase_schema_findings or scenario_schema_findings:
+        return findings
+    universe_readiness = build_execution_universe_readiness(
+        policy=authority["policy"],
+        catalog=authority["catalog"],
+        paraphrase_registry=authority["paraphrase_authority"],
+        operator_registry=authority["mutation_operators"],
+        scenario_registry=authority["operator_scenario_authority"],
+        trace_profiles=authority["trace_profiles"],
+        grader_registry=authority["grader_registry"],
+        source_run_manifest=authority["source_run_manifest"],
+        held_out_manifest=authority["protected_held_out_manifest"],
+    )
     expected_hashes = {
         "source_run_manifest_sha256": canonical_sha256(
             authority["source_run_manifest"]
@@ -231,6 +310,34 @@ def validate_execution_manifest(
         ),
         "mutation_operator_registry_sha256": canonical_sha256(
             authority["mutation_operators"]
+        ),
+        "paraphrase_authority_registry_sha256": canonical_sha256(
+            authority["paraphrase_authority"]
+        ),
+        "operator_scenario_authority_registry_sha256": canonical_sha256(
+            authority["operator_scenario_authority"]
+        ),
+        "protected_held_out_manifest_sha256": canonical_sha256(
+            authority["protected_held_out_manifest"]
+        ),
+        "execution_universe_compiler_sha256": (
+            execution_universe_compiler_sha256()
+        ),
+        "required_coordinate_set_sha256": universe_readiness[
+            "universe_summary"
+        ]["required_coordinate_set_sha256"],
+        "required_episode_relation_group_set_sha256": universe_readiness[
+            "universe_summary"
+        ]["required_episode_relation_group_set_sha256"],
+        "required_operator_scenario_coordinate_set_sha256": (
+            universe_readiness["universe_summary"][
+                "required_operator_scenario_coordinate_set_sha256"
+            ]
+        ),
+        "required_operator_scenario_relation_group_set_sha256": (
+            universe_readiness["universe_summary"][
+                "required_operator_scenario_relation_group_set_sha256"
+            ]
         ),
     }
     for field, expected in expected_hashes.items():
@@ -270,6 +377,14 @@ def validate_execution_manifest(
     }
     if len(operators) != len(authority["mutation_operators"]["operators"]):
         findings.append("mutation operator registry contains duplicate ids")
+    scenarios = {
+        scenario["scenario_id"]: scenario
+        for scenario in authority["operator_scenario_authority"]["scenarios"]
+    }
+    if len(scenarios) != len(
+        authority["operator_scenario_authority"]["scenarios"]
+    ):
+        findings.append("operator scenario registry contains duplicate ids")
     relation_check_profiles = {
         profile["expected_relation"]: profile
         for profile in authority["mutation_operators"][
@@ -309,6 +424,7 @@ def validate_execution_manifest(
             cell["paraphrase_index"],
             cell["repeat_index"],
             cell["seed"],
+            cell.get("operator_scenario_ref"),
         )
         for cell in cells
     ]
@@ -322,23 +438,13 @@ def validate_execution_manifest(
                 episodes=episodes,
                 corpus_entries=corpus_entries,
                 source_run_manifest=authority["source_run_manifest"],
+                paraphrase_entries={
+                    entry["paraphrase_authority_id"]: entry
+                    for entry in authority["paraphrase_authority"]["entries"]
+                },
+                paraphrase_registry=authority["paraphrase_authority"],
             )
         )
-        relation = cell["relation_binding"]
-        operator = operators.get(relation["operator_ref"])
-        if operator is None:
-            findings.append(
-                f"{cell['execution_cell_id']} references an unknown operator"
-            )
-        else:
-            if canonical_sha256(operator) != relation["operator_sha256"]:
-                findings.append(
-                    f"{cell['execution_cell_id']} operator hash drifted"
-                )
-            if operator["expected_relation"] != relation["expected_relation"]:
-                findings.append(
-                    f"{cell['execution_cell_id']} expected relation drifted"
-                )
         trace_profile = trace_profiles.get(cell["trace_profile_ref"])
         if trace_profile is None:
             findings.append(
@@ -387,20 +493,55 @@ def validate_execution_manifest(
             )
 
     findings.extend(_validate_policy_floor(manifest, authority))
-    findings.extend(_validate_relation_groups(manifest))
-    findings.extend(_validate_full_run_universe(manifest, authority))
+    findings.extend(
+        _validate_relation_groups(
+            manifest,
+            operators=operators,
+            scenarios=scenarios,
+            episodes=episodes,
+            scenario_registry=authority["operator_scenario_authority"],
+        )
+    )
+    findings.extend(
+        _validate_full_run_universe(
+            manifest,
+            authority,
+            universe_readiness=universe_readiness,
+        )
+    )
     return findings
 
 
 def _validate_full_run_universe(
     manifest: Mapping[str, Any],
     authority: Mapping[str, Any],
+    *,
+    universe_readiness: Mapping[str, Any],
 ) -> list[str]:
     findings: list[str] = []
     if manifest["execution_scope"] == "formal" and manifest["run_mode"] != "full":
         findings.append("formal execution requires full run mode")
     if manifest["run_mode"] != "full":
         return findings
+    readiness_field = (
+        "formal_status"
+        if manifest["execution_scope"] == "formal"
+        else "development_status"
+    )
+    if universe_readiness[readiness_field] != "ready":
+        blocker_codes = [
+            blocker["code"]
+            for blocker in universe_readiness[
+                "formal_blockers"
+                if manifest["execution_scope"] == "formal"
+                else "development_blockers"
+            ]
+        ]
+        findings.append(
+            "full execution universe authority is blocked: {}".format(
+                blocker_codes
+            )
+        )
     expected_episode_ids = {
         episode["episode_id"] for episode in authority["catalog"]["episodes"]
     }
@@ -440,12 +581,154 @@ def _validate_full_run_universe(
         if operator["kind"] != "standalone"
     }
     observed_operators = {
-        cell["relation_binding"]["operator_ref"]
-        for cell in manifest["cells"]
-        if cell["relation_binding"]["operator_ref"] != "episode_outcome"
+        group["operator_ref"]
+        for group in manifest["relation_groups"]
+        if group["operator_ref"] != "episode_outcome"
     }
     if observed_operators != expected_operators:
         findings.append("full run operator set differs from canonical registry")
+    expected_coordinates = required_coordinates(
+        authority["catalog"],
+        authority["policy"],
+    )
+    observed_coordinates = []
+    for cell in manifest["cells"]:
+        if cell["source_authority_kind"] == "protected_held_out":
+            continue
+        if cell.get("operator_scenario_ref") is not None:
+            continue
+        variant = cell["case_variant"]
+        case_variant_ref = (
+            "base"
+            if variant["kind"] == "base"
+            else variant.get("sibling_id", variant["kind"])
+        )
+        observed_coordinates.append(
+            {
+                "episode_id": cell["episode_id"],
+                "case_variant_ref": case_variant_ref,
+                "case_variant": variant,
+                "risk_level": cell["risk_level"],
+                "lane": cell["lane"],
+                "paraphrase_index": cell["paraphrase_index"],
+                "repeat_index": cell["repeat_index"],
+                "visible_turn": cell["visible_turn"],
+                "wording_authority_ref": cell["wording_authority_ref"],
+                "execution_cell_id": cell["execution_cell_id"],
+                "seed": cell["seed"],
+            }
+        )
+    observed_coordinates.sort(key=lambda item: item["execution_cell_id"])
+    if observed_coordinates != expected_coordinates:
+        findings.append(
+            "full run execution coordinate set differs from compiled universe"
+        )
+    operators = {
+        operator["operator_id"]: operator
+        for operator in authority["mutation_operators"]["operators"]
+    }
+    expected_episode_groups = required_episode_relation_groups(
+        authority["catalog"],
+        authority["policy"],
+        operators,
+        expected_coordinates,
+    )
+    expected_by_id = {
+        group["relation_group_id"]: group
+        for group in expected_episode_groups
+    }
+    observed_by_id = {
+        group["relation_group_id"]: group
+        for group in manifest["relation_groups"]
+    }
+    missing_or_drifted = [
+        group_id
+        for group_id, expected in expected_by_id.items()
+        if observed_by_id.get(group_id) != expected
+    ]
+    automatic_operator_refs = {
+        "episode_outcome",
+        "meaning_preserving_paraphrase",
+        "meaning_preserving_case_mutation",
+        "material_semantic_change",
+        "boundary_or_interaction_change",
+    }
+    unexpected_automatic = [
+        group["relation_group_id"]
+        for group in manifest["relation_groups"]
+        if group["operator_ref"] in automatic_operator_refs
+        and group["relation_group_id"] not in expected_by_id
+    ]
+    if missing_or_drifted or unexpected_automatic:
+        findings.append(
+            "full run Episode relation set differs from compiled universe"
+        )
+    scenarios_by_operator: dict[str, list[Mapping[str, Any]]] = {}
+    for scenario in authority["operator_scenario_authority"]["scenarios"]:
+        scenarios_by_operator.setdefault(
+            scenario["operator_ref"], []
+        ).append(scenario)
+    (
+        expected_scenario_coordinates,
+        expected_scenario_groups,
+        scenario_universe_findings,
+    ) = required_operator_scenario_universe(
+        coordinates=expected_coordinates,
+        operators=operators,
+        scenarios_by_operator=scenarios_by_operator,
+    )
+    if scenario_universe_findings:
+        findings.append(
+            "operator scenario universe cannot be compiled: {}".format(
+                scenario_universe_findings
+            )
+        )
+    observed_scenario_coordinates = []
+    for cell in manifest["cells"]:
+        if cell.get("operator_scenario_ref") is None:
+            continue
+        variant = cell["case_variant"]
+        variant_ref = (
+            "base"
+            if variant["kind"] == "base"
+            else variant.get("sibling_id", variant["kind"])
+        )
+        observed_scenario_coordinates.append(
+            {
+                "episode_id": cell["episode_id"],
+                "case_variant_ref": variant_ref,
+                "case_variant": variant,
+                "risk_level": cell["risk_level"],
+                "lane": cell["lane"],
+                "paraphrase_index": cell["paraphrase_index"],
+                "repeat_index": cell["repeat_index"],
+                "visible_turn": cell["visible_turn"],
+                "wording_authority_ref": cell["wording_authority_ref"],
+                "operator_scenario_ref": cell["operator_scenario_ref"],
+                "execution_cell_id": cell["execution_cell_id"],
+                "seed": cell["seed"],
+            }
+        )
+    observed_scenario_coordinates.sort(
+        key=lambda item: item["execution_cell_id"]
+    )
+    if observed_scenario_coordinates != expected_scenario_coordinates:
+        findings.append(
+            "full run operator scenario coordinate set differs from compiled universe"
+        )
+    expected_scenario_by_id = {
+        group["relation_group_id"]: group
+        for group in expected_scenario_groups
+    }
+    observed_scenario_by_id = {
+        group["relation_group_id"]: group
+        for group in manifest["relation_groups"]
+        if group["scenario_binding"] is not None
+    }
+    if observed_scenario_by_id != expected_scenario_by_id:
+        findings.append(
+            "full run operator scenario relation set differs from compiled universe"
+        )
     return findings
 
 
@@ -455,6 +738,8 @@ def _validate_cell_source_authority(
     episodes: Mapping[str, Mapping[str, Any]],
     corpus_entries: Mapping[str, Mapping[str, Any]],
     source_run_manifest: Mapping[str, Any],
+    paraphrase_entries: Mapping[str, Mapping[str, Any]],
+    paraphrase_registry: Mapping[str, Any],
 ) -> list[str]:
     findings: list[str] = []
     base_episode = episodes.get(cell["episode_id"])
@@ -467,8 +752,10 @@ def _validate_cell_source_authority(
         )
     variant = cell["case_variant"]
     episode = base_episode
+    case_variant_ref = "base"
     effective_core_sha256 = expected_core
     if variant["kind"] == "counterfactual":
+        case_variant_ref = variant["sibling_id"]
         sibling = next(
             (
                 item
@@ -526,10 +813,10 @@ def _validate_cell_source_authority(
         findings.append(
             f"{cell['execution_cell_id']} coverage atoms differ from Episode"
         )
-    expected_critical = episode["decision_stakes"]["risk_level"] == "critical"
-    if cell["critical"] != expected_critical:
+    expected_risk_level = episode["decision_stakes"]["risk_level"]
+    if cell["risk_level"] != expected_risk_level:
         findings.append(
-            f"{cell['execution_cell_id']} critical flag differs from Episode"
+            f"{cell['execution_cell_id']} risk level differs from Episode"
         )
     target_kinds = {
         target.get("claim_target_kind")
@@ -543,9 +830,72 @@ def _validate_cell_source_authority(
         findings.append(
             f"{cell['execution_cell_id']} claim target kind set drifted"
         )
+    expected_wording_authority_ref = (
+        f"episode:{cell['episode_id']}:{case_variant_ref}:base"
+        if cell["paraphrase_index"] == 0
+        else paraphrase_authority_ref(
+            cell["episode_id"],
+            case_variant_ref,
+            cell["paraphrase_index"],
+        )
+    )
+    if cell["wording_authority_ref"] != expected_wording_authority_ref:
+        findings.append(
+            f"{cell['execution_cell_id']} wording authority slot drifted"
+        )
+    message_plan = episode["user_episode"]["messages"]
+    if cell["paraphrase_index"] == 0:
+        if cell["wording_variant_id"] != "base":
+            findings.append(
+                f"{cell['execution_cell_id']} base wording has a variant id"
+            )
+    else:
+        entry = paraphrase_entries.get(expected_wording_authority_ref)
+        if entry is None:
+            findings.append(
+                f"{cell['execution_cell_id']} wording variant lacks canonical paraphrase authority"
+            )
+        else:
+            if paraphrase_registry["status"] != "reviewed":
+                findings.append(
+                    f"{cell['execution_cell_id']} uses an unreviewed paraphrase registry"
+                )
+            if entry["meaning_preservation_review"]["status"] != "reviewed":
+                findings.append(
+                    f"{cell['execution_cell_id']} uses an unreviewed paraphrase"
+                )
+            if cell["wording_variant_id"] != expected_wording_authority_ref:
+                findings.append(
+                    f"{cell['execution_cell_id']} wording variant id drifted"
+                )
+            if entry["message_plan_sha256"] != canonical_sha256(
+                entry["message_plan"]
+            ):
+                findings.append(
+                    f"{cell['execution_cell_id']} paraphrase message plan hash drifted"
+                )
+            expected_pair_sha256 = canonical_sha256(
+                {
+                    "source_message_plan_sha256": canonical_sha256(
+                        message_plan
+                    ),
+                    "candidate_message_plan_sha256": entry[
+                        "message_plan_sha256"
+                    ],
+                }
+            )
+            if entry["meaning_preservation_review"][
+                "source_candidate_pair_sha256"
+            ] != expected_pair_sha256:
+                findings.append(
+                    f"{cell['execution_cell_id']} paraphrase review pair drifted"
+                )
+            message_plan = entry["message_plan"]
+            episode = copy.deepcopy(episode)
+            episode["user_episode"]["messages"] = copy.deepcopy(message_plan)
     visible_messages = [
         message["text"]
-        for message in episode["user_episode"]["messages"]
+        for message in message_plan
         if message["turn"] <= cell["visible_turn"]
     ]
     if not visible_messages:
@@ -553,19 +903,10 @@ def _validate_cell_source_authority(
             f"{cell['execution_cell_id']} visible turn has no user message"
         )
     else:
-        base_wording_sha256 = canonical_sha256(visible_messages)
-        if cell["wording_variant_id"] == "base":
-            if cell["paraphrase_index"] != 0:
-                findings.append(
-                    f"{cell['execution_cell_id']} base wording has a paraphrase index"
-                )
-            if cell["wording_sha256"] != base_wording_sha256:
-                findings.append(
-                    f"{cell['execution_cell_id']} wording hash drifted"
-                )
-        else:
+        expected_wording_sha256 = canonical_sha256(visible_messages)
+        if cell["wording_sha256"] != expected_wording_sha256:
             findings.append(
-                f"{cell['execution_cell_id']} wording variant lacks canonical paraphrase authority"
+                f"{cell['execution_cell_id']} wording hash drifted"
             )
     corpus_entry = corpus_entries.get(cell["episode_id"])
     if corpus_entry is None:
@@ -640,22 +981,113 @@ def _validate_cell_source_authority(
     return findings
 
 
-def _validate_relation_groups(manifest: Mapping[str, Any]) -> list[str]:
+def _validate_relation_groups(
+    manifest: Mapping[str, Any],
+    *,
+    operators: Mapping[str, Mapping[str, Any]],
+    scenarios: Mapping[str, Mapping[str, Any]],
+    episodes: Mapping[str, Mapping[str, Any]],
+    scenario_registry: Mapping[str, Any],
+) -> list[str]:
     findings: list[str] = []
-    groups: dict[str, list[Mapping[str, Any]]] = {}
-    for cell in manifest["cells"]:
-        relation = cell["relation_binding"]
-        groups.setdefault(relation["relation_group_id"], []).append(cell)
-    for group_id, cells in groups.items():
-        bindings = [cell["relation_binding"] for cell in cells]
-        operator_refs = {binding["operator_ref"] for binding in bindings}
-        operator_hashes = {binding["operator_sha256"] for binding in bindings}
-        expected = {binding["expected_relation"] for binding in bindings}
-        if len(operator_refs) != 1 or len(operator_hashes) != 1 or len(expected) != 1:
-            findings.append(f"relation group {group_id} has inconsistent authority")
-        roles = [binding["member_role"] for binding in bindings]
+    cells_by_id = {
+        cell["execution_cell_id"]: cell for cell in manifest["cells"]
+    }
+    groups = manifest["relation_groups"]
+    group_ids = [group["relation_group_id"] for group in groups]
+    if len(group_ids) != len(set(group_ids)):
+        findings.append("relation group ids must be unique")
+    automatic_operator_refs = {
+        "episode_outcome",
+        "meaning_preserving_paraphrase",
+        "meaning_preserving_case_mutation",
+        "material_semantic_change",
+        "boundary_or_interaction_change",
+    }
+    referenced_cell_ids: set[str] = set()
+    for group in groups:
+        group_id = group["relation_group_id"]
+        operator_ref = group["operator_ref"]
+        scenario_binding = group["scenario_binding"]
+        operator = operators.get(operator_ref)
+        if operator is None:
+            findings.append(
+                f"relation group {group_id} references an unknown operator"
+            )
+        else:
+            if canonical_sha256(operator) != group["operator_sha256"]:
+                findings.append(f"relation group {group_id} operator hash drifted")
+            if operator["expected_relation"] != group["expected_relation"]:
+                findings.append(
+                    f"relation group {group_id} expected relation drifted"
+                )
+        scenario = None
+        if scenario_binding is None:
+            if operator_ref not in automatic_operator_refs:
+                findings.append(
+                    f"relation group {group_id} lacks operator scenario authority"
+                )
+        elif operator_ref in automatic_operator_refs:
+            findings.append(
+                f"relation group {group_id} cannot override Episode-derived authority"
+            )
+        else:
+            scenario = scenarios.get(scenario_binding["scenario_ref"])
+            if scenario_registry["status"] != "reviewed":
+                findings.append(
+                    f"relation group {group_id} uses an unreviewed scenario registry"
+                )
+            if scenario_registry["executor_binding"]["status"] != "executable":
+                findings.append(
+                    f"relation group {group_id} scenario executor is unavailable"
+                )
+            if scenario is None:
+                findings.append(
+                    f"relation group {group_id} references an unknown operator scenario"
+                )
+            else:
+                if scenario["review_status"] != "reviewed":
+                    findings.append(
+                        f"relation group {group_id} uses an unreviewed scenario"
+                    )
+                if scenario["operator_ref"] != operator_ref:
+                    findings.append(
+                        f"relation group {group_id} scenario operator drifted"
+                    )
+                if canonical_sha256(scenario) != scenario_binding[
+                    "scenario_sha256"
+                ]:
+                    findings.append(
+                        f"relation group {group_id} scenario hash drifted"
+                    )
+                if canonical_sha256(
+                    scenario["stimulus_contract"]
+                ) != scenario_binding["stimulus_contract_sha256"]:
+                    findings.append(
+                        f"relation group {group_id} scenario stimulus drifted"
+                    )
+        member_ids = [
+            member["execution_cell_id"] for member in group["members"]
+        ]
+        if len(member_ids) != len(set(member_ids)):
+            findings.append(
+                f"relation group {group_id} repeats a member cell"
+            )
+        unknown_member_ids = sorted(set(member_ids) - set(cells_by_id))
+        if unknown_member_ids:
+            findings.append(
+                f"relation group {group_id} references unknown cells "
+                f"{unknown_member_ids}"
+            )
+        referenced_cell_ids.update(set(member_ids) & set(cells_by_id))
+        member_cells = [
+            (member, cells_by_id.get(member["execution_cell_id"]))
+            for member in group["members"]
+        ]
+        cells = [cell for _, cell in member_cells if cell is not None]
+        roles = [member["member_role"] for member in group["members"]]
         if roles == ["singleton"]:
-            if next(iter(operator_refs)) != "episode_outcome":
+            if operator_ref != "episode_outcome":
                 findings.append(
                     f"relation group {group_id} singleton uses a relation operator"
                 )
@@ -674,7 +1106,6 @@ def _validate_relation_groups(manifest: Mapping[str, Any]) -> list[str]:
             )
         if len({cell["lane"] for cell in cells}) != 1:
             findings.append(f"relation group {group_id} crosses execution lanes")
-        operator_ref = next(iter(operator_refs))
         if operator_ref == "meaning_preserving_paraphrase":
             if len({cell["wording_sha256"] for cell in cells}) != len(cells):
                 findings.append(
@@ -689,7 +1120,36 @@ def _validate_relation_groups(manifest: Mapping[str, Any]) -> list[str]:
                 findings.append(
                     f"relation group {group_id} paraphrase changes case authority"
                 )
-        elif operator_ref in {
+            if len({cell["visible_turn"] for cell in cells}) != 1:
+                findings.append(
+                    f"relation group {group_id} paraphrase crosses visible turns"
+                )
+            if len({cell["repeat_index"] for cell in cells}) != 1:
+                findings.append(
+                    f"relation group {group_id} paraphrase crosses repeats"
+                )
+            anchors = [
+                cell
+                for member, cell in member_cells
+                if member["member_role"] == "anchor"
+                and cell is not None
+            ]
+            subjects = [
+                cell
+                for member, cell in member_cells
+                if member["member_role"] == "subject"
+                and cell is not None
+            ]
+            if anchors and anchors[0]["paraphrase_index"] != 0:
+                findings.append(
+                    f"relation group {group_id} paraphrase anchor is not canonical wording"
+                )
+            if any(cell["paraphrase_index"] == 0 for cell in subjects):
+                findings.append(
+                    f"relation group {group_id} paraphrase subject is canonical wording"
+                )
+        elif scenario_binding is None and operator_ref in {
+            "meaning_preserving_case_mutation",
             "material_semantic_change",
             "boundary_or_interaction_change",
             "time_offset_change",
@@ -705,13 +1165,15 @@ def _validate_relation_groups(manifest: Mapping[str, Any]) -> list[str]:
         }:
             anchors = [
                 cell
-                for cell in cells
-                if cell["relation_binding"]["member_role"] == "anchor"
+                for member, cell in member_cells
+                if member["member_role"] == "anchor"
+                and cell is not None
             ]
             subjects = [
                 cell
-                for cell in cells
-                if cell["relation_binding"]["member_role"] == "subject"
+                for member, cell in member_cells
+                if member["member_role"] == "subject"
+                and cell is not None
             ]
             if anchors and anchors[0]["case_variant"]["kind"] != "base":
                 findings.append(
@@ -724,6 +1186,99 @@ def _validate_relation_groups(manifest: Mapping[str, Any]) -> list[str]:
                 findings.append(
                     f"relation group {group_id} mutation subject lacks a counterfactual"
                 )
+            for axis in ("visible_turn", "paraphrase_index", "repeat_index"):
+                if len({cell[axis] for cell in cells}) != 1:
+                    findings.append(
+                        f"relation group {group_id} mutation crosses {axis}"
+                    )
+            for cell in subjects:
+                episode = episodes.get(cell["episode_id"])
+                sibling = (
+                    next(
+                        (
+                            item
+                            for item in episode["counterfactual_siblings"]
+                            if item["sibling_id"]
+                            == cell["case_variant"]["sibling_id"]
+                        ),
+                        None,
+                    )
+                    if episode is not None
+                    else None
+                )
+                expected_operator_ref = (
+                    AUTOMATIC_OPERATOR_BY_RELATION.get(
+                        sibling["expected_relation"]
+                    )
+                    if sibling is not None
+                    else None
+                )
+                if expected_operator_ref != operator_ref:
+                    findings.append(
+                        f"relation group {group_id} sibling relation operator drifted"
+                    )
+        if scenario is not None:
+            anchors = [
+                cell
+                for member, cell in member_cells
+                if member["member_role"] == "anchor"
+                and cell is not None
+            ]
+            subjects = [
+                cell
+                for member, cell in member_cells
+                if member["member_role"] == "subject"
+                and cell is not None
+            ]
+            if len(subjects) != 1:
+                findings.append(
+                    f"relation group {group_id} scenario requires one subject"
+                )
+            for cell in anchors:
+                if cell.get("operator_scenario_ref") is not None:
+                    findings.append(
+                        f"relation group {group_id} scenario anchor is mutated"
+                    )
+            for cell in subjects:
+                if cell.get("operator_scenario_ref") != scenario[
+                    "scenario_id"
+                ]:
+                    findings.append(
+                        f"relation group {group_id} scenario subject drifted"
+                    )
+            for cell in cells:
+                variant = cell["case_variant"]
+                variant_ref = (
+                    "base"
+                    if variant["kind"] == "base"
+                    else variant.get("sibling_id", variant["kind"])
+                )
+                if (
+                    cell["episode_id"] != scenario["source_episode_id"]
+                    or variant_ref != scenario["source_case_variant_ref"]
+                    or cell["lane"] != scenario["lane"]
+                ):
+                    findings.append(
+                        f"relation group {group_id} scenario source coordinate drifted"
+                    )
+            for axis in ("visible_turn", "paraphrase_index", "repeat_index"):
+                if len({cell[axis] for cell in cells}) != 1:
+                    findings.append(
+                        f"relation group {group_id} scenario crosses {axis}"
+                    )
+            if cells and (
+                cells[0]["visible_turn"] != 1
+                or cells[0]["paraphrase_index"] != 0
+                or cells[0]["repeat_index"] != 1
+            ):
+                findings.append(
+                    f"relation group {group_id} scenario uses a noncanonical anchor coordinate"
+                )
+    unreferenced = sorted(set(cells_by_id) - referenced_cell_ids)
+    if unreferenced:
+        findings.append(
+            f"execution cells lack relation authority: {unreferenced}"
+        )
     return findings
 
 
@@ -733,68 +1288,55 @@ def _validate_policy_floor(
 ) -> list[str]:
     findings: list[str] = []
     cells = manifest["cells"]
-    critical = {
+    variants = {
         (
             cell["episode_id"],
             canonical_sha256(cell["case_variant"]),
+            cell["risk_level"],
         )
         for cell in cells
-        if cell["critical"]
+        if cell.get("operator_scenario_ref") is None
     }
     run_policy = authority["policy"]["run_policy"]
-    for episode_id, variant_sha256 in sorted(critical):
-        group_label = f"{episode_id}/{variant_sha256}"
-        semantic_cells = [
-            cell
-            for cell in cells
-            if cell["episode_id"] == episode_id
-            and canonical_sha256(cell["case_variant"]) == variant_sha256
-            and cell["lane"] == "semantic_frame"
-        ]
-        wording_hashes = {
-            cell["wording_sha256"] for cell in semantic_cells
-        }
-        if len(wording_hashes) < run_policy["critical_episode_paraphrases"]:
-            findings.append(
-                f"{group_label} has too few critical semantic paraphrases"
-            )
-        for wording_hash in wording_hashes:
-            repeats = {
-                cell["repeat_index"]
-                for cell in semantic_cells
-                if cell["wording_sha256"] == wording_hash
-            }
-            if len(repeats) < run_policy[
-                "critical_episode_repeats_per_paraphrase"
-            ]:
+    if manifest["run_mode"] == "full":
+        for episode_id, variant_sha256, risk_level in sorted(variants):
+            group_label = f"{episode_id}/{variant_sha256}"
+            for lane, requirement in run_policy["lane_matrix"][risk_level].items():
+                lane_cells = [
+                    cell
+                    for cell in cells
+                    if cell["episode_id"] == episode_id
+                    and canonical_sha256(cell["case_variant"]) == variant_sha256
+                    and cell["lane"] == lane
+                    and cell.get("operator_scenario_ref") is None
+                ]
+                wording_hashes = {cell["wording_sha256"] for cell in lane_cells}
+                if len(wording_hashes) < requirement["paraphrases"]:
+                    findings.append(
+                        f"{group_label}/{lane} has too few paraphrases"
+                    )
+                for wording_hash in wording_hashes:
+                    repeats = {
+                        cell["repeat_index"]
+                        for cell in lane_cells
+                        if cell["wording_sha256"] == wording_hash
+                    }
+                    if len(repeats) < requirement["repeats"]:
+                        findings.append(
+                            f"{group_label}/{lane}/{wording_hash} has too few repeats"
+                        )
+            allowed_lanes = set(run_policy["lane_matrix"][risk_level])
+            unexpected_lane_names = {
+                cell["lane"]
+                for cell in cells
+                if cell["episode_id"] == episode_id
+                and canonical_sha256(cell["case_variant"]) == variant_sha256
+                and cell.get("operator_scenario_ref") is None
+            } - allowed_lanes
+            if unexpected_lane_names:
                 findings.append(
-                    f"{group_label}/{wording_hash} has too few semantic repeats"
-                )
-        authority_cells = [
-            cell
-            for cell in cells
-            if cell["episode_id"] == episode_id
-            and canonical_sha256(cell["case_variant"]) == variant_sha256
-            and cell["lane"] == "full_authority"
-        ]
-        authority_wording_hashes = {
-            cell["wording_sha256"] for cell in authority_cells
-        }
-        if len(authority_wording_hashes) < run_policy[
-            "high_risk_full_trace_paraphrases"
-        ]:
-            findings.append(
-                f"{group_label} has too few full-authority paraphrases"
-            )
-        for wording_hash in authority_wording_hashes:
-            repeats = {
-                cell["repeat_index"]
-                for cell in authority_cells
-                if cell["wording_sha256"] == wording_hash
-            }
-            if len(repeats) < run_policy["high_risk_full_trace_repeats"]:
-                findings.append(
-                    f"{group_label}/{wording_hash} has too few authority repeats"
+                    f"{group_label} has unexpected lanes "
+                    f"{sorted(unexpected_lane_names)}"
                 )
 
     profiles = {
@@ -1182,35 +1724,32 @@ def validate_relation_result(
         return findings
     if result["execution_manifest_sha256"] != canonical_sha256(manifest):
         findings.append("relation result does not bind execution manifest")
-    grouped: dict[str, list[Mapping[str, Any]]] = {}
-    for cell in manifest["cells"]:
-        binding = cell["relation_binding"]
-        if binding["operator_ref"] == "episode_outcome":
-            continue
-        grouped.setdefault(binding["relation_group_id"], []).append(cell)
-    cells = grouped.get(result["relation_group_id"])
-    if cells is None:
+    groups = {
+        group["relation_group_id"]: group
+        for group in manifest["relation_groups"]
+        if group["operator_ref"] != "episode_outcome"
+    }
+    group = groups.get(result["relation_group_id"])
+    if group is None:
         findings.append("relation group is absent from execution manifest")
         return findings
-    binding = cells[0]["relation_binding"]
-    if result["operator_ref"] != binding["operator_ref"]:
+    if result["operator_ref"] != group["operator_ref"]:
         findings.append("relation operator ref drifted")
-    if result["operator_sha256"] != binding["operator_sha256"]:
+    if result["operator_sha256"] != group["operator_sha256"]:
         findings.append("relation operator hash drifted")
-    if result["expected_relation"] != binding["expected_relation"]:
+    if result["expected_relation"] != group["expected_relation"]:
         findings.append("expected relation drifted")
-    if set(result["member_cell_ids"]) != {
-        cell["execution_cell_id"] for cell in cells
-    }:
+    member_cell_ids = {
+        member["execution_cell_id"] for member in group["members"]
+    }
+    if set(result["member_cell_ids"]) != member_cell_ids:
         findings.append("relation result member set is incomplete")
     member_result_ids = [
         item["execution_cell_id"] for item in result["member_results"]
     ]
     if len(member_result_ids) != len(set(member_result_ids)):
         findings.append("relation member result ids must be unique")
-    if set(member_result_ids) != {
-        cell["execution_cell_id"] for cell in cells
-    }:
+    if set(member_result_ids) != member_cell_ids:
         findings.append("relation member result set is incomplete")
     if cell_results is not None:
         expected_result_hashes = {
@@ -1241,7 +1780,7 @@ def validate_relation_result(
             "relation_check_profiles"
         ]
     }
-    profile = profiles.get(binding["expected_relation"])
+    profile = profiles.get(group["expected_relation"])
     if profile is None:
         findings.append("relation result has no registered check profile")
     elif set(check_ids) != set(profile["required_check_ids"]):
@@ -1688,9 +2227,9 @@ def derive_suite_result(
     )
     relation_results = list(relation_results)
     expected_relation_ids = {
-        cell["relation_binding"]["relation_group_id"]
-        for cell in manifest["cells"]
-        if cell["relation_binding"]["operator_ref"] != "episode_outcome"
+        group["relation_group_id"]
+        for group in manifest["relation_groups"]
+        if group["operator_ref"] != "episode_outcome"
     }
     observed_relation_ids = [
         result.get("relation_group_id", "") for result in relation_results
@@ -1828,7 +2367,7 @@ def derive_suite_result(
             {
                 cell["episode_id"]
                 for cell in manifest["cells"]
-                if cell["critical"]
+                if cell["risk_level"] == "critical"
             }
         ),
         "historical_regression_episode_count": len(

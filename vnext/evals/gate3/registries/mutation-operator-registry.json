@@ -21,6 +21,7 @@
   "operators": [
     {"operator_id": "episode_outcome", "operator_version": 1, "kind": "standalone", "expected_relation": "standalone_outcome"},
     {"operator_id": "meaning_preserving_paraphrase", "operator_version": 1, "kind": "metamorphic", "expected_relation": "preserve_measurement_identity"},
+    {"operator_id": "meaning_preserving_case_mutation", "operator_version": 1, "kind": "metamorphic", "expected_relation": "preserve_measurement_identity"},
     {"operator_id": "material_semantic_change", "operator_version": 1, "kind": "metamorphic", "expected_relation": "revise_measurement_identity"},
     {"operator_id": "boundary_or_interaction_change", "operator_version": 1, "kind": "metamorphic", "expected_relation": "change_claim_boundary"},
     {"operator_id": "time_offset_change", "operator_version": 1, "kind": "measurement_mutation", "expected_relation": "revise_measurement_identity"},
